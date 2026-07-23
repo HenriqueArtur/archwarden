@@ -1,0 +1,22 @@
+# Build outputs
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# archwarden's own cache directory (when dogfooding)
+.archwarden/
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Env files
+.env
+.env.local
+
+# Test artefacts
+tmp/
+*.snap.new
