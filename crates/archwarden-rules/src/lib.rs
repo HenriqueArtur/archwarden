@@ -11,3 +11,6 @@
 //! decision 9 stays true rather than aspirational.
 //!
 //! See `docs/RULES.md`.
+
+// Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod structure;

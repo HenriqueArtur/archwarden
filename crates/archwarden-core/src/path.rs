@@ -112,6 +112,22 @@ impl RepoRelPath {
         ))
     }
 
+    /// Appends a component.
+    ///
+    /// Fallible because `name` is untrusted text like any other: a caller
+    /// could pass `..`, and clamping that to the root would be the silent
+    /// wrong answer this type exists to avoid. For the entry names a directory
+    /// listing produces it never fails.
+    ///
+    /// # Errors
+    /// See [`PathError`].
+    pub fn join(&self, name: &str) -> Result<Self, PathError> {
+        if self.is_root() {
+            return Self::new(name);
+        }
+        Self::new(format!("{}/{name}", self.0))
+    }
+
     /// The final component, or `None` for the root.
     #[must_use]
     pub fn file_name(&self) -> Option<&str> {
@@ -277,6 +293,38 @@ mod tests {
         assert_eq!(path.as_path(), Utf8Path::new("packages/domain/src"));
         assert_eq!(path.as_path().as_str(), path.as_str());
         assert_eq!(RepoRelPath::root().as_path(), Utf8Path::new(""));
+    }
+
+    /// Joining is how a rule names the child it is reporting on, so it has to
+    /// agree with what the walk produced.
+    #[test]
+    fn joining_appends_a_component() {
+        assert_eq!(
+            p("packages/domain/src")
+                .join("user")
+                .expect("valid")
+                .as_str(),
+            "packages/domain/src/user"
+        );
+        assert_eq!(
+            RepoRelPath::root()
+                .join("package.json")
+                .expect("valid")
+                .as_str(),
+            "package.json"
+        );
+    }
+
+    /// A joined name goes through the same normalisation as any other input,
+    /// so a caller cannot smuggle an escape past the type.
+    #[test]
+    fn joining_a_name_that_escapes_the_root_is_refused() {
+        assert!(RepoRelPath::root().join("..").is_err());
+        assert!(p("src").join("../..").is_err());
+        assert_eq!(
+            p("src/user").join("..").expect("stays inside").as_str(),
+            "src"
+        );
     }
 
     #[test]

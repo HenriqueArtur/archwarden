@@ -68,21 +68,44 @@ pub trait Resolver: Send + Sync {
 /// Everything a file-local rule needs to reach a verdict.
 #[derive(Debug, Clone, Copy)]
 pub struct FileContext<'a> {
-    /// Facts for the file under test.
-    pub facts: &'a FileFacts,
+    /// The file under test.
+    pub path: &'a RepoRelPath,
+    /// Its facts, once a parser has run. `None` on a walk-only pass, which is
+    /// what a structure-only configuration does.
+    pub facts: Option<&'a FileFacts>,
     /// Names of the entries sitting beside it, for sibling checks. Supplied by
     /// the walk so a rule never touches the filesystem itself -- which is what
     /// keeps rules deterministic and cheap to test.
     pub siblings: &'a [String],
 }
 
-/// One rule, evaluated against one file.
+/// Everything a directory-local rule needs to reach a verdict.
 ///
-/// The two halves of this trait are the point of it. `check` is the gate;
-/// `describe_expectation` is the informant that `scaffold` and `agent-guide`
-/// are built from. Requiring both on the same trait means a rule whose
-/// expectation cannot be described does not compile, so the informant can
-/// never drift from what the checker actually enforces. See decision 9.
+/// Separate from [`FileContext`] because two of the five rule kinds ask about
+/// a *directory* -- which folders may exist here, does every file here have a
+/// spec sibling -- and handing them a file would mean each one recovering the
+/// directory and its contents for itself.
+#[derive(Debug, Clone, Copy)]
+pub struct DirectoryContext<'a> {
+    /// The directory under test.
+    pub path: &'a RepoRelPath,
+    /// Names of the directories immediately inside, sorted.
+    pub subdirectories: &'a [String],
+    /// Names of the files immediately inside, sorted.
+    pub files: &'a [String],
+}
+
+/// One rule, evaluated against a directory or a file.
+///
+/// The two halves of this trait are the point of it. The `check_*` methods are
+/// the gate; `describe_expectation` is the informant that `scaffold` and
+/// `agent-guide` are built from. Requiring both on the same trait means a rule
+/// whose expectation cannot be described does not compile, so the informant
+/// can never drift from what the checker actually enforces. See decision 9.
+///
+/// Both `check_*` methods default to reporting nothing, so a rule implements
+/// only the one its category is about. A rule that implements neither is
+/// inert, which `config doctor` can and should notice.
 pub trait RuleEngine: Send + Sync {
     /// This rule's stable identifier.
     fn id(&self) -> &RuleId;
@@ -93,14 +116,23 @@ pub trait RuleEngine: Send + Sync {
     /// The severity of findings this rule produces.
     fn level(&self) -> Level;
 
-    /// Whether the rule has anything to say about `path`.
+    /// Whether the rule has anything to say about a file at `path`.
     ///
     /// Must be purely lexical: `describe` and the pre-write hook call this for
     /// files that do not exist yet.
     fn applies_to(&self, path: &RepoRelPath) -> bool;
 
-    /// Evaluates the rule.
-    fn check(&self, ctx: FileContext<'_>) -> Vec<Finding>;
+    /// Evaluates the rule against one directory.
+    fn check_directory(&self, ctx: DirectoryContext<'_>) -> Vec<Finding> {
+        let _ = ctx;
+        Vec::new()
+    }
+
+    /// Evaluates the rule against one file.
+    fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {
+        let _ = ctx;
+        Vec::new()
+    }
 
     /// What the rule requires of `path`, whether or not the file exists.
     ///
@@ -139,18 +171,21 @@ mod tests {
             path.as_str().ends_with(".use-case.ts")
         }
 
-        fn check(&self, ctx: FileContext<'_>) -> Vec<Finding> {
-            if !self.applies_to(&ctx.facts.path) {
+        fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {
+            if !self.applies_to(ctx.path) {
                 return Vec::new();
             }
-            if ctx.facts.named_export(&self.name).is_some() {
+            if ctx
+                .facts
+                .is_some_and(|facts| facts.named_export(&self.name).is_some())
+            {
                 return Vec::new();
             }
             vec![Finding {
                 rule_id: self.id.clone(),
                 module_id: None,
                 level: self.level(),
-                path: ctx.facts.path.clone(),
+                path: ctx.path.clone(),
                 span: None,
                 observed: crate::finding::Observed::ExportMissing {
                     name: self.name.clone(),
@@ -223,8 +258,9 @@ mod tests {
     fn what_check_demands_is_what_describe_expectation_advertises() {
         let engine = engine();
         let facts = facts_for("packages/app/src/foo/foo.use-case.ts");
-        let findings = engine.check(FileContext {
-            facts: &facts,
+        let findings = engine.check_file(FileContext {
+            path: &facts.path,
+            facts: Some(&facts),
             siblings: &[],
         });
 
@@ -255,12 +291,123 @@ mod tests {
         assert!(engine.applies_to(&facts.path));
         assert!(
             engine
-                .check(FileContext {
-                    facts: &facts,
+                .check_file(FileContext {
+                    path: &facts.path,
+                    facts: Some(&facts),
                     siblings: &[]
                 })
                 .is_empty()
         );
+    }
+
+    /// A directory-oriented rule, standing in for the real `structure` engine.
+    /// Its purpose here is to be the mirror of `RequiresExport`: one
+    /// implements `check_file` and the other `check_directory`, so both
+    /// defaults get exercised.
+    struct ForbidsSubfolder {
+        id: RuleId,
+    }
+
+    impl RuleEngine for ForbidsSubfolder {
+        fn id(&self) -> &RuleId {
+            &self.id
+        }
+        fn module(&self) -> Option<&ModuleId> {
+            None
+        }
+        fn level(&self) -> Level {
+            Level::Error
+        }
+        fn applies_to(&self, _path: &RepoRelPath) -> bool {
+            true
+        }
+
+        fn check_directory(&self, ctx: DirectoryContext<'_>) -> Vec<Finding> {
+            ctx.subdirectories
+                .iter()
+                .filter(|name| name.as_str() == "forbidden")
+                .filter_map(|name| {
+                    Some(Finding {
+                        rule_id: self.id.clone(),
+                        module_id: None,
+                        level: Level::Error,
+                        path: ctx.path.join(name).ok()?,
+                        span: None,
+                        observed: crate::finding::Observed::UnexpectedSubfolder {
+                            name: name.clone(),
+                        },
+                        expected: Expectation::AllowedSubfolders {
+                            allowed: Vec::new(),
+                            warn: Vec::new(),
+                        },
+                    })
+                })
+                .collect()
+        }
+
+        fn describe_expectation(&self, _path: &RepoRelPath) -> Vec<Expectation> {
+            vec![Expectation::AllowedSubfolders {
+                allowed: Vec::new(),
+                warn: Vec::new(),
+            }]
+        }
+    }
+
+    /// A rule implements only the `check_*` method its category is about. The
+    /// other defaults to reporting nothing, so neither kind has to guess about
+    /// the shape it was not written for.
+    #[test]
+    fn the_unimplemented_half_of_the_trait_reports_nothing() {
+        let path = RepoRelPath::new("packages/app/src/foo").expect("valid");
+        let subdirectories = ["forbidden".to_owned()];
+        let files = ["anything.ts".to_owned()];
+
+        // A file-oriented rule, asked about a directory.
+        assert!(
+            engine()
+                .check_directory(DirectoryContext {
+                    path: &path,
+                    subdirectories: &subdirectories,
+                    files: &files,
+                })
+                .is_empty()
+        );
+
+        // A directory-oriented rule, asked about a file.
+        let directory_rule = ForbidsSubfolder {
+            id: RuleId::new("no-forbidden-folder").expect("valid"),
+        };
+        let facts = facts_for("packages/app/src/foo/bar.ts");
+        assert!(
+            directory_rule
+                .check_file(FileContext {
+                    path: &facts.path,
+                    facts: Some(&facts),
+                    siblings: &[],
+                })
+                .is_empty()
+        );
+
+        // And it does report when asked about what it *is* written for, so the
+        // assertions above are not passing because the rule is inert.
+        let reported = directory_rule.check_directory(DirectoryContext {
+            path: &path,
+            subdirectories: &subdirectories,
+            files: &files,
+        });
+        assert_eq!(reported.len(), 1);
+        assert_eq!(
+            reported.first().expect("one").path.as_str(),
+            "packages/app/src/foo/forbidden"
+        );
+
+        // The rest of the trait answers too. A double whose identity methods
+        // are never called is a double nobody has checked is well formed.
+        assert_eq!(directory_rule.id().as_str(), "no-forbidden-folder");
+        assert_eq!(directory_rule.module(), None);
+        assert_eq!(directory_rule.level(), Level::Error);
+        assert!(directory_rule.applies_to(&path));
+        assert_eq!(directory_rule.describe_expectation(&path).len(), 1);
     }
 
     #[test]
@@ -270,8 +417,9 @@ mod tests {
 
         assert!(
             engine
-                .check(FileContext {
-                    facts: &facts,
+                .check_file(FileContext {
+                    path: &facts.path,
+                    facts: Some(&facts),
                     siblings: &[]
                 })
                 .is_empty()
@@ -289,7 +437,8 @@ mod tests {
             "foo.use-case.spec.ts".to_owned(),
         ];
         let ctx = FileContext {
-            facts: &facts,
+            path: &facts.path,
+            facts: Some(&facts),
             siblings: &siblings,
         };
 

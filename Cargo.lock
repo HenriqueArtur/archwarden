@@ -161,6 +161,9 @@ dependencies = [
 [[package]]
 name = "archwarden-rules"
 version = "0.0.0"
+dependencies = [
+ "archwarden-core",
+]
 
 [[package]]
 name = "arrayref"

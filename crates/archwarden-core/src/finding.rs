@@ -151,8 +151,13 @@ pub enum Observed {
 }
 
 /// One rule's verdict on one file.
+///
+/// Not `#[non_exhaustive]`, unlike [`Observed`] and [`Expectation`]. Those two
+/// are matched on by downstream code, which is what the attribute protects; a
+/// finding is *built* by every rule engine, and the attribute would make that
+/// impossible from another crate. Adding a field here is a breaking change,
+/// and should be.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct Finding {
     /// Which rule fired.
     pub rule_id: RuleId,
