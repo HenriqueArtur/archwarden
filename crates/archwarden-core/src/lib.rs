@@ -9,22 +9,30 @@
 //! built `GlobSet`; a compiled rule cannot be constructed unless its globs and
 //! regexes are valid, so no downstream code ever has to re-check them.
 //!
+//! # Layout
+//!
+//! - [`facts`] — what a parser extracts from one file
+//! - [`finding`] — what a rule reports, and why
+//! - [`hash`] — content hashing, the basis of both cache keys
+//! - [`ids`] — stable identifiers for rules and modules
+//! - [`level`] — severity, of which there are exactly two
+//! - [`path`] — repository-relative paths
+//! - [`scope`] — the `roots` / `from` directory matcher
+//! - [`template`] — the `{{pascal(name)}}` mini-template
+//! - [`traits`] — the parser, resolver and rule-engine seams
+//!
 //! See `docs/ARCHITECTURE.md`.
 
-/// Path scopes: the `roots` and `from` fields on rules.
-pub mod scope;
-
-/// The `{{pascal(name)}}` template used by naming rules.
-pub mod template;
-
-/// Severity levels.
-pub mod level;
-
-/// Stable identifiers for rules and modules.
-pub mod ids;
-
-/// Repository-relative paths.
-pub mod path;
-
-/// Content hashing for the cache keys.
+// Each module documents itself with an inner `//!` block. Do not add `///`
+// doc comments here as well: rustdoc concatenates the two and then resolves
+// every intra-doc link in *this* scope, so a `[`FileFacts`]` written inside
+// `facts` would fail to resolve.
+pub mod facts;
+pub mod finding;
 pub mod hash;
+pub mod ids;
+pub mod level;
+pub mod path;
+pub mod scope;
+pub mod template;
+pub mod traits;

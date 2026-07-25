@@ -237,7 +237,7 @@ até o CLI. O critério de pronto do M1 completo é o do M1b.
 
 ---
 
-#### M1a — `archwarden-core` completo `🟦`
+#### M1a — `archwarden-core` completo `⚠️`
 
 **Objetivo:** todos os tipos e traits que o resto do workspace consome, sem
 nenhuma dependência interna.
@@ -250,18 +250,57 @@ nenhuma dependência interna.
   repo. Confusão relativo-vs-absoluto é fonte clássica de bug em linter.
 - ✅ `hash`: `ContentHash` (`blake3`), base das duas chaves de cache.
 - ✅ `level`: `Level` (`error`/`warning`) — ADR#1.
-- `facts`: `FileFacts`, `ImportFact`, `ExportFact` (com as tags de D9),
+- ✅ `facts`: `FileFacts`, `ImportFact`, `ExportFact` (com as tags de D9),
   `CallFact`. Já `Serialize`/`Deserialize`, porque o M4 vai persistir isso.
-- `finding`: `Finding` carregando `Observed` + `Expectation` estruturados, não
+- ✅ `finding`: `Finding` carregando `Observed` + `Expectation` estruturados, não
   `String`. É o que faz o `explain` melhorado de v1 não virar refactor.
-- `traits`: `Parser`, `Resolver`, `RuleEngine` (com `describe_expectation`).
+- ✅ `traits`: `Parser`, `Resolver`, `RuleEngine` (com `describe_expectation`).
 
 **Pronto quando:** `archwarden-core` compila sem dependência interna alguma,
 cobertura ≥ 90%, e `cargo mutants -p archwarden-core` sai com zero
 sobreviventes.
 
-**Registro**
-> _(pendente)_
+**Registro** — 2026-07-24 21:00 → 2026-07-25 09:50 -03 · `⚠️ concluído com desvio`
+
+Critério de pronto atingido: nove módulos, zero dependência interna,
+**84 testes**, **98,7% de cobertura**, **131 mutantes / 94 mortos / 0
+sobreviventes**. Todos os comandos do CI em 0.
+
+**1. Step dividido em M1a/M1b** a pedido do Henrique, já registrado acima.
+
+**2. `facts` não passou por fase vermelha.** Nos outros módulos escrevi teste →
+stub → vermelho por asserção → implementação. Em `facts` a lógica é um bitset
+mecânico e escrevi implementação e teste juntos; os 12 testes passaram de
+primeira. Não é TDD. O `cargo-mutants` cobriu a lacuna depois (ver 4), mas fica
+registrado como desvio do processo, não como acerto.
+
+**3. A tag serde do `Expectation`/`Observed` é `type`, não `kind`.** Descoberto
+por erro de compilação: `RequiredExport` já tem um campo `kind`, e o
+`AGENT-INTEGRATION.md:149` documenta esse nome no JSON do `scaffold`. Quem cedeu
+foi a tag. `type` também casa com o discriminador que o próprio config usa.
+
+**4. `cargo-mutants` acusou 3 sobreviventes em `facts`; só 1 era buraco real.**
+Os outros dois eram **mutantes equivalentes** — `1 << 0` e `1 >> 0` dão o mesmo
+valor, e `ExportTags::none()` era indistinguível de `Default::default()` porque
+eu derivava os dois. Nenhum teste consegue matar mutante equivalente. Em vez de
+forçar teste ou suprimir, tirei a ambiguidade do código: bits viraram constantes
+hex explícitas e o derive `Default` saiu (`none()` é o construtor nomeado de um
+conjunto; ter os dois era API redundante). O buraco real era `|` virando `^` em
+`with()`, que só difere ao adicionar uma tag já presente — teste de
+idempotência adicionado.
+
+**5. `///` em `pub mod` no `lib.rs` quebrava o rustdoc.** Com `///` na
+declaração **e** `//!` dentro do módulo, o rustdoc concatena os dois e resolve
+todos os links intra-doc no escopo externo, onde os tipos do módulo não existem.
+`cargo doc -D warnings` só acusou quando o primeiro `[`FileFacts`]` apareceu.
+`lib.rs` reescrito sem os `///`, com o motivo em comentário para não voltar.
+
+**Uma decisão que vale confirmar:** `Expectation` e `Observed` já têm todas as
+variantes das cinco categorias de regra, incluindo as de M5/M6 que ainda não
+têm engine. São `#[non_exhaustive]`, então adicionar depois não quebra nada.
+Fiz assim porque as variantes vêm do `RULES.md`, que é especificação, não
+chute — mas se alguma categoria mudar de forma até lá, essas variantes mudam
+junto.
 
 ---
 
