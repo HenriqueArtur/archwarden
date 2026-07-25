@@ -41,15 +41,25 @@ jobs:
   differential:
     name: differential vs dependency-cruiser
     runs-on: ubuntu-latest
-    # Tier 3 in docs/TESTING.md. Needs dependency-cruiser and the target repos,
-    # which are configured through secrets rather than checked in. Skipped
-    # until the import-boundary rules land in M5.
-    if: false
+    # Tier 3 in docs/TESTING.md. The target repositories are private and are
+    # configured through `ARCHWARDEN_DIFF_REPO` rather than checked in; without
+    # one the test says so and passes. The job runs anyway so the harness stays
+    # compiled and the wiring stays honest -- a job that is `if: false` rots.
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - run: npm install -g dependency-cruiser
-      - run: cargo test --workspace --features differential
+      # dependency-cruiser resolves TypeScript through the *target* repo's own
+      # typescript, so it is installed there rather than globally. It needs
+      # TypeScript 5: dependency-cruiser 18 declares `>=2 <7` and silently
+      # cruises nothing when only 7 is present.
+      - name: install the reference tool into the target
+        if: vars.ARCHWARDEN_DIFF_REPO != ''
+        run: npm install --no-audit --no-fund dependency-cruiser typescript@5
+        working-directory: ${{ vars.ARCHWARDEN_DIFF_REPO }}
+      - run: cargo test -p archwarden-engine --features differential -- --nocapture
+        env:
+          ARCHWARDEN_DIFF_REPO: ${{ vars.ARCHWARDEN_DIFF_REPO }}
+          ARCHWARDEN_DIFF_DIRS: ${{ vars.ARCHWARDEN_DIFF_DIRS }}

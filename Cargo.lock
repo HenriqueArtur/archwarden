@@ -173,6 +173,7 @@ dependencies = [
  "camino",
  "criterion",
  "ignore",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]

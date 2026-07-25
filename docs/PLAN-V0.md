@@ -765,7 +765,7 @@ O crate `engine` não está no conjunto de zero-sobreviventes do plano
 
 ---
 
-### M5 — Resolver + `import-boundary`
+### M5 — Resolver + `import-boundary` `✅`
 
 **Objetivo:** grafo de imports próprio (ADR#7). Dividido em quatro por
 tamanho, como o M1.
@@ -973,13 +973,121 @@ pelo nome.
 
 ---
 
-#### M5d — Tier 3 `⬜`
+#### M5d — Tier 3 `✅`
 
-- Harness differential vs `dependency-cruiser`,
-  `tests/differential/known-divergences.md`.
+**Tarefas**
+- ✅ `crates/archwarden-engine/tests/differential.rs`, atrás da feature
+  `differential`.
+- ✅ `tests/differential/known-divergences.md`, lido pelo harness — o markdown
+  é a fonte da verdade, não uma lista em código que ia divergir da
+  justificativa ao lado.
+- ✅ Job `differential` do nightly ligado (era `if: false`).
+
+**Registro** — 2026-07-25
+
+**O harness pegou um erro na primeira execução — no meu documento, não no
+código.** Eu tinha escrito no `known-divergences.md` que "re-export não é aresta
+de import em archwarden" e implementado o filtro correspondente. O parser faz o
+contrário desde o M3, e de propósito: `oxc.rs:325` diz *"a re-export's source is
+an import for the purpose of the graph"*. Um arquivo que faz
+`export * from '@/domain'` depende de domain — depende mais, inclusive, porque
+republica sob o próprio nome. Filtro removido, documento reescrito, e a entrada
+ficou lá como registro de uma suposição que a documentação sustentou e o código
+não.
+
+**Divergência real encontrada, e archwarden está certo.** Subpath de `exports`
+em pacote de workspace: `import { X } from '@org/domain/types'` onde
+`@org/domain` é symlink para `packages/domain/user` e o `package.json` mapeia
+`"./types"` para um arquivo. O archwarden segue o mapa e o symlink e chega na
+fonte; o `dependency-cruiser` 18.1 resolve o `@org/domain` nu mas devolve
+`couldNotResolve` para o subpath.
+
+Isso levantou uma pergunta de desenho do harness: **`couldNotResolve` é
+admissão de ignorância, não afirmação de ausência.** Comparar contra uma
+admissão de ignorância produz ruído, não sinal. O harness passou a separar as
+duas coisas: aresta que o `dependency-cruiser` *colocou* e o archwarden não viu
+continua sendo falha; aresta que ele desistiu de colocar vira nota
+`more than the reference`. O inverso — mesmo par caindo em arquivos diferentes
+— continua falhando dos dois lados.
+
+**Validado contra o Flowmaatik.** O repo não estava alcançável na primeira
+tentativa — o `ai-jail` só expunha o `archwarden`. Henrique adicionou
+`--map .../Flowmaatik:/mnt/flowmaatik` (read-only) e a corrida saiu:
+**22 pacotes, 3.269 arquivos TS/TSX, ~6.300 arestas.**
+
+| | |
+|---|---|
+| Pacotes que batem aresta por aresta | **20 de 22** |
+| Divergências reais | **6 arestas**, uma única causa |
+
+Rodado com o `dependency-cruiser` deles (17.4.3, em
+`packages/application/node_modules/.bin`) e com o 18.1.0 do meu scratchpad —
+números idênticos.
+
+Antes disso o harness tinha sido validado contra um repo sintético com alias de
+`tsconfig.paths`, alias de subpath, resolução por `index`, `.js` significando
+`.ts`, dependência circular, `.d.ts`, import de efeito colateral, workspace por
+symlink e `exports` com subpath. O fixture não é commitado — os alvos vão por
+variável de ambiente, como o `TESTING.md` manda.
+
+**O achado: `import()` dinâmico é invisível para o archwarden.** As seis
+divergências são todas isto, em duas formas:
+
+```ts
+const { mapReaction } = await import("./mappers/map-reaction");   // expressão
+actor: import("../../actor/actor").Actor;                          // posição de tipo
+```
+
+O parser lê `module_record.import_entries` e `requested_modules`, que cobrem só
+sintaxe **estática** de módulo. Um `import()` é expressão de chamada e não
+aparece. O `dependency-cruiser` pega as duas formas.
+
+Pelos três casos do `TESTING.md` isto é o **(a): archwarden está errado, e se
+corrige** — não vira entrada de divergência conhecida. Uma boundary rule hoje é
+contornável escrevendo `await import('@/domain/user')`, e ninguém precisa
+querer contornar: code-splitting é normal. No Flowmaatik são 208 `import()` em
+46 arquivos, **7 deles apontando para outro pacote `@flowmaatik/*`** — que é
+exatamente o que uma boundary rule existe para pegar. Virou o M5e.
+
+**Erro meu na primeira passada, corrigido.** Apareceram 4 divergências extras em
+`apps/app` que eram artefato de invocação: passei `ARCHWARDEN_DIFF_DIRS=src`
+enquanto o archwarden caminha o pacote inteiro, então `scripts/` e `e2e/` só
+existiam de um lado. Com os diretórios casando, `apps/app` fecha em 1588×1588.
+
+**Confirmado em repo real o que o fixture já apontava:** o `packages/domain`
+tem **93 arestas que só o archwarden vê**, todas `exports` com wildcard
+(`"./address/*": "./src/address/*.ts"`), que o `dependency-cruiser` não resolve
+em nenhuma das duas versões. Ali quem está certo somos nós, e o harness reporta
+como nota.
+
+**Descoberta de ferramenta que vale para quem for rodar:** o
+`dependency-cruiser` 18 declara `typescript >=2 <7` e, com TypeScript 7
+instalado, **cruza zero arquivos sem dizer por quê** — `totalCruised: 0` e
+`transpilersFound[typescript].available: false` enterrado no resumo. Por isso o
+harness afirma que o lado dele não veio vazio: uma comparação vazia passaria
+pelo motivo errado. O job do nightly instala `typescript@5` explicitamente.
+
+**Sem alvo configurado o teste diz por que não fez nada e passa.** Um teste
+differential não tem como inventar um repositório contra o qual diferenciar, e
+falhar por falta de um só ensinaria a ignorá-lo.
 
 **Pronto quando:** Tier 3 roda contra o Flowmaatik sem divergência não
-justificada.
+justificada — **rodou**, e as 6 divergências que sobraram têm uma causa só, que
+vira o M5e. Depois dele esta corrida deve fechar em zero.
+
+---
+
+#### M5e — `import()` dinâmico `⬜`
+
+Encontrado pelo M5d contra o Flowmaatik.
+
+**Tarefas**
+- `parser`: registrar `import()` com argumento string literal como
+  `ImportFact` — na forma de expressão e na de posição de tipo.
+- Argumento não-literal (`import(algumaVar)`) fica de fora: não há specifier
+  para resolver, e inventar um seria pior que omitir.
+- Reconferir o differential contra o Flowmaatik; a expectativa é zero
+  divergências não explicadas nos 22 pacotes.
 
 ---
 
