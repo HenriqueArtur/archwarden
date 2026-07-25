@@ -268,6 +268,17 @@ mod tests {
         assert_eq!(RepoRelPath::root().to_string(), "");
     }
 
+    /// `as_path` is what hands the path to `globset`, which works in
+    /// `Utf8Path` rather than `&str`. It must expose the normalised form, not
+    /// whatever was passed in.
+    #[test]
+    fn as_path_exposes_the_normalised_path() {
+        let path = p("./packages//domain/./src/");
+        assert_eq!(path.as_path(), Utf8Path::new("packages/domain/src"));
+        assert_eq!(path.as_path().as_str(), path.as_str());
+        assert_eq!(RepoRelPath::root().as_path(), Utf8Path::new(""));
+    }
+
     #[test]
     fn file_name_is_the_final_component() {
         assert_eq!(p("packages/domain/user.ts").file_name(), Some("user.ts"));

@@ -165,11 +165,14 @@ mod tests {
     /// consulting the schema.
     #[test]
     fn the_error_names_the_first_offending_character() {
-        let err = RuleId::new("ok-then*bad?").expect_err("should reject");
-        let IdError::InvalidCharacter { character, .. } = err else {
-            panic!("expected InvalidCharacter, got {err:?}");
-        };
-        assert_eq!(character, '*');
+        assert_eq!(
+            RuleId::new("ok-then*bad?"),
+            Err(IdError::InvalidCharacter {
+                kind: "rule",
+                id: "ok-then*bad?".to_owned(),
+                character: '*',
+            })
+        );
     }
 
     /// The two kinds report themselves distinctly, so a config error says

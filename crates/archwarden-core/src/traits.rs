@@ -238,6 +238,31 @@ mod tests {
         assert_eq!(advertised.first(), Some(demanded));
     }
 
+    /// The path every file in a clean repository takes: the rule applies, the
+    /// file satisfies it, and nothing is reported.
+    #[test]
+    fn a_satisfied_rule_reports_nothing() {
+        let engine = engine();
+        let mut facts = facts_for("packages/app/src/foo/foo.use-case.ts");
+        facts.exports.push(crate::facts::ExportFact {
+            name: Some("Foo".to_owned()),
+            tags: ExportTags::only(ExportKind::Function),
+            is_default: false,
+            reexport_from: None,
+            span: crate::facts::Span::new(0, 10),
+        });
+
+        assert!(engine.applies_to(&facts.path));
+        assert!(
+            engine
+                .check(FileContext {
+                    facts: &facts,
+                    siblings: &[]
+                })
+                .is_empty()
+        );
+    }
+
     #[test]
     fn a_rule_says_nothing_about_a_file_outside_its_scope() {
         let engine = engine();

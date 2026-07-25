@@ -302,6 +302,34 @@ Fiz assim porque as variantes vêm do `RULES.md`, que é especificação, não
 chute — mas se alguma categoria mudar de forma até lá, essas variantes mudam
 junto.
 
+**6. Cobertura elevada para 100% no core, a pedido do Henrique** (2026-07-25,
+depois de o M1a já estar aprovado). Estava em 98,66%. As lacunas eram de três
+naturezas diferentes, e só uma se resolvia escrevendo teste:
+
+- *Teste faltando de verdade* — `as_path()`, e o caminho em que a regra é
+  satisfeita e nada é reportado. Testes adicionados.
+- *Braço `panic!` de `let ... else` dentro de teste* — nunca executado porque o
+  teste passa. Reescritos como `assert_eq!` contra o erro inteiro, o que de
+  quebra passou a fixar a frase exata que o usuário lê em vez de checar
+  `contains`.
+- *Branch de erro inalcançável em código de produção* — dois casos. Em
+  `parse_hex`, dois `map_err` que nenhuma entrada alcança, porque comprimento e
+  alfabeto já foram validados antes; substituídos por uma função `hex_value`
+  total. Em `Scope::compile`, o erro do `GlobSetBuilder::build()`, impossível
+  porque cada glob já foi validado individualmente; resolvido trocando
+  `GlobSet` por `Vec<GlobMatcher>`, cujo construtor é infalível.
+
+Vale registrar o padrão: **piso de 100% não se atinge só escrevendo teste.**
+Boa parte do caminho foi apagar código defensivo que nenhuma entrada alcança —
+o que é uma melhora, mas é uma mudança de código motivada por uma métrica, e
+precisa ser olhada como tal. A troca `GlobSet` → `Vec<GlobMatcher>` é a de mais
+consequência e está justificada em comentário no `scope.rs`: escopo de regra
+tem um ou dois padrões, onde as duas estruturas se equivalem.
+
+Cobertura **de linha** ficou em 100% no core; **de região** em 99,66% (7
+regiões), resíduo de curto-circuito e instanciação de genéricos que o
+`llvm-cov` conta separado. O piso do CI é `--fail-under-lines`.
+
 ---
 
 #### M1b — `config` + `resolver` mínimo + CLI `⬜`
@@ -326,8 +354,9 @@ junto.
 - **Remover `--no-tests=pass` do job `test` em `.github/workflows/ci.yml`.**
   Foi muleta do M0 (workspace sem teste algum). Com TDD obrigatório, "nenhum
   teste rodou" tem que quebrar o build.
-- **Ligar o piso de cobertura** no job `coverage`: `--fail-under-lines 70` no
-  workspace, 90 em `core`/`config`/`rules`.
+- ✅ **Piso de cobertura ligado** no job `coverage`, com os números que o
+  Henrique fixou em 2026-07-25: **100% no `archwarden-core`**, **95% no
+  workspace** (meta 100%). Dois invocações do `llvm-cov`, uma por piso.
 
 **Pronto quando:** `archwarden config validate` roda contra config válido e
 inválido com exit code e mensagem `miette` corretos; schema gerado valida os

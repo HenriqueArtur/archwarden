@@ -92,16 +92,15 @@ impl ContentHash {
             });
         }
 
+        // Every character is now known to be an ASCII hex digit, and the byte
+        // length is an exact multiple of two, so the conversion below is
+        // total. Using fallible parsing here instead would add two error
+        // branches that no input can reach.
         let mut bytes = [0u8; HASH_LEN];
         for (slot, pair) in bytes.iter_mut().zip(text.as_bytes().chunks_exact(2)) {
-            let pair = std::str::from_utf8(pair).map_err(|_| HashError::NotHex {
-                text: text.to_owned(),
-                character: char::REPLACEMENT_CHARACTER,
-            })?;
-            *slot = u8::from_str_radix(pair, 16).map_err(|_| HashError::NotHex {
-                text: text.to_owned(),
-                character: char::REPLACEMENT_CHARACTER,
-            })?;
+            *slot = pair
+                .iter()
+                .fold(0u8, |acc, byte| acc * 16 + hex_value(*byte));
         }
 
         Ok(Self(bytes))
@@ -111,6 +110,21 @@ impl ContentHash {
     #[must_use]
     pub fn as_bytes(&self) -> &[u8; HASH_LEN] {
         &self.0
+    }
+}
+
+/// The numeric value of one ASCII hex digit.
+///
+/// Total by construction: a byte that is not a hex digit maps to zero.
+/// [`ContentHash::parse_hex`] rejects those before reaching this, and keeping
+/// the function total means that guarantee does not become an error branch no
+/// input can take.
+fn hex_value(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        b'a'..=b'f' => byte - b'a' + 10,
+        b'A'..=b'F' => byte - b'A' + 10,
+        _ => 0,
     }
 }
 
@@ -168,6 +182,29 @@ mod tests {
         );
     }
 
+    /// `hex_value` is total on purpose, so its contract for a non-digit is
+    /// part of the design rather than an accident.
+    #[test]
+    fn hex_value_maps_digits_and_defaults_the_rest_to_zero() {
+        assert_eq!(hex_value(b'0'), 0);
+        assert_eq!(hex_value(b'9'), 9);
+        assert_eq!(hex_value(b'a'), 10);
+        assert_eq!(hex_value(b'f'), 15);
+        assert_eq!(hex_value(b'A'), 10);
+        assert_eq!(hex_value(b'F'), 15);
+        assert_eq!(hex_value(b'z'), 0);
+        assert_eq!(hex_value(b' '), 0);
+    }
+
+    /// Uppercase hex parses, even though `to_hex` only ever emits lowercase:
+    /// a hash pasted from another tool should not be rejected on case alone.
+    #[test]
+    fn uppercase_hex_parses_to_the_same_value() {
+        let hash = ContentHash::of(b"content");
+        let upper = hash.to_hex().to_uppercase();
+        assert_eq!(ContentHash::parse_hex(&upper).expect("parses"), hash);
+    }
+
     #[test]
     fn hex_round_trips() {
         let hash = ContentHash::of(b"some file content");
@@ -178,14 +215,15 @@ mod tests {
 
     #[test]
     fn parsing_rejects_wrong_length_and_non_hex() {
-        let err = ContentHash::parse_hex("abc").expect_err("too short");
-        let HashError::BadLength { expected, text } = err else {
-            panic!("expected BadLength, got {err:?}");
-        };
         // The message tells the user the width to aim for, so the number has
         // to be the real one rather than merely present.
-        assert_eq!(expected, 64);
-        assert_eq!(text, "abc");
+        assert_eq!(
+            ContentHash::parse_hex("abc"),
+            Err(HashError::BadLength {
+                text: "abc".to_owned(),
+                expected: 64,
+            })
+        );
 
         let long = "z".repeat(64);
         assert!(matches!(

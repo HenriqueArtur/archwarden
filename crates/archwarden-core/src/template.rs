@@ -265,13 +265,15 @@ mod tests {
     /// without opening the docs.
     #[test]
     fn an_unknown_transform_lists_the_valid_ones() {
-        let err = render("{{pascalcase(name)}}", captures).expect_err("should fail");
-        let TemplateError::UnknownTransform { name, available } = err else {
-            panic!("expected UnknownTransform, got {err:?}");
-        };
-        assert_eq!(name, "pascalcase");
-        assert!(available.contains("pascal"), "available was {available}");
-        assert!(available.contains("raw"), "available was {available}");
+        // Asserting the whole error pins the exact sentence a user reads,
+        // rather than just checking that some substring is in there.
+        assert_eq!(
+            render("{{pascalcase(name)}}", captures),
+            Err(TemplateError::UnknownTransform {
+                name: "pascalcase".to_owned(),
+                available: "pascal, camel, kebab, snake, upper, lower, raw".to_owned(),
+            })
+        );
     }
 
     /// Referencing a group the regex does not define is a config bug, and it

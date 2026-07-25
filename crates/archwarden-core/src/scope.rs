@@ -5,7 +5,7 @@
 //! what it inspects inside a selected directory. See `docs/RULES.md`.
 
 use camino::Utf8Path;
-use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use globset::{GlobBuilder, GlobMatcher};
 
 /// A scope pattern that could not be compiled.
 #[derive(Debug, thiserror::Error)]
@@ -22,9 +22,17 @@ pub struct ScopeError {
 /// Matching is purely lexical: no path is ever touched on disk. That is what
 /// lets `describe` and the pre-write hook answer "which rules apply here?" for
 /// files that do not exist yet.
+///
+/// Patterns are held as individually compiled matchers rather than as a
+/// `GlobSet`. A `GlobSet` amortises one candidate construction across many
+/// patterns, which is the right trade for a gitignore-sized list; a rule's
+/// scope is one or two patterns, where the two are equivalent. What the
+/// individual matchers buy is that `Glob::compile_matcher` is infallible,
+/// so `compile` has exactly one failure mode -- a pattern that does not
+/// parse -- instead of a second, unreachable one from building the set.
 #[derive(Debug, Clone)]
 pub struct Scope {
-    set: GlobSet,
+    matchers: Vec<GlobMatcher>,
     patterns: Vec<String>,
     /// Whether the repository root itself is selected. Tracked separately
     /// because the root is the empty path, which is not a glob any engine
@@ -42,7 +50,7 @@ impl Scope {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let mut builder = GlobSetBuilder::new();
+        let mut matchers = Vec::new();
         let mut stored = Vec::new();
         let mut matches_root = false;
 
@@ -56,13 +64,13 @@ impl Scope {
                 continue;
             }
 
-            add_glob(&mut builder, normalised, &raw)?;
+            add_glob(&mut matchers, normalised, &raw)?;
 
             // `X/**` selects everything beneath X. Users also expect X itself,
             // which globset does not give us, so it is added explicitly. A
             // bare `**` means the whole repository, root included.
             match normalised.strip_suffix("/**") {
-                Some(prefix) if !prefix.is_empty() => add_glob(&mut builder, prefix, &raw)?,
+                Some(prefix) if !prefix.is_empty() => add_glob(&mut matchers, prefix, &raw)?,
                 Some(_) => matches_root = true,
                 None => {
                     if normalised == "**" {
@@ -74,13 +82,8 @@ impl Scope {
             stored.push(raw);
         }
 
-        let set = builder.build().map_err(|source| ScopeError {
-            pattern: stored.join(", "),
-            source,
-        })?;
-
         Ok(Self {
-            set,
+            matchers,
             patterns: stored,
             matches_root,
         })
@@ -94,7 +97,7 @@ impl Scope {
         if as_str.is_empty() || as_str == "." {
             return self.matches_root;
         }
-        self.set.is_match(dir.as_std_path())
+        self.matchers.iter().any(|m| m.is_match(dir.as_std_path()))
     }
 
     /// Whether `file` sits directly inside a selected directory.
@@ -121,7 +124,7 @@ fn normalise(pattern: &str) -> &str {
     if trimmed == "." { "" } else { trimmed }
 }
 
-fn add_glob(builder: &mut GlobSetBuilder, pattern: &str, raw: &str) -> Result<(), ScopeError> {
+fn add_glob(matchers: &mut Vec<GlobMatcher>, pattern: &str, raw: &str) -> Result<(), ScopeError> {
     // `literal_separator` is what makes `*` stop at a path boundary. Without
     // it, `src/*` would also select `src/a/b`, and the distinction between `*`
     // and `**` that docs/RULES.md promises would not exist.
@@ -132,7 +135,7 @@ fn add_glob(builder: &mut GlobSetBuilder, pattern: &str, raw: &str) -> Result<()
             pattern: raw.to_owned(),
             source,
         })?;
-    builder.add(glob);
+    matchers.push(glob.compile_matcher());
     Ok(())
 }
 

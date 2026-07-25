@@ -63,20 +63,26 @@ jobs:
         with:
           tool: cargo-llvm-cov
       # docs/TESTING.md requires every branch of every rule kind to be covered.
+      # The floors are enforced, not advisory. Never lower one to make a red
+      # build green: either write the test, or delete the unreachable code the
+      # test cannot reach.
       #
-      # No floor is enforced yet: at M0 the workspace has no library code, so
-      # the only measurable lines are two binary entry points and the number
-      # would be 0% no matter how good the tests are. Enforcing a threshold
-      # against that is theatre. The floor turns on in M1, when there is
-      # library code to measure -- see docs/PLAN-V0.md.
-      #
-      # Target once enabled: --fail-under-lines 70 workspace-wide, 90 for
-      # archwarden-core, -config and -rules. Raise as coverage improves; never
-      # lower it to make a red build green.
+      # archwarden-core is held at 100%. It is pure logic with no I/O, so
+      # there is nothing in it that is genuinely hard to reach -- an uncovered
+      # line there means either a missing test or a branch no input can take,
+      # and both deserve to fail the build.
+      - run: cargo llvm-cov -p archwarden-core --all-features --fail-under-lines 100
+
+      # Everything else: 95% is the floor, 100% the aim. The crates that touch
+      # the filesystem, the terminal and node_modules have edges that cost more
+      # to reach than they are worth.
       #
       # The regex is unanchored on purpose: llvm-cov matches it against
       # absolute paths, so '^xtask/' silently matches nothing.
-      - run: cargo llvm-cov --workspace --all-features --ignore-filename-regex 'xtask/'
+      - run: >
+          cargo llvm-cov --workspace --all-features
+          --ignore-filename-regex 'xtask/'
+          --fail-under-lines 95
 
   supply-chain:
     name: licences and advisories
