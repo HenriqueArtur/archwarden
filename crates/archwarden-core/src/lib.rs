@@ -10,3 +10,9 @@
 //! regexes are valid, so no downstream code ever has to re-check them.
 //!
 //! See `docs/ARCHITECTURE.md`.
+
+/// Path scopes: the `roots` and `from` fields on rules.
+pub mod scope;
+
+/// The `{{pascal(name)}}` template used by naming rules.
+pub mod template;

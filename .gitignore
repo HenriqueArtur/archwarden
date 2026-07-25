@@ -27,3 +27,7 @@
 # Test artefacts
 tmp/
 *.snap.new
+
+# cargo-mutants scratch output
+mutants.out/
+mutants.out.old/
