@@ -1072,22 +1072,61 @@ differential não tem como inventar um repositório contra o qual diferenciar, e
 falhar por falta de um só ensinaria a ignorá-lo.
 
 **Pronto quando:** Tier 3 roda contra o Flowmaatik sem divergência não
-justificada — **rodou**, e as 6 divergências que sobraram têm uma causa só, que
-vira o M5e. Depois dele esta corrida deve fechar em zero.
+justificada — **rodou**, achou 6 divergências de uma causa só, e depois do M5e
+fecha em **22 de 22 pacotes, zero divergências**.
 
 ---
 
-#### M5e — `import()` dinâmico `⬜`
+#### M5e — `import()` dinâmico `✅`
 
 Encontrado pelo M5d contra o Flowmaatik.
 
 **Tarefas**
-- `parser`: registrar `import()` com argumento string literal como
-  `ImportFact` — na forma de expressão e na de posição de tipo.
-- Argumento não-literal (`import(algumaVar)`) fica de fora: não há specifier
-  para resolver, e inventar um seria pior que omitir.
-- Reconferir o differential contra o Flowmaatik; a expectativa é zero
-  divergências não explicadas nos 22 pacotes.
+- ✅ `parser`: `import()` com specifier literal vira `ImportFact`, na forma de
+  expressão e na de posição de tipo.
+- ✅ Argumento não-literal fica de fora.
+- ✅ Differential reconferido contra o Flowmaatik.
+
+**Registro** — 2026-07-25
+
+**22 de 22 pacotes, zero divergências não explicadas.** Antes eram 20 de 22 com
+6 arestas divergentes; as seis eram esta.
+
+O `module_record` do `oxc` cobre sintaxe de **módulo**. Um `import()` é
+expressão de chamada, então sai pelo AST — um `Visit` que trata dois nós:
+
+| Nó | Marcação |
+|---|---|
+| `ImportExpression` (`await import('./x')`) | `type_only: false` |
+| `TSImportType` (`import('./x').T`) | **`type_only: true`** |
+
+A segunda marcação é decisão, não detalhe: `import("./a").Actor` numa anotação
+de tipo é apagado na compilação, então uma regra com `include_type_only: false`
+não deve enxergá-lo. Virou asserção no teste.
+
+**Specifier não-literal fica de fora.** `import(name)` e
+`import(`./locales/${name}`)` não nomeiam um módulo, e inventar um faria uma
+boundary rule reportar um caminho que ninguém escreveu. O tally `unresolved` do
+run é onde o usuário fica sabendo que a corrida viu menos que tudo.
+
+**`require()` continua de fora**, e tem teste dizendo isso. Resolução `CommonJS`
+tem regras próprias que o v0 não promete seguir; pegar a string aqui prometeria
+uma cobertura que o resolver não tem.
+
+**Seis mutantes sobreviventes no `oxc.rs`, todos anteriores a este step.**
+`cargo mutants`: 49 mutantes, 35 mortos, 8 inviáveis, 6 vivos — nenhum no
+código novo (`dynamic_imports` / `DynamicImportCollector` ficaram limpos).
+Os seis são:
+
+- 4 em `declaration_tags` / `record_default` — as tags de
+  `export default function` e `export default class`;
+- 2 na chave de deduplicação do `imports` (`span == span && specifier ==
+  specifier`), que com `||` juntaria dois `import` do mesmo módulo em
+  statements diferentes.
+
+O `archwarden-parser` **não está** no conjunto de zero-sobreviventes do plano
+(`core`, `config`, `rules` estão), então isto está dentro da tolerância
+acordada — mas é lacuna de teste real e fica registrada aqui em vez de sumir.
 
 ---
 

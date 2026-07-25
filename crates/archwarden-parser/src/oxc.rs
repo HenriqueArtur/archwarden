@@ -19,7 +19,10 @@ use archwarden_core::{
     traits::Parser as ParserTrait,
 };
 use oxc_allocator::Allocator;
-use oxc_ast::ast::{Declaration, Expression, Program, Statement, VariableDeclarationKind};
+use oxc_ast::ast::{
+    Declaration, Expression, ImportExpression, Program, Statement, TSImportType,
+    VariableDeclarationKind,
+};
 use oxc_ast_visit::Visit;
 use oxc_span::SourceType;
 
@@ -82,7 +85,7 @@ impl ParserTrait for OxcParser {
         Ok(FileFacts {
             path: path.clone(),
             content_hash,
-            imports: imports(&parsed.module_record),
+            imports: imports(&parsed.module_record, &parsed.program),
             exports: exports(&parsed.module_record, &declaration_tags),
             calls: calls(&parsed.program),
         })
@@ -294,7 +297,10 @@ fn local_name(name: &oxc_syntax::module_record::ExportLocalName<'_>) -> Option<S
     }
 }
 
-fn imports(record: &oxc_syntax::module_record::ModuleRecord<'_>) -> Vec<ImportFact> {
+fn imports(
+    record: &oxc_syntax::module_record::ModuleRecord<'_>,
+    program: &Program<'_>,
+) -> Vec<ImportFact> {
     // Grouped by statement, so one `import { A, B } from './x'` is one fact
     // with two names rather than two facts naming the same module.
     let mut by_statement: Vec<ImportFact> = Vec::new();
@@ -343,8 +349,66 @@ fn imports(record: &oxc_syntax::module_record::ModuleRecord<'_>) -> Vec<ImportFa
         }
     }
 
+    // The module record covers module *syntax* only. A dynamic `import()` is
+    // an ordinary call expression, so it is invisible there and has to come
+    // off the AST -- which is how a boundary rule was bypassable by writing
+    // `await import('@/domain/user')`. Found by the differential harness
+    // against a real monorepo; see M5e in `docs/PLAN-V0.md`.
+    by_statement.extend(dynamic_imports(program));
+
     by_statement.sort_by_key(|fact| (fact.span.start, fact.span.end));
     by_statement
+}
+
+/// Every `import()` in the file whose specifier is written out.
+fn dynamic_imports(program: &Program<'_>) -> Vec<ImportFact> {
+    let mut collector = DynamicImportCollector::default();
+    collector.visit_program(program);
+    collector.imports
+}
+
+#[derive(Default)]
+struct DynamicImportCollector {
+    imports: Vec<ImportFact>,
+}
+
+impl DynamicImportCollector {
+    fn record(&mut self, specifier: &str, type_only: bool, span: oxc_span::Span) {
+        self.imports.push(ImportFact {
+            specifier: specifier.to_owned(),
+            resolved: None,
+            type_only,
+            // A dynamic import binds nothing at the statement level: whatever
+            // the caller destructures out of the promise is a separate
+            // binding, and `call-obligation` matches call sites rather than
+            // import names.
+            names: Vec::new(),
+            span: span_of(span),
+        });
+    }
+}
+
+impl<'a> Visit<'a> for DynamicImportCollector {
+    fn visit_import_expression(&mut self, expression: &ImportExpression<'a>) {
+        // Only a literal specifier. `import(name)` and
+        // `import(`./locales/${name}`)` name no single module, and inventing
+        // one would have a boundary rule report a path nobody wrote. The
+        // run's `unresolved` tally is where a user learns it saw less than
+        // everything.
+        if let Expression::StringLiteral(literal) = &expression.source {
+            self.record(literal.value.as_str(), false, expression.span);
+        }
+        oxc_ast_visit::walk::walk_import_expression(self, expression);
+    }
+
+    fn visit_ts_import_type(&mut self, import: &TSImportType<'a>) {
+        // `import("./a").Actor` in a type position is a real dependency and an
+        // erased one, so it is recorded and marked type-only. A rule with
+        // `include_type_only: false` should not see it; one with the default
+        // should.
+        self.record(import.source.value.as_str(), true, import.span);
+        oxc_ast_visit::walk::walk_ts_import_type(self, import);
+    }
 }
 
 fn calls(program: &Program<'_>) -> Vec<CallFact> {
@@ -589,6 +653,113 @@ import { type U, W } from './mixed';
             !by_specifier("./mixed").type_only,
             "a statement is type-only only when every name in it is"
         );
+    }
+
+    /// A `import()` expression is a dependency. Found by the differential
+    /// harness against a real monorepo, where a boundary rule could be
+    /// bypassed -- without anyone trying to -- by lazy-loading a forbidden
+    /// layer. See M5e in `docs/PLAN-V0.md`.
+    #[test]
+    fn a_dynamic_import_is_an_import() {
+        let facts = parse(
+            "src/x.ts",
+            r"
+export async function lazy() {
+  const { mapReaction } = await import('./mappers/map-reaction');
+  return mapReaction;
+}
+",
+        );
+
+        let specifiers: Vec<_> = facts.imports.iter().map(|i| i.specifier.as_str()).collect();
+        assert_eq!(specifiers, ["./mappers/map-reaction"]);
+    }
+
+    /// TypeScript's `import("...")` in type position is the same dependency
+    /// written differently, and dependency-cruiser counts it. So do we.
+    #[test]
+    fn a_dynamic_import_in_type_position_is_an_import() {
+        let facts = parse(
+            "src/x.ts",
+            r#"
+export interface Ctx {
+  actor: import("../../actor/actor").Actor;
+}
+"#,
+        );
+
+        let import = facts.imports.first().expect("one import");
+        assert_eq!(import.specifier, "../../actor/actor");
+        assert!(
+            import.type_only,
+            "a type-position import is erased, so a rule that opted out of \
+             type-only imports must not see it"
+        );
+    }
+
+    /// A specifier that is not a literal cannot be resolved, and inventing one
+    /// would be worse than omitting it: a boundary rule would report a path
+    /// nobody wrote. It is left out, and the `unresolved` tally is where a
+    /// user learns the run could not see everything.
+    #[test]
+    fn a_computed_dynamic_import_is_left_out() {
+        let facts = parse(
+            "src/x.ts",
+            r"
+export async function lazy(name: string) {
+  const a = await import(name);
+  const b = await import(`./locales/${name}.ts`);
+  const c = await import('./known');
+  return [a, b, c];
+}
+",
+        );
+
+        let specifiers: Vec<_> = facts.imports.iter().map(|i| i.specifier.as_str()).collect();
+        assert_eq!(specifiers, ["./known"], "only the literal one");
+    }
+
+    /// A dynamic import brings no names into scope at the statement level --
+    /// the destructuring is a separate binding -- and it is not type-only.
+    #[test]
+    fn a_dynamic_import_binds_no_names_and_is_not_type_only() {
+        let facts = parse("src/x.ts", "export const p = import('./thing');");
+
+        let import = facts.imports.first().expect("one import");
+        assert!(import.names.is_empty());
+        assert!(!import.type_only);
+        assert!(import.resolved.is_none(), "resolution is a later pass");
+    }
+
+    /// Static and dynamic imports of the same module are one dependency each,
+    /// and both survive. Ordering stays by position so a finding's span points
+    /// at the statement a reader can find.
+    #[test]
+    fn static_and_dynamic_imports_coexist_in_source_order() {
+        let facts = parse(
+            "src/x.ts",
+            r"
+import { A } from './a';
+export async function lazy() {
+  const { B } = await import('./b');
+  const { C } = await import('./a');
+  return [A, B, C];
+}
+",
+        );
+
+        let specifiers: Vec<_> = facts.imports.iter().map(|i| i.specifier.as_str()).collect();
+        assert_eq!(specifiers, ["./a", "./b", "./a"]);
+    }
+
+    /// `require()` is not `import()`. `CommonJS` resolution has its own rules
+    /// and v0 does not claim to follow them; picking up the string here would
+    /// promise a coverage the resolver does not have.
+    #[test]
+    fn a_require_call_is_not_picked_up() {
+        let facts = parse("src/x.ts", "export const thing = require('./commonjs');");
+
+        assert!(facts.imports.is_empty());
     }
 
     /// A re-export's source is an import as far as the graph is concerned.
