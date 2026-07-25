@@ -837,18 +837,63 @@ modo de falha mais provável deste projeto.
 
 ---
 
-#### M5b — Grafo `⬜`
+#### M5b — Passe de resolução `✅`
 
 **Tarefas**
-- `engine`: passe de resolução preenchendo `ImportFact.resolved`.
-- `engine`: montagem do grafo e índice reverso (`ARCHITECTURE.md:141-144`).
+- ✅ `engine`: `resolve_imports` preenchendo `ImportFact.resolved`, com tally
+  por tipo de destino.
+- ✅ `core`: `RuleEngine::needs_resolution()`, separado de `needs_facts()`.
+- ❌ `engine`: índice reverso — **não construído, de propósito.** Ver abaixo.
 
-O `ImportFact` já sai do parser com specifier, `type_only` e nomes desde o M3;
-o que falta é resolvê-lo. Decisão a tomar aqui: os `facts` vão para o cache com
-`resolved: None` (saída pura do parser, chave só de conteúdo) e a resolução
-roda todo run, ou vão resolvidos e a chave passa a incluir o
-`resolution_epoch`. Inclino para a primeira — o `oxc_resolver` tem cache
-próprio e a chave por conteúdo fica honesta.
+**Registro** — 2026-07-25
+
+**O índice reverso não tem consumidor no v0.** O `ARCHITECTURE.md:195` pede
+"se o arquivo A mudou, quem importa A?" — e a razão declarada ali é
+invalidação incremental de cache. O v0 não tem watch mode e re-checa o repo
+inteiro todo run. Fui atrás de quem perguntaria, regra por regra:
+
+| Regra | Pergunta que faz |
+|---|---|
+| `structure` | forma do diretório |
+| `naming` | exports do próprio arquivo |
+| `spec-pair` | irmãos do próprio arquivo |
+| `import-boundary` | **os próprios imports** (`RULES.md:271-277`) |
+| `call-obligation` | os próprios imports e chamadas |
+
+Nenhuma pergunta "quem me importa". Construir o índice agora seria código sem
+um requisito contra o qual testá-lo. Fica para o v1, junto com o watch mode que
+é o motivo dele existir. Registrado aqui e no `//!` do módulo para que a
+ausência seja decisão e não esquecimento.
+
+**Destino do import: contado, não guardado.** O `ImportFact.resolved` é
+`Option<RepoRelPath>`, e as globs de uma boundary rule são caminhos relativos
+ao repo (`RULES.md:281-285`). Uma dependência instalada e um builtin não têm
+caminho que uma glob dessas possa casar — mas se os dois virassem `None` junto
+com "não resolveu", o relatório não conseguiria distinguir *"lodash é uma
+dependência"* de *"lodash não foi encontrado"*. Num repo sem `node_modules`
+instalado isso é a diferença entre silêncio e três mil ruídos.
+
+Solução: só `InRepo` chega ao fato; `External`, `Builtin` e falha são
+**contados** num `Outcomes`. O tipo do fato não precisa aprender sobre
+dependências, e o relatório consegue dizer a verdade.
+
+**Limitação que isso deixa, para o Henrique decidir depois:** no v0 não dá para
+escrever *"a UI não pode importar `lodash` direto"* nem *"ninguém importa
+`node:fs`"*. As globs só alcançam caminhos do repo. O `RULES.md` não pede isso
+— todos os exemplos são camadas internas — mas é uma regra de arquitetura
+plausível, e agora existe um `Outcomes.builtin`/`.external` de onde partir.
+
+**`needs_resolution()` é separado de `needs_facts()`** porque resolver é um
+segundo custo em cima de parsear: bate no filesystem para cada specifier de
+cada arquivo. Uma regra de naming lê dentro do arquivo e nunca pergunta para
+onde os imports vão — não deve pagar por isso.
+
+**Escopo movido para o M5c.** A ligação do passe no runner ficou de fora
+deliberadamente: nenhuma engine do v0 devolve `needs_resolution() == true`
+ainda, então o encanamento não teria como ser testado através do `check()`.
+Vai junto com a engine que o liga, que é onde ele passa a ter consumidor.
+
+`cargo mutants` no `resolve.rs`: **26 mutantes, 26 mortos.**
 
 ---
 
@@ -856,6 +901,10 @@ próprio e a chave por conteúdo fica honesta.
 
 - `rules`: `forbid_import_from`, `must_import_from`, `except`,
   `include_type_only` + `describe_expectation`.
+- `engine`: ligar `resolve_imports` no runner (`ImportResolver` construído uma
+  vez por run, só quando alguma engine pede), `Outcomes` no `Report`.
+- `cli`: relatar imports não resolvidos — uma boundary rule que não enxergou
+  nada é um relatório limpo mentindo.
 
 ---
 

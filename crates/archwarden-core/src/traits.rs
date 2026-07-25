@@ -132,6 +132,16 @@ pub trait RuleEngine: Send + Sync {
         false
     }
 
+    /// Whether this rule reads *where a file's imports land*.
+    ///
+    /// Separate from [`needs_facts`](Self::needs_facts) because resolution is
+    /// a second cost on top of parsing: it probes the filesystem for every
+    /// specifier in every file it applies to. A naming rule reads inside a
+    /// file and never asks where its imports go, and should not pay for it.
+    fn needs_resolution(&self) -> bool {
+        false
+    }
+
     /// Evaluates the rule against one directory.
     fn check_directory(&self, ctx: DirectoryContext<'_>) -> Vec<Finding> {
         let _ = ctx;
@@ -251,6 +261,10 @@ mod tests {
         assert_eq!(engines[0].level(), Level::Error);
         assert_eq!(engines[0].module(), None);
         assert!(engines[0].needs_facts(), "it reads exports");
+        assert!(
+            !engines[0].needs_resolution(),
+            "but it never asks where an import goes"
+        );
     }
 
     /// `applies_to` answers for a path with no file behind it, which is what
@@ -427,6 +441,7 @@ mod tests {
             !directory_rule.needs_facts(),
             "a directory rule reads names, not contents"
         );
+        assert!(!directory_rule.needs_resolution());
     }
 
     #[test]

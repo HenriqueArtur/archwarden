@@ -13,6 +13,7 @@ authors.workspace = true
 archwarden-cache = { workspace = true }
 archwarden-core = { workspace = true }
 archwarden-parser = { workspace = true }
+archwarden-resolver = { workspace = true }
 archwarden-rules = { workspace = true }
 camino = { workspace = true }
 ignore = { workspace = true }
