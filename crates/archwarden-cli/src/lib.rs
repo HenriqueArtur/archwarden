@@ -5,6 +5,7 @@
 
 pub mod describe;
 pub mod diagnostic;
+pub mod doctor;
 pub mod exit;
 pub mod guide;
 pub mod hook;
@@ -144,6 +145,16 @@ pub enum ConfigCommand {
     /// Check that the config parses and matches the schema. Fast; no files are
     /// walked. For the semantic checks, use `config doctor`.
     Validate,
+
+    /// Look for a configuration that parses and is still wrong.
+    ///
+    /// A rule that loads and then never fires is indistinguishable from a rule
+    /// that passes, which is what this exists to catch.
+    Doctor {
+        /// How to render the diagnosis.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
 }
 
 /// A harness archwarden can speak the hook protocol of.
@@ -224,6 +235,9 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
         } => install_hooks(*claude_code, *remove, working_directory, output),
         Command::Config { command } => match command {
             ConfigCommand::Validate => validate(cli.config.as_deref(), working_directory, output),
+            ConfigCommand::Doctor { format } => {
+                doctor(cli.config.as_deref(), working_directory, *format, output)
+            }
         },
     }
 }
@@ -670,6 +684,26 @@ fn load(
         Some(path) => discovery::load_file(&working_directory.join(path)),
         None => discovery::load_from(working_directory),
     }
+}
+
+/// Looks for a configuration that parses and is still wrong.
+///
+/// Exits clean even with concerns. They are advice about a configuration, not
+/// findings about code, and a non-zero exit would put them in a CI gate where
+/// a deliberate choice would start failing builds.
+fn doctor(
+    explicit: Option<&Utf8Path>,
+    working_directory: &Utf8Path,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let Ok((_, compiled)) = prepare(explicit, working_directory, output) else {
+        return Exit::ConfigProblem;
+    };
+
+    let concerns = crate::doctor::examine(&compiled);
+    crate::doctor::render(&concerns, format, output.out);
+    Exit::Clean
 }
 
 fn validate(
@@ -1796,6 +1830,65 @@ mod tests {
         let kept =
             std::fs::read_to_string(guard.path().join("arch.config.json")).expect("still there");
         assert_eq!(kept, NAMING, "the user's config is untouched");
+    }
+
+    /// The doctor through the command line, on the mistake that started it:
+    /// a rule inside an `ignore` entry that can never fire.
+    #[test]
+    fn doctor_reports_a_rule_that_can_never_fire() {
+        let (_guard, result) = run_in(
+            &[(
+                "arch.config.json",
+                r#"{"version":0,"ignore":"src/legacy/**","rules":[{
+                    "type":"structure","id":"legacy-shape","level":"error",
+                    "roots":"src/legacy/*","allowed_subfolders":["types"]}]}"#,
+            )],
+            &["config", "doctor"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean, "advice is not a gate");
+        assert!(result.out.contains("unreachable-scope"), "{}", result.out);
+        assert!(result.out.contains("fix:"), "{}", result.out);
+    }
+
+    /// A sound configuration says so.
+    #[test]
+    fn doctor_is_quiet_about_a_sound_configuration() {
+        let (_guard, result) = run_in(&[("arch.config.json", NAMING)], &["config", "doctor"]);
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(result.out.contains("No concerns"), "{}", result.out);
+    }
+
+    /// A broken config is still exit 2 here: the doctor cannot advise on a
+    /// file it could not read.
+    #[test]
+    fn doctor_on_a_broken_config_exits_two() {
+        let (_guard, result) = run_in(
+            &[("arch.config.json", r#"{"version": 0,,}"#)],
+            &["config", "doctor"],
+        );
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+    }
+
+    /// The JSON an agent or a CI script would read.
+    #[test]
+    fn doctor_emits_a_versioned_json_shape() {
+        let (_guard, result) = run_in(
+            &[(
+                "arch.config.json",
+                r#"{"version":0,"ignore":"src/legacy/**","rules":[{
+                    "type":"structure","id":"legacy-shape","level":"error",
+                    "roots":"src/legacy/*","allowed_subfolders":["types"]}]}"#,
+            )],
+            &["config", "doctor", "--format", "json"],
+        );
+
+        let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("valid JSON");
+        assert_eq!(parsed["version"], 0);
+        assert_eq!(parsed["concerns"][0]["code"], "unreachable-scope");
+        assert_eq!(parsed["concerns"][0]["rule_id"], "legacy-shape");
     }
 
     /// A structural configuration reads no bytes, so it has nothing to cache

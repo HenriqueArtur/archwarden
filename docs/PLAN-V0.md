@@ -65,6 +65,7 @@ Sair num commit de docs **antes** do M0, para as docs pararem de se contradizer.
 | C6 | `AGENT-INTEGRATION.md:182` | `check --file` deve reportar `"skipped": [...]`, nunca pular regra em silêncio |
 | C11 | `AGENT-INTEGRATION.md:145` | Shape do `scaffold` precisa de `filename_patterns` e `allowed_subfolders` |
 | C12 | `ARCHITECTURE.md:252` | `agent-guide` não pode usar `describe_expectation` — ela é por caminho |
+| C16 | `CONFIG.md:333` | Três checagens do doctor já são erro duro desde o M1 |
 | C15 | `AGENT-INTEGRATION.md:168` | Hook recebe JSON no stdin, não `$CLAUDE_FILE_PATH` |
 | C14 | `CONFIG.md` | Campo desconhecido na config era ignorado em silêncio; agora é erro |
 | C13 | `AGENT-INTEGRATION.md:180` | `check --file` roda boundary rules; não existe "cold-cache" a pular |
@@ -1592,19 +1593,66 @@ arrow sob `kind: "function"` faz o `scaffold` emitir uma linha que não compila.
 
 
 **Objetivo:** pegar config errado antes de o usuário culpar a ferramenta.
+Dividido em quatro.
 
-**Tarefas**
-- Todas as checagens de `CONFIG.md:227-233`.
-- **Caret exato em erro de config (opção C).** Trocar o parse por uma AST com
+---
+
+#### M8a — `config doctor`, checagens sem caminhar o repo `✅`
+
+**Registro** — 2026-07-25
+
+**Correção C16 — três das dez checagens já eram erro duro.** O
+`CONFIG.md:333` listava id duplicado, `disable` de id inexistente e preset
+declarando `root` como coisas que o doctor reporta. As três são erro no
+`extends.rs` desde o M1, e isso é **melhor**: a config nem carrega, então o
+erro aparece onde o usuário está olhando, e não num comando separado que ele
+pode nunca rodar. Documento corrigido.
+
+**Quatro checagens entregues**, todas respondíveis sem tocar em arquivo:
+
+| Código | O que pega |
+|---|---|
+| `walk-skip-hides-imports` | D5: `skip_dirs.scope: "walk"` ao lado de boundary rule |
+| `unreachable-scope` | D6: escopo inteiramente dentro de um `ignore` |
+| `spec-folder-not-allowed` | `spec-pair` olhando pasta que a `structure` proíbe |
+| `hint-disagrees-with-kind` | entrada do M7b: hint arrow sob `kind: "function"` |
+
+**Cada achado carrega três coisas: código, frase e correção.** O código é slug
+estável para grep e para uma ferramenta decidir; a frase diz o que está errado;
+a correção diz o que fazer. Um doctor que só aponta é um doctor que o usuário
+lê uma vez.
+
+**Sai com exit 0 mesmo com achados.** São conselhos sobre configuração, não
+achados sobre código. Um exit não-zero colocaria escolha deliberada dentro de
+um gate de CI, e aí o comando vira coisa que se desliga.
+
+**A checagem de escopo inalcançável erra para o silêncio, de propósito.**
+Contenção de globs é indecidível no geral. Ela só afirma cobertura quando o
+`ignore` é um `**` sob prefixo literal que também prefixa o escopo — se tiver
+glob no prefixo do `ignore`, não conclui nada. Um doctor que gritasse sobre
+regras que funcionam é um doctor que ninguém roda.
+
+**A checagem de hint também.** Só reporta o caso inequívoco — hint com `=>` sob
+regra que exige exatamente `function`. Regra que aceita `function` ou `arrow`
+não é questionada, porque das duas formas o hint está certo para uma delas.
+
+Um mutante sobreviveu e apontou lacuna real: o `governing_structure` casa a
+regra de `structure` pelo **escopo**, e nenhum teste tinha mais de uma regra
+sobre o mesmo escopo nem uma `structure` sobre escopo diferente. Os dois casos
+importam — o primeiro pegaria a regra errada, o segundo inventaria um achado
+sobre config correta. Dois testes, **zero sobreviventes**.
+
+**Tarefas restantes**
+- Checagens que precisam do repositório (M8b).
+- `config explain <rule-id>` (M8c).
+- **Caret exato em erro de config (opção C), M8d.** Trocar o parse por uma AST com
   spans (`jsonc-parser` ou equivalente) e casar o caminho do
   `serde_path_to_error` contra ela. Fica aqui porque o doctor precisa de span
   para "campo desconhecido `allowed_subfolder`, você quis dizer
   `allowed_subfolders`?" de qualquer forma, e fazer as duas coisas juntas evita
   mexer na camada de diagnóstico duas vezes. Decidido em 2026-07-25.
-- Avisos novos das decisões: `skip_dirs.scope:"walk"` + `import-boundary` (D5);
-  `roots` coberto por `ignore` (D6); preset declarando `root` e `disable` de id
-  inexistente (D7); arquivo só com default export sob regra `naming` (D9).
-- `config explain <rule-id>`.
+- Aviso restante das decisões: arquivo só com default export sob regra
+  `naming` (D9) — precisa do repositório, fica no M8b.
 
 **Pronto quando:** cada checagem tem fixture que a dispara.
 

@@ -330,17 +330,30 @@ silently disabling nothing.
 Three commands cover the config itself:
 
 - `archwarden config validate` — schema-only. Fast. Fails on structural JSON errors.
-- `archwarden config doctor` — semantic. Slower. Reports:
-  - regexes that never match any file in the repo,
-  - scopes pointing to non-existent paths,
-  - `spec-pair` targeting a subfolder not present in the corresponding structure rule,
-  - `call-obligation` naming a symbol that no file in scope imports (likely typo),
-  - duplicate rule `id`s across the config and presets,
+- `archwarden config doctor` — semantic. Answers "does this config mean what
+  you think?", where `validate` only answers "does it mean anything?".
+
+  Three of the checks originally listed here — duplicate rule `id`s, `disable`
+  naming a rule that does not exist, and a preset declaring `root` — are **hard
+  errors** when the config loads, not doctor findings. That is strictly better:
+  a typo fails where the user is looking, rather than in a command they may
+  never run.
+
+  Answerable from the config alone:
   - unreachable rules (scope fully covered by an `ignore` entry),
-  - `disable` naming a rule id that does not exist,
-  - a preset declaring `root`,
   - `skip_dirs.scope: "walk"` coexisting with `import-boundary` rules,
+  - `spec-pair` targeting a subfolder the corresponding structure rule forbids,
+  - a `signature_hint` written in a style the rule's `kind` does not accept.
+
+  Answerable only against the repository:
+  - regexes that never match any file,
+  - scopes pointing to non-existent paths,
+  - `call-obligation` naming a symbol that no file in scope imports,
   - files targeted by a `naming` rule that export only a default.
+
+  Every finding carries a code, a sentence, and a fix. The command exits 0 even
+  with findings: they are advice about a configuration, not findings about
+  code, and a non-zero exit would put a deliberate choice into a CI gate.
 - `archwarden config explain <rule-id>` — lists every file the rule currently
   covers and, if applicable, every file it currently flags. Useful for a
   coding agent that needs to understand a rule before writing code.
