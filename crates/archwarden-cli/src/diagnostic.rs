@@ -5,7 +5,7 @@
 //! with a caret under it, which is the difference between a user fixing their
 //! config in ten seconds and opening the schema.
 
-use archwarden_config::discovery::LoadError;
+use archwarden_config::{discovery::LoadError, extends::ExtendsError};
 use miette::{Diagnostic, NamedSource, SourceSpan};
 
 /// A config problem, ready to render.
@@ -61,6 +61,51 @@ impl ConfigDiagnostic {
             // gets the bare rendering rather than failing to compile. That is
             // the right default: the message is always correct, only the
             // span and the help are missing.
+            _ => Self {
+                message: error.to_string(),
+                source_text: None,
+                span: None,
+                help: None,
+            },
+        }
+    }
+}
+
+impl ConfigDiagnostic {
+    /// Builds a diagnostic from a preset-merge failure.
+    ///
+    /// A preset problem that is really a load problem is delegated, so a
+    /// syntax error inside a preset still gets the same caret a syntax error
+    /// in the entry config does.
+    #[must_use]
+    pub fn from_extends_error(error: &ExtendsError) -> Self {
+        match error {
+            ExtendsError::Unloadable(inner) => Self::from_load_error(inner),
+
+            ExtendsError::Cycle { .. } => Self {
+                message: error.to_string(),
+                source_text: None,
+                span: None,
+                help: Some(
+                    "one of these files extends another that eventually \
+                     extends it back; break the loop by inlining the shared \
+                     rules into a preset neither of them extends"
+                        .to_owned(),
+                ),
+            },
+
+            ExtendsError::DuplicateRuleId { .. } => Self {
+                message: error.to_string(),
+                source_text: None,
+                span: None,
+                help: Some(
+                    "rule ids must be unique across a config and every preset \
+                     it extends, because `explain` and `disable` address rules \
+                     by id. Rename one, or `disable` the inherited rule."
+                        .to_owned(),
+                ),
+            },
+
             _ => Self {
                 message: error.to_string(),
                 source_text: None,

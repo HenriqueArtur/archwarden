@@ -11,6 +11,7 @@ authors.workspace = true
 
 [dependencies]
 archwarden-core = { workspace = true, features = ["schema"] }
+archwarden-resolver = { workspace = true }
 camino = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }

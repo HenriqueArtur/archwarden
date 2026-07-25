@@ -11,6 +11,7 @@ authors.workspace = true
 
 [dependencies]
 archwarden-config = { workspace = true }
+archwarden-resolver = { workspace = true }
 camino = { workspace = true }
 clap = { workspace = true }
 # `fancy` is what renders the source span and the underline. It is the whole

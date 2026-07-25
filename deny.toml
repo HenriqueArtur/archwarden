@@ -11,6 +11,7 @@ all-features = true
 #   - Unicode-3.0        `unicode-ident`, pulled in by every proc macro
 #   - ISC                 several small utility crates
 #   - Apache-2.0 WITH LLVM-exception   the Rust standard library's own terms
+#   - Zlib                `foldhash`, pulled in by oxc_resolver's hash maps
 #
 # What is deliberately absent: every copyleft licence, including MPL-2.0.
 # archwarden ships as a single statically linked binary; a file-level copyleft
@@ -24,6 +25,7 @@ allow = [
     "ISC",
     "MIT",
     "Unicode-3.0",
+    "Zlib",
 ]
 confidence-threshold = 0.93
 

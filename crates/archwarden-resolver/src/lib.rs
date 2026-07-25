@@ -12,3 +12,6 @@
 //!
 //! Rule engines never call a resolver. They consume already-resolved paths, so
 //! swapping the implementation never touches rule code (decision 6).
+
+// Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod preset;

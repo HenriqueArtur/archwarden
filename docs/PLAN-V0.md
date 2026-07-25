@@ -345,11 +345,11 @@ regiões), resíduo de curto-circuito e instanciação de genéricos que o
   `Rule` de 5 variantes (D14), array `rules` de topo + `modules[].rules`,
   helper `OneOrMany` para todo campo de glob.
 - ✅ `config`: discovery subindo do CWD (ADR#4), `--config` override.
-- **`resolver`: trait `Resolver` + `OxcResolver` configurado só para resolução
-  de pacote** (achar `<pkg>/package.json` e o entry point). Antecipado do M5
-  por causa de D7 — ver nota abaixo.
-- `config`: `extends` — path relativo + pacote npm via `resolver`, merge,
-  escalares (local vence), `disable`, erro se preset declara `root`.
+- ✅ **`resolver`: `PresetResolver` sobre `oxc_resolver`**, configurado só para
+  resolução de preset. Antecipado do M5 por causa de D7 — ver nota abaixo.
+- ✅ `config`: `extends` — path relativo + pacote npm via `resolver`, merge,
+  escalares (local vence), `disable`, erro se preset declara `root`, detecção
+  de ciclo, id duplicado.
 - `config`: lowering para `core::CompiledConfig` (compila globs e regexes).
 - `config`: erro de regex com lookahead com mensagem explicativa (D3).
 - `xtask gen-schema` → `schema/v0.json`.

@@ -10,6 +10,12 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+camino = { workspace = true }
+oxc_resolver = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

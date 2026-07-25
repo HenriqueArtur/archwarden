@@ -13,5 +13,6 @@
 // Modules document themselves with `//!`; see the note in archwarden-core.
 pub mod config;
 pub mod discovery;
+pub mod extends;
 pub mod one_or_many;
 pub mod rule;

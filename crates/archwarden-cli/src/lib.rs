@@ -6,7 +6,11 @@
 pub mod diagnostic;
 pub mod exit;
 
-use archwarden_config::discovery::{self, LoadedConfig};
+use archwarden_config::{
+    discovery::{self, LoadedConfig},
+    extends::{self, MergedConfig},
+};
+use archwarden_resolver::preset::PresetResolver;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 
@@ -98,6 +102,8 @@ fn validate(
         }
     };
 
+    // Checked before merging: an unsupported version means this build cannot
+    // be trusted to interpret the file at all, presets included.
     if !loaded.config.version_is_supported() {
         let _ = writeln!(
             output.err,
@@ -109,16 +115,40 @@ fn validate(
         return Exit::ConfigProblem;
     }
 
-    let rules = loaded.config.rules().count();
+    let merged = match extends::merge(loaded, &PresetResolver::new()) {
+        Ok(merged) => merged,
+        Err(error) => {
+            let report = miette::Report::new(ConfigDiagnostic::from_extends_error(&error));
+            let _ = writeln!(output.err, "{report:?}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    report_valid(&merged, output);
+    Exit::Clean
+}
+
+/// Says what was loaded, and from where.
+///
+/// The rule count and the preset list are the cheapest way for a user to
+/// notice that a preset did not load, or that `disable` removed more than
+/// they meant.
+fn report_valid(merged: &MergedConfig, output: &mut Output<'_>) {
+    let rules = merged.config.rules().count();
     let _ = writeln!(
         output.out,
         "{} is valid ({} rule{})",
-        loaded.path,
+        merged.path,
         rules,
         if rules == 1 { "" } else { "s" }
     );
 
-    Exit::Clean
+    if merged.sources.len() > 1 {
+        let _ = writeln!(output.out, "  extends:");
+        for source in merged.sources.iter().filter(|s| **s != merged.path) {
+            let _ = writeln!(output.out, "    {source}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -301,6 +331,119 @@ mod tests {
 
         assert_eq!(exit, Exit::Clean);
         assert!(String::from_utf8_lossy(&stdout).contains("arch.config.json"));
+    }
+
+    /// A preset's rules count towards the total, and the files that
+    /// contributed are listed. Seeing the preset in the output is how a user
+    /// notices it loaded from where they expected.
+    #[test]
+    fn validation_folds_in_presets_and_names_them() {
+        let (_guard, result) = run_in(
+            &[
+                (
+                    "presets/base.json",
+                    r#"{"version":0,"rules":[
+                        {"type":"structure","id":"from-preset","level":"error","roots":"p/*"}]}"#,
+                ),
+                (
+                    "arch.config.json",
+                    r#"{"version":0,"extends":"./presets/base.json","rules":[
+                        {"type":"structure","id":"local","level":"error","roots":"l/*"}]}"#,
+                ),
+            ],
+            &["config", "validate"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(result.out.contains("2 rules"), "{}", result.out);
+        assert!(result.out.contains("extends:"), "{}", result.out);
+        assert!(result.out.contains("presets/base.json"), "{}", result.out);
+    }
+
+    /// A config with no presets says nothing about them, rather than printing
+    /// an empty section.
+    #[test]
+    fn a_config_without_presets_says_nothing_about_them() {
+        let (_guard, result) = run_in(&[("arch.config.json", MINIMAL)], &["config", "validate"]);
+        assert!(!result.out.contains("extends:"), "{}", result.out);
+    }
+
+    /// A cycle would otherwise recurse until the stack ran out. The user gets
+    /// a diagnostic and a way out instead of a crash.
+    #[test]
+    fn an_extends_cycle_is_a_config_problem_with_a_way_out() {
+        let (_guard, result) = run_in(
+            &[
+                ("arch.config.json", r#"{"version":0,"extends":"./a.json"}"#),
+                ("a.json", r#"{"version":0,"extends":"./arch.config.json"}"#),
+            ],
+            &["config", "validate"],
+        );
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.err.contains("cycle"), "{}", result.err);
+        assert!(result.err.contains("break the loop"), "{}", result.err);
+    }
+
+    /// Two rules with one id make `explain` and `disable` ambiguous, so it is
+    /// refused with both filenames and a suggestion.
+    #[test]
+    fn a_duplicate_rule_id_across_a_preset_is_refused() {
+        let (_guard, result) = run_in(
+            &[
+                (
+                    "presets/base.json",
+                    r#"{"version":0,"rules":[
+                        {"type":"structure","id":"clash","level":"error","roots":"p/*"}]}"#,
+                ),
+                (
+                    "arch.config.json",
+                    r#"{"version":0,"extends":"./presets/base.json","rules":[
+                        {"type":"structure","id":"clash","level":"error","roots":"l/*"}]}"#,
+                ),
+            ],
+            &["config", "validate"],
+        );
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.err.contains("clash"), "{}", result.err);
+        assert!(result.err.contains("disable"), "{}", result.err);
+    }
+
+    /// A missing preset is a config problem, not a silent partial load.
+    #[test]
+    fn an_unresolvable_preset_is_a_config_problem() {
+        let (_guard, result) = run_in(
+            &[(
+                "arch.config.json",
+                r#"{"version":0,"extends":"@org/not-installed"}"#,
+            )],
+            &["config", "validate"],
+        );
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.err.contains("@org/not-installed"), "{}", result.err);
+    }
+
+    /// The version check runs before presets are touched: an unsupported
+    /// version means this build cannot be trusted to read the file at all.
+    #[test]
+    fn an_unsupported_version_is_refused_before_presets_are_resolved() {
+        let (_guard, result) = run_in(
+            &[(
+                "arch.config.json",
+                r#"{"version":99,"extends":"@org/not-installed"}"#,
+            )],
+            &["config", "validate"],
+        );
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.err.contains("99"), "{}", result.err);
+        assert!(
+            !result.err.contains("not-installed"),
+            "should not have tried to resolve: {}",
+            result.err
+        );
     }
 
     /// clap's own contract, worth pinning: the parser is built from these
