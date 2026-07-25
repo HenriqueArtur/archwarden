@@ -91,8 +91,14 @@ pub enum CompiledRuleKind {
     SpecPair {
         /// Subdirectories subject to the rule. `.` means the scope itself.
         subfolders: Vec<String>,
-        /// The expected sibling suffix.
-        spec_suffix: String,
+        /// The markers that make a filename a spec: `spec`, `test`, or both.
+        ///
+        /// A marker, not a whole suffix. The extension comes from the source
+        /// file, because `Component.tsx` wanting `Component.spec.tsx` is
+        /// mechanical rather than a preference anyone configures. Which marker
+        /// a project uses *is* a preference, and vitest and jest both accept
+        /// either.
+        spec_markers: Vec<String>,
         /// Files exempted from the rule.
         ignore_files: PathSet,
         /// Whether the spec must contain at least one `it` or `test` call.
@@ -398,13 +404,13 @@ mod tests {
     fn spec_pair_needs_a_parser_only_when_it_inspects_the_spec() {
         let cheap = CompiledRuleKind::SpecPair {
             subfolders: vec![".".to_owned()],
-            spec_suffix: ".spec.ts".to_owned(),
+            spec_markers: vec!["spec".to_owned()],
             ignore_files: PathSet::default(),
             require_non_empty_spec: false,
         };
         let thorough = CompiledRuleKind::SpecPair {
             subfolders: vec![".".to_owned()],
-            spec_suffix: ".spec.ts".to_owned(),
+            spec_markers: vec!["spec".to_owned()],
             ignore_files: PathSet::default(),
             require_non_empty_spec: true,
         };
@@ -420,7 +426,7 @@ mod tests {
             naming(),
             CompiledRuleKind::SpecPair {
                 subfolders: Vec::new(),
-                spec_suffix: ".spec.ts".to_owned(),
+                spec_markers: vec!["spec".to_owned()],
                 ignore_files: PathSet::default(),
                 require_non_empty_spec: false,
             },

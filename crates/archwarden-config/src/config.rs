@@ -168,8 +168,7 @@ mod tests {
                       "id": "src-needs-spec",
                       "level": "error",
                       "roots": ["src/**"],
-                      "subfolders": ["."],
-                      "spec_suffix": ".spec.ts"
+                      "subfolders": ["."]
                     }
                   ]
                 }

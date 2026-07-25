@@ -374,10 +374,13 @@
           "description": "Subdirectories subject to the rule. `[\".\"]` means the scope itself.",
           "$ref": "#/$defs/OneOrMany"
         },
-        "spec_suffix": {
-          "description": "The expected sibling suffix.",
-          "type": "string",
-          "default": ".spec.ts"
+        "spec_markers": {
+          "description": "What makes a filename a spec: `spec`, `test`, or both.\n\nA marker, not a whole suffix: the extension is taken from the source\nfile, so `Component.tsx` wants `Component.spec.tsx` without anyone\nsaying so. The default accepts both markers, which is what vitest and\njest do, so the common project needs no configuration here at all.",
+          "$ref": "#/$defs/OneOrMany",
+          "default": [
+            "spec",
+            "test"
+          ]
         },
         "ignore_files": {
           "description": "Globs exempted from the rule.",

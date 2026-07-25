@@ -13,4 +13,5 @@
 //! See `docs/RULES.md`.
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod spec_pair;
 pub mod structure;

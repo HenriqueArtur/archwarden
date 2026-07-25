@@ -198,7 +198,7 @@ is set.
 
 - `subfolders` — which folders under each selected directory are subject to
   the rule. Use `["."]` to apply to the directory itself.
-- `spec_suffix` — the expected sibling suffix (default `.spec.ts`).
+- `spec_markers` — what makes a filename a spec. Default `["spec", "test"]`.
 - `ignore_files` — repo-relative **globs** exempted (usually type-only files
   with no runtime behaviour to test). Globs, not exact paths, for consistency
   with every other path field in the config.
@@ -208,10 +208,42 @@ is set.
   **`describe(...)` does not count** — an empty `describe` block satisfies the
   letter of the rule while defeating its entire purpose.
 
+### How a spec is named
+
+A spec is `<stem>.<marker>.<extension>`, and the parts come from different
+places on purpose:
+
+- the **stem** is everything before the file's last dot, so a compound name
+  survives intact: `user.db.repository.ts` pairs with
+  `user.db.repository.spec.ts`, and `create-client.use-case.ts` with
+  `create-client.use-case.spec.ts`;
+- the **marker** is a project's preference, and `spec_markers` configures it.
+  The default accepts both, which is what vitest (`**/*.{test,spec}.?(c|m)[jt]s?(x)`)
+  and jest (`**/?(*.)+(spec|test).[jt]s?(x)`) do, so the common project
+  configures nothing;
+- the **extension** is the source file's own and is not configurable, because
+  `Component.tsx` wanting `Component.spec.tsx` is mechanical rather than a
+  choice anyone makes differently.
+
+Two asymmetries, both deliberate:
+
+- **Recognising** an existing spec accepts any JS/TS extension, so a `.tsx`
+  component tested by a `.ts` spec is satisfied. Refusing it would be a false
+  positive on a file that plainly exists.
+- **Suggesting** a missing spec uses the first marker and the source's own
+  extension, so `scaffold` gives one deterministic answer rather than a list.
+
+The marker must be the last stem component. `user.spec.ts` is a spec;
+`user.spec.helper.ts` is a helper that happens to mention one. A bare
+`spec.ts` counts, matching both runners' optional `<name>.` prefix.
+
 **Default ignores** (baked in, not configurable):
-- Files ending in the configured `spec_suffix` (obviously).
-- `index.ts`, `index.tsx`.
-- `DOC.md`, `README.md`.
+- Files that are themselves specs.
+- `index.ts`, `index.tsx`, `index.js`, `index.jsx` — barrel files re-export and
+  hold no behaviour of their own.
+- Anything that is not a JS/TS source file. This covers `DOC.md`, `README.md`,
+  `package.json`, images and everything else in one rule, rather than naming
+  them: nobody should have to declare that a PNG needs no test.
 
 **Cannot express**: test-first ordering (that the spec was written before
 the impl). Git history could tell us, but making that a gate would be

@@ -135,6 +135,37 @@ impl RepoRelPath {
     }
 }
 
+/// What kind of file a name denotes, as far as archwarden cares.
+///
+/// Derived from the name alone, which is why it lives beside [`RepoRelPath`]
+/// rather than in `facts`: nothing is parsed to work it out.
+///
+/// "Is this a spec?" is deliberately not one of these. A spec is whatever a
+/// rule's `spec_markers` say it is, and two rules in one config may disagree,
+/// so answering here would force one of them on the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum FileClass {
+    /// A JavaScript or TypeScript source file.
+    Source,
+    /// Anything else. Structure rules still see these, since a
+    /// `filename_patterns` rule may well be about `DOC.md`.
+    Other,
+}
+
+impl FileClass {
+    /// Classifies by extension.
+    #[must_use]
+    pub fn of(name: &str) -> Self {
+        let source = matches!(
+            name.rsplit_once('.').map(|(_, extension)| extension),
+            Some("ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs")
+        );
+
+        if source { Self::Source } else { Self::Other }
+    }
+}
+
 /// Recognises the three shapes of absolute path archwarden can meet: POSIX
 /// (`/x`), a Windows drive (`C:/x`), and a UNC share (`//server/share`, which
 /// has already been unified from `\\server\share`).
@@ -325,6 +356,25 @@ mod tests {
             p("src/user").join("..").expect("stays inside").as_str(),
             "src"
         );
+    }
+
+    /// A spec file is a source file. Whether it counts as "a spec" is a
+    /// question only a rule's `spec_markers` can answer.
+    #[test]
+    fn files_are_classified_by_extension() {
+        for name in [
+            "user.ts",
+            "user.spec.ts",
+            "c.tsx",
+            "m.mjs",
+            "c.cts",
+            "old.js",
+        ] {
+            assert_eq!(FileClass::of(name), FileClass::Source, "{name}");
+        }
+        for name in ["README.md", "DOC.md", "data.json", "no-extension", ""] {
+            assert_eq!(FileClass::of(name), FileClass::Other, "{name}");
+        }
     }
 
     #[test]

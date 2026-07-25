@@ -8,7 +8,10 @@
 
 use std::collections::BTreeMap;
 
-use archwarden_core::{compiled::CompiledConfig, path::RepoRelPath};
+use archwarden_core::{
+    compiled::CompiledConfig,
+    path::{FileClass, RepoRelPath},
+};
 use camino::Utf8Path;
 
 /// Why the walk could not complete.
@@ -24,34 +27,6 @@ pub enum WalkError {
         #[source]
         source: Box<ignore::Error>,
     },
-}
-
-/// What kind of file this is, as far as archwarden cares.
-///
-/// "Is this a spec?" is deliberately not here: a spec is whatever a rule's
-/// `spec_suffix` says it is, and two rules in one config may disagree. Asking
-/// the tree would force one answer on both.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[non_exhaustive]
-pub enum FileClass {
-    /// A JavaScript or TypeScript source file.
-    Source,
-    /// Anything else. Structure rules still see these, since a `filename_patterns`
-    /// rule may well be about `DOC.md`.
-    Other,
-}
-
-impl FileClass {
-    /// Classifies by extension.
-    #[must_use]
-    pub fn of(name: &str) -> Self {
-        let source = matches!(
-            name.rsplit_once('.').map(|(_, extension)| extension),
-            Some("ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs")
-        );
-
-        if source { Self::Source } else { Self::Other }
-    }
 }
 
 /// One file in the tree.
@@ -459,18 +434,6 @@ mod tests {
                 ("user.ts", FileClass::Source),
             ]
         );
-    }
-
-    /// A spec file is a source file. Whether it counts as "a spec" is a
-    /// question only a rule's `spec_suffix` can answer, so the tree does not
-    /// pretend to know.
-    #[test]
-    fn a_spec_file_is_classified_as_source() {
-        assert_eq!(FileClass::of("user.spec.ts"), FileClass::Source);
-        assert_eq!(FileClass::of("user.ts"), FileClass::Source);
-        assert_eq!(FileClass::of("README.md"), FileClass::Other);
-        assert_eq!(FileClass::of("no-extension"), FileClass::Other);
-        assert_eq!(FileClass::of(""), FileClass::Other);
     }
 
     /// Report output has to be byte-identical between runs, so the tree is

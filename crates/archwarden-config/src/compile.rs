@@ -19,7 +19,7 @@ use archwarden_core::{
 use crate::{
     config::{self, Config},
     extends::MergedConfig,
-    rule::{MustExport, Rule},
+    rule::{MustExport, Rule, SpecPairRule},
 };
 
 /// The spelling `must_export.kind` uses for "any declaration form".
@@ -78,6 +78,20 @@ pub enum CompileError {
         name: String,
         /// The valid names.
         available: String,
+    },
+
+    /// A `spec-pair` marker is not a single filename component.
+    #[error(
+        "rule `{rule}`: `{marker}` is not a spec marker. A marker is one \
+         filename component such as `spec` or `test`; the extension comes \
+         from the source file, so `Component.tsx` wants `Component.spec.tsx` \
+         without being told."
+    )]
+    InvalidSpecMarker {
+        /// The rule.
+        rule: RuleId,
+        /// The marker as written.
+        marker: String,
     },
 
     /// A `must_export.name` template refers to a capture group that its
@@ -189,7 +203,7 @@ fn compile_rule(
 
         Rule::SpecPair(r) => CompiledRuleKind::SpecPair {
             subfolders: r.subfolders.iter().cloned().collect(),
-            spec_suffix: r.spec_suffix.clone(),
+            spec_markers: spec_markers(&id, r)?,
             ignore_files: globs(&id, "ignore_files", &r.ignore_files)?,
             require_non_empty_spec: r.require_non_empty_spec,
         },
@@ -234,6 +248,29 @@ where
         field,
         source,
     })
+}
+
+/// Validates the `spec-pair` markers.
+///
+/// A marker is one filename component -- `spec`, `test` -- and the extension
+/// is taken from the source file. A marker carrying a dot or an extension is
+/// almost always someone writing the old whole-suffix form, and guessing what
+/// they meant would be worse than saying so.
+fn spec_markers(rule: &RuleId, spec: &SpecPairRule) -> Result<Vec<String>, CompileError> {
+    let mut markers = Vec::new();
+
+    for marker in &spec.spec_markers {
+        let trimmed = marker.trim_start_matches('.');
+        if trimmed.is_empty() || trimmed.contains('.') {
+            return Err(CompileError::InvalidSpecMarker {
+                rule: rule.clone(),
+                marker: marker.clone(),
+            });
+        }
+        markers.push(trimmed.to_owned());
+    }
+
+    Ok(markers)
 }
 
 fn export_kind(rule: &RuleId, must_export: &MustExport) -> Result<KindFilter, CompileError> {

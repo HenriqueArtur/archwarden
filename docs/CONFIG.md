@@ -171,7 +171,7 @@ never verified — it only makes `scaffold` output realistic.
   "level": "error",
   "roots": ["packages/domain/src/*"],
   "subfolders": ["calcs", "services", "adapters"],
-  "spec_suffix": ".spec.ts",
+  "spec_markers": ["spec", "test"],
   "ignore_files": [
     "packages/domain/src/nota-fiscal/variants/nfe/services/nfe-service.ts",
     "packages/domain/src/**/*.types.ts"
@@ -180,6 +180,12 @@ never verified — it only makes `scaffold` output realistic.
 ```
 
 `ignore_files` takes globs, so both an exact path and a pattern work.
+
+`spec_markers` defaults to `["spec", "test"]` and can usually be omitted: it
+is what vitest and jest both accept. The extension is never configured — it
+comes from the source file, so `Component.tsx` pairs with
+`Component.spec.tsx`. See [`RULES.md`](RULES.md) for how a compound name like
+`user.db.repository.ts` is handled.
 
 Optional `require_non_empty_spec: true` fails on `.spec.ts` files that contain
 no `it(...)` or `test(...)` calls — this is what enforces "spec written
@@ -324,8 +330,7 @@ The smallest useful config:
           "id": "src-needs-spec",
           "level": "error",
           "roots": ["src/**"],
-          "subfolders": ["."],
-          "spec_suffix": ".spec.ts"
+          "subfolders": ["."]
         }
       ]
     }

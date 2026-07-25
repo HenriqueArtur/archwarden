@@ -157,9 +157,14 @@ pub struct SpecPairRule {
     pub roots: Patterns,
     /// Subdirectories subject to the rule. `["."]` means the scope itself.
     pub subfolders: Patterns,
-    /// The expected sibling suffix.
-    #[serde(default = "default_spec_suffix")]
-    pub spec_suffix: String,
+    /// What makes a filename a spec: `spec`, `test`, or both.
+    ///
+    /// A marker, not a whole suffix: the extension is taken from the source
+    /// file, so `Component.tsx` wants `Component.spec.tsx` without anyone
+    /// saying so. The default accepts both markers, which is what vitest and
+    /// jest do, so the common project needs no configuration here at all.
+    #[serde(default = "default_spec_markers")]
+    pub spec_markers: Patterns,
     /// Globs exempted from the rule.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub ignore_files: Patterns,
@@ -170,8 +175,8 @@ pub struct SpecPairRule {
     pub require_non_empty_spec: bool,
 }
 
-fn default_spec_suffix() -> String {
-    ".spec.ts".to_owned()
+fn default_spec_markers() -> Patterns {
+    Patterns::Many(vec!["spec".to_owned(), "test".to_owned()])
 }
 
 /// Layer A may not import from layer B, or must import from layer C.
@@ -345,7 +350,6 @@ mod tests {
               "level": "error",
               "roots": ["packages/domain/src/*"],
               "subfolders": ["calcs", "services", "adapters"],
-              "spec_suffix": ".spec.ts",
               "ignore_files": ["packages/domain/src/**/*.types.ts"]
             }"#,
         );
@@ -354,7 +358,7 @@ mod tests {
             panic!("expected a spec-pair rule");
         };
         assert_eq!(spec.subfolders.len(), 3);
-        assert_eq!(spec.spec_suffix, ".spec.ts");
+        assert_eq!(spec.spec_markers.as_slice(), ["spec", "test"]);
         assert!(!spec.require_non_empty_spec, "defaults to off");
     }
 
@@ -371,7 +375,11 @@ mod tests {
         let Rule::SpecPair(spec) = &rule else {
             panic!("expected a spec-pair rule");
         };
-        assert_eq!(spec.spec_suffix, ".spec.ts");
+        assert_eq!(
+            spec.spec_markers.as_slice(),
+            ["spec", "test"],
+            "both markers by default, as vitest and jest accept"
+        );
         assert!(!spec.require_non_empty_spec);
         assert!(spec.ignore_files.is_empty());
     }
