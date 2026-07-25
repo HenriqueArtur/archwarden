@@ -16,3 +16,15 @@ pub mod scope;
 
 /// The `{{pascal(name)}}` template used by naming rules.
 pub mod template;
+
+/// Severity levels.
+pub mod level;
+
+/// Stable identifiers for rules and modules.
+pub mod ids;
+
+/// Repository-relative paths.
+pub mod path;
+
+/// Content hashing for the cache keys.
+pub mod hash;

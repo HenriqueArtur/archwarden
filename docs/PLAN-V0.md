@@ -228,17 +228,48 @@ interno. Hoje está excluído do `typos` por causa disso.
 
 ---
 
-### M1 — Core + config `⬜`
+### M1 — Core + config
 
-**Objetivo:** primeira fatia vertical — do JSON no disco até um comando que
-responde.
+Dividido em dois na execução, a pedido do Henrique em 2026-07-25: o step
+original era materialmente maior que o M0 e entregaria um diff grande demais
+para uma revisão só. M1a fecha o `archwarden-core`; M1b faz a fatia vertical
+até o CLI. O critério de pronto do M1 completo é o do M1b.
+
+---
+
+#### M1a — `archwarden-core` completo `🟦`
+
+**Objetivo:** todos os tipos e traits que o resto do workspace consome, sem
+nenhuma dependência interna.
 
 **Tarefas**
-- `core`: `Level`, `RuleId`, `ContentHash`, `RepoRelPath`, `Finding`,
-  `Observed`, `Expectation`, `FileFacts` (já `Serialize`), traits `Parser`,
-  `Resolver`, `RuleEngine` (com `describe_expectation`).
-- `core`: matcher de path (wrapper de `globset`) implementando D4; transforms
-  de caso via `heck` (`pascal`/`camel`/`kebab`/`snake`/`upper`/`lower`/`raw`).
+- ✅ `scope`: matcher de path implementando D4 (`roots`/`from`).
+- ✅ `template`: transforms de caso e `{{pascal(name)}}` via `heck`.
+- ✅ `ids`: newtypes `RuleId`, `ModuleId`.
+- ✅ `path`: `RepoRelPath` — garante no tipo que o caminho é relativo à raiz do
+  repo. Confusão relativo-vs-absoluto é fonte clássica de bug em linter.
+- ✅ `hash`: `ContentHash` (`blake3`), base das duas chaves de cache.
+- ✅ `level`: `Level` (`error`/`warning`) — ADR#1.
+- `facts`: `FileFacts`, `ImportFact`, `ExportFact` (com as tags de D9),
+  `CallFact`. Já `Serialize`/`Deserialize`, porque o M4 vai persistir isso.
+- `finding`: `Finding` carregando `Observed` + `Expectation` estruturados, não
+  `String`. É o que faz o `explain` melhorado de v1 não virar refactor.
+- `traits`: `Parser`, `Resolver`, `RuleEngine` (com `describe_expectation`).
+
+**Pronto quando:** `archwarden-core` compila sem dependência interna alguma,
+cobertura ≥ 90%, e `cargo mutants -p archwarden-core` sai com zero
+sobreviventes.
+
+**Registro**
+> _(pendente)_
+
+---
+
+#### M1b — `config` + `resolver` mínimo + CLI `⬜`
+
+**Objetivo:** a fatia vertical — do JSON no disco até um comando que responde.
+
+**Tarefas**
 - `config`: tipos de wire format com `Deserialize` + `JsonSchema` — enum `Rule`
   de 5 variantes (D14), array `rules` de topo + `modules[].rules`, helper
   `OneOrMany` para todo campo de glob.
