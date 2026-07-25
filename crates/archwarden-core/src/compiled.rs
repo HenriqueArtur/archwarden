@@ -237,6 +237,15 @@ impl CompiledConfig {
         self.ignore.is_match(path.as_path())
     }
 
+    /// The compiled `ignore` globs.
+    ///
+    /// Exposed so the walk can clone them into its pruning closure, which the
+    /// walker requires to be `'static`.
+    #[must_use]
+    pub fn ignore_globs(&self) -> &PathSet {
+        &self.ignore
+    }
+
     /// The escape-hatch configuration.
     #[must_use]
     pub fn skip_dirs(&self) -> &SkipDirs {
@@ -335,6 +344,19 @@ mod tests {
 
         assert!(config.is_ignored(&ignored));
         assert_eq!(config.rules_for_file(&ignored).count(), 0);
+    }
+
+    /// The walk clones these into its pruning closure rather than asking
+    /// `is_ignored` per entry, so that an `ignore` of `**/node_modules/**`
+    /// stops the walk at the boundary instead of descending into it.
+    #[test]
+    fn the_ignore_globs_are_reachable_for_the_walk_to_prune_with() {
+        let config = config(vec![], &["**/node_modules/**"]);
+
+        let globs = config.ignore_globs();
+        assert_eq!(globs.patterns(), ["**/node_modules/**"]);
+        assert!(globs.is_match(path("packages/app/node_modules/x/index.js").as_path()));
+        assert!(!globs.is_match(path("packages/app/src/x.ts").as_path()));
     }
 
     #[test]

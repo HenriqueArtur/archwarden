@@ -8,3 +8,6 @@
 //! Each stage takes owned inputs and returns owned outputs. No stage shares
 //! mutable state with another, which is what makes them independently testable
 //! and independently replaceable.
+
+// Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod walk;
