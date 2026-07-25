@@ -65,6 +65,7 @@ Sair num commit de docs **antes** do M0, para as docs pararem de se contradizer.
 | C6 | `AGENT-INTEGRATION.md:182` | `check --file` deve reportar `"skipped": [...]`, nunca pular regra em silêncio |
 | C11 | `AGENT-INTEGRATION.md:145` | Shape do `scaffold` precisa de `filename_patterns` e `allowed_subfolders` |
 | C12 | `ARCHITECTURE.md:252` | `agent-guide` não pode usar `describe_expectation` — ela é por caminho |
+| C15 | `AGENT-INTEGRATION.md:168` | Hook recebe JSON no stdin, não `$CLAUDE_FILE_PATH` |
 | C14 | `CONFIG.md` | Campo desconhecido na config era ignorado em silêncio; agora é erro |
 | C13 | `AGENT-INTEGRATION.md:180` | `check --file` roda boundary rules; não existe "cold-cache" a pular |
 | C7 | `.gitignore:8` | Ignorar `.archwarden/cache/`, não `.archwarden/` inteiro |
@@ -1247,7 +1248,7 @@ O `unreadable_files` continua e ganhou teste próprio nos dois formatos: agora
 
 ---
 
-### M7 — Superfície de agente
+### M7 — Superfície de agente `✅`
 
 **Objetivo:** ADR#9 completo — informante, não só gate. Dividido em cinco por
 tamanho, como o M1 e o M5.
@@ -1502,10 +1503,84 @@ que uma chave significa é pior que um erro. Documentado no `CONFIG.md`.
 
 ---
 
-#### M7e — `install-hooks` e `init` `⬜`
+#### M7e — `install-hooks` e `init` `✅`
 
-- `cli`: `install-hooks --claude-code [--remove]`, idempotente.
-- `cli`: `init`.
+**Tarefas**
+- ✅ `cli`: `hook claude-code` — lê o evento do stdin e responde no protocolo.
+- ✅ `cli`: `install-hooks --claude-code [--remove]`, idempotente.
+- ✅ `cli`: `init`.
+- ✅ Tier 2 do setup recomendado inteiro, ponta a ponta.
+
+**Registro** — 2026-07-25
+
+**Correção C15 — o hook não recebe `$CLAUDE_FILE_PATH`.** O
+`AGENT-INTEGRATION.md:168` dizia que o comando instalado seria
+`archwarden check --file $CLAUDE_FILE_PATH`. Fui conferir num hook que funciona
+de verdade (o `pre-tool-use.sh` do ai-memory, instalado nesta máquina): o
+Claude Code entrega o evento como **JSON no stdin**, e o alvo da escrita está
+em `tool_input.file_path`.
+
+Então o comando instalado é `archwarden hook claude-code`, que lê o payload
+sozinho — um binário, sem aspas de shell, e sem depender de um `jq` que o
+usuário pode não ter.
+
+**O protocolo de resposta veio de um plugin oficial, não de palpite.** O
+`hookify` do marketplace oficial emite, para negar:
+
+```json
+{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny"},
+ "systemMessage":"..."}
+```
+
+Emito exatamente isso. Procurei `permissionDecisionReason` na máquina inteira e
+não achei uso, então não inventei o campo — a explicação vai no
+`systemMessage`, que é onde o plugin oficial põe.
+
+**O hook nunca bloqueia por falhar.** Payload ilegível, ferramenta que não
+escreve arquivo, config quebrada, config de versão futura — cada caso libera a
+escrita. Bloquear é decisão carregada na resposta, nunca efeito colateral de
+algo dar errado. Tem teste para os quatro casos. É o que o `pretooluse.py`
+oficial também faz, com um comentário em caixa alta: *"ALWAYS exit 0 — never
+block operations due to hook errors"*.
+
+Finding de warning aparece sem bloquear, pela D1.
+
+**Editar o `settings.json` do usuário exigiu uma mudança de dependência.** O
+`serde_json` usa `BTreeMap` por padrão, então um round-trip **alfabetiza todas
+as chaves** — um diff enorme num arquivo que é do usuário e que ele não pediu
+para reformatar. Confirmei com um probe antes de escrever qualquer coisa:
+`{"z":1,"a":2,"m":3}` volta como `{"a":2,"m":3,"z":1}`. A feature
+`preserve_order` entrou no workspace por causa disso, e tem teste assertando
+que a ordem das chaves do usuário sobrevive.
+
+**Idempotência de verdade, não só "não duplica".** A entrada é reconhecida pelo
+**comando**, não pelo bloco inteiro, então quem estreitou o matcher ou pôs um
+`timeout` mantém a edição numa segunda execução. E quando não há nada a mudar o
+arquivo **não é reescrito** — reescrever com os mesmos bytes ainda aparece no
+`git status`. O `--remove` tira só a nossa entrada, e leva junto o
+`"PreToolUse": []` vazio: deixar isso para trás é lixo no arquivo dos outros.
+
+**O `init` não gera regra nenhuma.** Regra gerada é regra que ninguém escolheu,
+e um linter que começa reportando coisa que o usuário não pediu é um linter que
+ele desliga. O que ele escreve que vale é a linha `$schema` — com o C14 no
+lugar, o editor passa a dar completação **e** erro em chave errada. Ele se
+recusa a sobrescrever: config é escrita à mão e costuma ser longa.
+
+Verificado no binário, o setup recomendado inteiro do
+`AGENT-INTEGRATION.md:246`: `init` → `install-hooks --claude-code` → hook
+negando uma escrita inválida com a mensagem que o `ROADMAP.md:57` pede.
+
+```
+decision: deny
+archwarden: `src/user/create-client.use-case.ts` would break these rules.
+
+  [error] usecase-name — `CreateClient` is declared as `arrow` or `const`
+  expected: an export named `CreateClient`
+
+Run `archwarden scaffold src/user/create-client.use-case.ts` for the shape it should have.
+```
+
+`cargo mutants` nos dois módulos: 21 mutantes, **zero sobreviventes**.
 
 ---
 

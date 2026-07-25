@@ -291,7 +291,10 @@ fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
 }
 
 /// One sentence for what was found.
-fn describe_observed(observed: &Observed) -> String {
+///
+/// Shared with the hook, so a blocked write and a failing `check` describe the
+/// same problem in the same words.
+pub(crate) fn describe_observed(observed: &Observed) -> String {
     match observed {
         Observed::UnexpectedSubfolder { name } => {
             format!("folder `{name}` is not allowed here")

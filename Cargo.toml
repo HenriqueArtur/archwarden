@@ -27,7 +27,11 @@ archwarden-rules = { path = "crates/archwarden-rules", version = "0.0.0" }
 
 # --- serialisation ----------------------------------------------------------
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+# `preserve_order` because `install-hooks` edits the user's own
+# `.claude/settings.json`. Without it serde_json's map is a BTreeMap and a
+# round-trip alphabetises their keys -- a large diff in a file they own, that
+# they did not ask for.
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
 # Reports which field failed to deserialise. serde_json's own line and column
 # are only trustworthy for syntax errors -- see docs/PLAN-V0.md.
 serde_path_to_error = "0.1.20"

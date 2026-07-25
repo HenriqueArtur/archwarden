@@ -188,14 +188,30 @@ you prefer to version it, or gitignore and regenerate on demand.
 
 One-shot installer that writes the appropriate harness hook file.
 
-- `--claude-code` — writes a `PreToolUse` matcher for `Write`/`Edit` in
-  `.claude/settings.json` that runs `archwarden check --file $CLAUDE_FILE_PATH`
-  and blocks on non-zero exit.
+- `--claude-code` — writes a `PreToolUse` entry matching `Write|Edit|MultiEdit`
+  in `.claude/settings.json`, running `archwarden hook claude-code`.
 - Future flags for other harnesses as their hook APIs stabilise.
 
-The installer is idempotent: running it again either no-ops or updates
-the block, never duplicates it. Uninstall with `archwarden install-hooks
---claude-code --remove`.
+The command is `archwarden hook claude-code`, not
+`archwarden check --file $CLAUDE_FILE_PATH`. Claude Code does not pass the path
+in the environment: the hook is handed the event as JSON on stdin, with the
+target under `tool_input.file_path`. archwarden reads that itself, so the
+installed line needs no `jq` and no shell quoting.
+
+**The hook never blocks by failing.** An unreadable payload, a tool that writes
+no file, a broken configuration — each allows the write. Blocking is a decision
+carried in the response (`hookSpecificOutput.permissionDecision: "deny"`), never
+a side effect of something going wrong. A hook that took a user's write down
+with it would be uninstalled the same day.
+
+A warning-level finding is shown without blocking, per decision 1.
+
+The installer is idempotent: a second run reports the hook is already there and
+does not rewrite the file, so it does not appear in `git status` for nothing. It
+recognises its own entry by the command, so a user who narrowed the matcher or
+added a timeout keeps that edit. Other hooks, other settings, and the order the
+user wrote their keys in all survive. Uninstall with `archwarden install-hooks
+--claude-code --remove`, which is also safe to run when nothing is installed.
 
 ### `archwarden check --file <path>`
 

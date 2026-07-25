@@ -148,6 +148,8 @@ fn help_lists_the_available_commands() {
         .stdout(contains("describe"))
         .stdout(contains("scaffold"))
         .stdout(contains("agent-guide"))
+        .stdout(contains("install-hooks"))
+        .stdout(contains("init"))
         .stdout(contains("config"))
         .stdout(contains("--config"));
 }
@@ -231,6 +233,64 @@ fn check_file_stops_a_write_that_would_create_a_forbidden_folder() {
         .assert()
         .success()
         .stdout(contains("is fine"));
+}
+
+/// The whole of `AGENT-INTEGRATION.md`'s recommended setup, through the real
+/// process: init, install the hook, and have the hook refuse a bad write.
+#[test]
+fn the_recommended_setup_works_end_to_end() {
+    let dir = repo(&[]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("init")
+        .assert()
+        .success()
+        .stdout(contains("wrote"));
+
+    std::fs::write(
+        dir.path().join("arch.config.json"),
+        r#"{"version":0,"rules":[{
+            "type":"naming","id":"usecase-name","level":"error","roots":"src/*",
+            "file_pattern":"^(?<name>[a-z0-9-]+)\\.use-case\\.ts$",
+            "must_export":{"name":"{{pascal(name)}}","kind":"function"}}]}"#,
+    )
+    .expect("write a real config");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["install-hooks", "--claude-code"])
+        .assert()
+        .success()
+        .stdout(contains("installed"));
+
+    let settings = std::fs::read_to_string(dir.path().join(".claude/settings.json"))
+        .expect("the hook was written");
+    assert!(
+        settings.contains("archwarden hook claude-code"),
+        "{settings}"
+    );
+
+    std::fs::create_dir_all(dir.path().join("src/user")).expect("create dirs");
+    std::fs::write(
+        dir.path().join("src/user/create-client.use-case.ts"),
+        "export const CreateClient = () => {};",
+    )
+    .expect("write the offending file");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(
+            r#"{"hook_event_name":"PreToolUse","tool_name":"Write",
+                "tool_input":{"file_path":"src/user/create-client.use-case.ts"}}"#,
+        )
+        .assert()
+        // The hook never fails: blocking is carried in the response.
+        .success()
+        .stdout(contains(r#""permissionDecision":"deny""#))
+        .stdout(contains("usecase-name"))
+        .stdout(contains("archwarden scaffold"));
 }
 
 /// Layer 3, redirected the way `AGENT-INTEGRATION.md` shows it: the guide goes

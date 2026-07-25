@@ -7,6 +7,8 @@ pub mod describe;
 pub mod diagnostic;
 pub mod exit;
 pub mod guide;
+pub mod hook;
+pub mod hooks;
 pub mod report;
 pub mod scaffold;
 
@@ -105,6 +107,29 @@ pub enum Command {
         scope: Option<String>,
     },
 
+    /// Answer a harness's pre-write question, reading the event from stdin.
+    ///
+    /// Installed by `install-hooks`; not usually run by hand.
+    Hook {
+        /// Which harness's protocol to speak.
+        #[arg(value_enum)]
+        harness: Harness,
+    },
+
+    /// Wire archwarden into a harness as a pre-write hook.
+    InstallHooks {
+        /// Install for Claude Code, in `.claude/settings.json`.
+        #[arg(long)]
+        claude_code: bool,
+
+        /// Take the hook back out instead of putting it in.
+        #[arg(long)]
+        remove: bool,
+    },
+
+    /// Write a starter configuration.
+    Init,
+
     /// Inspect the configuration itself.
     Config {
         /// Which config command to run.
@@ -121,6 +146,13 @@ pub enum ConfigCommand {
     Validate,
 }
 
+/// A harness archwarden can speak the hook protocol of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Harness {
+    /// Claude Code's `PreToolUse` protocol.
+    ClaudeCode,
+}
+
 /// Where a command writes its output.
 ///
 /// Passing these in rather than printing directly is what lets a test assert
@@ -130,6 +162,8 @@ pub struct Output<'a> {
     pub out: &'a mut dyn std::io::Write,
     /// Diagnostics.
     pub err: &'a mut dyn std::io::Write,
+    /// Where a command reads from, for the one that is handed a payload.
+    pub input: &'a mut dyn std::io::Read,
 }
 
 /// Runs a parsed command line.
@@ -180,6 +214,14 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             scope.as_deref(),
             output,
         ),
+        Command::Init => init(working_directory, output),
+        Command::Hook { harness } => {
+            hook(*harness, cli.config.as_deref(), working_directory, output)
+        }
+        Command::InstallHooks {
+            claude_code,
+            remove,
+        } => install_hooks(*claude_code, *remove, working_directory, output),
         Command::Config { command } => match command {
             ConfigCommand::Validate => validate(cli.config.as_deref(), working_directory, output),
         },
@@ -262,6 +304,181 @@ fn describe(
     let applies = crate::describe::describe(&compiled, &path);
     crate::describe::render(&path, &applies, format, output.out);
     Exit::Clean
+}
+
+/// The starter configuration `init` writes.
+///
+/// No rules. A generated rule is a rule nobody chose, and a linter that starts
+/// by reporting things the user never asked for is a linter they turn off. The
+/// `$schema` line is the part that earns its place: an editor picks it up and
+/// gives completion and, since M7d.1, an error on a misspelled key.
+const STARTER: &str = r#"{
+  "$schema": "https://archwarden.dev/schema/v0.json",
+  "version": 0,
+  "rules": []
+}
+"#;
+
+/// Writes a starter configuration, if there is not one already.
+fn init(working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
+    let path = working_directory.join(discovery::CONFIG_FILE_NAME);
+
+    // Never overwrites. A config is hand-written and often long, and a command
+    // that replaced one would be a command nobody runs twice on purpose.
+    if path.exists() {
+        let _ = writeln!(output.err, "`{path}` already exists; nothing was written");
+        return Exit::ConfigProblem;
+    }
+
+    if let Err(error) = std::fs::write(&path, STARTER) {
+        let _ = writeln!(output.err, "cannot write `{path}`: {error}");
+        return Exit::ConfigProblem;
+    }
+
+    let _ = writeln!(
+        output.out,
+        "wrote {path}\n\n\
+         Next: add a rule, then\n\
+         \x20 archwarden config validate      check it parses\n\
+         \x20 archwarden describe <path>      see what applies to a file\n\
+         \x20 archwarden install-hooks --claude-code   block invalid writes"
+    );
+    Exit::Clean
+}
+
+/// Answers a harness's pre-write question.
+///
+/// Always exits clean. A hook that blocked because *it* failed would be worse
+/// than no hook, so every unexpected shape allows the write and says why;
+/// blocking is a decision carried in the response, never a side effect of
+/// something going wrong.
+fn hook(
+    harness: Harness,
+    explicit: Option<&Utf8Path>,
+    working_directory: &Utf8Path,
+    output: &mut Output<'_>,
+) -> Exit {
+    let Harness::ClaudeCode = harness;
+
+    let mut payload = String::new();
+    if std::io::Read::read_to_string(output.input, &mut payload).is_err() {
+        return allow(output);
+    }
+    let Some(argument) = crate::hook::target(&payload) else {
+        return allow(output);
+    };
+
+    // A broken or absent configuration is the user's problem to fix at their
+    // own pace, not a reason to stop them writing a file.
+    let Ok(loaded) = load(explicit, working_directory) else {
+        return allow(output);
+    };
+    let Ok(merged) = extends::merge(loaded, &PresetResolver::new()) else {
+        return allow(output);
+    };
+    let Ok(compiled) = compile::compile(&merged) else {
+        return allow(output);
+    };
+    let Ok(path) = crate::describe::repo_relative(&merged.root, working_directory, &argument)
+    else {
+        return allow(output);
+    };
+
+    let single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
+    let decision = if single.fails_build() {
+        crate::hook::Decision::Deny(crate::hook::explain(&single))
+    } else if single.findings.is_empty() {
+        crate::hook::Decision::Allow
+    } else {
+        // Decision 1: warnings are visible and do not gate.
+        crate::hook::Decision::Note(crate::hook::explain(&single))
+    };
+
+    let _ = write!(output.out, "{}", crate::hook::respond(&decision));
+    Exit::Clean
+}
+
+fn allow(output: &mut Output<'_>) -> Exit {
+    let _ = write!(
+        output.out,
+        "{}",
+        crate::hook::respond(&crate::hook::Decision::Allow)
+    );
+    Exit::Clean
+}
+
+/// Wires archwarden into a harness, or takes it back out.
+fn install_hooks(
+    claude_code: bool,
+    remove: bool,
+    working_directory: &Utf8Path,
+    output: &mut Output<'_>,
+) -> Exit {
+    if !claude_code {
+        let _ = writeln!(
+            output.err,
+            "say which harness: `--claude-code` is the only one so far"
+        );
+        return Exit::ConfigProblem;
+    }
+
+    let settings = working_directory.join(crate::hooks::CLAUDE_SETTINGS);
+    let current = std::fs::read_to_string(&settings).ok();
+
+    let edited = if remove {
+        crate::hooks::remove(current.as_deref())
+    } else {
+        crate::hooks::install(current.as_deref())
+    };
+
+    let (contents, outcome) = match edited {
+        Ok(edited) => edited,
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    // Nothing changed, nothing is written: rewriting a file to the same bytes
+    // still shows up as a modification in an editor and in `git status`.
+    if matches!(
+        outcome,
+        crate::hooks::Outcome::AlreadyInstalled | crate::hooks::Outcome::NotInstalled
+    ) {
+        let _ = writeln!(output.out, "{}", describe_outcome(outcome, &settings));
+        return Exit::Clean;
+    }
+
+    if let Some(parent) = settings.parent()
+        && let Err(error) = std::fs::create_dir_all(parent)
+    {
+        let _ = writeln!(output.err, "cannot create `{parent}`: {error}");
+        return Exit::ConfigProblem;
+    }
+    if let Err(error) = std::fs::write(&settings, contents) {
+        let _ = writeln!(output.err, "cannot write `{settings}`: {error}");
+        return Exit::ConfigProblem;
+    }
+
+    let _ = writeln!(output.out, "{}", describe_outcome(outcome, &settings));
+    Exit::Clean
+}
+
+fn describe_outcome(outcome: crate::hooks::Outcome, settings: &Utf8Path) -> String {
+    match outcome {
+        crate::hooks::Outcome::Installed => {
+            format!("installed the pre-write hook in {settings}")
+        }
+        crate::hooks::Outcome::AlreadyInstalled => {
+            format!("the pre-write hook is already in {settings}")
+        }
+        crate::hooks::Outcome::Removed => {
+            format!("removed the pre-write hook from {settings}")
+        }
+        crate::hooks::Outcome::NotInstalled => {
+            format!("no archwarden hook was in {settings}")
+        }
+    }
 }
 
 /// Checks one file, for a pre-write hook.
@@ -523,18 +740,25 @@ mod tests {
     /// Runs against an existing tree, so a test can run twice over one
     /// repository -- which is the only way to observe a cache at all.
     fn run_at(root: &Utf8Path, args: &[&str]) -> Captured {
+        run_with(root, args, "")
+    }
+
+    /// Runs with something on stdin, for the hook.
+    fn run_with(root: &Utf8Path, args: &[&str], input: &str) -> Captured {
         let mut command_line = vec!["archwarden"];
         command_line.extend_from_slice(args);
         let cli = Cli::try_parse_from(command_line).expect("arguments should parse");
 
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
+        let mut input = input.as_bytes();
         let exit = run(
             &cli,
             root,
             &mut Output {
                 out: &mut stdout,
                 err: &mut stderr,
+                input: &mut input,
             },
         );
 
@@ -686,12 +910,14 @@ mod tests {
 
         let cli = Cli::try_parse_from(["archwarden", "config", "validate"]).expect("parses");
         let (mut stdout, mut stderr) = (Vec::new(), Vec::new());
+        let mut input = std::io::empty();
         let exit = run(
             &cli,
             &nested,
             &mut Output {
                 out: &mut stdout,
                 err: &mut stderr,
+                input: &mut input,
             },
         );
 
@@ -1366,6 +1592,210 @@ mod tests {
             "{}",
             result.out
         );
+    }
+
+    const WRITE_EVENT: &str = r#"{
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": { "file_path": "src/user/create-client.use-case.ts" }
+    }"#;
+
+    /// The whole point of Layer 4: an invalid write is refused, with a message
+    /// naming the rule and the fix.
+    #[test]
+    fn the_hook_denies_a_write_that_would_break_a_rule() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::write(root.join("arch.config.json"), NAMING).expect("write");
+        std::fs::create_dir_all(root.join("src/user")).expect("create dirs");
+        std::fs::write(
+            root.join("src/user/create-client.use-case.ts"),
+            "export const CreateClient = () => {};",
+        )
+        .expect("write");
+
+        let result = run_with(&root, &["hook", "claude-code"], WRITE_EVENT);
+
+        assert_eq!(result.exit, Exit::Clean, "the hook itself did not fail");
+        let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("valid JSON");
+        assert_eq!(
+            parsed["hookSpecificOutput"]["permissionDecision"], "deny",
+            "{}",
+            result.out
+        );
+        let message = parsed["systemMessage"].as_str().expect("a message");
+        assert!(message.contains("usecase-name"), "{message}");
+        assert!(message.contains("expected:"), "{message}");
+    }
+
+    /// A legal write is allowed, quietly.
+    #[test]
+    fn the_hook_allows_a_write_that_is_fine() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::write(root.join("arch.config.json"), NAMING).expect("write");
+        std::fs::create_dir_all(root.join("src/user")).expect("create dirs");
+        std::fs::write(
+            root.join("src/user/create-client.use-case.ts"),
+            "export function CreateClient() {}",
+        )
+        .expect("write");
+
+        let result = run_with(&root, &["hook", "claude-code"], WRITE_EVENT);
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert_eq!(result.out, "{}\n");
+    }
+
+    /// A hook that blocked because *it* failed would be worse than no hook.
+    /// Every unexpected shape lets the write through.
+    #[test]
+    fn the_hook_never_blocks_because_of_its_own_trouble() {
+        let cases: [(&str, &str); 4] = [
+            ("a broken config", r#"{"version": 0,,}"#),
+            ("a config for a future version", r#"{"version": 99}"#),
+            (
+                "an uncompilable rule",
+                r#"{"version":0,"rules":[{"type":"structure",
+                "id":"a","level":"error","roots":"["}]}"#,
+            ),
+            ("no rules at all", r#"{"version":0}"#),
+        ];
+
+        for (what, config) in cases {
+            let (_guard, result) = {
+                let dir = tempfile::tempdir().expect("temp dir");
+                let root =
+                    Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                        .expect("UTF-8");
+                std::fs::write(root.join("arch.config.json"), config).expect("write");
+                let result = run_with(&root, &["hook", "claude-code"], WRITE_EVENT);
+                (dir, result)
+            };
+
+            assert_eq!(result.exit, Exit::Clean, "{what}");
+            assert_eq!(result.out, "{}\n", "{what} should allow the write");
+        }
+    }
+
+    /// A payload naming no file is not this hook's business.
+    #[test]
+    fn the_hook_allows_a_tool_that_writes_nothing() {
+        let (_guard, result) = run_in(&[("arch.config.json", NAMING)], &["hook", "claude-code"]);
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert_eq!(result.out, "{}\n");
+    }
+
+    /// `install-hooks` writes the settings file, and says what it did.
+    #[test]
+    fn install_hooks_writes_the_settings_file() {
+        let (guard, result) = run_in(
+            &[("arch.config.json", MINIMAL)],
+            &["install-hooks", "--claude-code"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(
+            result.out.contains("installed the pre-write hook"),
+            "{}",
+            result.out
+        );
+
+        let settings = guard.path().join(crate::hooks::CLAUDE_SETTINGS);
+        let written = std::fs::read_to_string(&settings).expect("the file exists");
+        assert!(written.contains(crate::hooks::HOOK_COMMAND), "{written}");
+    }
+
+    /// Idempotent, and it does not touch the file when there is nothing to
+    /// change: rewriting to the same bytes still shows up in `git status`.
+    #[test]
+    fn install_hooks_run_twice_leaves_the_file_alone() {
+        let (guard, first) = run_in(
+            &[("arch.config.json", MINIMAL)],
+            &["install-hooks", "--claude-code"],
+        );
+        assert_eq!(first.exit, Exit::Clean);
+
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        let settings = root.join(crate::hooks::CLAUDE_SETTINGS);
+        let before = std::fs::metadata(&settings)
+            .and_then(|m| m.modified())
+            .expect("mtime");
+
+        let second = run_at(&root, &["install-hooks", "--claude-code"]);
+
+        assert!(second.out.contains("already in"), "{}", second.out);
+        let after = std::fs::metadata(&settings)
+            .and_then(|m| m.modified())
+            .expect("mtime");
+        assert_eq!(before, after, "the file was not rewritten");
+    }
+
+    /// And uninstall, which the doc asks for by name.
+    #[test]
+    fn install_hooks_can_take_the_hook_back_out() {
+        let (guard, _) = run_in(
+            &[("arch.config.json", MINIMAL)],
+            &["install-hooks", "--claude-code"],
+        );
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+
+        let removed = run_at(&root, &["install-hooks", "--claude-code", "--remove"]);
+        assert_eq!(removed.exit, Exit::Clean);
+        assert!(removed.out.contains("removed"), "{}", removed.out);
+
+        let written = std::fs::read_to_string(root.join(crate::hooks::CLAUDE_SETTINGS))
+            .expect("the file is still there");
+        assert!(!written.contains(crate::hooks::HOOK_COMMAND), "{written}");
+
+        let again = run_at(&root, &["install-hooks", "--claude-code", "--remove"]);
+        assert!(again.out.contains("no archwarden hook"), "{}", again.out);
+    }
+
+    /// Naming no harness is a usage error, not a silent no-op.
+    #[test]
+    fn install_hooks_needs_a_harness() {
+        let (_guard, result) = run_in(&[("arch.config.json", MINIMAL)], &["install-hooks"]);
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.err.contains("--claude-code"), "{}", result.err);
+    }
+
+    /// The first command a new user runs.
+    #[test]
+    fn init_writes_a_starter_config() {
+        let (guard, result) = run_in(&[], &["init"]);
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(result.out.contains("wrote"), "{}", result.out);
+
+        let written = std::fs::read_to_string(guard.path().join("arch.config.json"))
+            .expect("the file exists");
+        assert!(written.contains("$schema"), "{written}");
+
+        // It has to be a config archwarden itself accepts, or the first thing
+        // a new user sees is an error from the tool that wrote the file.
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        let validated = run_at(&root, &["config", "validate"]);
+        assert_eq!(validated.exit, Exit::Clean, "{}", validated.err);
+    }
+
+    /// It never overwrites. A config is hand-written and often long, and a
+    /// command that replaced one would be a command nobody runs twice on
+    /// purpose.
+    #[test]
+    fn init_refuses_to_overwrite() {
+        let (guard, result) = run_in(&[("arch.config.json", NAMING)], &["init"]);
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.err.contains("already exists"), "{}", result.err);
+
+        let kept =
+            std::fs::read_to_string(guard.path().join("arch.config.json")).expect("still there");
+        assert_eq!(kept, NAMING, "the user's config is untouched");
     }
 
     /// A structural configuration reads no bytes, so it has nothing to cache

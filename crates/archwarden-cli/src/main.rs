@@ -15,6 +15,7 @@ fn main() -> ExitCode {
 
     let mut stdout = std::io::stdout().lock();
     let mut stderr = std::io::stderr().lock();
+    let mut stdin = std::io::stdin().lock();
 
     let Some(working_directory) = current_directory(&mut stderr) else {
         return Exit::ConfigProblem.into();
@@ -26,6 +27,7 @@ fn main() -> ExitCode {
         &mut Output {
             out: &mut stdout,
             err: &mut stderr,
+            input: &mut stdin,
         },
     )
     .into()
