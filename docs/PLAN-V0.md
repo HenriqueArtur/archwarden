@@ -618,9 +618,39 @@ ordens) e passa. O job do CI é isolado, então não afeta o build.
 
 **Objetivo:** bater o critério warm do `ROADMAP.md:48-51`.
 
+**Medição feita antes de começar (2026-07-25), e ela questiona a premissa do
+ADR#3.** Com o M3 pronto e build em release, num repo sintético:
+
+| | |
+|---|---|
+| 30.635 arquivos, 120 MB | **0,20 s** |
+| 4.020 arquivos | 0,025 s |
+| Pico de memória | 30 MB |
+
+Sem cache algum. O orçamento do `ROADMAP.md` era 30k em menos de 5s a frio;
+está 25× abaixo. O ADR#3 justifica o cache dizendo que "ferramentas
+não-incrementais cruzam uma linha de usabilidade entre 10k e 100k arquivos" —
+a 0,2s essa linha não está sendo cruzada.
+
+Ressalvas: arquivos sintéticos são mais simples que TS real, page cache quente,
+VM de 4 cores ARM, e cerca de metade dos arquivos foi parseada.
+
+O cache **continua certo** para o watch mode de v1 e para o hook de pré-escrita
+(onde 20ms importa), mas como bloqueador do v0 perdeu a urgência. Henrique
+optou por manter a ordem do plano em 2026-07-25; registrado aqui para que a
+decisão seja informada e não implícita.
+
 **Tarefas**
-- `cache`: store `redb`, duas tabelas — `facts[content_hash]` e
+- ✅ `cache`: store `redb`, duas tabelas — `facts[content_hash]` e
   `findings[content_hash + rules_hash + resolution_epoch]` (C5).
+
+  **Formato de valor mudou de `postcard` para MessagePack (`rmp-serde`).** Um
+  `Finding` carrega `Observed` e `Expectation`, que usam
+  `#[serde(tag = "type")]` porque o relatório JSON é contrato com agentes. O
+  serde **não consegue** serializar enum com tag interna num formato que não
+  seja auto-descritivo — o que elimina `postcard` e `bincode` de uma vez. Os
+  `facts` funcionavam com postcard; os `findings` não, e o teste de round-trip
+  foi o que revelou. MessagePack é auto-descritivo e continua compacto.
 - `cache`: `resolution_epoch` = hash de `tsconfig*.json` + `package.json` +
   lockfile (C4).
 - `cache`: versionamento de formato (ADR#3), invalidação total em bump.

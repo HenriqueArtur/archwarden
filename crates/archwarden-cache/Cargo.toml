@@ -10,6 +10,15 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+archwarden-core = { workspace = true }
+camino = { workspace = true }
+redb = { workspace = true }
+rmp-serde = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

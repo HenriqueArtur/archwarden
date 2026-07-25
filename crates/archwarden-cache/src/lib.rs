@@ -14,3 +14,6 @@
 //! warm run would serve stale findings after a `tsconfig.paths` change.
 //!
 //! See `docs/ARCHITECTURE.md`.
+
+// Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod store;
