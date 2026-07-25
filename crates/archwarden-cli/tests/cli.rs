@@ -146,6 +146,7 @@ fn help_lists_the_available_commands() {
         .success()
         .stdout(contains("check"))
         .stdout(contains("describe"))
+        .stdout(contains("scaffold"))
         .stdout(contains("config"))
         .stdout(contains("--config"));
 }
@@ -175,6 +176,31 @@ fn describe_answers_through_the_binary_for_a_file_that_does_not_exist() {
         .success()
         .stdout(contains(r#""id": "usecase-name""#))
         .stdout(contains(r#""name": "CreateClient""#));
+}
+
+/// Layer 2's second call, through the real process.
+#[test]
+fn scaffold_answers_through_the_binary() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"naming","id":"usecase-name","level":"error","roots":"src/*",
+             "file_pattern":"^(?<name>[a-z0-9-]+)\\.use-case\\.ts$",
+             "must_export":{"name":"{{pascal(name)}}","kind":"function",
+                            "signature_hint":"(deps: Deps): UseCase"}},
+            {"type":"spec-pair","id":"usecase-spec","level":"error","roots":"src/*",
+             "subfolders":".","spec_markers":"spec","require_non_empty_spec":true}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["scaffold", "src/user/create-client.use-case.ts"])
+        .assert()
+        .success()
+        .stdout(contains(
+            "export function CreateClient(deps: Deps): UseCase",
+        ))
+        .stdout(contains("src/user/create-client.use-case.spec.ts"));
 }
 
 /// The working directory is read by `main`, so a relative path typed from a

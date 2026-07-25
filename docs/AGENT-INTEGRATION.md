@@ -144,14 +144,34 @@ Output — JSON mode: structured. Fields:
 
 ```json
 {
+  "version": 0,
   "path": "...",
-  "required_exports": [ { "kind": "function", "name": "Foo", "signature_hint": "..." } ],
+  "required_exports": [ { "name": "Foo", "kinds": ["function"], "signature_hint": "..." } ],
   "required_siblings": [ { "path": "...", "constraints": ["non-empty-spec"] } ],
-  "forbidden_imports": [ { "pattern": "packages/domain/**", "except": ["..."] } ],
+  "forbidden_imports": [
+    { "pattern": "packages/domain/**", "except": ["..."], "include_type_only": true }
+  ],
   "required_imports": [],
-  "call_obligations": []
+  "call_obligations": [],
+  "filename_patterns": [],
+  "allowed_subfolders": null
 }
 ```
+
+`kinds` is a list because `kind: ["function", "arrow"]` is a normal way to say
+"callable, either form"; it is empty for `kind: "any"`, which asks for no
+particular declaration form. One entry per glob in `forbidden_imports`, not per
+rule: an agent asks "may I import this?" about one path at a time.
+
+`filename_patterns` and `allowed_subfolders` are not extras. Without the first,
+an agent scaffolding a path whose *name* is already wrong is told everything
+except the thing it has to fix first; the second is what `scaffold` answers
+when asked about a directory, which `describe` already does.
+
+`signature_hint` is reproduced verbatim after the declaration keyword, so a
+hint written in one form (`(deps: Deps) => UseCase`) under a rule demanding
+another (`kind: "function"`) produces a line that does not compile. archwarden
+never verifies the hint — that is `config doctor`'s job.
 
 ### `archwarden agent-guide`
 

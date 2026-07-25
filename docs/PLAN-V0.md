@@ -63,6 +63,7 @@ Sair num commit de docs **antes** do M0, para as docs pararem de se contradizer.
 | C4 | `ARCHITECTURE.md:131` | Chave de cache precisa de `resolution_epoch` (hash de `tsconfig*.json` + `package.json` + lockfile) |
 | C5 | `ARCHITECTURE.md:131` | Separar `facts[content_hash]` de `findings[content+rules+epoch]` |
 | C6 | `AGENT-INTEGRATION.md:182` | `check --file` deve reportar `"skipped": [...]`, nunca pular regra em silêncio |
+| C11 | `AGENT-INTEGRATION.md:145` | Shape do `scaffold` precisa de `filename_patterns` e `allowed_subfolders` |
 | C7 | `.gitignore:8` | Ignorar `.archwarden/cache/`, não `.archwarden/` inteiro |
 | C8 | `.gitignore:5` | **Remover `Cargo.lock`** — workspace com binário commita o lock |
 | C9 | `ARCHITECTURE.md:147` | `ignore` não usa rayon; tem threadpool próprio |
@@ -1302,9 +1303,54 @@ sobreviventes**.
 
 ---
 
-#### M7b — `scaffold` `⬜`
+#### M7b — `scaffold` `✅`
 
-- `cli`: `scaffold <path>` consumindo `describe_expectation` de cada regra.
+**Tarefas**
+- ✅ `cli`: `scaffold <path>` (text + JSON), Tier 2 incluído.
+
+**Registro** — 2026-07-25
+
+**É uma transposição, não uma segunda travessia.** O `scaffold` é construído em
+cima do `describe`: duas varreduras das mesmas regras poderiam discordar, e aí
+um agente que seguisse o `scaffold` reprovaria no `check`. O `describe` responde
+regra a regra; quem vai escrever um arquivo não pensa regra a regra, pensa em
+uma lista de exports, uma de irmãos, uma de restrições de import.
+
+**Uma entrada por glob, não por regra.** Um `forbid_import_from` com três globs
+vira três entradas, cada uma carregando o `except` da regra. O agente pergunta
+"posso importar isto?" sobre um caminho de cada vez, e uma lista que ele tem
+que desempacotar antes é uma lista que ele erra.
+
+**Correção C11 — o shape do `AGENT-INTEGRATION.md:145` estava incompleto.**
+Faltavam duas coisas:
+
+- `filename_patterns` — sem isso, um agente montando um caminho cujo **nome** já
+  está errado recebe tudo menos o que ele precisa consertar primeiro;
+- `allowed_subfolders` — o `describe` já responde sobre diretório, e um
+  `scaffold` que perdesse a resposta seria menos útil que o comando em que se
+  apoia.
+
+Também troquei `"kind": "function"` por `"kinds": ["function"]`: `kind:
+["function","arrow"]` é jeito normal de dizer "chamável, qualquer forma", e a
+lista vazia é como o `any` diz que não pede forma nenhuma. Documento
+atualizado.
+
+**Uma aresta afiada que fica registrada.** O `signature_hint` é reproduzido
+literalmente depois da palavra-chave, então um hint em estilo arrow
+(`(deps: Deps) => UseCase`) sob uma regra que exige `kind: "function"` produz:
+
+```
+export function CreateClient(deps: Deps) => UseCase<In, Out>
+```
+
+que não compila. Está **certo** pelo contrato — o `RULES.md` diz que o hint é
+"never verified" e o exemplo do próprio doc usa o estilo com dois-pontos — mas é
+o tipo de coisa que um usuário descobre tarde. **Não é para o `scaffold`
+resolver:** validar hint contra kind é checagem semântica de config, que é
+exatamente o `config doctor` do M8. Anotado lá.
+
+**Latência: 2 ms**, mesma do `describe` e pelo mesmo motivo — nenhum arquivo é
+lido.
 
 ---
 
@@ -1328,6 +1374,11 @@ sobreviventes**.
 ---
 
 ### M8 — `config doctor` `⬜`
+
+**Entrada vinda do M7b:** `config doctor` deve avisar quando um
+`signature_hint` não combina com o `kind` que a regra exige — hint em estilo
+arrow sob `kind: "function"` faz o `scaffold` emitir uma linha que não compila.
+
 
 **Objetivo:** pegar config errado antes de o usuário culpar a ferramenta.
 

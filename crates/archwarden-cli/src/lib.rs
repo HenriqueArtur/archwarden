@@ -7,6 +7,7 @@ pub mod describe;
 pub mod diagnostic;
 pub mod exit;
 pub mod report;
+pub mod scaffold;
 
 use archwarden_cache::store::Cache;
 use archwarden_config::{
@@ -65,6 +66,21 @@ pub enum Command {
         format: Format,
     },
 
+    /// Show the smallest shape that would satisfy the rules at a path.
+    ///
+    /// `describe` answers rule by rule; this transposes the same answer into
+    /// one list of exports, one of siblings, one of import constraints.
+    Scaffold {
+        /// The file or directory to shape, relative to the working directory
+        /// or absolute.
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// How to render the shape.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+
     /// Inspect the configuration itself.
     Config {
         /// Which config command to run.
@@ -107,6 +123,13 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             output,
         ),
         Command::Describe { path, format } => describe(
+            cli.config.as_deref(),
+            working_directory,
+            path,
+            *format,
+            output,
+        ),
+        Command::Scaffold { path, format } => scaffold(
             cli.config.as_deref(),
             working_directory,
             path,
@@ -194,6 +217,35 @@ fn describe(
 
     let applies = crate::describe::describe(&compiled, &path);
     crate::describe::render(&path, &applies, format, output.out);
+    Exit::Clean
+}
+
+/// Shows the smallest shape that would satisfy the rules at one path.
+///
+/// Shares `describe`'s path resolution and config loading, and is built on its
+/// answer, so the two commands cannot disagree about what applies.
+fn scaffold(
+    explicit: Option<&Utf8Path>,
+    working_directory: &Utf8Path,
+    argument: &str,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+        Ok(prepared) => prepared,
+        Err(exit) => return exit,
+    };
+
+    let path = match crate::describe::repo_relative(&merged.root, working_directory, argument) {
+        Ok(path) => path,
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    let shape = crate::scaffold::scaffold(&compiled, &path);
+    crate::scaffold::render(&path, &shape, format, output.out);
     Exit::Clean
 }
 
@@ -1021,6 +1073,42 @@ mod tests {
         );
 
         assert_eq!(result.exit, Exit::ConfigProblem);
+    }
+
+    /// The other half of Layer 2: having asked what applies, the agent asks
+    /// what to write.
+    #[test]
+    fn scaffold_shows_what_to_write() {
+        let (_guard, result) = run_in(
+            &[("arch.config.json", NAMING)],
+            &["scaffold", "src/user/create-client.use-case.ts"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(
+            result.out.contains("export function CreateClient"),
+            "{}",
+            result.out
+        );
+    }
+
+    /// And the JSON an agent should consume, which `describe` and `scaffold`
+    /// version separately.
+    #[test]
+    fn scaffold_emits_a_versioned_json_shape() {
+        let (_guard, result) = run_in(
+            &[("arch.config.json", NAMING)],
+            &[
+                "scaffold",
+                "src/user/create-client.use-case.ts",
+                "--format",
+                "json",
+            ],
+        );
+
+        let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("valid JSON");
+        assert_eq!(parsed["version"], 0);
+        assert_eq!(parsed["required_exports"][0]["name"], "CreateClient");
     }
 
     /// A structural configuration reads no bytes, so it has nothing to cache
