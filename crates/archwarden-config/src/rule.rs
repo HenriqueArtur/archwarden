@@ -94,6 +94,7 @@ impl Rule {
 
 /// Which folders may exist under a scope, and which filenames.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct StructureRule {
     /// Stable identifier, unique across the config and its presets.
     pub id: RuleId,
@@ -119,6 +120,7 @@ pub struct StructureRule {
 
 /// The filename dictates the exported symbol's name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NamingRule {
     /// Stable identifier.
     pub id: RuleId,
@@ -134,6 +136,7 @@ pub struct NamingRule {
 
 /// The export a `naming` rule requires.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MustExport {
     /// Declaration forms that satisfy the rule: one name, a list of names, or
     /// `"any"`. See the table in `docs/RULES.md`.
@@ -148,6 +151,7 @@ pub struct MustExport {
 
 /// Every unit file under the scope needs a spec sibling.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SpecPairRule {
     /// Stable identifier.
     pub id: RuleId,
@@ -181,6 +185,7 @@ fn default_spec_markers() -> Patterns {
 
 /// Layer A may not import from layer B, or must import from layer C.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ImportBoundaryRule {
     /// Stable identifier.
     pub id: RuleId,
@@ -210,6 +215,7 @@ fn default_true() -> bool {
 
 /// Files matching a pattern must call a given symbol.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CallObligationRule {
     /// Stable identifier.
     pub id: RuleId,
@@ -225,6 +231,7 @@ pub struct CallObligationRule {
 
 /// The call a `call-obligation` rule requires.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct MustCall {
     /// The callee as it appears at a call site, e.g. `Event.save`. Method
     /// chains are matched exactly.
@@ -237,6 +244,83 @@ pub struct MustCall {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A misspelled field is refused rather than ignored.
+    ///
+    /// Found the hard way in M7d: a config saying `allow` where the field is
+    /// `allowed_subfolders` compiled to a `structure` rule that constrained
+    /// nothing, `config validate` called it valid, and `check` reported a
+    /// clean repository. A rule that silently enforces nothing is the worst
+    /// possible failure for a linter -- it is indistinguishable from a rule
+    /// that passes.
+    #[test]
+    fn a_misspelled_field_is_refused() {
+        let error = serde_json::from_str::<Rule>(
+            r#"{"type":"structure","id":"shape","level":"error",
+                "roots":"src/*","allow":["types"]}"#,
+        )
+        .expect_err("`allow` is not a field");
+
+        assert!(error.to_string().contains("allow"), "{error}");
+    }
+
+    /// Every rule kind refuses one, not just the first that happened to be
+    /// tested. A gap here is a rule kind that can be silently disabled.
+    #[test]
+    fn every_rule_kind_refuses_an_unknown_field() {
+        let cases = [
+            r#"{"type":"structure","id":"a","level":"error","roots":"src/*","nope":1}"#,
+            r#"{"type":"naming","id":"a","level":"error","roots":"src/*",
+                "file_pattern":"^x$","must_export":{"name":"X","kind":"any"},"nope":1}"#,
+            r#"{"type":"spec-pair","id":"a","level":"error","roots":"src/*",
+                "subfolders":".","spec_markers":"spec","nope":1}"#,
+            r#"{"type":"import-boundary","id":"a","level":"error","from":"src/**","nope":1}"#,
+            r#"{"type":"call-obligation","id":"a","level":"error","roots":"src/*",
+                "file_pattern":"^x$","must_call":{"symbol":"S","imported_from":"m"},"nope":1}"#,
+        ];
+
+        for case in cases {
+            assert!(
+                serde_json::from_str::<Rule>(case).is_err(),
+                "accepted an unknown field: {case}"
+            );
+        }
+    }
+
+    /// The nested objects too, which is where a typo is easiest to make and
+    /// hardest to notice.
+    #[test]
+    fn a_nested_object_refuses_an_unknown_field() {
+        assert!(
+            serde_json::from_str::<Rule>(
+                r#"{"type":"naming","id":"a","level":"error","roots":"src/*",
+                    "file_pattern":"^x$","must_export":{"name":"X","kind":"any","hint":"..."}}"#
+            )
+            .is_err(),
+            "`hint` is not a field; `signature_hint` is"
+        );
+        assert!(
+            serde_json::from_str::<Rule>(
+                r#"{"type":"call-obligation","id":"a","level":"error","roots":"src/*",
+                    "file_pattern":"^x$","must_call":{"symbol":"S","from":"m"}}"#
+            )
+            .is_err(),
+            "`from` is not a field; `imported_from` is"
+        );
+    }
+
+    /// And a correctly spelled config still parses, which is the half that
+    /// would break if the attribute were put somewhere it does not belong.
+    #[test]
+    fn a_well_spelled_rule_still_parses() {
+        let rule: Rule = serde_json::from_str(
+            r#"{"type":"structure","id":"shape","level":"error",
+                "roots":"src/*","allowed_subfolders":["types"]}"#,
+        )
+        .expect("parses");
+
+        assert_eq!(rule.id().as_str(), "shape");
+    }
 
     fn parse(json: &str) -> Rule {
         serde_json::from_str(json).expect("should deserialise")

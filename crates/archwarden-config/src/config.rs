@@ -12,6 +12,7 @@ pub const SCHEMA_VERSION: u32 = 0;
 /// A parsed `arch.config.json`, before `extends` is resolved and before globs
 /// and regexes are compiled.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     /// The `$schema` URL. Present so editors offer completion; archwarden
     /// itself ignores it.
@@ -67,6 +68,7 @@ pub struct Config {
 /// `[domain] packages/domain/src/user/wrong-folder`. Each rule still carries
 /// its own scope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Module {
     /// The label.
     pub id: ModuleId,
@@ -77,6 +79,7 @@ pub struct Module {
 
 /// Which directories are exempt, and from what.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SkipDirs {
     /// Directory name prefixes. Empty disables the escape hatch.
     #[serde(default = "default_skip_prefixes")]
@@ -146,6 +149,47 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The same protection as on the rules, at the top level and in every
+    /// nested object. A misspelled key here disables a setting rather than a
+    /// rule, which is quieter still.
+    #[test]
+    fn an_unknown_field_is_refused_at_every_level() {
+        let cases = [
+            r#"{"version":0,"rulez":[]}"#,
+            r#"{"version":0,"modules":[{"id":"m","rulez":[]}]}"#,
+            r#"{"version":0,"skip_dirs":{"prefix":["_"]}}"#,
+        ];
+
+        for case in cases {
+            assert!(
+                serde_json::from_str::<Config>(case).is_err(),
+                "accepted an unknown field: {case}"
+            );
+        }
+    }
+
+    /// And every documented key still parses, including the ones with a
+    /// `serde` rename, which is what would break if the attribute were applied
+    /// carelessly.
+    #[test]
+    fn a_well_spelled_config_still_parses() {
+        let config: Config = serde_json::from_str(
+            r#"{
+                "$schema": "https://archwarden.dev/schema/v0.json",
+                "version": 0,
+                "extends": ["@org/preset"],
+                "ignore": ["dist/**"],
+                "skip_dirs": {"prefixes": ["_"], "scope": "structure"},
+                "modules": [{"id": "domain", "rules": []}],
+                "rules": []
+            }"#,
+        )
+        .expect("parses");
+
+        assert_eq!(config.version, 0);
+    }
+
     use archwarden_core::level::Level;
 
     fn parse(json: &str) -> Config {

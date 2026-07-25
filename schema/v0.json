@@ -64,6 +64,7 @@
       }
     }
   },
+  "additionalProperties": false,
   "required": [
     "version"
   ],
@@ -110,7 +111,8 @@
           "$ref": "#/$defs/SkipScope",
           "default": "structure"
         }
-      }
+      },
+      "additionalProperties": false
     },
     "SkipScope": {
       "description": "How far a `skip_dirs` exemption reaches.",
@@ -143,6 +145,7 @@
           }
         }
       },
+      "additionalProperties": false,
       "required": [
         "id"
       ]
@@ -158,70 +161,232 @@
           "description": "Which folders may exist, and which filenames.",
           "type": "object",
           "properties": {
+            "id": {
+              "description": "Stable identifier, unique across the config and its presets.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "allowed_subfolders": {
+              "description": "Subdirectory names that are permitted.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "warn_subfolders": {
+              "description": "Subdirectory names that are permitted but reported as warnings,\nwhatever `level` says. Naming a folder is more specific than the rule's\nblanket severity, and the more specific declaration wins.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "recurse_into": {
+              "description": "Subdirectories that carry the same structural contract, recursively.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "filename_patterns": {
+              "description": "Regexes every direct child file's name must match at least one of.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "type": {
               "type": "string",
               "const": "structure"
             }
           },
-          "$ref": "#/$defs/StructureRule",
+          "additionalProperties": false,
           "required": [
-            "type"
+            "type",
+            "id",
+            "level",
+            "roots"
           ]
         },
         {
           "description": "The filename dictates the exported symbol's name.",
           "type": "object",
           "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "file_pattern": {
+              "description": "Regex over the filename, with a named capture group.",
+              "type": "string"
+            },
+            "must_export": {
+              "description": "The export the file must carry.",
+              "$ref": "#/$defs/MustExport"
+            },
             "type": {
               "type": "string",
               "const": "naming"
             }
           },
-          "$ref": "#/$defs/NamingRule",
+          "additionalProperties": false,
           "required": [
-            "type"
+            "type",
+            "id",
+            "level",
+            "roots",
+            "file_pattern",
+            "must_export"
           ]
         },
         {
           "description": "Every unit file needs a spec sibling.",
           "type": "object",
           "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "subfolders": {
+              "description": "Subdirectories subject to the rule. `[\".\"]` means the scope itself.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "spec_markers": {
+              "description": "What makes a filename a spec: `spec`, `test`, or both.\n\nA marker, not a whole suffix: the extension is taken from the source\nfile, so `Component.tsx` wants `Component.spec.tsx` without anyone\nsaying so. The default accepts both markers, which is what vitest and\njest do, so the common project needs no configuration here at all.",
+              "$ref": "#/$defs/OneOrMany",
+              "default": [
+                "spec",
+                "test"
+              ]
+            },
+            "ignore_files": {
+              "description": "Globs exempted from the rule.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "require_non_empty_spec": {
+              "description": "Whether the spec must contain at least one `it(...)` or `test(...)`.\nA bare `describe(...)` does not count: an empty describe block\nsatisfies the letter of the rule while defeating its purpose.",
+              "type": "boolean",
+              "default": false
+            },
             "type": {
               "type": "string",
               "const": "spec-pair"
             }
           },
-          "$ref": "#/$defs/SpecPairRule",
+          "additionalProperties": false,
           "required": [
-            "type"
+            "type",
+            "id",
+            "level",
+            "roots",
+            "subfolders"
           ]
         },
         {
           "description": "Layer A may not import from layer B.",
           "type": "object",
           "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "from": {
+              "description": "Directory globs selecting the importer. Same semantics as `roots`.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "forbid_import_from": {
+              "description": "Globs matched against the *resolved* import path. Matching means the\nimport is illegal.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "must_import_from": {
+              "description": "Globs matched against the resolved import path. If none of the file's\nimports match, the file is illegal.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "except": {
+              "description": "Exceptions, also matched against the resolved path.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "include_type_only": {
+              "description": "Whether `import type` and inline `type` marks count.",
+              "type": "boolean",
+              "default": true
+            },
             "type": {
               "type": "string",
               "const": "import-boundary"
             }
           },
-          "$ref": "#/$defs/ImportBoundaryRule",
+          "additionalProperties": false,
           "required": [
-            "type"
+            "type",
+            "id",
+            "level",
+            "from"
           ]
         },
         {
           "description": "Files matching a pattern must call a given symbol.",
           "type": "object",
           "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "file_pattern": {
+              "description": "Regex over the filename.",
+              "type": "string"
+            },
+            "must_call": {
+              "description": "The call the file must contain.",
+              "$ref": "#/$defs/MustCall"
+            },
             "type": {
               "type": "string",
               "const": "call-obligation"
             }
           },
-          "$ref": "#/$defs/CallObligationRule",
+          "additionalProperties": false,
           "required": [
-            "type"
+            "type",
+            "id",
+            "level",
+            "roots",
+            "file_pattern",
+            "must_call"
           ]
         }
       ]
@@ -245,57 +410,6 @@
         }
       ]
     },
-    "StructureRule": {
-      "description": "Which folders may exist under a scope, and which filenames.",
-      "type": "object",
-      "properties": {
-        "id": {
-          "description": "Stable identifier, unique across the config and its presets.",
-          "$ref": "#/$defs/RuleId"
-        },
-        "level": {
-          "description": "Severity.",
-          "$ref": "#/$defs/Level"
-        },
-        "roots": {
-          "description": "Directory globs this rule applies to.",
-          "$ref": "#/$defs/OneOrMany"
-        },
-        "allowed_subfolders": {
-          "description": "Subdirectory names that are permitted.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "warn_subfolders": {
-          "description": "Subdirectory names that are permitted but reported as warnings,\nwhatever `level` says. Naming a folder is more specific than the rule's\nblanket severity, and the more specific declaration wins.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "recurse_into": {
-          "description": "Subdirectories that carry the same structural contract, recursively.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        },
-        "filename_patterns": {
-          "description": "Regexes every direct child file's name must match at least one of.",
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      },
-      "required": [
-        "id",
-        "level",
-        "roots"
-      ]
-    },
     "MustExport": {
       "description": "The export a `naming` rule requires.",
       "type": "object",
@@ -316,127 +430,10 @@
           ]
         }
       },
+      "additionalProperties": false,
       "required": [
         "kind",
         "name"
-      ]
-    },
-    "NamingRule": {
-      "description": "The filename dictates the exported symbol's name.",
-      "type": "object",
-      "properties": {
-        "id": {
-          "description": "Stable identifier.",
-          "$ref": "#/$defs/RuleId"
-        },
-        "level": {
-          "description": "Severity.",
-          "$ref": "#/$defs/Level"
-        },
-        "roots": {
-          "description": "Directory globs this rule applies to.",
-          "$ref": "#/$defs/OneOrMany"
-        },
-        "file_pattern": {
-          "description": "Regex over the filename, with a named capture group.",
-          "type": "string"
-        },
-        "must_export": {
-          "description": "The export the file must carry.",
-          "$ref": "#/$defs/MustExport"
-        }
-      },
-      "required": [
-        "id",
-        "level",
-        "roots",
-        "file_pattern",
-        "must_export"
-      ]
-    },
-    "SpecPairRule": {
-      "description": "Every unit file under the scope needs a spec sibling.",
-      "type": "object",
-      "properties": {
-        "id": {
-          "description": "Stable identifier.",
-          "$ref": "#/$defs/RuleId"
-        },
-        "level": {
-          "description": "Severity.",
-          "$ref": "#/$defs/Level"
-        },
-        "roots": {
-          "description": "Directory globs this rule applies to.",
-          "$ref": "#/$defs/OneOrMany"
-        },
-        "subfolders": {
-          "description": "Subdirectories subject to the rule. `[\".\"]` means the scope itself.",
-          "$ref": "#/$defs/OneOrMany"
-        },
-        "spec_markers": {
-          "description": "What makes a filename a spec: `spec`, `test`, or both.\n\nA marker, not a whole suffix: the extension is taken from the source\nfile, so `Component.tsx` wants `Component.spec.tsx` without anyone\nsaying so. The default accepts both markers, which is what vitest and\njest do, so the common project needs no configuration here at all.",
-          "$ref": "#/$defs/OneOrMany",
-          "default": [
-            "spec",
-            "test"
-          ]
-        },
-        "ignore_files": {
-          "description": "Globs exempted from the rule.",
-          "$ref": "#/$defs/OneOrMany"
-        },
-        "require_non_empty_spec": {
-          "description": "Whether the spec must contain at least one `it(...)` or `test(...)`.\nA bare `describe(...)` does not count: an empty describe block\nsatisfies the letter of the rule while defeating its purpose.",
-          "type": "boolean",
-          "default": false
-        }
-      },
-      "required": [
-        "id",
-        "level",
-        "roots",
-        "subfolders"
-      ]
-    },
-    "ImportBoundaryRule": {
-      "description": "Layer A may not import from layer B, or must import from layer C.",
-      "type": "object",
-      "properties": {
-        "id": {
-          "description": "Stable identifier.",
-          "$ref": "#/$defs/RuleId"
-        },
-        "level": {
-          "description": "Severity.",
-          "$ref": "#/$defs/Level"
-        },
-        "from": {
-          "description": "Directory globs selecting the importer. Same semantics as `roots`.",
-          "$ref": "#/$defs/OneOrMany"
-        },
-        "forbid_import_from": {
-          "description": "Globs matched against the *resolved* import path. Matching means the\nimport is illegal.",
-          "$ref": "#/$defs/OneOrMany"
-        },
-        "must_import_from": {
-          "description": "Globs matched against the resolved import path. If none of the file's\nimports match, the file is illegal.",
-          "$ref": "#/$defs/OneOrMany"
-        },
-        "except": {
-          "description": "Exceptions, also matched against the resolved path.",
-          "$ref": "#/$defs/OneOrMany"
-        },
-        "include_type_only": {
-          "description": "Whether `import type` and inline `type` marks count.",
-          "type": "boolean",
-          "default": true
-        }
-      },
-      "required": [
-        "id",
-        "level",
-        "from"
       ]
     },
     "MustCall": {
@@ -452,42 +449,10 @@
           "type": "string"
         }
       },
+      "additionalProperties": false,
       "required": [
         "symbol",
         "imported_from"
-      ]
-    },
-    "CallObligationRule": {
-      "description": "Files matching a pattern must call a given symbol.",
-      "type": "object",
-      "properties": {
-        "id": {
-          "description": "Stable identifier.",
-          "$ref": "#/$defs/RuleId"
-        },
-        "level": {
-          "description": "Severity.",
-          "$ref": "#/$defs/Level"
-        },
-        "roots": {
-          "description": "Directory globs this rule applies to.",
-          "$ref": "#/$defs/OneOrMany"
-        },
-        "file_pattern": {
-          "description": "Regex over the filename.",
-          "type": "string"
-        },
-        "must_call": {
-          "description": "The call the file must contain.",
-          "$ref": "#/$defs/MustCall"
-        }
-      },
-      "required": [
-        "id",
-        "level",
-        "roots",
-        "file_pattern",
-        "must_call"
       ]
     }
   }

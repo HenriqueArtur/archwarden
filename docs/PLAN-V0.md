@@ -65,6 +65,8 @@ Sair num commit de docs **antes** do M0, para as docs pararem de se contradizer.
 | C6 | `AGENT-INTEGRATION.md:182` | `check --file` deve reportar `"skipped": [...]`, nunca pular regra em silêncio |
 | C11 | `AGENT-INTEGRATION.md:145` | Shape do `scaffold` precisa de `filename_patterns` e `allowed_subfolders` |
 | C12 | `ARCHITECTURE.md:252` | `agent-guide` não pode usar `describe_expectation` — ela é por caminho |
+| C14 | `CONFIG.md` | Campo desconhecido na config era ignorado em silêncio; agora é erro |
+| C13 | `AGENT-INTEGRATION.md:180` | `check --file` roda boundary rules; não existe "cold-cache" a pular |
 | C7 | `.gitignore:8` | Ignorar `.archwarden/cache/`, não `.archwarden/` inteiro |
 | C8 | `.gitignore:5` | **Remover `Cargo.lock`** — workspace com binário commita o lock |
 | C9 | `ARCHITECTURE.md:147` | `ignore` não usa rayon; tem threadpool próprio |
@@ -1405,9 +1407,98 @@ quatro. **Zero sobreviventes.**
 
 ---
 
-#### M7d — `check --file` `⬜`
+#### M7d — `check --file` `✅`
 
-- `cli`: `check --file <path>` com `"skipped": [...]` explícito (C6).
+**Tarefas**
+- ✅ `engine`: `single::check_file`, uma leitura por diretório do caminho.
+- ✅ `cli`: `check --file <path>` com `skipped` explícito (C6), Tier 2 incluído.
+
+**Registro** — 2026-07-25
+
+**Correção C13 — o "cold-cache" do `AGENT-INTEGRATION.md:180` não existe.** O
+texto dizia que as graph rules precisam de estado cross-file, só disponível com
+cache quente, e que rodar o grafo a cada escrita estouraria o orçamento de
+latência. As duas metades estão erradas:
+
+1. Uma boundary rule é **file-local depois da resolução** — ela pergunta sobre
+   os *próprios* imports. Isso já estava estabelecido no M5b, quando decidi não
+   construir o índice reverso por falta de consumidor.
+2. Resolver custa pouco. **Medido: 3 ms por invocação** contra o `node_modules`
+   e o `tsconfig` reais do Flowmaatik, num arquivo com 4 imports, incluindo a
+   checagem de diretório do `spec-pair`.
+
+Verificado que a regra **dispara mesmo**, não passa em silêncio: com um
+`import '../internal/secret'` plantado, o `check --file` devolveu
+`forbidden-import` com o caminho resolvido, e `skipped: []`.
+
+**O desenho mudou no meio, e para melhor.** Comecei assumindo que regras de
+diretório seriam puladas e reportadas. Aí descobri, lendo o `spec_pair.rs`, que
+a checagem de irmão ausente vive no `check_directory` — ou seja, a falha que um
+hook pré-escrita mais precisa pegar ("seu arquivo novo não tem spec") ficaria
+de fora. E a de `structure` também ("você criou uma pasta proibida").
+
+Um hook que perde duas das cinco regras é um hook fraco. Então o comando roda
+as regras de diretório também, com **uma listagem por ancestral e a escrita
+dobrada dentro** — nem o arquivo nem as pastas até ele existem quando o hook
+pergunta, e checar a árvore como ela está perderia exatamente o que o hook
+existe para pegar. Os findings são filtrados para a ancestralidade do próprio
+caminho: quem está escrevendo um arquivo não recebe o problema do vizinho.
+
+**`skipped` sobrou com dois motivos, ambos reais:** `unreadable` (o arquivo não
+foi lido ou parseado) e `not-source` — este último apareceu por causa de um
+mutante. Uma `call-obligation` com `file_pattern` casando `^data\.json$` era
+reportada como "não deu para ler", quando o arquivo está perfeito e quem está
+errado é a regra. Motivos opostos exigem correções opostas, então viraram
+slugs distintos.
+
+**Um mutante sobrevive, e é o mesmo padrão do M4.** A guarda `is_source` antes
+de parsear: o parser recusa extensão não-fonte de qualquer jeito, então trocar
+`&&` por `||` chega na mesma resposta por um caminho com uma leitura
+desperdiçada. Fica porque ler um arquivo para descobrir que ele é do tipo
+errado é trabalho sem motivo — e num binário que casou um `file_pattern` é
+trabalho grande. Segunda ocorrência da forma; anotada no código.
+
+---
+
+#### M7d.1 — campos desconhecidos na config `✅`
+
+Bug encontrado por acidente durante o M7d: escrevi `"allow"` num teste onde o
+campo é `"allowed_subfolders"`, e nada reclamou.
+
+**Registro** — 2026-07-25
+
+O `config validate` dizia *"is valid (1 rule)"* e o `check` reportava
+*"0 errors"* — com uma regra `structure` que não constrangia coisa nenhuma.
+**Uma regra que silenciosamente não enforça nada é a pior falha possível num
+linter, porque é indistinguível de uma regra que passa.** É a mesma classe do
+C6, um nível acima: lá era regra pulada em silêncio, aqui é regra desarmada em
+silêncio.
+
+`#[serde(deny_unknown_fields)]` nos dez tipos de wire — `Config`, `Module`,
+`SkipDirs`, as cinco regras, `MustExport` e `MustCall`. O diagnóstico que sai
+já era bom de graça, porque o `serde_path_to_error` do M1 dá o caminho e o
+serde lista as alternativas:
+
+```
+× ... at `rules[0]`: unknown field `allow`, expected one of `id`, `level`,
+  `roots`, `allowed_subfolders`, `warn_subfolders`, `recurse_into`,
+  `filename_patterns`
+```
+
+**Efeito colateral bom no schema.** O `schemars` traduz o atributo para
+`additionalProperties: false` — 10 lugares —, então um editor com `$schema`
+ligado pega o erro **antes** de rodar qualquer coisa. Validei com um validador
+JSON Schema de verdade: config correta `VALID`, config com `allow` `INVALID`.
+
+O `$defs` do schema caiu de 15 para 10 porque o `schemars` passou a **inlinar**
+os cinco variants em vez de referenciá-los — com tag interna, o `type` precisa
+entrar nas `properties` de cada um para o `additionalProperties: false` não
+rejeitar tudo. Conferi que entrou: `required: [type, id, level, roots]`.
+
+**O custo, e é decisão consciente:** uma config escrita para um archwarden mais
+novo passa a ser **recusada** por um mais velho, em vez de degradar. É a troca
+certa — o arquivo é pequeno, tem campo `version`, e um palpite errado sobre o
+que uma chave significa é pior que um erro. Documentado no `CONFIG.md`.
 
 ---
 

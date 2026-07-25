@@ -97,6 +97,29 @@ workflow. Named capture groups (`(?<name>...)`) work normally.
 `archwarden config validate` reports unsupported constructs with a message
 saying so, rather than a raw engine error.
 
+### Unknown fields are refused
+
+A key archwarden does not recognise is an error, not something ignored:
+
+```
+× arch.config.json is not a valid archwarden config: at `rules[0]`:
+  unknown field `allow`, expected one of `id`, `level`, `roots`,
+  `allowed_subfolders`, `warn_subfolders`, `recurse_into`, `filename_patterns`
+```
+
+A misspelled key would otherwise compile to a rule that constrains nothing,
+which `validate` would call valid and `check` would report as a clean
+repository. A rule that silently enforces nothing is the worst failure a linter
+has, because it is indistinguishable from a rule that passes.
+
+The published JSON Schema says the same (`additionalProperties: false`), so an
+editor with `$schema` wired up flags the typo before archwarden runs.
+
+The cost is that a config written for a newer archwarden is **refused** by an
+older one rather than degrading. That is the intended trade: a config file is
+small, versioned by its `version` field, and a wrong guess about what a key
+means is worse than an error.
+
 The five rule types are specified in [`RULES.md`](RULES.md). This section
 shows realistic examples for each.
 
