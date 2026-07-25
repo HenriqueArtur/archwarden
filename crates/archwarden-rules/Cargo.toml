@@ -1,0 +1,15 @@
+[package]
+name = "archwarden-rules"
+description = "Rule engines for archwarden."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

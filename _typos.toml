@@ -1,0 +1,17 @@
+[files]
+extend-exclude = [
+    "Cargo.lock",
+    "target/",
+    # PLAN-V0.md is written in Portuguese; typos is an English dictionary and
+    # produces nothing but false positives on it. See the note in that file
+    # about eventually bringing it in line with the rest of docs/, which are
+    # all English.
+    "docs/PLAN-V0.md",
+]
+
+[default.extend-identifiers]
+# Checked before words are split, which is what these need: typos otherwise
+# breaks "PnP" into "Pn" and offers "On".
+PnP = "PnP"
+# oxc's crate and type names are not English and must not be "corrected".
+oxc = "oxc"

@@ -1,0 +1,15 @@
+[package]
+name = "archwarden-core"
+description = "Shared types, traits, path matching, and case transforms for archwarden."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

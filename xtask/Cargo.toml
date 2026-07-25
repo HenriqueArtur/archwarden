@@ -1,0 +1,13 @@
+[package]
+name = "xtask"
+description = "Repository automation for archwarden: schema generation, release tasks."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+
+[lints]
+workspace = true

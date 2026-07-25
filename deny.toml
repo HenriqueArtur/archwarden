@@ -1,0 +1,42 @@
+[graph]
+all-features = true
+
+[licenses]
+# Decision 11 fixes the licence allowlist for third-party *test fixtures*:
+# MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, 0BSD.
+#
+# This list governs *dependencies*, which is a related but separate question,
+# so it is slightly wider. The additions are the permissive licences that are
+# unavoidable in any Rust dependency tree:
+#   - Unicode-3.0        `unicode-ident`, pulled in by every proc macro
+#   - ISC                 several small utility crates
+#   - Apache-2.0 WITH LLVM-exception   the Rust standard library's own terms
+#
+# What is deliberately absent: every copyleft licence, including MPL-2.0.
+# archwarden ships as a single statically linked binary; a file-level copyleft
+# dependency inside it is a licensing question no user should have to answer.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.93
+
+[bans]
+# Duplicate versions bloat a binary users download. A warning rather than an
+# error because we do not control our dependencies' own dependency choices.
+multiple-versions = "warn"
+# A wildcard version in our own manifests is always a mistake.
+wildcards = "deny"
+
+[advisories]
+yanked = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

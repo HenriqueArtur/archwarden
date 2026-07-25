@@ -1,0 +1,55 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mutants:
+    name: mutation testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      # TDD is mandatory on this project, and "I wrote the test first" is not
+      # verifiable in review. This is: cargo-mutants injects bugs and checks
+      # whether the suite catches them. Tests written after the fact tend to
+      # mirror the implementation and leave mutants alive; tests written first
+      # describe behaviour and kill them.
+      #
+      # The correctness core must have zero survivors. Other crates are
+      # reported but do not fail the job yet.
+      - run: >
+          cargo mutants --workspace
+          --package archwarden-core
+          --package archwarden-config
+          --package archwarden-rules
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-report
+          path: mutants.out/
+
+  differential:
+    name: differential vs dependency-cruiser
+    runs-on: ubuntu-latest
+    # Tier 3 in docs/TESTING.md. Needs dependency-cruiser and the target repos,
+    # which are configured through secrets rather than checked in. Skipped
+    # until the import-boundary rules land in M5.
+    if: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g dependency-cruiser
+      - run: cargo test --workspace --features differential

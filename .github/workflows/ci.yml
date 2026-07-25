@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # rustc version comes from rust-toolchain.toml, which pins it for every job
+  # here and for every contributor. That is also what verifies the MSRV
+  # declared in Cargo.toml -- there is no separate MSRV job because there is no
+  # second version in play.
+
+  lint:
+    name: format, clippy, docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # nextest runs each test in its own process, so one panic cannot take the
+      # suite with it, and reports failures in a readable form.
+      #
+      # --no-tests=pass is TEMPORARY, for M0 only: the workspace has no tests
+      # yet and nextest correctly treats "zero tests ran" as an error. Removing
+      # this flag is an explicit task in M1 of docs/PLAN-V0.md -- on a project
+      # where TDD is mandatory, "no tests ran" must fail the build.
+      - run: cargo nextest run --workspace --all-features --no-tests=pass
+      # nextest does not run doctests; they are tests too.
+      - run: cargo test --workspace --doc
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      # docs/TESTING.md requires every branch of every rule kind to be covered.
+      #
+      # No floor is enforced yet: at M0 the workspace has no library code, so
+      # the only measurable lines are two binary entry points and the number
+      # would be 0% no matter how good the tests are. Enforcing a threshold
+      # against that is theatre. The floor turns on in M1, when there is
+      # library code to measure -- see docs/PLAN-V0.md.
+      #
+      # Target once enabled: --fail-under-lines 70 workspace-wide, 90 for
+      # archwarden-core, -config and -rules. Raise as coverage improves; never
+      # lower it to make a red build green.
+      #
+      # The regex is unanchored on purpose: llvm-cov matches it against
+      # absolute paths, so '^xtask/' silently matches nothing.
+      - run: cargo llvm-cov --workspace --all-features --ignore-filename-regex 'xtask/'
+
+  supply-chain:
+    name: licences and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # Licence allowlist lives in deny.toml and derives from decision 11.
+      - run: cargo deny check
+
+  hygiene:
+    name: unused deps and typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete,typos-cli
+      - run: cargo machete
+      - run: typos
+
+  future-rust:
+    name: latest stable (advisory)
+    runs-on: ubuntu-latest
+    # Early warning that a future rustc breaks us. Never blocks a merge: the
+    # pinned toolchain is what we actually ship.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+      - run: cargo test --workspace --all-features

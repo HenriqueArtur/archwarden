@@ -1,0 +1,9 @@
+[toolchain]
+# Pinned so every contributor and CI job compiles with the same rustc.
+# Bumping this is a deliberate change: it also raises the MSRV declared in
+# Cargo.toml (`rust-version`), which CI verifies with a dedicated build.
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+# `llvm-tools-preview` is required by cargo-llvm-cov but is not listed here on
+# purpose: it would force every contributor to download it just to run
+# `cargo build`. The coverage CI job installs it explicitly.
