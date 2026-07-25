@@ -358,7 +358,7 @@ regiões), resíduo de curto-circuito e instanciação de genéricos que o
 
 ---
 
-#### M1b — `config` + `resolver` mínimo + CLI `⬜`
+#### M1b — `config` + `resolver` mínimo + CLI `⚠️`
 
 **Objetivo:** a fatia vertical — do JSON no disco até um comando que responde.
 
@@ -372,13 +372,15 @@ regiões), resíduo de curto-circuito e instanciação de genéricos que o
 - ✅ `config`: `extends` — path relativo + pacote npm via `resolver`, merge,
   escalares (local vence), `disable`, erro se preset declara `root`, detecção
   de ciclo, id duplicado.
-- `config`: lowering para `core::CompiledConfig` (compila globs e regexes).
+- ✅ `config`: lowering para `core::CompiledConfig` (compila globs e regexes,
+  e confere que todo template referencia grupo de captura que existe).
 - ✅ `core`: `Pattern` — regex compilado, com detecção e mensagem explicativa
   para lookahead, lookbehind e backreference (D3).
-- `xtask gen-schema` → `schema/v0.json`.
+- ✅ `xtask gen-schema` → `schema/v0.json`, com `check-schema` no CI para o
+  schema commitado não sair de sincronia com os tipos.
 - ✅ `cli`: `clap`, `archwarden config validate`, exit codes 0/1/2, render
   `miette`. Crate reestruturado com `lib.rs` testável e `main.rs` fino.
-- Tier 1 em tudo. `proptest`: config loading nunca panica (`TESTING.md:150`).
+- ✅ Tier 1 em tudo. `proptest`: config loading nunca panica (`TESTING.md:150`).
 - ✅ **`--no-tests=pass` removido** do job `test`. A muleta do M0 saiu assim
   que passou a existir teste.
 - ✅ **Piso de cobertura ligado** no job `coverage`, com os números que o
@@ -388,6 +390,36 @@ regiões), resíduo de curto-circuito e instanciação de genéricos que o
 **Pronto quando:** `archwarden config validate` roda contra config válido e
 inválido com exit code e mensagem `miette` corretos; schema gerado valida os
 exemplos do `CONFIG.md`; `extends` resolve preset em npm, pnpm e yarn PnP.
+
+**Registro** — 2026-07-25 09:55 → 11:39 -03 · `⚠️ concluído com desvio`
+
+Critério atingido. **254 testes**, workspace em 98,8%, core em 100% de linha e
+função, zero mutantes sobreviventes em `core`, `config` e `resolver`. Todos os
+comandos do CI em 0.
+
+Quatro coisas que testes pegaram e que eu tinha feito errado:
+
+1. **`--config` relativo resolvia contra o CWD do processo**, não contra o
+   diretório passado pro `run`. Só apareceu porque `run` recebe o diretório em
+   vez de ler o ambiente — que é exatamente por que essa estrutura foi
+   escolhida.
+2. **Afirmei em comentário uma proteção que não existia:** `extensions:
+   [".json"]` no resolver não impede preset em JavaScript, porque essa lista só
+   vale para specifier sem extensão. Virou checagem em código.
+3. **`main.rs` nunca tinha rodado em teste.** As 29 linhas do binário eram
+   verificadas só por smoke manual. Agora 8 testes sobem o processo.
+4. **`typos` acusou um erro de grafia intencional** num teste (`funktion`).
+   Trocado por `callable` — palavra real que simplesmente não é um export kind,
+   o que testa o mesmo caminho sem brigar com o corretor.
+
+**Desvios registrados em detalhe acima:** piso de cobertura de linha do core
+baixado de 100 para 99 por limitação do `cargo-llvm-cov` (compensado com piso
+de função em 100%); `Zlib` adicionado ao `deny.toml` por causa do `foldhash`
+sob o `oxc_resolver`.
+
+**Continua aberto:** o caret do `miette` na linha errada para erros de
+`Deserialize` manual (descrito abaixo). Não foi decidido se vira step próprio
+ou se fica pro M8.
 
 **Achado a resolver (2026-07-25):** o caret do `miette` cai na linha errada
 quando o erro vem de um `Deserialize` manual — por exemplo um `RuleId`

@@ -8,6 +8,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+archwarden-config = { workspace = true }
+schemars = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

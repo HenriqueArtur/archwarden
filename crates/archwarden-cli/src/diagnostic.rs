@@ -5,7 +5,7 @@
 //! with a caret under it, which is the difference between a user fixing their
 //! config in ten seconds and opening the schema.
 
-use archwarden_config::{discovery::LoadError, extends::ExtendsError};
+use archwarden_config::{compile::CompileError, discovery::LoadError, extends::ExtendsError};
 use miette::{Diagnostic, NamedSource, SourceSpan};
 
 /// A config problem, ready to render.
@@ -69,9 +69,7 @@ impl ConfigDiagnostic {
             },
         }
     }
-}
 
-impl ConfigDiagnostic {
     /// Builds a diagnostic from a preset-merge failure.
     ///
     /// A preset problem that is really a load problem is delegated, so a
@@ -111,6 +109,29 @@ impl ConfigDiagnostic {
                 source_text: None,
                 span: None,
                 help: None,
+            },
+        }
+    }
+
+    /// Builds a diagnostic from a compilation failure.
+    ///
+    /// These carry no span: by this point the config has been merged from
+    /// several files and the offending value no longer has one position. Every
+    /// `CompileError` names its rule instead, which is what a user searches by.
+    #[must_use]
+    pub fn from_compile_error(error: &CompileError) -> Self {
+        Self {
+            message: error.to_string(),
+            source_text: None,
+            span: None,
+            help: match error {
+                CompileError::Pattern { .. } => Some(
+                    "archwarden matches filenames with a linear-time regex \
+                     engine, which is what keeps a pathological pattern from \
+                     hanging a pre-commit hook. See docs/CONFIG.md."
+                        .to_owned(),
+                ),
+                _ => None,
             },
         }
     }

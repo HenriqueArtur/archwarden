@@ -30,6 +30,11 @@ jobs:
       - run: cargo doc --workspace --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
+      # The published JSON Schema is generated from the config types and
+      # committed, because editors fetch it by URL. Without this check a field
+      # added to a rule would silently stop appearing in completion, and nobody
+      # would notice until a user filed a bug.
+      - run: cargo xtask check-schema
 
   test:
     name: tests

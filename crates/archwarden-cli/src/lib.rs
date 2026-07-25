@@ -7,6 +7,7 @@ pub mod diagnostic;
 pub mod exit;
 
 use archwarden_config::{
+    compile,
     discovery::{self, LoadedConfig},
     extends::{self, MergedConfig},
 };
@@ -124,7 +125,19 @@ fn validate(
         }
     };
 
-    report_valid(&merged, output);
+    // Compiling is what makes this command mean something beyond "the JSON
+    // parsed": every glob is built, every regex is compiled, and every export
+    // template is checked against the capture groups its pattern defines.
+    let compiled = match compile::compile(&merged) {
+        Ok(compiled) => compiled,
+        Err(error) => {
+            let report = miette::Report::new(ConfigDiagnostic::from_compile_error(&error));
+            let _ = writeln!(output.err, "{report:?}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    report_valid(&merged, compiled.rule_count(), output);
     Exit::Clean
 }
 
@@ -133,8 +146,7 @@ fn validate(
 /// The rule count and the preset list are the cheapest way for a user to
 /// notice that a preset did not load, or that `disable` removed more than
 /// they meant.
-fn report_valid(merged: &MergedConfig, output: &mut Output<'_>) {
-    let rules = merged.config.rules().count();
+fn report_valid(merged: &MergedConfig, rules: usize, output: &mut Output<'_>) {
     let _ = writeln!(
         output.out,
         "{} is valid ({} rule{})",
@@ -444,6 +456,63 @@ mod tests {
             "should not have tried to resolve: {}",
             result.err
         );
+    }
+
+    /// The point of compiling during `validate`: a pattern that no engine can
+    /// run is a config problem, and the user hears about it now rather than
+    /// the first time a matching file appears.
+    #[test]
+    fn an_unsupported_regex_construct_fails_validation() {
+        let (_guard, result) = run_in(
+            &[(
+                "arch.config.json",
+                r#"{"version":0,"rules":[
+                    {"type":"structure","id":"no-lookahead","level":"error","roots":"src/*",
+                     "filename_patterns":["^(?!.*\\.spec\\.ts$).*\\.ts$"]}]}"#,
+            )],
+            &["config", "validate"],
+        );
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.err.contains("no-lookahead"), "{}", result.err);
+        assert!(result.err.contains("negative lookahead"), "{}", result.err);
+        assert!(result.err.contains("linear-time"), "{}", result.err);
+    }
+
+    /// A template naming a capture group its pattern never defines would
+    /// otherwise stay silent until some file happened to match.
+    #[test]
+    fn a_template_with_a_missing_capture_group_fails_validation() {
+        let (_guard, result) = run_in(
+            &[(
+                "arch.config.json",
+                r#"{"version":0,"rules":[
+                    {"type":"naming","id":"typo","level":"error","roots":"src/*",
+                     "file_pattern":"^(?<name>[a-z]+)\\.ts$",
+                     "must_export":{"kind":"function","name":"{{pascal(nome)}}"}}]}"#,
+            )],
+            &["config", "validate"],
+        );
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.err.contains("typo"), "{}", result.err);
+        assert!(result.err.contains("nome"), "{}", result.err);
+    }
+
+    /// An invalid glob in a rule's scope is caught before any file is walked.
+    #[test]
+    fn an_invalid_scope_glob_fails_validation() {
+        let (_guard, result) = run_in(
+            &[(
+                "arch.config.json",
+                r#"{"version":0,"rules":[
+                    {"type":"structure","id":"bad","level":"error","roots":"packages/[domain"}]}"#,
+            )],
+            &["config", "validate"],
+        );
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.err.contains("bad"), "{}", result.err);
     }
 
     /// clap's own contract, worth pinning: the parser is built from these

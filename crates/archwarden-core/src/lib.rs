@@ -11,6 +11,7 @@
 //!
 //! # Layout
 //!
+//! - [`compiled`] — rules with every glob and regex already compiled
 //! - [`facts`] — what a parser extracts from one file
 //! - [`finding`] — what a rule reports, and why
 //! - [`glob`] — glob sets matched against whole paths
@@ -29,6 +30,7 @@
 // doc comments here as well: rustdoc concatenates the two and then resolves
 // every intra-doc link in *this* scope, so a `[`FileFacts`]` written inside
 // `facts` would fail to resolve.
+pub mod compiled;
 pub mod facts;
 pub mod finding;
 pub mod glob;

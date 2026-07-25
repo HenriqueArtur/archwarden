@@ -1,0 +1,491 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "description": "A parsed `arch.config.json`, before `extends` is resolved and before globs\nand regexes are compiled.",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "description": "The `$schema` URL. Present so editors offer completion; archwarden\nitself ignores it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "description": "Config format version.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "root": {
+      "description": "Where globs resolve from. Defaults to the config file's directory.\n\nA preset may not set this: it cannot know the layout of the repository\nincluding it, and silently relocating every glob in a config is not\nsomething a shared package should be able to do.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "extends": {
+      "description": "Presets to inherit from. A `./`-prefixed entry is a path; anything else\nis an npm package name.",
+      "$ref": "#/$defs/OneOrMany"
+    },
+    "ignore": {
+      "description": "Extra ignore globs, on top of `.gitignore`, which is always honoured.\n\nIgnore always wins over a rule's scope, however specific that scope is:\na kill-switch that can be overridden by accident is not one.",
+      "$ref": "#/$defs/OneOrMany"
+    },
+    "skip_dirs": {
+      "description": "The `_`-prefix escape hatch.",
+      "$ref": "#/$defs/SkipDirs",
+      "default": {
+        "prefixes": [
+          "_"
+        ],
+        "scope": "structure"
+      }
+    },
+    "modules": {
+      "description": "Rules grouped under a label, which is what findings report in brackets.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Module"
+      }
+    },
+    "rules": {
+      "description": "Rules belonging to no module, typically import boundaries, which are\ncross-module by nature. They report as `[*]`.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Rule"
+      }
+    },
+    "disable": {
+      "description": "Rule ids inherited from a preset that this config drops.\n\nWithout this, one unwanted rule makes a whole preset unusable.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/RuleId"
+      }
+    }
+  },
+  "required": [
+    "version"
+  ],
+  "$defs": {
+    "OneOrMany": {
+      "description": "One `T`, or several.\n\nSerialises back to whichever shape it was written in, so a config that\nround-trips through archwarden does not gain array brackets it never had.",
+      "anyOf": [
+        {
+          "description": "A single value, written bare.",
+          "type": "string"
+        },
+        {
+          "description": "Several values, written as an array.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      ]
+    },
+    "SkipDirs": {
+      "description": "Which directories are exempt, and from what.",
+      "type": "object",
+      "properties": {
+        "prefixes": {
+          "description": "Directory name prefixes. Empty disables the escape hatch.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "_"
+          ]
+        },
+        "globs": {
+          "description": "Globs, for cases a prefix cannot express.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scope": {
+          "description": "How far the exemption reaches.",
+          "$ref": "#/$defs/SkipScope",
+          "default": "structure"
+        }
+      }
+    },
+    "SkipScope": {
+      "description": "How far a `skip_dirs` exemption reaches.",
+      "oneOf": [
+        {
+          "description": "Exempt from `structure` rules only. Files inside are still parsed and\nstill enter the import graph.",
+          "type": "string",
+          "const": "structure"
+        },
+        {
+          "description": "Removed from the walk entirely, and therefore invisible to every rule.\n\nRarely what you want: it turns `mkdir _x && mv offender.ts _x/` into a\nway to bypass any import boundary. `config doctor` warns when this is\ncombined with `import-boundary` rules.",
+          "type": "string",
+          "const": "walk"
+        }
+      ]
+    },
+    "Module": {
+      "description": "A named group of rules.\n\nA module is a label, not a scope: it exists so a finding can say\n`[domain] packages/domain/src/user/wrong-folder`. Each rule still carries\nits own scope.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The label.",
+          "$ref": "#/$defs/ModuleId"
+        },
+        "rules": {
+          "description": "The rules in it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Rule"
+          }
+        }
+      },
+      "required": [
+        "id"
+      ]
+    },
+    "ModuleId": {
+      "description": "A module's identifier. Modules are labels for grouping output, not scopes.",
+      "type": "string"
+    },
+    "Rule": {
+      "description": "One rule, discriminated by `type`.\n\n`import-boundary` is an ordinary rule like the rest. There is no `graph`\nkey: boundaries go through the same matcher and the same\n`describe_expectation`, which is what keeps `describe` and `agent-guide` in\nlockstep with the checker. See decision 14.",
+      "oneOf": [
+        {
+          "description": "Which folders may exist, and which filenames.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "structure"
+            }
+          },
+          "$ref": "#/$defs/StructureRule",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "The filename dictates the exported symbol's name.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "naming"
+            }
+          },
+          "$ref": "#/$defs/NamingRule",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Every unit file needs a spec sibling.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "spec-pair"
+            }
+          },
+          "$ref": "#/$defs/SpecPairRule",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Layer A may not import from layer B.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "import-boundary"
+            }
+          },
+          "$ref": "#/$defs/ImportBoundaryRule",
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "description": "Files matching a pattern must call a given symbol.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "call-obligation"
+            }
+          },
+          "$ref": "#/$defs/CallObligationRule",
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "RuleId": {
+      "description": "A rule's stable identifier, unique across a config and its presets.",
+      "type": "string"
+    },
+    "Level": {
+      "description": "How seriously a finding is taken.",
+      "oneOf": [
+        {
+          "description": "Reported and visible, but the run still succeeds. For technical debt\nthat must stay in sight until it is paid down.",
+          "type": "string",
+          "const": "warning"
+        },
+        {
+          "description": "Fails the run. Blocks CI.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    },
+    "StructureRule": {
+      "description": "Which folders may exist under a scope, and which filenames.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable identifier, unique across the config and its presets.",
+          "$ref": "#/$defs/RuleId"
+        },
+        "level": {
+          "description": "Severity.",
+          "$ref": "#/$defs/Level"
+        },
+        "roots": {
+          "description": "Directory globs this rule applies to.",
+          "$ref": "#/$defs/OneOrMany"
+        },
+        "allowed_subfolders": {
+          "description": "Subdirectory names that are permitted.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "warn_subfolders": {
+          "description": "Subdirectory names that are permitted but reported as warnings,\nwhatever `level` says. Naming a folder is more specific than the rule's\nblanket severity, and the more specific declaration wins.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "recurse_into": {
+          "description": "Subdirectories that carry the same structural contract, recursively.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "filename_patterns": {
+          "description": "Regexes every direct child file's name must match at least one of.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "level",
+        "roots"
+      ]
+    },
+    "MustExport": {
+      "description": "The export a `naming` rule requires.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "Declaration forms that satisfy the rule: one name, a list of names, or\n`\"any\"`. See the table in `docs/RULES.md`.",
+          "$ref": "#/$defs/OneOrMany"
+        },
+        "name": {
+          "description": "The required name, as a template over `file_pattern`'s capture groups.",
+          "type": "string"
+        },
+        "signature_hint": {
+          "description": "A signature shown by `scaffold`. **Never verified** — constraining the\ntype of an export is type checking, which is `tsc`'s job.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "name"
+      ]
+    },
+    "NamingRule": {
+      "description": "The filename dictates the exported symbol's name.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable identifier.",
+          "$ref": "#/$defs/RuleId"
+        },
+        "level": {
+          "description": "Severity.",
+          "$ref": "#/$defs/Level"
+        },
+        "roots": {
+          "description": "Directory globs this rule applies to.",
+          "$ref": "#/$defs/OneOrMany"
+        },
+        "file_pattern": {
+          "description": "Regex over the filename, with a named capture group.",
+          "type": "string"
+        },
+        "must_export": {
+          "description": "The export the file must carry.",
+          "$ref": "#/$defs/MustExport"
+        }
+      },
+      "required": [
+        "id",
+        "level",
+        "roots",
+        "file_pattern",
+        "must_export"
+      ]
+    },
+    "SpecPairRule": {
+      "description": "Every unit file under the scope needs a spec sibling.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable identifier.",
+          "$ref": "#/$defs/RuleId"
+        },
+        "level": {
+          "description": "Severity.",
+          "$ref": "#/$defs/Level"
+        },
+        "roots": {
+          "description": "Directory globs this rule applies to.",
+          "$ref": "#/$defs/OneOrMany"
+        },
+        "subfolders": {
+          "description": "Subdirectories subject to the rule. `[\".\"]` means the scope itself.",
+          "$ref": "#/$defs/OneOrMany"
+        },
+        "spec_suffix": {
+          "description": "The expected sibling suffix.",
+          "type": "string",
+          "default": ".spec.ts"
+        },
+        "ignore_files": {
+          "description": "Globs exempted from the rule.",
+          "$ref": "#/$defs/OneOrMany"
+        },
+        "require_non_empty_spec": {
+          "description": "Whether the spec must contain at least one `it(...)` or `test(...)`.\nA bare `describe(...)` does not count: an empty describe block\nsatisfies the letter of the rule while defeating its purpose.",
+          "type": "boolean",
+          "default": false
+        }
+      },
+      "required": [
+        "id",
+        "level",
+        "roots",
+        "subfolders"
+      ]
+    },
+    "ImportBoundaryRule": {
+      "description": "Layer A may not import from layer B, or must import from layer C.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable identifier.",
+          "$ref": "#/$defs/RuleId"
+        },
+        "level": {
+          "description": "Severity.",
+          "$ref": "#/$defs/Level"
+        },
+        "from": {
+          "description": "Directory globs selecting the importer. Same semantics as `roots`.",
+          "$ref": "#/$defs/OneOrMany"
+        },
+        "forbid_import_from": {
+          "description": "Globs matched against the *resolved* import path. Matching means the\nimport is illegal.",
+          "$ref": "#/$defs/OneOrMany"
+        },
+        "must_import_from": {
+          "description": "Globs matched against the resolved import path. If none of the file's\nimports match, the file is illegal.",
+          "$ref": "#/$defs/OneOrMany"
+        },
+        "except": {
+          "description": "Exceptions, also matched against the resolved path.",
+          "$ref": "#/$defs/OneOrMany"
+        },
+        "include_type_only": {
+          "description": "Whether `import type` and inline `type` marks count.",
+          "type": "boolean",
+          "default": true
+        }
+      },
+      "required": [
+        "id",
+        "level",
+        "from"
+      ]
+    },
+    "MustCall": {
+      "description": "The call a `call-obligation` rule requires.",
+      "type": "object",
+      "properties": {
+        "symbol": {
+          "description": "The callee as it appears at a call site, e.g. `Event.save`. Method\nchains are matched exactly.",
+          "type": "string"
+        },
+        "imported_from": {
+          "description": "The module the symbol must be imported from, which disambiguates\nsame-named functions from different packages.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "symbol",
+        "imported_from"
+      ]
+    },
+    "CallObligationRule": {
+      "description": "Files matching a pattern must call a given symbol.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Stable identifier.",
+          "$ref": "#/$defs/RuleId"
+        },
+        "level": {
+          "description": "Severity.",
+          "$ref": "#/$defs/Level"
+        },
+        "roots": {
+          "description": "Directory globs this rule applies to.",
+          "$ref": "#/$defs/OneOrMany"
+        },
+        "file_pattern": {
+          "description": "Regex over the filename.",
+          "type": "string"
+        },
+        "must_call": {
+          "description": "The call the file must contain.",
+          "$ref": "#/$defs/MustCall"
+        }
+      },
+      "required": [
+        "id",
+        "level",
+        "roots",
+        "file_pattern",
+        "must_call"
+      ]
+    }
+  }
+}

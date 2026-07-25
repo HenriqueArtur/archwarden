@@ -11,6 +11,7 @@
 //! resolution. See `docs/CONFIG.md`.
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod compile;
 pub mod config;
 pub mod discovery;
 pub mod extends;
