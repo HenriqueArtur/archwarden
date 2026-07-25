@@ -144,14 +144,34 @@ Output — JSON mode: structured. Fields:
 
 ```json
 {
+  "version": 0,
   "path": "...",
-  "required_exports": [ { "kind": "function", "name": "Foo", "signature_hint": "..." } ],
+  "required_exports": [ { "name": "Foo", "kinds": ["function"], "signature_hint": "..." } ],
   "required_siblings": [ { "path": "...", "constraints": ["non-empty-spec"] } ],
-  "forbidden_imports": [ { "pattern": "packages/domain/**", "except": ["..."] } ],
+  "forbidden_imports": [
+    { "pattern": "packages/domain/**", "except": ["..."], "include_type_only": true }
+  ],
   "required_imports": [],
-  "call_obligations": []
+  "call_obligations": [],
+  "filename_patterns": [],
+  "allowed_subfolders": null
 }
 ```
+
+`kinds` is a list because `kind: ["function", "arrow"]` is a normal way to say
+"callable, either form"; it is empty for `kind: "any"`, which asks for no
+particular declaration form. One entry per glob in `forbidden_imports`, not per
+rule: an agent asks "may I import this?" about one path at a time.
+
+`filename_patterns` and `allowed_subfolders` are not extras. Without the first,
+an agent scaffolding a path whose *name* is already wrong is told everything
+except the thing it has to fix first; the second is what `scaffold` answers
+when asked about a directory, which `describe` already does.
+
+`signature_hint` is reproduced verbatim after the declaration keyword, so a
+hint written in one form (`(deps: Deps) => UseCase`) under a rule demanding
+another (`kind: "function"`) produces a line that does not compile. archwarden
+never verifies the hint — that is `config doctor`'s job.
 
 ### `archwarden agent-guide`
 
@@ -168,21 +188,74 @@ you prefer to version it, or gitignore and regenerate on demand.
 
 One-shot installer that writes the appropriate harness hook file.
 
-- `--claude-code` — writes a `PreToolUse` matcher for `Write`/`Edit` in
-  `.claude/settings.json` that runs `archwarden check --file $CLAUDE_FILE_PATH`
-  and blocks on non-zero exit.
+- `--claude-code` — writes a `PreToolUse` entry matching `Write|Edit|MultiEdit`
+  in `.claude/settings.json`, running `archwarden hook claude-code`.
 - Future flags for other harnesses as their hook APIs stabilise.
 
-The installer is idempotent: running it again either no-ops or updates
-the block, never duplicates it. Uninstall with `archwarden install-hooks
---claude-code --remove`.
+The command is `archwarden hook claude-code`, not
+`archwarden check --file $CLAUDE_FILE_PATH`. Claude Code does not pass the path
+in the environment: the hook is handed the event as JSON on stdin, with the
+target under `tool_input.file_path`. archwarden reads that itself, so the
+installed line needs no `jq` and no shell quoting.
+
+**The hook never blocks by failing.** An unreadable payload, a tool that writes
+no file, a broken configuration — each allows the write. Blocking is a decision
+carried in the response (`hookSpecificOutput.permissionDecision: "deny"`), never
+a side effect of something going wrong. A hook that took a user's write down
+with it would be uninstalled the same day.
+
+A warning-level finding is shown without blocking, per decision 1.
+
+The installer is idempotent: a second run reports the hook is already there and
+does not rewrite the file, so it does not appear in `git status` for nothing. It
+recognises its own entry by the command, so a user who narrowed the matcher or
+added a timeout keeps that edit. Other hooks, other settings, and the order the
+user wrote their keys in all survive. Uninstall with `archwarden install-hooks
+--claude-code --remove`, which is also safe to run when nothing is installed.
 
 ### `archwarden check --file <path>`
 
 Same engine as `archwarden check`, restricted to a single file. Used by
-Layer 4 hooks. Bypasses graph rules that require cross-file state unless
-the file's cached facts already exist; the graph rules run in full on
-`archwarden check` at commit time.
+Layer 4 hooks.
+
+**Every rule runs**, boundary rules included. An earlier draft of this
+document expected graph rules to need cross-file state and be skipped on a
+cold cache; that is not so. A boundary rule is file-local once its imports are
+resolved — it asks about *its own* imports — and resolving them costs a handful
+of filesystem probes. Measured at 3 ms per invocation against a real monorepo's
+`node_modules` and `tsconfig`, for a file with four imports.
+
+Two of the five rule kinds report through a directory check: a forbidden folder
+and a missing spec are both facts about a directory's contents. Those run too,
+against one listing per ancestor directory, **with the write folded in** —
+neither the file nor the folders leading to it necessarily exist when a hook
+asks, and checking the tree as it stands would miss exactly what the hook is
+for. Their findings are then filtered to this path's own ancestry: an agent
+writing one file is not handed its neighbour's problems.
+
+What genuinely cannot run is a rule that reads a file this command could not.
+That is **reported, never silently dropped**:
+
+```json
+{
+  "version": 0,
+  "path": "...",
+  "findings": [ ... ],
+  "skipped": [
+    { "rule_id": "usecase-factory-name", "reason": "unreadable" }
+  ]
+}
+```
+
+Reasons are stable slugs: `unreadable` (the file could not be read or parsed)
+and `not-source` (the rule is pointed at a file that is not TypeScript or
+JavaScript, so there are no facts to read — the file is fine and the rule is
+not). `skipped` is always present, even when empty: a caller has to see the
+list is empty rather than infer it from absence.
+
+This matters because a silent skip would make the same write pass or fail
+depending on what the run happened to have available, which contradicts the
+determinism goal in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Recommended setup
 

@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # rustc version comes from rust-toolchain.toml, which pins it for every job
+  # here and for every contributor. That is also what verifies the MSRV
+  # declared in Cargo.toml -- there is no separate MSRV job because there is no
+  # second version in play.
+
+  lint:
+    name: format, clippy, docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+      # The published JSON Schema is generated from the config types and
+      # committed, because editors fetch it by URL. Without this check a field
+      # added to a rule would silently stop appearing in completion, and nobody
+      # would notice until a user filed a bug.
+      - run: cargo xtask check-schema
+
+  test:
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # nextest runs each test in its own process, so one panic cannot take the
+      # suite with it, and reports failures in a readable form. It also treats
+      # "zero tests ran" as an error, which on a project where TDD is mandatory
+      # is exactly right.
+      - run: cargo nextest run --workspace --all-features
+      # nextest does not run doctests; they are tests too.
+      - run: cargo test --workspace --doc
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      # docs/TESTING.md requires every branch of every rule kind to be covered.
+      # The floors are enforced, not advisory. Never lower one to make a red
+      # build green: either write the test, or delete the unreachable code the
+      # test cannot reach.
+      #
+      # archwarden-core is held as close to 100% as the tool can measure. It is
+      # pure logic with no I/O, so an uncovered line means either a missing
+      # test or a branch no input can take, and both deserve to fail the build.
+      #
+      # The line floor is 99 rather than 100, and that is a limitation of
+      # cargo-llvm-cov rather than a concession. Its summary reports one missed
+      # line in glob.rs that its own lcov, JSON and HTML reports all show as
+      # covered -- a phantom inside macro-expanded code. Chasing it produced
+      # several real tests and never moved the number.
+      #
+      # The function floor stays at 100 and is the stricter half of the pair:
+      # deleting a test drops function coverage immediately, which a line floor
+      # of 99 could absorb. See docs/PLAN-V0.md.
+      - run: >
+          cargo llvm-cov -p archwarden-core --all-features
+          --fail-under-lines 99
+          --fail-under-functions 100
+
+      # Everything else: 95% is the floor, 100% the aim. The crates that touch
+      # the filesystem, the terminal and node_modules have edges that cost more
+      # to reach than they are worth.
+      #
+      # The regex is unanchored on purpose: llvm-cov matches it against
+      # absolute paths, so '^xtask/' silently matches nothing.
+      - run: >
+          cargo llvm-cov --workspace --all-features
+          --ignore-filename-regex 'xtask/'
+          --fail-under-lines 95
+
+  supply-chain:
+    name: licences and advisories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # Licence allowlist lives in deny.toml and derives from decision 11.
+      - run: cargo deny check
+
+  hygiene:
+    name: unused deps and typos
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-machete,typos-cli
+      - run: cargo machete
+      - run: typos
+
+  distribution:
+    name: the install routes
+    runs-on: ubuntu-latest
+    # The release workflow cannot be run on a pull request, but the pieces it
+    # depends on can: the shim that decides which archive to download, and the
+    # script that writes checksums into the formula. Both fail on a stranger's
+    # machine, days later, if they are wrong.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: the npm shim
+        working-directory: npm
+        run: node --test "test/*.test.mjs"
+      - name: the homebrew stamper
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+  future-rust:
+    name: latest stable (advisory)
+    runs-on: ubuntu-latest
+    # Early warning that a future rustc breaks us. Never blocks a merge: the
+    # pinned toolchain is what we actually ship.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          rustflags: ""
+      - run: cargo test --workspace --all-features

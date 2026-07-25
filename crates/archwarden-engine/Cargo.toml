@@ -1,0 +1,42 @@
+[package]
+name = "archwarden-engine"
+description = "Pipeline orchestration for archwarden: walk, parse, resolve, check."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+archwarden-cache = { workspace = true }
+archwarden-core = { workspace = true }
+archwarden-parser = { workspace = true }
+archwarden-resolver = { workspace = true }
+archwarden-rules = { workspace = true }
+camino = { workspace = true }
+ignore = { workspace = true }
+thiserror = { workspace = true }
+
+[features]
+# Tier 3 differential tests against dependency-cruiser. Off by default: they
+# need a target repository and a Node toolchain, neither of which belongs on
+# the fast PR CI. See docs/TESTING.md.
+differential = ["dep:serde_json"]
+
+[dependencies.serde_json]
+workspace = true
+optional = true
+
+[dev-dependencies]
+archwarden-parser = { workspace = true }
+criterion = { workspace = true }
+tempfile = { workspace = true }
+
+[[bench]]
+name = "check"
+harness = false
+
+[lints]
+workspace = true

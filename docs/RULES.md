@@ -9,6 +9,62 @@ engine runs them in the same order for cache-friendly evaluation.
 
 ---
 
+## Scope: how `roots` selects what a rule sees
+
+Every rule declares a scope. **A scope glob always selects directories**,
+never files. Each rule kind then declares what it inspects inside a selected
+directory:
+
+| Rule | Field | Inspects, inside each selected directory |
+|---|---|---|
+| `structure` | `allowed_subfolders`, `warn_subfolders` | the direct child directories |
+| `structure` | `filename_patterns` | the direct child files, by basename |
+| `naming` | `file_pattern` | the direct child files, by basename |
+| `spec-pair` | `subfolders` | the listed subdirectories (`"."` = the directory itself), then files in them |
+| `call-obligation` | `file_pattern` | the direct child files, by basename |
+| `import-boundary` | *(scope only)* | every file in the directory is a candidate importer |
+
+Recursion lives entirely in the glob. `apps/api/*` selects only the direct
+child directories of `apps/api`; `apps/api/**` selects every directory under
+it, recursively. `X/**` also selects `X` itself.
+
+The field is named `roots` (an array) on every rule except `import-boundary`,
+where it is named `from` because that reads naturally against
+`forbid_import_from`. The semantics are identical — only the name differs.
+Every glob field accepts either a single string or an array of strings.
+
+**Why directories and not files.** `describe <path>` and the Layer 4 pre-write
+hook must answer "which rules apply to this file?" for files that *do not
+exist yet*. With this rule the answer is purely lexical and touches no disk:
+split the path into `dirname` and `basename`, match `dirname` against the
+scope, match `basename` against the rule's pattern. If scope meant different
+things for different rule kinds, the matcher would need a branch per kind —
+and that branch is exactly where `check` and `describe` would drift apart,
+which decision 9 exists to prevent.
+
+## Severity precedence
+
+Within a single rule, **the most specific declaration wins**. Specificity is
+decided by, in order: (1) the number of literal path segments in the glob,
+(2) the length of the literal prefix, (3) declaration order — later wins.
+
+This is what makes `warn_subfolders` work: naming a folder explicitly is more
+specific than the rule's blanket `level`, so entries in `warn_subfolders`
+report as `warning` regardless of the rule's `level`, and `level` applies to
+folders in neither list. Still only two levels, as decision 1 requires.
+
+Two boundaries on this:
+
+- **It does not apply across rules.** Two rules matching the same file
+  produce two independent findings with their own levels. A narrowly-scoped
+  `warning` rule never downgrades a broadly-scoped `error` rule — otherwise
+  adding a rule could silently weaken an existing gate.
+- **`ignore` always wins over scope**, however deep the scope glob is. An
+  ignore entry is a kill-switch, and a kill-switch that can be overridden by
+  accident is not one. `config doctor` reports rules made unreachable this way.
+
+---
+
 ## 1. Structure
 
 **What it enforces**: which folders may exist under a module, and (optionally)
@@ -29,9 +85,29 @@ which filenames may exist inside a folder.
 "variants" of an entity). The `recurse_into` field lists subfolders that
 carry the same structural contract as the parent, recursively.
 
-**Escape hatch**. Directories prefixed with `_` are skipped by the walk.
-Convention borrowed from Next.js; used for internal helpers that are not
-themselves part of the module structure.
+**Escape hatch**. Directories prefixed with `_` are exempt from structure
+rules. Convention borrowed from Next.js; used for internal helpers that are
+not themselves part of the module structure. Configurable at the top level:
+
+```json
+"skip_dirs": {
+  "prefixes": ["_"],
+  "globs": [],
+  "scope": "structure"
+}
+```
+
+`scope: "structure"` (the default) exempts the directory from `structure`
+rules only. Files inside it are still parsed, still enter the import graph,
+and are still subject to every other rule.
+
+`scope: "walk"` removes them from the walk entirely, making them invisible to
+everything. This is available but rarely what you want: it turns
+`mkdir _x && mv offender.ts _x/` into a way to bypass any import boundary.
+`config doctor` warns when `scope: "walk"` coexists with `import-boundary`
+rules.
+
+Setting `prefixes: []` disables the escape hatch.
 
 **Cannot express**: relative ordering of files, "at least one file of
 kind X must exist" — those belong to a future `presence` rule and are
@@ -49,11 +125,56 @@ derivable from the filename by a case transform.
 **Shape**:
 
 - `file_pattern` — regex with a named capture group (typically `name`).
-- `must_export` — describes the required export: kind (`function`, `const`,
-  `class`, `type`, `interface`), name (templated from the capture group).
+- `must_export` — describes the required export:
+  - `kind` — one tag or a list of tags (see table below).
+  - `name` — templated from the capture group.
+  - `signature_hint` — optional free-form string. **Never verified.** It exists
+    so `scaffold` can show a realistic skeleton
+    (`export function Foo(deps: FooDeps): UseCase<FooInput, FooOutput>`)
+    rather than just a name. Constraining the actual type is type checking;
+    use `tsc`.
 
 **Case transformers available in templates**: `pascal`, `camel`, `kebab`,
 `snake`, `upper`, `lower`, `raw`.
+
+**Export kinds**. Each export in a file is tagged. `kind` matches if the
+export carries **any** of the listed tags. Note that an arrow function is not
+a `function` — the declaration form is what is tagged, deliberately, so a rule
+can require one and not the other.
+
+| Source form | Tags | Matches `kind: "function"`? |
+|---|---|---|
+| `export function Foo() {}` | `function` | ✅ |
+| `export async function Foo() {}` | `function` | ✅ |
+| `export function* Foo() {}` | `function` | ✅ |
+| `export const Foo = () => {}` | `const`, `arrow` | ❌ |
+| `export const Foo = async () => {}` | `const`, `arrow` | ❌ |
+| `export const Foo = function () {}` | `const` | ❌ |
+| `export const Foo = 42` | `const` | ❌ |
+| `export let Foo` / `export var Foo` | `let` / `var` | ❌ |
+| `export class Foo {}` | `class` | ❌ |
+| `export type Foo = ...` | `type` | ❌ |
+| `export interface Foo {}` | `interface` | ❌ |
+| `export enum Foo {}` | `enum` | ❌ |
+| `const Foo = ...; export { Foo }` | tags of the local declaration | depends |
+| `export { Foo } from './x'` | `reexport` | ❌ (see below) |
+
+Valid tags: `function`, `arrow`, `const`, `let`, `var`, `class`, `type`,
+`interface`, `enum`, `reexport`, `any`.
+
+Use `kind: ["function", "arrow"]` to mean "callable, either form" — a good
+default for presets.
+
+**Default exports do not satisfy a named `must_export`.** A default export's
+local name does not bind the importer (`import Whatever from './foo'`), and
+this rule exists to couple filename to the symbol importers actually see.
+`config doctor` warns when a file targeted by a `naming` rule exports only a
+default.
+
+**Re-exports** match `kind: "any"` or `kind: "reexport"` and fail any concrete
+kind, with a specific reason: *"symbol is re-exported from './x'; kind is not
+determinable without cross-file analysis"*. Following the re-export would make
+a file-local rule cross-file, which is not what this rule is.
 
 **Multiple exports**. If a file has other exports besides the required
 one, they are ignored. The rule enforces presence and correctness of the
@@ -75,20 +196,54 @@ is set.
 
 **Shape**:
 
-- `subfolders` — which folders under each root are subject to the rule.
-  Use `["."]` to apply to the root itself.
-- `spec_suffix` — the expected sibling suffix (default `.spec.ts`).
-- `ignore_files` — exact repo-relative paths exempted (usually type-only
-  files with no runtime behaviour to test).
+- `subfolders` — which folders under each selected directory are subject to
+  the rule. Use `["."]` to apply to the directory itself.
+- `spec_markers` — what makes a filename a spec. Default `["spec", "test"]`.
+- `ignore_files` — repo-relative **globs** exempted (usually type-only files
+  with no runtime behaviour to test). Globs, not exact paths, for consistency
+  with every other path field in the config.
 - `require_non_empty_spec` (bool, default `false`) — if true, the spec
-  file must contain at least one `it(...)`, `test(...)`, or `describe(...)`
-  call. This is the "TDD gate" flag: it prevents empty stubs from
-  satisfying the rule.
+  file must contain at least one `it(...)` or `test(...)` call. This is the
+  "TDD gate" flag: it prevents empty stubs from satisfying the rule.
+  **`describe(...)` does not count** — an empty `describe` block satisfies the
+  letter of the rule while defeating its entire purpose.
+
+### How a spec is named
+
+A spec is `<stem>.<marker>.<extension>`, and the parts come from different
+places on purpose:
+
+- the **stem** is everything before the file's last dot, so a compound name
+  survives intact: `user.db.repository.ts` pairs with
+  `user.db.repository.spec.ts`, and `create-client.use-case.ts` with
+  `create-client.use-case.spec.ts`;
+- the **marker** is a project's preference, and `spec_markers` configures it.
+  The default accepts both, which is what vitest (`**/*.{test,spec}.?(c|m)[jt]s?(x)`)
+  and jest (`**/?(*.)+(spec|test).[jt]s?(x)`) do, so the common project
+  configures nothing;
+- the **extension** is the source file's own and is not configurable, because
+  `Component.tsx` wanting `Component.spec.tsx` is mechanical rather than a
+  choice anyone makes differently.
+
+Two asymmetries, both deliberate:
+
+- **Recognising** an existing spec accepts any JS/TS extension, so a `.tsx`
+  component tested by a `.ts` spec is satisfied. Refusing it would be a false
+  positive on a file that plainly exists.
+- **Suggesting** a missing spec uses the first marker and the source's own
+  extension, so `scaffold` gives one deterministic answer rather than a list.
+
+The marker must be the last stem component. `user.spec.ts` is a spec;
+`user.spec.helper.ts` is a helper that happens to mention one. A bare
+`spec.ts` counts, matching both runners' optional `<name>.` prefix.
 
 **Default ignores** (baked in, not configurable):
-- Files ending in the configured `spec_suffix` (obviously).
-- `index.ts`, `index.tsx`.
-- `DOC.md`, `README.md`.
+- Files that are themselves specs.
+- `index.ts`, `index.tsx`, `index.js`, `index.jsx` — barrel files re-export and
+  hold no behaviour of their own.
+- Anything that is not a JS/TS source file. This covers `DOC.md`, `README.md`,
+  `package.json`, images and everything else in one rule, rather than naming
+  them: nobody should have to declare that a PNG needs no test.
 
 **Cannot express**: test-first ordering (that the spec was written before
 the impl). Git history could tell us, but making that a gate would be
@@ -103,17 +258,31 @@ must import from layer D.
 
 **Scope**: graph. Requires parse + resolve.
 
+**Shape**: an import boundary is an ordinary rule with
+`type: "import-boundary"`. Its scope field is named `from` rather than `roots`
+(see "Scope" above); the semantics are the same.
+
+Because a boundary is cross-module by nature — "domain must not import
+application" belongs to neither layer — boundaries usually live in the
+top-level `rules` array rather than inside a `modules[].rules`. Both are
+accepted; module membership is only a label for output.
+
 **Two directions**:
 
-- **Forbid** — `from` matches importer path, `forbid_import_from` matches
+- **Forbid** — `from` selects the importer, `forbid_import_from` matches the
   resolved import path. If both match, the import is illegal.
-- **Require** — `from` matches importer path, `must_import_from` matches
+- **Require** — `from` selects the importer, `must_import_from` matches the
   resolved import path. If `from` matches but no import satisfies the
   requirement, the file is illegal.
 
 **Exceptions**. Each rule accepts `except`, a list of globs matched against
 the *resolved* import path. Common use: "UI may not import domain, except
 type-only imports from `domain/*/types/**`".
+
+`except` shields against `forbid_import_from` only. A rule that both requires
+and forbids reads as "must reach A, must not reach B, and here are the corners
+of B that are allowed" — an exception to a *requirement* would be a
+requirement nobody has to meet.
 
 **Path matching semantics**. Globs are applied against the repo-relative
 resolved path (never against the specifier string). This means aliases,
@@ -127,6 +296,12 @@ are extracted separately. Rules may opt in with `include_type_only: false`
 **Cannot express**: transitive prohibitions ("X may not reach Y through
 any chain"). That is a graph reachability question and belongs to a future
 rule if there is demand.
+
+**Also cannot express, in v0**: a prohibition on a *dependency* or a runtime
+builtin — "the UI may not import `lodash` directly", "nobody imports
+`node:fs`". Globs are matched against repo-relative paths, and neither an
+installed package nor a builtin has one. The run counts them separately, so
+the information is there when a rule for it is designed.
 
 ---
 

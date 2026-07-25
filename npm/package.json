@@ -1,0 +1,34 @@
+{
+  "name": "@archwarden/cli",
+  "version": "0.1.0",
+  "description": "A fast, declarative architecture linter for TypeScript and JavaScript.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HenriqueArtur/archwarden.git"
+  },
+  "homepage": "https://github.com/HenriqueArtur/archwarden",
+  "bin": {
+    "archwarden": "bin/archwarden.mjs"
+  },
+  "files": [
+    "bin",
+    "install.mjs",
+    "README.md"
+  ],
+  "scripts": {
+    "postinstall": "node install.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ]
+}

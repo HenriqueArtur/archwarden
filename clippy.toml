@@ -1,0 +1,12 @@
+# The panic-free lints denied in Cargo.toml's [workspace.lints.clippy] are
+# about production code paths. Inside #[cfg(test)], `unwrap()` on a value the
+# test just constructed is idiomatic Rust and reads better than the
+# alternatives, so they are relaxed there.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-print-in-tests = true
+
+# `dbg!` is leftover debugging even in a test.
+allow-dbg-in-tests = false

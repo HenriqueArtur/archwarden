@@ -1,0 +1,4 @@
+# Deliberately minimal: rustfmt defaults are the community norm, and every
+# option added here is one more thing to argue about in review. `cargo fmt
+# --check` runs in CI, so formatting is never a review topic.
+edition = "2024"

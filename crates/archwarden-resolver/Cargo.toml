@@ -1,0 +1,22 @@
+[package]
+name = "archwarden-resolver"
+description = "Module resolution for archwarden, backed by oxc_resolver."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+archwarden-core = { workspace = true }
+camino = { workspace = true }
+oxc_resolver = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

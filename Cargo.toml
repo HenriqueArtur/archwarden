@@ -1,0 +1,139 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.96"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/HenriqueArtur/archwarden"
+homepage = "https://github.com/HenriqueArtur/archwarden"
+authors = ["Henrique Artur"]
+
+# Single source of version truth for the whole workspace. Member crates pull a
+# dependency with `foo = { workspace = true }` and never restate a version, so
+# the eight crates cannot drift onto different releases of the same crate.
+[workspace.dependencies]
+
+# --- internal ---------------------------------------------------------------
+archwarden-cache = { path = "crates/archwarden-cache", version = "0.1.0" }
+archwarden-config = { path = "crates/archwarden-config", version = "0.1.0" }
+archwarden-core = { path = "crates/archwarden-core", version = "0.1.0" }
+archwarden-engine = { path = "crates/archwarden-engine", version = "0.1.0" }
+archwarden-parser = { path = "crates/archwarden-parser", version = "0.1.0" }
+archwarden-resolver = { path = "crates/archwarden-resolver", version = "0.1.0" }
+archwarden-rules = { path = "crates/archwarden-rules", version = "0.1.0" }
+
+# --- serialisation ----------------------------------------------------------
+serde = { version = "1.0.229", features = ["derive"] }
+# `preserve_order` because `install-hooks` edits the user's own
+# `.claude/settings.json`. Without it serde_json's map is a BTreeMap and a
+# round-trip alphabetises their keys -- a large diff in a file they own, that
+# they did not ask for.
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+# Reports which field failed to deserialise. serde_json's own line and column
+# are only trustworthy for syntax errors -- see docs/PLAN-V0.md.
+serde_path_to_error = "0.1.20"
+schemars = "1.2.1"
+# MessagePack, not postcard. The cache stores `Finding`, whose `Observed` and
+# `Expectation` are internally tagged (`#[serde(tag = "type")]`) because the
+# JSON report is a contract with agents. serde cannot serialise an internally
+# tagged enum into a format that is not self-describing, which rules postcard
+# and bincode out. MessagePack is self-describing and still compact.
+rmp-serde = "1.3.1"
+# A JSON parser that keeps byte ranges, for pointing a caret at the exact
+# member a schema violation is about. `serde_json` reports the position its
+# parser had reached, which for a schema violation has already moved past the
+# offending value.
+jsonc-parser = "0.33.0"
+
+# --- errors -----------------------------------------------------------------
+# thiserror in libraries (typed enums), miette in the binary (source spans).
+thiserror = "2.0.19"
+miette = "7.6.0"
+
+# --- paths, matching, text --------------------------------------------------
+camino = { version = "1.2.4", features = ["serde1"] }
+globset = "0.4.19"
+# `regex`, not `fancy-regex`/`regress`: linear-time matching only. archwarden
+# runs inside pre-commit and agent pre-write hooks, where a catastrophically
+# backtracking pattern is a denial of service on the user's own workflow.
+# The cost is no lookaround and no backreferences. See docs/CONFIG.md.
+regex = "1.13.1"
+heck = "0.5.0"
+
+# --- JS/TS front-end --------------------------------------------------------
+# The oxc AST crates version in lockstep with each other and break often on
+# 0.x, so they are pinned exactly. oxc_resolver versions independently.
+oxc_allocator = "=0.141.0"
+oxc_ast = "=0.141.0"
+oxc_ast_visit = "=0.141.0"
+oxc_parser = "=0.141.0"
+oxc_span = "=0.141.0"
+oxc_syntax = "=0.141.0"
+oxc_resolver = "11.24.2"
+
+# --- walk, parallelism, cache ----------------------------------------------
+ignore = "0.4.31"
+rayon = "1.12.0"
+blake3 = "1.8.5"
+redb = "4.1.0"
+
+# --- cli --------------------------------------------------------------------
+clap = { version = "4.6.4", features = ["derive"] }
+anstream = "1.0.0"
+
+# --- dev --------------------------------------------------------------------
+assert_cmd = "2.2.2"
+criterion = "0.8.2"
+insta = { version = "1.48.0", features = ["json"] }
+predicates = "3.1.4"
+proptest = "1.11.0"
+tempfile = "3.27.0"
+
+[workspace.lints.rust]
+# archwarden has no reason to reach for unsafe. `forbid` cannot be locally
+# overridden, unlike `deny`.
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+elided_lifetimes_in_paths = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# Panic-free discipline. archwarden runs as a CI gate, a pre-commit hook, and
+# an agent pre-write hook. In all three, a panic is a far worse failure than a
+# reported error: it produces a stack trace instead of a diagnostic, and in the
+# hook case it interrupts the user's write with no actionable message.
+# clippy.toml relaxes every one of these inside #[cfg(test)].
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+
+# Only the binary crates talk to the terminal; libraries return values.
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
+
+# Pedantic lints that fight this domain rather than help it.
+# `archwarden_core::rule::RuleId` is the name we want, not `rule::Id`.
+module_name_repetitions = "allow"
+# Revisit once the error enums exist and are worth documenting per-variant.
+missing_errors_doc = "allow"
+
+[profile.release]
+# A linter is distributed as one binary and run constantly. Optimise for the
+# run, accept the build cost: this is paid once in CI per release.
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1

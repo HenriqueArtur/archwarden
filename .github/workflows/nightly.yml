@@ -1,0 +1,65 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  mutants:
+    name: mutation testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-mutants
+      # TDD is mandatory on this project, and "I wrote the test first" is not
+      # verifiable in review. This is: cargo-mutants injects bugs and checks
+      # whether the suite catches them. Tests written after the fact tend to
+      # mirror the implementation and leave mutants alive; tests written first
+      # describe behaviour and kill them.
+      #
+      # The correctness core must have zero survivors. Other crates are
+      # reported but do not fail the job yet.
+      - run: >
+          cargo mutants --workspace
+          --package archwarden-core
+          --package archwarden-config
+          --package archwarden-rules
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutants-report
+          path: mutants.out/
+
+  differential:
+    name: differential vs dependency-cruiser
+    runs-on: ubuntu-latest
+    # Tier 3 in docs/TESTING.md. The target repositories are private and are
+    # configured through `ARCHWARDEN_DIFF_REPO` rather than checked in; without
+    # one the test says so and passes. The job runs anyway so the harness stays
+    # compiled and the wiring stays honest -- a job that is `if: false` rots.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # dependency-cruiser resolves TypeScript through the *target* repo's own
+      # typescript, so it is installed there rather than globally. It needs
+      # TypeScript 5: dependency-cruiser 18 declares `>=2 <7` and silently
+      # cruises nothing when only 7 is present.
+      - name: install the reference tool into the target
+        if: vars.ARCHWARDEN_DIFF_REPO != ''
+        run: npm install --no-audit --no-fund dependency-cruiser typescript@5
+        working-directory: ${{ vars.ARCHWARDEN_DIFF_REPO }}
+      - run: cargo test -p archwarden-engine --features differential -- --nocapture
+        env:
+          ARCHWARDEN_DIFF_REPO: ${{ vars.ARCHWARDEN_DIFF_REPO }}
+          ARCHWARDEN_DIFF_DIRS: ${{ vars.ARCHWARDEN_DIFF_DIRS }}

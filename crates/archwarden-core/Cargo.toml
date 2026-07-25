@@ -1,0 +1,33 @@
+[package]
+name = "archwarden-core"
+description = "Shared types, traits, path matching, and case transforms for archwarden."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+camino = { workspace = true }
+globset = { workspace = true }
+heck = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+# Only archwarden-config needs to describe these types as JSON Schema. Keeping
+# it optional means the cache, the engine and the future language server do not
+# pull a schema generator they never call.
+schemars = { workspace = true, optional = true }
+
+[features]
+schema = ["dep:schemars"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

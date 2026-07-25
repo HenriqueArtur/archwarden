@@ -1,10 +1,17 @@
 # Build outputs
 /target/
 **/*.rs.bk
-Cargo.lock
 
-# archwarden's own cache directory (when dogfooding)
-.archwarden/
+# Cargo.lock IS committed: this workspace produces a binary, so reproducible
+# builds and supply-chain auditing depend on it. Do not add it here.
+
+# archwarden's own cache directory (when dogfooding).
+# Only the cache — .archwarden/ also holds generated artefacts such as
+# AGENT_RULES.md, which users may legitimately want to commit.
+.archwarden/cache/
+
+# Personal tooling, not required to work on this project
+.ai-jail
 
 # Editors
 .idea/
@@ -20,3 +27,12 @@ Cargo.lock
 # Test artefacts
 tmp/
 *.snap.new
+
+# The npm shim downloads the binary at install time; it is never committed.
+npm/bin/archwarden
+npm/bin/archwarden.exe
+npm/node_modules/
+
+# cargo-mutants scratch output
+mutants.out/
+mutants.out.old/

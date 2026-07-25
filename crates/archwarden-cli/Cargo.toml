@@ -1,0 +1,60 @@
+[package]
+name = "archwarden-cli"
+description = "A fast, declarative architecture linter for TypeScript and JavaScript."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# `cargo binstall archwarden-cli` downloads the release archive instead of
+# building from source. The strings below have to match what
+# `.github/workflows/release.yml` names its assets, exactly; when one changes
+# the other is wrong, and the failure is a 404 nobody can debug from the
+# error.
+#
+# `{ name }` is the crate name, which is not the binary's name, so the archive
+# stem is written out rather than interpolated.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/archwarden-{ version }-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+bin-dir = "archwarden-{ version }-{ target }/{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
+[dependencies]
+archwarden-config = { workspace = true }
+archwarden-core = { workspace = true }
+archwarden-cache = { workspace = true }
+archwarden-engine = { workspace = true }
+archwarden-rules = { workspace = true }
+archwarden-resolver = { workspace = true }
+camino = { workspace = true }
+clap = { workspace = true }
+jsonc-parser = { workspace = true }
+# `fancy` is what renders the source span and the underline. It is the whole
+# reason miette is here rather than anyhow.
+miette = { workspace = true, features = ["fancy"] }
+# Only to classify a config error as syntax-or-not; see diagnostic.rs.
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[lib]
+name = "archwarden_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "archwarden"
+path = "src/main.rs"

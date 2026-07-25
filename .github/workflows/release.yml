@@ -1,0 +1,236 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build, for a dry run"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Every target builds on a runner of its own architecture, rather than
+  # cross-compiling from one.
+  #
+  # `blake3` compiles C for its SIMD paths, so a cross-compile needs a C
+  # cross-toolchain per target -- either a docker image or a linker install,
+  # both of which are machinery to maintain for something GitHub already
+  # offers. `ubuntu-24.04-arm` made the arm64 half native, and musl only needs
+  # `musl-tools` for the architecture it is already on.
+  #
+  # The one real cross-compile is x86_64 macOS from an arm64 runner, which
+  # Apple's own toolchain handles: its SDK carries both architectures.
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            packages: musl-tools
+            cc: musl-gcc
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            packages: musl-tools
+            cc: musl-gcc
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          target: ${{ matrix.target }}
+
+      - name: install the musl C toolchain
+        if: matrix.packages
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.packages }}
+
+      # `blake3` compiles C, and `cc-rs` treats a musl target on a gnu host as
+      # a cross-compile even when the architectures match: it derives a tool
+      # name from the triple. For `x86_64-unknown-linux-musl` its candidate
+      # list ends in plain `musl`, so `musl-gcc` is found; for
+      # `aarch64-unknown-linux-musl` the table says `aarch64-linux-musl` with
+      # no fallback, and `musl-tools` does not ship that name. The build fails
+      # with `failed to find tool "aarch64-linux-musl-gcc"`.
+      #
+      # `CC_<target>` is read before that table, and on a runner of the same
+      # architecture `musl-gcc` *is* the right compiler. Set for both musl
+      # targets rather than only the one that needs it, so neither depends on
+      # a lookup table in someone else's crate.
+      - name: name the musl compiler
+        if: matrix.cc
+        run: |
+          echo "CC_${{ matrix.target }}=${{ matrix.cc }}" >> "$GITHUB_ENV"
+
+      # `--locked` on purpose: a release must be built from the dependency
+      # versions the tests ran against, not from whatever resolved today.
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p archwarden-cli
+
+      # A binary that will not print its own version is not one to publish.
+      # Skipped where the build was a cross-compile and cannot run here.
+      - name: check the binary runs
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/archwarden"
+          [ "${{ matrix.archive }}" = "zip" ] && BIN="$BIN.exe"
+          "$BIN" --version
+
+      - name: package
+        shell: bash
+        run: |
+          # A dispatch names its own tag; a tag push is named by the ref.
+          # Written as an `if` rather than `[ -n ... ] && VERSION=...` because
+          # that form's exit status is the step's, the day someone moves it to
+          # the last line.
+          if [ -n "${{ inputs.tag }}" ]; then
+            VERSION="${{ inputs.tag }}"
+          else
+            VERSION="$GITHUB_REF_NAME"
+          fi
+          VERSION="${VERSION#v}"
+
+          NAME="archwarden-${VERSION}-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          cp README.md LICENSE-MIT LICENSE-APACHE "dist/$NAME/"
+
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cp "target/${{ matrix.target }}/release/archwarden.exe" "dist/$NAME/"
+            (cd dist && 7z a "$NAME.zip" "$NAME")
+          else
+            cp "target/${{ matrix.target }}/release/archwarden" "dist/$NAME/"
+            (cd dist && tar czf "$NAME.tar.gz" "$NAME")
+          fi
+
+          # Checksums travel with the archive so an installer can verify what
+          # it downloaded without a second round trip. Through `python3`
+          # rather than `shasum`, which on the Windows runner is whatever Git
+          # for Windows happened to install.
+          python3 scripts/checksum.py dist "$NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    name: publish the release
+    needs: build
+    runs-on: ubuntu-latest
+    # A dry run builds every target and stops there, which is the point of
+    # having one.
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+
+  npm:
+    name: publish the npm shim
+    needs: publish
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      # The version is written in, not maintained by hand: the shim downloads
+      # `archwarden-{version}-{target}`, so a package.json out of step with the
+      # tag is a 404 at install time.
+      - name: stamp the version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          node -e '
+            const fs = require("node:fs");
+            const path = "npm/package.json";
+            const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+            manifest.version = process.argv[1];
+            fs.writeFileSync(path, JSON.stringify(manifest, null, 2) + "\n");
+          ' "$VERSION"
+
+      - name: check the shim before publishing it
+        working-directory: npm
+        run: node --test "test/*.test.mjs"
+
+      # Skipped rather than failed when the repository has no token. The
+      # release itself already succeeded by this point, and a red workflow
+      # would say otherwise.
+      - name: is there a token?
+        id: token
+        run: |
+          if [ -n "${{ secrets.NPM_TOKEN }}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::NPM_TOKEN is not set; the npm shim was not published"
+          fi
+
+      # Runs after `publish`, so the archives the postinstall downloads are
+      # already there. A shim published first would be broken for however long
+      # the release job took.
+      - name: publish
+        if: steps.token.outputs.present == 'true'
+        working-directory: npm
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  formula:
+    name: stamp the homebrew formula
+    needs: publish
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Checksums by hand are checksums that eventually ship wrong. The
+      # workflow that produced the archives is the only thing that knows them,
+      # and the script refuses to leave a placeholder behind.
+      - name: write the version and checksums in
+        run: |
+          python3 scripts/stamp-formula.py \
+            Formula/archwarden.rb "$GITHUB_REF_NAME" dist
+          cat Formula/archwarden.rb
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homebrew-formula
+          path: Formula/archwarden.rb
