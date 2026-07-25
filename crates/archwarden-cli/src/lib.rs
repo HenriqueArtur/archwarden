@@ -11,6 +11,7 @@ pub mod explain;
 pub mod guide;
 pub mod hook;
 pub mod hooks;
+pub mod locate;
 pub mod report;
 pub mod scaffold;
 

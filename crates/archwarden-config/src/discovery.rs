@@ -43,14 +43,19 @@ pub enum LoadError {
         path: Utf8PathBuf,
         /// The file's contents, for span rendering.
         source_text: String,
-        /// Where in the document the failure was, as a dotted path such as
-        /// `rules[1].type`. Empty when the failure was at the root.
+        /// Where in the document the failure was, one step per level. Empty
+        /// when the failure was at the root.
+        ///
+        /// Structured rather than a dotted string because a caller resolves it
+        /// against the document to find the exact span, and a rendered path
+        /// cannot be walked back: a key containing `.` or `[` would be
+        /// indistinguishable from the punctuation that separates segments.
         ///
         /// This exists because `serde_json`'s own line and column are only
         /// trustworthy for syntax errors: for a schema violation the parser
         /// has usually moved past the offending value by the time it reports,
         /// so the position lands on the following token.
-        pointer: String,
+        segments: Vec<PathSegment>,
         /// What serde objected to.
         #[source]
         source: serde_json::Error,
@@ -108,22 +113,59 @@ pub fn discover(start: &Utf8Path) -> Result<Utf8PathBuf, LoadError> {
 pub fn parse(path: &Utf8Path, source_text: &str) -> Result<Config, LoadError> {
     let deserializer = &mut serde_json::Deserializer::from_str(source_text);
 
-    serde_path_to_error::deserialize(deserializer).map_err(|error| {
-        let pointer = error.path().to_string();
-        LoadError::Invalid {
-            path: path.to_owned(),
-            source_text: source_text.to_owned(),
-            // `serde_path_to_error` renders a root-level failure as `.` and
-            // an unknown one as `?`. Neither tells a user anything, so both
-            // collapse to empty, which callers read as "no useful path".
-            pointer: if pointer == "." || pointer == "?" {
-                String::new()
-            } else {
-                pointer
-            },
-            source: error.into_inner(),
-        }
+    serde_path_to_error::deserialize(deserializer).map_err(|error| LoadError::Invalid {
+        path: path.to_owned(),
+        source_text: source_text.to_owned(),
+        segments: segments_of(error.path()),
+        source: error.into_inner(),
     })
+}
+
+/// One step of the way to a failure.
+///
+/// `serde_path_to_error` has richer segments than this; the two that survive
+/// are the two a JSON document can be walked by. `Enum` and `Unknown` describe
+/// Rust's shape rather than the file's -- an internally tagged enum has no
+/// nesting in the document -- so following them would point at nothing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PathSegment {
+    /// An object member, by name.
+    Key(String),
+    /// An array element, by position.
+    Index(usize),
+}
+
+fn segments_of(path: &serde_path_to_error::Path) -> Vec<PathSegment> {
+    path.iter()
+        .filter_map(|segment| match segment {
+            serde_path_to_error::Segment::Seq { index } => Some(PathSegment::Index(*index)),
+            serde_path_to_error::Segment::Map { key } => Some(PathSegment::Key(key.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A path rendered the way `serde_path_to_error` renders one, for a message.
+#[must_use]
+pub fn render_path(segments: &[PathSegment]) -> String {
+    use std::fmt::Write as _;
+
+    let mut rendered = String::new();
+    for segment in segments {
+        match segment {
+            PathSegment::Key(key) => {
+                if !rendered.is_empty() {
+                    rendered.push('.');
+                }
+                rendered.push_str(key);
+            }
+            PathSegment::Index(index) => {
+                let _ = write!(rendered, "[{index}]");
+            }
+        }
+    }
+    rendered
 }
 
 /// Reads and parses a config file.
@@ -297,35 +339,108 @@ mod tests {
         assert!(source_text.contains("version"), "text is carried back");
     }
 
+    /// Returns the failure path of a config that should not parse.
+    fn failing_path(source_text: &str) -> Vec<PathSegment> {
+        match parse(Utf8Path::new("arch.config.json"), source_text) {
+            Err(LoadError::Invalid { segments, .. }) => segments,
+            other => panic!("expected an Invalid, got {other:?}"),
+        }
+    }
+
     /// The path is the point of routing parsing through `serde_path_to_error`.
     /// `serde_json`'s own position cannot be trusted for a schema violation, so
     /// "which of the thirty rules" has to come from somewhere else.
     #[test]
     fn a_schema_violation_records_which_field_failed() {
-        let err = parse(
-            Utf8Path::new("arch.config.json"),
+        let segments = failing_path(
             r#"{"version":0,"rules":[
                 {"type":"structure","id":"fine","level":"error","roots":"a/*"},
                 {"type":"structure","id":"bad id","level":"error","roots":"b/*"}]}"#,
-        )
-        .expect_err("should fail");
+        );
 
-        let LoadError::Invalid { pointer, .. } = &err else {
-            return assert!(matches!(err, LoadError::Invalid { .. }), "{err:?}");
-        };
-        assert_eq!(pointer, "rules[1]");
+        assert_eq!(
+            segments,
+            [PathSegment::Key("rules".to_owned()), PathSegment::Index(1)]
+        );
+        assert_eq!(render_path(&segments), "rules[1]");
     }
 
     /// A failure at the document root has no useful path, and `.` is noise in
     /// a message rather than information.
     #[test]
     fn a_root_level_failure_records_an_empty_path() {
-        let err = parse(Utf8Path::new("arch.config.json"), "[]").expect_err("should fail");
+        let segments = failing_path("[]");
 
-        let LoadError::Invalid { pointer, .. } = &err else {
-            return assert!(matches!(err, LoadError::Invalid { .. }), "{err:?}");
-        };
-        assert!(pointer.is_empty(), "got `{pointer}`");
+        assert!(segments.is_empty(), "got {segments:?}");
+        assert!(render_path(&segments).is_empty());
+    }
+
+    /// The path is structured rather than a string because a caller walks it
+    /// through the document to find a span, and a rendered path cannot be
+    /// walked back: a key containing `.` or `[` is indistinguishable from the
+    /// punctuation between segments.
+    #[test]
+    fn every_step_is_one_segment() {
+        let segments =
+            failing_path(r#"{"version":0,"modules":[{"id":"not a valid id","rules":[]}]}"#);
+
+        assert_eq!(
+            segments,
+            [
+                PathSegment::Key("modules".to_owned()),
+                PathSegment::Index(0),
+                PathSegment::Key("id".to_owned()),
+            ],
+            "a step is a step, and the punctuation between them is the \
+             renderer's business"
+        );
+        assert_eq!(render_path(&segments), "modules[0].id");
+    }
+
+    /// **The path stops at the rule.** `Rule` is an internally tagged enum
+    /// (`#[serde(tag = "type")]`), and serde deserialises one of those by
+    /// buffering the object first and reading the variant out of the buffer.
+    /// The path tracker cannot follow across that boundary, so a failure on a
+    /// field *inside* a rule is reported at the rule.
+    ///
+    /// This is the second thing `tag = "type"` has cost: it also ruled out
+    /// every non-self-describing cache format in M4. Both are worth it -- the
+    /// tag is what makes the JSON report a contract an agent can read -- but
+    /// the price is real and is recorded here so the next reader does not
+    /// spend an afternoon looking for the bug.
+    ///
+    /// A caret still lands: on the whole rule for most failures, and on the
+    /// exact word for an unknown field, whose name the message carries.
+    #[test]
+    fn a_failure_inside_a_rule_is_reported_at_the_rule() {
+        assert_eq!(
+            render_path(&failing_path(
+                r#"{"version":0,"rules":[
+                    {"type":"naming","id":"n","level":"error","roots":"a/*",
+                     "file_pattern":"^x$","must_export":{"name":"X","kind":42}}]}"#,
+            )),
+            "rules[0]",
+            "not `rules[0].must_export.kind`"
+        );
+        assert_eq!(
+            render_path(&failing_path(
+                r#"{"version":0,"rules":[
+                    {"type":"structure","id":"a","level":"nope","roots":"a/*"}]}"#,
+            )),
+            "rules[0]"
+        );
+    }
+
+    /// Outside a rule the path is as deep as the document, which is what makes
+    /// the caret exact everywhere else.
+    #[test]
+    fn a_failure_outside_a_rule_keeps_every_step() {
+        assert_eq!(
+            render_path(&failing_path(
+                r#"{"version":0,"skip_dirs":{"prefixes":"not an array"}}"#,
+            )),
+            "skip_dirs.prefixes"
+        );
     }
 
     /// A config that parses as JSON but is not a config is still Invalid, not

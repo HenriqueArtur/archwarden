@@ -42,6 +42,11 @@ schemars = "1.2.1"
 # tagged enum into a format that is not self-describing, which rules postcard
 # and bincode out. MessagePack is self-describing and still compact.
 rmp-serde = "1.3.1"
+# A JSON parser that keeps byte ranges, for pointing a caret at the exact
+# member a schema violation is about. `serde_json` reports the position its
+# parser had reached, which for a schema violation has already moved past the
+# offending value.
+jsonc-parser = "0.33.0"
 
 # --- errors -----------------------------------------------------------------
 # thiserror in libraries (typed enums), miette in the binary (source spans).

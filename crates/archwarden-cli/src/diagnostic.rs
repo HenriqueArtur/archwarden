@@ -44,25 +44,41 @@ impl ConfigDiagnostic {
             LoadError::Invalid {
                 path,
                 source_text,
-                pointer,
+                segments,
                 source,
             } => {
-                // Only a syntax error can be pointed at. serde_json reports
-                // the parser's position, which for a schema violation has
-                // already moved past the offending value -- the caret would
-                // land on the next token and accuse innocent code. Measured
-                // across four error kinds; only one of them was accurate.
-                let pointable = matches!(
+                // Two ways to point at the problem, and they are not
+                // interchangeable. A syntax error's own position is exact --
+                // the parser stopped at the offending byte. A schema
+                // violation's is not: serde has already read past the value,
+                // so its number lands on the next token and accuses innocent
+                // code. For those, the path is walked through a span-keeping
+                // parse of the same text instead.
+                let reason = strip_position(&source.to_string());
+                let syntax = matches!(
                     source.classify(),
                     serde_json::error::Category::Syntax | serde_json::error::Category::Eof
                 );
 
-                // serde_json appends its own position to every message. For a
-                // syntax error the caret already shows it; for a schema
-                // violation it is the untrustworthy number this whole change
-                // exists to stop showing. Either way it goes.
-                let reason = strip_position(&source.to_string());
+                let span = if syntax {
+                    byte_offset(source_text, source.line(), source.column())
+                        .map(|offset| SourceSpan::new(offset.into(), 1))
+                } else {
+                    // For "unknown field `x`" serde names the containing
+                    // object, because the field is not part of the struct it
+                    // was building. The word the user misspelt is right
+                    // there, so the caret goes on it; failing that, on the
+                    // object, which is still the right neighbourhood.
+                    crate::locate::unknown_field(&reason)
+                        .and_then(|field| crate::locate::locate_key(source_text, segments, field))
+                        .or_else(|| crate::locate::locate(source_text, segments))
+                        .map(|found| SourceSpan::new(found.start.into(), found.len()))
+                };
 
+                // The path stays in the message even when the caret lands.
+                // A caret shows *where*; `rules[1].roots` says *what*, and a
+                // user reading a failure in CI has only the text.
+                let pointer = archwarden_config::discovery::render_path(segments);
                 let located = if pointer.is_empty() {
                     reason
                 } else {
@@ -71,12 +87,10 @@ impl ConfigDiagnostic {
 
                 Self {
                     message: format!("{path} is not a valid archwarden config: {located}"),
-                    source_text: pointable
+                    source_text: span
+                        .is_some()
                         .then(|| NamedSource::new(path.as_str(), source_text.clone())),
-                    span: pointable
-                        .then(|| byte_offset(source_text, source.line(), source.column()))
-                        .flatten()
-                        .map(|offset| SourceSpan::new(offset.into(), 1)),
+                    span,
                     help: Some(
                         "check the field against the schema at \
                          https://archwarden.dev/schema/v0.json"
@@ -295,25 +309,106 @@ mod tests {
         assert!(diagnostic.to_string().contains("arch.config.json"));
     }
 
-    /// A schema violation gets **no** caret, on purpose.
+    /// A schema violation now gets a caret too, and it lands on the value the
+    /// path names rather than on wherever serde's parser had reached.
     ///
-    /// `serde_json` reports the parser's position, and by the time a schema
-    /// violation is raised the parser has moved past the offending value, so
-    /// the caret would land on the following token. Measured across four
-    /// error kinds and only one was accurate. The field path replaces it.
+    /// This is the M8d change. Before it, a schema violation got no caret at
+    /// all, because `serde_json`'s position has moved past the offending value
+    /// by the time serde objects, and a caret on the following token accuses
+    /// innocent code.
     #[test]
-    fn a_schema_violation_gets_a_path_instead_of_a_caret() {
-        let diagnostic =
-            ConfigDiagnostic::from_load_error(&invalid(r#"{"version": 0, "rules": "nope"}"#));
+    fn a_schema_violation_gets_a_caret_on_the_named_value() {
+        let source_text = r#"{"version": 0, "rules": "nope"}"#;
+        let diagnostic = ConfigDiagnostic::from_load_error(&invalid(source_text));
 
-        assert!(diagnostic.span.is_none(), "no caret under innocent code");
-        assert!(diagnostic.source_text.is_none());
+        let span = diagnostic.span.expect("a caret");
+        assert_eq!(
+            source_text.get(span.offset()..span.offset() + span.len()),
+            Some(r#""nope""#),
+            "on the value the path names"
+        );
+        assert!(
+            diagnostic.source_text.is_some(),
+            "with the file to render it"
+        );
         assert!(diagnostic.to_string().contains("rules"), "{diagnostic}");
         assert!(diagnostic.help.is_some(), "points at the published schema");
     }
 
-    /// The path is what makes a schema violation actionable in a config with
-    /// thirty rules: it says *which* one.
+    /// An unknown field is reported at the object that contains it, because
+    /// the field is not part of the struct serde was building. The caret goes
+    /// on the misspelt word anyway -- it is right there in the message.
+    #[test]
+    fn an_unknown_field_gets_a_caret_on_the_word_itself() {
+        let source_text = r#"{"version":0,"rules":[
+            {"type":"structure","id":"a","level":"error","roots":"a/*"},
+            {"type":"structure","id":"b","level":"error","roots":"b/*","allow":["types"]}]}"#;
+        let diagnostic = ConfigDiagnostic::from_load_error(&invalid(source_text));
+
+        let span = diagnostic.span.expect("a caret");
+        assert_eq!(
+            source_text.get(span.offset()..span.offset() + span.len()),
+            Some(r#""allow""#),
+            "on the word the user misspelt, in the second rule"
+        );
+    }
+
+    /// A failure inside a rule is reported at the rule: `Rule` is an
+    /// internally tagged enum, and serde loses the path across the buffer it
+    /// deserialises one through. The caret still lands on the right rule out
+    /// of many, which is the question a user is actually asking.
+    #[test]
+    fn a_failure_inside_a_rule_puts_the_caret_on_that_rule() {
+        let source_text = r#"{"version":0,"rules":[
+            {"type":"structure","id":"fine","level":"error","roots":"a/*"},
+            {"type":"structure","id":"b","level":"nope","roots":"b/*"}]}"#;
+        let diagnostic = ConfigDiagnostic::from_load_error(&invalid(source_text));
+
+        let span = diagnostic.span.expect("a caret");
+        let pointed_at = source_text
+            .get(span.offset()..span.offset() + span.len())
+            .expect("a real span");
+
+        assert!(
+            pointed_at.contains(r#""nope""#),
+            "the broken rule: {pointed_at}"
+        );
+        assert!(
+            !pointed_at.contains(r#""fine""#),
+            "not the innocent one: {pointed_at}"
+        );
+    }
+
+    /// A broken preset gets the same treatment as a broken entry config: the
+    /// failure is delegated rather than re-described, so a caret lands inside
+    /// the preset file and the message names *that* file.
+    ///
+    /// Without the delegation a user whose preset has a typo would be told
+    /// only "a preset could not be loaded", with nothing to open.
+    #[test]
+    fn a_broken_preset_is_delegated_and_keeps_its_caret() {
+        let inner = invalid(r#"{"version": 0, "rules": "nope"}"#);
+        let direct = ConfigDiagnostic::from_load_error(&inner);
+        let through_preset = ConfigDiagnostic::from_extends_error(&ExtendsError::Unloadable(inner));
+
+        assert_eq!(through_preset.to_string(), direct.to_string());
+        assert_eq!(through_preset.span, direct.span);
+        assert!(through_preset.span.is_some(), "the caret survives the hop");
+    }
+
+    /// A document that will not parse as JSON at all keeps the syntax error's
+    /// own position, which for a syntax error *is* exact.
+    #[test]
+    fn a_syntax_error_keeps_its_own_position() {
+        let diagnostic = ConfigDiagnostic::from_load_error(&invalid(r#"{"version": 0,,}"#));
+
+        assert!(diagnostic.span.is_some(), "the parser stopped at the byte");
+        assert!(diagnostic.source_text.is_some());
+    }
+
+    /// The path is what makes a schema violation readable when the caret
+    /// cannot be: it survives a copy-paste into a chat window, and it is all a
+    /// CI log has.
     #[test]
     fn the_path_names_the_offending_rule_by_index() {
         let diagnostic = ConfigDiagnostic::from_load_error(&invalid(
@@ -325,7 +420,11 @@ mod tests {
         let message = diagnostic.to_string();
         assert!(message.contains("rules[1]"), "{message}");
         assert!(message.contains("bad id"), "{message}");
-        assert!(diagnostic.span.is_none());
+
+        // The path stays in the message even now that a caret lands. A caret
+        // shows *where*; `rules[1]` says *what*, and a user reading a CI log
+        // has only the text.
+        assert!(diagnostic.span.is_some(), "and the caret too");
     }
 
     /// A failure at the root has no useful path, and an empty one is not

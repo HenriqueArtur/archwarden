@@ -1585,7 +1585,7 @@ Run `archwarden scaffold src/user/create-client.use-case.ts` for the shape it sh
 
 ---
 
-### M8 — `config doctor` `⬜`
+### M8 — `config doctor` `✅`
 
 **Entrada vinda do M7b:** `config doctor` deve avisar quando um
 `signature_hint` não combina com o `kind` que a regra exige — hint em estilo
@@ -1736,14 +1736,67 @@ Uma nota de processo: o `typos` reclamou de `usecase-nmae`, que era typo
 *deliberado* num teste. Troquei por `usecase-naming` — id errado que é palavra
 válida, e que representa melhor o erro real (confundir kind com id) do que uma
 letra trocada.
-- **Caret exato em erro de config (opção C), M8d.** Trocar o parse por uma AST com
-  spans (`jsonc-parser` ou equivalente) e casar o caminho do
-  `serde_path_to_error` contra ela. Fica aqui porque o doctor precisa de span
-  para "campo desconhecido `allowed_subfolder`, você quis dizer
-  `allowed_subfolders`?" de qualquer forma, e fazer as duas coisas juntas evita
-  mexer na camada de diagnóstico duas vezes. Decidido em 2026-07-25.
-- Aviso restante das decisões: arquivo só com default export sob regra
-  `naming` (D9) — precisa do repositório, fica no M8b.
+---
+
+#### M8d — caret exato em erro de config (opção C) `✅`
+
+Decidido no M1: trocar o parse por uma AST com spans e casar o caminho do
+`serde_path_to_error` contra ela.
+
+**Registro** — 2026-07-25
+
+**Antes**, uma violação de schema não ganhava caret nenhum — o M1 tinha medido
+que a posição do `serde_json` só é confiável para erro de sintaxe, porque num
+erro de schema o parser já passou do valor ofensor e o caret acusaria a regra
+seguinte. **Agora:**
+
+```
+ 5 │     { "type": "structure", "id": "second", ..., "allow": ["types"] }
+   ·                                                 ───┬───
+   ·                                                    ╰── here
+```
+
+`jsonc-parser` 0.33 (MIT) dá `Range` em todo nó. O documento é parseado uma
+segunda vez e o caminho é caminhado pela AST. Dois parses de um arquivo de
+config não é nada — acontece uma vez, no caminho de imprimir um erro.
+
+**O caminho virou estruturado.** Era `String` (`"rules[1]"`); virou
+`Vec<PathSegment>`. Um caminho renderizado não pode ser caminhado de volta: uma
+chave contendo `.` ou `[` é indistinguível da pontuação que separa os
+segmentos.
+
+**Duas precisões, e a diferença importa.** Para "unknown field `allow`" o serde
+reporta o **objeto que contém**, porque o campo não faz parte do struct que ele
+estava montando — a palavra errada está na mensagem, então o caret vai nela.
+Para o resto, o caret vai no nó que o caminho nomeia.
+
+**Descoberta que custou um teste vermelho: o caminho para dentro de uma regra.**
+Escrevi um teste esperando `rules[0].must_export.kind` e veio `rules[0]`. O
+`Rule` é enum com tag interna (`#[serde(tag = "type")]`), e o serde
+desserializa um desses **bufferizando o objeto** e lendo o variant do buffer —
+o rastreador de caminho não atravessa essa fronteira.
+
+É a **segunda** vez que o `tag = "type"` cobra: no M4 ele eliminou todo formato
+de cache não auto-descritivo, trocando postcard por MessagePack. Vale as duas
+vezes — a tag é o que faz o relatório JSON ser contrato que um agente lê — mas o
+preço é real e ficou registrado nos dois lugares, para o próximo leitor não
+gastar uma tarde procurando o bug.
+
+Na prática o caret ainda cai **na regra certa entre trinta**, que é a pergunta
+que o usuário está fazendo. E para campo desconhecido cai na palavra exata.
+
+**O caminho continua na mensagem mesmo com caret.** Caret mostra *onde*;
+`rules[1]` diz *o quê*, e quem lê uma falha no log de CI só tem o texto.
+
+`cargo mutants`: 48 no `locate.rs` + `diagnostic.rs`, 11 no `discovery.rs`,
+**zero sobreviventes** — depois de matar um que apontou lacuna real: a
+delegação de erro de preset (`ExtendsError::Unloadable`) não tinha teste, e sem
+ela quem tem typo num preset ouviria só "um preset não pôde ser carregado", sem
+nada para abrir.
+
+**Nota lateral:** o `cargo deny` avisa que a permissão `BSD-3-Clause` do
+`deny.toml` não corresponde a nenhuma dependência. É anterior a este step e não
+falha o check; vale limpar quando alguém passar por lá.
 
 **Pronto quando:** cada checagem tem fixture que a dispara.
 

@@ -123,6 +123,7 @@ dependencies = [
  "assert_cmd",
  "camino",
  "clap",
+ "jsonc-parser",
  "miette",
  "predicates",
  "serde",
@@ -835,6 +836,12 @@ checksum = "9301b34ecbe81051a62001a2dfa56d906628efdfbc68153e0a4d5eba58181ece"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "jsonc-parser"
+version = "0.33.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "362fdb0bfedf94ebd31e4e82ff38ba705b6b82417b3b25f0c4bbb024dd11f552"
 
 [[package]]
 name = "libc"

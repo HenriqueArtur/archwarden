@@ -18,6 +18,7 @@ archwarden-rules = { workspace = true }
 archwarden-resolver = { workspace = true }
 camino = { workspace = true }
 clap = { workspace = true }
+jsonc-parser = { workspace = true }
 # `fancy` is what renders the source span and the underline. It is the whole
 # reason miette is here rather than anyhow.
 miette = { workspace = true, features = ["fancy"] }
