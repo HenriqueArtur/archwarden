@@ -119,6 +119,7 @@ dependencies = [
  "archwarden-core",
  "archwarden-engine",
  "archwarden-resolver",
+ "archwarden-rules",
  "assert_cmd",
  "camino",
  "clap",

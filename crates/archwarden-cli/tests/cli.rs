@@ -144,8 +144,62 @@ fn help_lists_the_available_commands() {
         .arg("--help")
         .assert()
         .success()
+        .stdout(contains("check"))
+        .stdout(contains("describe"))
         .stdout(contains("config"))
         .stdout(contains("--config"));
+}
+
+/// Layer 2 of `docs/AGENT-INTEGRATION.md`, through the real process: an agent
+/// asks what applies to a path it is about to create. The file is not there,
+/// and neither is its directory.
+#[test]
+fn describe_answers_through_the_binary_for_a_file_that_does_not_exist() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[{
+            "type":"naming","id":"usecase-name","level":"error","roots":"src/*",
+            "file_pattern":"^(?<name>[a-z0-9-]+)\\.use-case\\.ts$",
+            "must_export":{"name":"{{pascal(name)}}","kind":"function"}}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "describe",
+            "src/user/create-client.use-case.ts",
+            "--format",
+            "json",
+        ])
+        .assert()
+        .success()
+        .stdout(contains(r#""id": "usecase-name""#))
+        .stdout(contains(r#""name": "CreateClient""#));
+}
+
+/// The working directory is read by `main`, so a relative path typed from a
+/// subdirectory has to resolve the way the user means it. This is the only
+/// place that is exercised against a real process.
+#[test]
+fn describe_resolves_a_relative_path_from_a_subdirectory() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{
+                "type":"naming","id":"usecase-name","level":"error","roots":"src/*",
+                "file_pattern":"^(?<name>[a-z0-9-]+)\\.use-case\\.ts$",
+                "must_export":{"name":"{{pascal(name)}}","kind":"function"}}]}"#,
+        ),
+        ("src/user/placeholder.ts", ""),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path().join("src/user"))
+        .args(["describe", "create-client.use-case.ts"])
+        .assert()
+        .success()
+        .stdout(contains("src/user/create-client.use-case.ts"))
+        .stdout(contains("CreateClient"));
 }
 
 /// The repository shape the `check` tests share: a domain entity with one

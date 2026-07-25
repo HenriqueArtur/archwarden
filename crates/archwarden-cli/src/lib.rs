@@ -3,6 +3,7 @@
 //! The binary is a four-line shim over [`run`]. Everything that decides
 //! anything lives here so it can be tested without spawning a process.
 
+pub mod describe;
 pub mod diagnostic;
 pub mod exit;
 pub mod report;
@@ -49,6 +50,21 @@ pub enum Command {
         no_cache: bool,
     },
 
+    /// Say what the rules require of a path, which need not exist yet.
+    ///
+    /// The informant half of decision 9: an agent asks before it writes,
+    /// rather than being told after.
+    Describe {
+        /// The file or directory to ask about, relative to the working
+        /// directory or absolute.
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// How to render the answer.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+
     /// Inspect the configuration itself.
     Config {
         /// Which config command to run.
@@ -88,6 +104,13 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             working_directory,
             *format,
             *no_cache,
+            output,
+        ),
+        Command::Describe { path, format } => describe(
+            cli.config.as_deref(),
+            working_directory,
+            path,
+            *format,
             output,
         ),
         Command::Config { command } => match command {
@@ -140,6 +163,38 @@ fn prepare(
     })?;
 
     Ok((merged, compiled))
+}
+
+/// Says what the rules require of one path.
+///
+/// Reads no file and parses nothing: every rule's `describe_expectation` is
+/// purely lexical, which is what lets this answer about a path that does not
+/// exist yet. Exit is clean even when nothing applies -- a query that found no
+/// rules is not a failure, and an agent branching on the exit code should see
+/// "your setup is wrong" only when it is.
+fn describe(
+    explicit: Option<&Utf8Path>,
+    working_directory: &Utf8Path,
+    argument: &str,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+        Ok(prepared) => prepared,
+        Err(exit) => return exit,
+    };
+
+    let path = match crate::describe::repo_relative(&merged.root, working_directory, argument) {
+        Ok(path) => path,
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    let applies = crate::describe::describe(&compiled, &path);
+    crate::describe::render(&path, &applies, format, output.out);
+    Exit::Clean
 }
 
 /// archwarden's own directory in the repository, and the cache inside it.
@@ -887,6 +942,85 @@ mod tests {
             "{}",
             result.out
         );
+    }
+
+    /// The command an agent calls before it writes. The file does not exist,
+    /// and that is the point.
+    #[test]
+    fn describe_answers_about_a_file_that_does_not_exist() {
+        let (_guard, result) = run_in(
+            &[("arch.config.json", NAMING)],
+            &["describe", "src/user/create-client.use-case.ts"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(
+            result.out.contains("usecase-name (naming)"),
+            "{}",
+            result.out
+        );
+        assert!(
+            result.out.contains("an export named `CreateClient`"),
+            "{}",
+            result.out
+        );
+    }
+
+    /// The JSON an agent should actually consume.
+    #[test]
+    fn describe_emits_a_versioned_json_shape() {
+        let (_guard, result) = run_in(
+            &[("arch.config.json", NAMING)],
+            &[
+                "describe",
+                "src/user/create-client.use-case.ts",
+                "--format",
+                "json",
+            ],
+        );
+
+        let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("valid JSON");
+        assert_eq!(parsed["version"], 0);
+        assert_eq!(parsed["path"], "src/user/create-client.use-case.ts");
+        assert_eq!(parsed["rules"][0]["id"], "usecase-name");
+        assert_eq!(
+            parsed["rules"][0]["expectations"][0]["name"],
+            "CreateClient"
+        );
+    }
+
+    /// Nothing applying is a clean answer, not a failure: an agent branching
+    /// on the exit code should see a non-zero one only when its setup is
+    /// wrong.
+    #[test]
+    fn describe_exits_clean_when_no_rule_applies() {
+        let (_guard, result) = run_in(&[("arch.config.json", NAMING)], &["describe", "README.md"]);
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(result.out.contains("No rule applies"), "{}", result.out);
+    }
+
+    /// A path outside the repository is refused rather than silently
+    /// described as something else.
+    #[test]
+    fn describe_refuses_a_path_outside_the_repository() {
+        let (_guard, result) = run_in(&[("arch.config.json", NAMING)], &["describe", "../a.ts"]);
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.out.is_empty(), "nothing is described");
+        assert!(result.err.contains("../a.ts"), "{}", result.err);
+    }
+
+    /// A broken config is still exit 2 here, so an agent can tell "your setup
+    /// is wrong" from "nothing applies".
+    #[test]
+    fn describing_with_a_broken_config_exits_two() {
+        let (_guard, result) = run_in(
+            &[("arch.config.json", r#"{"version": 0,,}"#)],
+            &["describe", "src/a.ts"],
+        );
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
     }
 
     /// A structural configuration reads no bytes, so it has nothing to cache

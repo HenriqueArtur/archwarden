@@ -251,7 +251,11 @@ fn describe_observed(observed: &Observed) -> String {
 }
 
 /// One sentence for what was required.
-fn describe_expectation(expectation: &Expectation) -> String {
+///
+/// Shared with `describe`, which renders the same expectations for a file that
+/// does not exist yet. One renderer, so the gate and the informant can never
+/// word the same requirement differently -- decision 9.
+pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
     match expectation {
         Expectation::AllowedSubfolders { allowed, warn } => {
             let mut parts = vec![format!("one of {}", join_or(allowed, "no folders"))];

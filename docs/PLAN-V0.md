@@ -1243,25 +1243,87 @@ O `unreadable_files` continua e ganhou teste próprio nos dois formatos: agora
 
 ---
 
-### M7 — Superfície de agente `⬜`
+### M7 — Superfície de agente
 
-**Objetivo:** ADR#9 completo — informante, não só gate.
-
-**Tarefas**
-- `cli`: `describe <path>` (text + JSON), reusando o matcher, sem parse.
-- `cli`: `scaffold <path>` consumindo `describe_expectation` de cada regra.
-- `cli`: `agent-guide --format markdown|json --scope <glob>`, determinístico.
-- `cli`: `check --file <path>` com `"skipped": [...]` explícito (C6).
-- `cli`: `install-hooks --claude-code [--remove]`, idempotente.
-- `cli`: `init`.
-- Tier 2 para cada comando.
+**Objetivo:** ADR#9 completo — informante, não só gate. Dividido em cinco por
+tamanho, como o M1 e o M5.
 
 **Pronto quando:** `describe`/`scaffold` respondem <50ms warm
 (`ROADMAP.md:54`); hook do Claude Code bloqueia escrita inválida com mensagem
 que identifica regra e correção (`ROADMAP.md:55-57`).
 
-**Registro**
-> _(pendente)_
+---
+
+#### M7a — `describe` `✅`
+
+**Tarefas**
+- ✅ `cli`: `describe <path>` (text + JSON), sem parse, Tier 2 incluído.
+
+**Registro** — 2026-07-25
+
+**O seam desenhado no M2 pagou.** O `RuleEngine::describe_expectation` existe
+desde o M2 justamente para isto, com o contrato de ser puramente lexical — e
+foi por isso que este step virou quase só renderização. As cinco engines já
+respondiam certo sobre um caminho que não existe; não precisei tocar em
+nenhuma.
+
+**"Aplica" quer dizer "tem exigência", não "a glob casou".** Uma regra de
+`naming` cujo escopo cobre `src/user/` mas cujo `file_pattern` não casa
+`helper.ts` **não** aparece na resposta. Um agente que recebesse a regra sem
+exigência ficaria tentando satisfazer algo que nunca vai disparar.
+
+**`ignore` ganha do escopo, e o `describe` concorda com o `check`.** Se
+divergissem, o agente seria mandado satisfazer uma regra que nunca vai rodar —
+pior que não responder.
+
+**Resolução de caminho é lexical, nunca toca no disco.** É o ponto todo:
+`describe` responde sobre arquivo que não existe, então `canonicalize` não está
+disponível. O `RepoRelPath::new` já normalizava `.` e `..` desde o M2, então
+sobrou traduzir "onde o usuário está" para "relativo à raiz". Coberto para
+subdiretório, caminho absoluto, e recusa fora do repo com mensagem que nomeia
+as duas pontas.
+
+**Uma renderização só.** O `describe_expectation(&Expectation) -> String` do
+`report.rs` virou `pub(crate)` e é o mesmo que o `check` usa. O informante e o
+gate não conseguem redigir a mesma exigência de formas diferentes — que é o
+que a ADR#9 pede.
+
+**`DESCRIBE_VERSION` é separado do `REPORT_VERSION`.** Um agente que consome um
+pode nunca ler o outro, e acoplar os dois forçaria bump em quem consome um
+contrato que não mudou.
+
+**Latência: 2 ms por chamada** (10 execuções, release, repo pequeno). O
+`ROADMAP.md:54` pede <50 ms e o `AGENT-INTEGRATION.md:41` pede <20 ms. E o
+custo é O(regras), não O(arquivos) — o `describe` não caminha a árvore —, então
+o número não piora com o tamanho do repositório.
+
+`cargo mutants` no `describe.rs`: 7 mutantes, 5 mortos, 2 inviáveis, **zero
+sobreviventes**.
+
+---
+
+#### M7b — `scaffold` `⬜`
+
+- `cli`: `scaffold <path>` consumindo `describe_expectation` de cada regra.
+
+---
+
+#### M7c — `agent-guide` `⬜`
+
+- `cli`: `agent-guide --format markdown|json --scope <glob>`, determinístico.
+
+---
+
+#### M7d — `check --file` `⬜`
+
+- `cli`: `check --file <path>` com `"skipped": [...]` explícito (C6).
+
+---
+
+#### M7e — `install-hooks` e `init` `⬜`
+
+- `cli`: `install-hooks --claude-code [--remove]`, idempotente.
+- `cli`: `init`.
 
 ---
 
