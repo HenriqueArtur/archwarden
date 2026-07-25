@@ -95,6 +95,16 @@ Verificação objetiva, não sistema de honra:
   (inline snapshot). `cargo insta review` só para revisar mudança intencional
   em snapshot existente — nunca para criar o primeiro.
 
+**Convenção: não usar `let ... else { panic!() }` para destrinchar erro em
+teste.** Esse braço nunca executa quando o teste passa, então é linha morta que
+nenhuma execução alcança e que derruba o piso de cobertura. Bateu quatro vezes
+até virar regra. As alternativas:
+
+- `assert_eq!` contra o valor de erro inteiro — de quebra fixa a frase exata
+  que o usuário lê, em vez de checar `contains`;
+- uma função auxiliar que devolve `Option`, com um teste que exercita o braço
+  `None`. Aí o caminho negativo é comportamento testado, não código morto.
+
 ### Lints e ferramental
 
 `[workspace.lints]` na raiz; cada crate herda com `[lints] workspace = true`.
@@ -351,7 +361,8 @@ regiões), resíduo de curto-circuito e instanciação de genéricos que o
   escalares (local vence), `disable`, erro se preset declara `root`, detecção
   de ciclo, id duplicado.
 - `config`: lowering para `core::CompiledConfig` (compila globs e regexes).
-- `config`: erro de regex com lookahead com mensagem explicativa (D3).
+- ✅ `core`: `Pattern` — regex compilado, com detecção e mensagem explicativa
+  para lookahead, lookbehind e backreference (D3).
 - `xtask gen-schema` → `schema/v0.json`.
 - ✅ `cli`: `clap`, `archwarden config validate`, exit codes 0/1/2, render
   `miette`. Crate reestruturado com `lib.rs` testável e `main.rs` fino.

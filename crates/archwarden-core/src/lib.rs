@@ -17,6 +17,7 @@
 //! - [`ids`] — stable identifiers for rules and modules
 //! - [`level`] — severity, of which there are exactly two
 //! - [`path`] — repository-relative paths
+//! - [`pattern`] — filename regexes, and the constructs we refuse
 //! - [`scope`] — the `roots` / `from` directory matcher
 //! - [`template`] — the `{{pascal(name)}}` mini-template
 //! - [`traits`] — the parser, resolver and rule-engine seams
@@ -33,6 +34,7 @@ pub mod hash;
 pub mod ids;
 pub mod level;
 pub mod path;
+pub mod pattern;
 pub mod scope;
 pub mod template;
 pub mod traits;

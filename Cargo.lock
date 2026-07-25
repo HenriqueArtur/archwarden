@@ -124,6 +124,7 @@ dependencies = [
  "camino",
  "globset",
  "heck",
+ "regex",
  "schemars",
  "serde",
  "serde_json",
