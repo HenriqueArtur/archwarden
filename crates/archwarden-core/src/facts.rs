@@ -218,8 +218,12 @@ impl KindFilter {
 }
 
 /// A symbol a file exports.
+///
+/// Like [`crate::finding::Finding`], and for the same reason, this is not
+/// `#[non_exhaustive]`: a parser front-end in another crate has to build one,
+/// and the attribute would make that impossible. The attribute stays on the
+/// enums, which downstream code only reads.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ExportFact {
     /// The exported name. `None` for an anonymous default export.
     pub name: Option<String>,
@@ -236,7 +240,6 @@ pub struct ExportFact {
 
 /// An import a file declares.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct ImportFact {
     /// The specifier exactly as written, e.g. `@/domain/user`.
     pub specifier: String,
@@ -254,7 +257,6 @@ pub struct ImportFact {
 
 /// A call expression found in a file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct CallFact {
     /// The callee as written at the call site, e.g. `Event.save`. Method
     /// chains are recorded verbatim and matched exactly.
@@ -265,7 +267,6 @@ pub struct CallFact {
 
 /// Everything archwarden knows about one file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[non_exhaustive]
 pub struct FileFacts {
     /// The file, relative to the repository root.
     pub path: RepoRelPath,

@@ -57,6 +57,7 @@ oxc_ast = "=0.141.0"
 oxc_ast_visit = "=0.141.0"
 oxc_parser = "=0.141.0"
 oxc_span = "=0.141.0"
+oxc_syntax = "=0.141.0"
 oxc_resolver = "11.24.2"
 
 # --- walk, parallelism, cache ----------------------------------------------

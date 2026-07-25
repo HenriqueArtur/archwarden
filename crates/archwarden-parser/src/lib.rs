@@ -6,3 +6,6 @@
 //!
 //! Adding another language means implementing this trait and populating the
 //! same fact types. No rule engine changes.
+
+// Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod oxc;
