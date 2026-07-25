@@ -12,6 +12,7 @@ authors.workspace = true
 [dependencies]
 archwarden-config = { workspace = true }
 archwarden-core = { workspace = true }
+archwarden-cache = { workspace = true }
 archwarden-engine = { workspace = true }
 archwarden-resolver = { workspace = true }
 camino = { workspace = true }

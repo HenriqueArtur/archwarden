@@ -614,7 +614,7 @@ ordens) e passa. O job do CI é isolado, então não afeta o build.
 
 ---
 
-### M4 — Cache `⬜`
+### M4 — Cache `✅`
 
 **Objetivo:** bater o critério warm do `ROADMAP.md:48-51`.
 
@@ -651,17 +651,117 @@ decisão seja informada e não implícita.
   seja auto-descritivo — o que elimina `postcard` e `bincode` de uma vez. Os
   `facts` funcionavam com postcard; os `findings` não, e o teste de round-trip
   foi o que revelou. MessagePack é auto-descritivo e continua compacto.
-- `cache`: `resolution_epoch` = hash de `tsconfig*.json` + `package.json` +
-  lockfile (C4).
-- `cache`: versionamento de formato (ADR#3), invalidação total em bump.
-- `engine`: probe antes de parse, flush em lote no fim.
-- `benches/`: criterion cold/warm; baseline registrada com a máquina (D13).
+- ✅ `engine`: `resolution_epoch` = hash de `tsconfig*.json` + `package.json` +
+  lockfile (C4). Ficou em `archwarden-engine/src/epoch.rs`, não no `cache`:
+  quem sabe quais arquivos existem é o `RepoTree`, e o `cache` não conhece
+  árvore nenhuma. 11 testes.
+- ✅ `cache`: versionamento de formato (ADR#3), invalidação total em bump.
+- ✅ `engine`: probe antes de parse, flush em lote no fim. `check` passou a
+  receber um `Run { root, config, tree, cache }` — struct e não quatro
+  parâmetros, porque `Option<&mut Cache>` numa lista de argumentos não diz
+  para que serve.
+- ✅ `cli`: `--no-cache`, cache em `.archwarden/cache/cache.redb`, `files_parsed`
+  e `facts_reused` no resumo (texto e JSON).
+- ✅ `benches/`: criterion `walk` / `check/cold` / `check/warm` em 1k e 10k
+  arquivos.
 
 **Pronto quando:** warm run mede-se em `criterion` e a invalidação por mudança
 de `tsconfig.paths` tem teste.
 
-**Registro**
-> _(pendente)_
+**Registro** — 2026-07-25
+
+Tudo entregue, e a medição diz uma coisa desconfortável.
+
+**Baseline (D13).** Lima Ubuntu 24.04, ARM64, 4 cores, build `--release`,
+page cache quente, repo sintético de arquivos TS uniformes (~500 B, um
+`import`, uma `interface`, uma `class`, a função exportada):
+
+| | 1.000 arquivos | 10.000 arquivos |
+|---|---|---|
+| `walk` | 0,77 ms | 6,1 ms |
+| `check/cold` (sem cache) | 5,53 ms | 61,6 ms |
+| `check/warm` (cache cheio) | 4,60 ms | 55,4 ms |
+
+**O cache economiza 10%.** Não 5×, não 2×: 10%. Fui atrás do porquê em vez de
+registrar o número e seguir, e a decomposição para 10k arquivos é:
+
+| Etapa | Custo | Observação |
+|---|---|---|
+| ler + hashear (`blake3`) | 22,8 ms | 2,28 µs/arquivo — inevitável |
+| parse (`oxc`) | ~14 ms | **é isto que o cache poupa** |
+| probe no `redb` | 8,0 ms | **é isto que o cache custa** |
+| regras + contabilidade | ~25 ms | |
+
+O parse do `oxc` custa 1,4 µs por arquivo. Ler o arquivo do disco custa 2,3 µs.
+**Parsear é mais barato que ler.** O cache troca 14 ms de parse por 8 ms de
+probe, e o ganho líquido some no ruído.
+
+Dos 800 ns do probe: 214 ns são `begin_read` + `open_table` por arquivo,
+164 ns a busca na árvore B, e ~390 ns o decode MessagePack. Reusar uma
+transação de leitura ao longo do run salvaria ~2 ms em 55 ms — não vale a
+complexidade de invalidar o snapshot depois do `flush`. Registrado como opção,
+não feito.
+
+**O que isto significa.** A premissa do ADR#3 já tinha sido questionada pela
+medição de 2026-07-25 (30k arquivos em 0,20 s a frio). Agora há um segundo
+dado: mesmo quando o cache funciona perfeitamente, ele não tem o que economizar,
+porque a metade cara é o I/O e não o parse. As saídas reais, se um dia o
+número importar:
+
+- **(a) `mtime` + tamanho no lugar do hash de conteúdo** — troca o `read` por
+  um `stat`, que é ~10× mais barato. É o que ferramentas de build fazem. Custa
+  correção: um arquivo restaurado com o mesmo `mtime` e tamanho passa batido.
+- **(b) cachear `findings` por diretório**, não `facts` por arquivo — pula
+  também as regras (~25 ms), mas continua precisando saber que nada mudou.
+- **(c) paralelizar com `rayon`** — ortogonal, 4 cores parados hoje, e
+  provavelmente o maior ganho isolado.
+
+Nenhuma foi feita. (a) é decisão de produto (correção por velocidade), (b)
+depende do grafo do M5, (c) é M8. A tabela `findings` e o `resolution_epoch`
+estão prontos e testados, mas **não estão ligados no runner** — ligar findings
+por arquivo seria errado, porque a chave precisa cobrir a forma do diretório e
+não o conteúdo de um arquivo. Fica para o M5, junto com o grafo.
+
+**Desvios do esperado**
+
+- `run::check` mudou de assinatura para o struct `Run`. Quarto caso em que a
+  primeira implementação real de uma camada corrigiu a abstração desenhada
+  antes dela.
+- `reads_files(&CompiledConfig)` surgiu por causa de um teste: uma config só
+  estrutural não deve **criar** o arquivo de cache. Abrir um `redb` que
+  ninguém vai consultar deixa um arquivo que o usuário tem que descobrir por
+  que existe.
+- O JSON do resumo ganhou `files_parsed` e `facts_reused`. Não é bump de
+  `REPORT_VERSION`: acrescentar campo não quebra consumidor.
+- Texto só mostra `· N parsed, M reused` quando algo foi lido. Um run
+  estrutural imprimindo `0 parsed, 0 reused` só levanta a pergunta.
+- Dois furos de cobertura que **antecediam o M4** apareceram na conferência e
+  foram fechados: `unreadable_files` não tinha teste nenhum (arquivo em
+  Latin-1), e o marcador `<unreadable>` do epoch também não (`chmod 000`,
+  `#[cfg(unix)]`).
+- Erro meu, pego pelo compilador e não por revisão: escrevi o JSON de teste em
+  `camelCase` (`filePattern`, `mustExport`). O formato documentado em
+  `CONFIG.md:148` é `snake_case`.
+
+**Um mutante sobrevivente, deixado de propósito.** `cargo mutants` no `engine`
+(29 mutantes): 22 mortos, 6 inviáveis, 1 vivo — trocar `&&` por `||` em
+`run.rs:152`, na guarda `file.class == FileClass::Source && algum engine
+needs_facts()`. Ele sobrevive porque **toda engine de hoje já recusa arquivo
+não-fonte por conta própria** (`spec_pair::is_exempt` checa `FileClass`,
+`naming::applies_to` exige que o `file_pattern` case). Não existe entrada
+alcançável em que as duas metades discordem.
+
+Tentei matá-lo com um `.json` numa pasta governada por `spec-pair`; o teste
+ficou (é contrato de verdade: aquele arquivo nunca é parseado) mas não mata o
+mutante, porque `applies_to` já devolve `false` antes. Matar de fato exigiria
+injetar uma engine de teste no `check`, o que significa mudar a assinatura para
+receber engines só por causa da métrica.
+
+A guarda **fica**. `FileFacts` vem de um parser de TypeScript; o invariante
+"só arquivo-fonte vai para o parser" pertence ao único lugar que chama o
+parser, não espalhado por toda regra futura — e D10 já prevê `.md` na árvore.
+O crate `engine` não está no conjunto de zero-sobreviventes do plano
+(`rules`, `config`, `core` estão).
 
 ---
 

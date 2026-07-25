@@ -7,6 +7,7 @@ pub mod diagnostic;
 pub mod exit;
 pub mod report;
 
+use archwarden_cache::store::Cache;
 use archwarden_config::{
     compile,
     discovery::{self, LoadedConfig},
@@ -39,6 +40,13 @@ pub enum Command {
         /// How to render the report.
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
+
+        /// Parse every file from source, reading and writing nothing.
+        ///
+        /// The escape hatch for a suspected cache bug: if a run disagrees with
+        /// `--no-cache`, the cache is wrong and that is worth a report.
+        #[arg(long)]
+        no_cache: bool,
     },
 
     /// Inspect the configuration itself.
@@ -75,9 +83,13 @@ pub struct Output<'a> {
 /// interface and a stray `Err` bubbling to `main` would bypass it.
 pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
     match &cli.command {
-        Command::Check { format } => {
-            check(cli.config.as_deref(), working_directory, *format, output)
-        }
+        Command::Check { format, no_cache } => check(
+            cli.config.as_deref(),
+            working_directory,
+            *format,
+            *no_cache,
+            output,
+        ),
         Command::Config { command } => match command {
             ConfigCommand::Validate => validate(cli.config.as_deref(), working_directory, output),
         },
@@ -130,10 +142,21 @@ fn prepare(
     Ok((merged, compiled))
 }
 
+/// archwarden's own directory in the repository, and the cache inside it.
+///
+/// Decision 4 in `DECISIONS.md`: archwarden owns `.archwarden/` for generated
+/// artefacts and never writes anywhere else in the user's tree.
+const CACHE_DIRECTORY: &str = ".archwarden/cache";
+
+/// The database file itself. Its format version lives inside it, so this name
+/// does not change when the shape does.
+const CACHE_FILE: &str = "cache.redb";
+
 fn check(
     explicit: Option<&Utf8Path>,
     working_directory: &Utf8Path,
     format: Format,
+    no_cache: bool,
     output: &mut Output<'_>,
 ) -> Exit {
     let (merged, compiled) = match prepare(explicit, working_directory, output) {
@@ -149,13 +172,51 @@ fn check(
         }
     };
 
-    let outcome = archwarden_engine::run::check(&merged.root, &compiled, &tree);
+    // Opened only when a rule will actually look inside a file. A purely
+    // structural configuration reads no bytes, and a cache it never consults
+    // would just be a file someone has to wonder about.
+    let mut cache = if no_cache || !archwarden_engine::run::reads_files(&compiled) {
+        None
+    } else {
+        open_cache(&merged.root, output)
+    };
+
+    let outcome = archwarden_engine::run::check(archwarden_engine::run::Run {
+        root: &merged.root,
+        config: &compiled,
+        tree: &tree,
+        cache: cache.as_mut(),
+    });
+
+    // A cache that did not persist costs the next run its speed and nothing
+    // else, so it is a note on stderr rather than a failure.
+    if let Some(cache) = cache.as_mut()
+        && let Err(error) = cache.flush()
+    {
+        let _ = writeln!(output.err, "note: the cache was not written — {error}");
+    }
+
     crate::report::render(&outcome, format, output.out);
 
     if outcome.fails_build() {
         Exit::Errors
     } else {
         Exit::Clean
+    }
+}
+
+/// Opens the repository's cache, or explains why it is running without one.
+///
+/// A cache is a rebuildable artefact. Refusing to lint because one is damaged
+/// would be the wrong trade, so a failure here degrades the run instead of
+/// ending it.
+fn open_cache(root: &Utf8Path, output: &mut Output<'_>) -> Option<Cache> {
+    match Cache::open(&root.join(CACHE_DIRECTORY).join(CACHE_FILE)) {
+        Ok(cache) => Some(cache),
+        Err(error) => {
+            let _ = writeln!(output.err, "note: running without a cache — {error}");
+            None
+        }
     }
 }
 
@@ -236,6 +297,13 @@ mod tests {
             std::fs::write(&path, contents).expect("write file");
         }
 
+        let captured = run_at(&root, args);
+        (dir, captured)
+    }
+
+    /// Runs against an existing tree, so a test can run twice over one
+    /// repository -- which is the only way to observe a cache at all.
+    fn run_at(root: &Utf8Path, args: &[&str]) -> Captured {
         let mut command_line = vec!["archwarden"];
         command_line.extend_from_slice(args);
         let cli = Cli::try_parse_from(command_line).expect("arguments should parse");
@@ -244,20 +312,39 @@ mod tests {
         let mut stderr = Vec::new();
         let exit = run(
             &cli,
-            &root,
+            root,
             &mut Output {
                 out: &mut stdout,
                 err: &mut stderr,
             },
         );
 
-        let captured = Captured {
+        Captured {
             out: String::from_utf8(stdout).expect("stdout is UTF-8"),
             err: String::from_utf8(stderr).expect("stderr is UTF-8"),
             exit,
-        };
-        (dir, captured)
+        }
     }
+
+    /// The summary counts, pulled back out of a JSON report.
+    fn cache_split(captured: &Captured) -> (u64, u64) {
+        let parsed: serde_json::Value =
+            serde_json::from_str(&captured.out).expect("stdout is a JSON report");
+        (
+            parsed["summary"]["files_parsed"]
+                .as_u64()
+                .expect("files_parsed"),
+            parsed["summary"]["facts_reused"]
+                .as_u64()
+                .expect("facts_reused"),
+        )
+    }
+
+    /// A configuration whose one rule has to look inside files.
+    const NAMING: &str = r#"{"version":0,"rules":[{
+        "type":"naming","id":"usecase-name","level":"error","roots":"src/*",
+        "file_pattern":"^(?<name>[a-z0-9-]+)\\.use-case\\.ts$",
+        "must_export":{"name":"{{pascal(name)}}","kind":"function"}}]}"#;
 
     const MINIMAL: &str = r#"{"version": 0}"#;
 
@@ -580,5 +667,173 @@ mod tests {
         );
         assert!(Cli::try_parse_from(["archwarden", "nope"]).is_err());
         assert!(Cli::try_parse_from(["archwarden", "config", "validate"]).is_ok());
+    }
+
+    /// The cache lives in `.archwarden/cache/`, which is archwarden's own
+    /// directory in the repository and the one `.gitignore` covers.
+    #[test]
+    fn checking_writes_a_cache_under_the_repository() {
+        let (guard, result) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export function CreateClient() {}",
+                ),
+            ],
+            &["check"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        let cache = guard.path().join(CACHE_DIRECTORY);
+        assert!(cache.is_dir(), "no cache at {}", cache.display());
+    }
+
+    /// The point of the whole milestone: the second run over an unchanged
+    /// repository parses nothing.
+    #[test]
+    fn a_second_check_reuses_the_cached_facts() {
+        let (guard, cold) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export function CreateClient() {}",
+                ),
+                (
+                    "src/user/delete-client.use-case.ts",
+                    "export function DeleteClient() {}",
+                ),
+            ],
+            &["check", "--format", "json"],
+        );
+        assert_eq!(cache_split(&cold), (2, 0));
+
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        let warm = run_at(&root, &["check", "--format", "json"]);
+
+        assert_eq!(cache_split(&warm), (0, 2));
+
+        // The counts differ by design -- that is the point of the cache. What
+        // may never differ is the answer, or the scope it was computed over.
+        let (cold, warm): (serde_json::Value, serde_json::Value) = (
+            serde_json::from_str(&cold.out).expect("JSON"),
+            serde_json::from_str(&warm.out).expect("JSON"),
+        );
+        assert_eq!(warm["findings"], cold["findings"]);
+        assert_eq!(
+            warm["summary"]["files_scanned"],
+            cold["summary"]["files_scanned"]
+        );
+
+        // And the cache is not itself a file to be checked: it lives in a
+        // dotted directory precisely so the walk never sees it.
+        assert_eq!(cold["summary"]["files_scanned"], 3);
+    }
+
+    /// `--no-cache` is the escape hatch for a suspected cache bug, so it has to
+    /// both skip reading and skip writing.
+    #[test]
+    fn no_cache_neither_reads_nor_writes() {
+        let files = [
+            ("arch.config.json", NAMING),
+            (
+                "src/user/create-client.use-case.ts",
+                "export function CreateClient() {}",
+            ),
+        ];
+        let (guard, first) = run_in(&files, &["check", "--format", "json", "--no-cache"]);
+        assert_eq!(cache_split(&first), (1, 0));
+        assert!(
+            !guard.path().join(CACHE_DIRECTORY).exists(),
+            "nothing should have been written"
+        );
+
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        let second = run_at(&root, &["check", "--format", "json", "--no-cache"]);
+        assert_eq!(cache_split(&second), (1, 0), "and nothing was read back");
+    }
+
+    /// An edited file is parsed again. A cache that missed an edit would be
+    /// worse than no cache at all.
+    #[test]
+    fn editing_a_file_forces_it_to_be_parsed_again() {
+        let (guard, first) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export function CreateClient() {}",
+                ),
+            ],
+            &["check", "--format", "json"],
+        );
+        assert_eq!(first.exit, Exit::Clean);
+
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        std::fs::write(
+            root.join("src/user/create-client.use-case.ts"),
+            "export const CreateClient = () => {};",
+        )
+        .expect("edit");
+
+        let second = run_at(&root, &["check", "--format", "json"]);
+        assert_eq!(cache_split(&second), (1, 0));
+        assert_eq!(second.exit, Exit::Errors, "the new fault is reported");
+    }
+
+    /// A cache that cannot be opened must not stop the run: it is a rebuildable
+    /// artefact, and refusing to lint because of one would be the wrong trade.
+    #[test]
+    fn an_unusable_cache_is_a_note_not_a_failure() {
+        let (guard, first) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export function CreateClient() {}",
+                ),
+            ],
+            &["check", "--format", "json"],
+        );
+        assert_eq!(first.exit, Exit::Clean);
+
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        // A directory where the database file should be: unopenable, and not
+        // something the cache may delete its way out of.
+        let database = root.join(CACHE_DIRECTORY).join(CACHE_FILE);
+        std::fs::remove_file(&database).expect("remove the database");
+        std::fs::create_dir(&database).expect("put a directory in its place");
+
+        let second = run_at(&root, &["check", "--format", "json"]);
+
+        assert_eq!(second.exit, Exit::Clean, "the run still happened");
+        assert_eq!(cache_split(&second), (1, 0), "and it parsed for itself");
+        assert!(second.err.contains("cache"), "{}", second.err);
+        drop(guard);
+    }
+
+    /// A structural configuration reads no bytes, so it has nothing to cache
+    /// and must not pay for opening one.
+    #[test]
+    fn a_structural_configuration_writes_no_cache() {
+        let (guard, result) = run_in(
+            &[
+                (
+                    "arch.config.json",
+                    r#"{"version":0,"rules":[{"type":"structure","id":"shape",
+                       "level":"error","roots":"src/*","allow":["types"]}]}"#,
+                ),
+                ("src/user/types/user.ts", ""),
+            ],
+            &["check", "--format", "json"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert_eq!(cache_split(&result), (0, 0));
+        assert!(
+            !guard.path().join(CACHE_DIRECTORY).exists(),
+            "an empty cache is still a file someone has to gitignore"
+        );
     }
 }

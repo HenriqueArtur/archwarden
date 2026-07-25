@@ -55,6 +55,8 @@ struct Summary {
     warnings: usize,
     files_scanned: usize,
     directories_scanned: usize,
+    files_parsed: usize,
+    facts_reused: usize,
 }
 
 impl Summary {
@@ -64,6 +66,8 @@ impl Summary {
             warnings: report.warning_count(),
             files_scanned: report.files_scanned,
             directories_scanned: report.directories_scanned,
+            files_parsed: report.files_parsed,
+            facts_reused: report.facts_reused,
         }
     }
 }
@@ -141,7 +145,7 @@ fn render_text(report: &Report, out: &mut dyn std::io::Write) {
     }
 
     let summary = Summary::of(report);
-    let _ = writeln!(
+    let _ = write!(
         out,
         "{} {}, {} {} · {} {}, {} {}",
         summary.errors,
@@ -153,6 +157,18 @@ fn render_text(report: &Report, out: &mut dyn std::io::Write) {
         summary.directories_scanned,
         plural(summary.directories_scanned, "directory", "directories"),
     );
+
+    // Only when files were actually read. A structural run has nothing to say
+    // here, and "0 parsed, 0 reused" would only invite the question of why.
+    if summary.files_parsed + summary.facts_reused > 0 {
+        let _ = write!(
+            out,
+            " · {} parsed, {} reused",
+            summary.files_parsed, summary.facts_reused
+        );
+    }
+
+    let _ = writeln!(out);
 }
 
 fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
@@ -305,6 +321,8 @@ mod tests {
             files_scanned: 34,
             unimplemented_rules: Vec::new(),
             unreadable_files: Vec::new(),
+            files_parsed: 0,
+            facts_reused: 0,
         }
     }
 
@@ -363,11 +381,9 @@ mod tests {
         );
 
         let singular = Report {
-            findings: Vec::new(),
             directories_scanned: 1,
             files_scanned: 1,
-            unimplemented_rules: Vec::new(),
-            unreadable_files: Vec::new(),
+            ..report(Vec::new())
         };
         assert!(
             rendered(&singular, Format::Text).ends_with("1 file, 1 directory\n"),
@@ -381,11 +397,8 @@ mod tests {
     #[test]
     fn an_unchecked_rule_is_announced_in_both_formats() {
         let report = Report {
-            findings: Vec::new(),
-            directories_scanned: 1,
-            files_scanned: 1,
             unimplemented_rules: vec!["future-rule".to_owned()],
-            unreadable_files: Vec::new(),
+            ..report(Vec::new())
         };
 
         let text = rendered(&report, Format::Text);
@@ -412,6 +425,8 @@ mod tests {
         assert_eq!(parsed["summary"]["warnings"], 0);
         assert_eq!(parsed["summary"]["files_scanned"], 34);
         assert_eq!(parsed["summary"]["directories_scanned"], 12);
+        assert_eq!(parsed["summary"]["files_parsed"], 0);
+        assert_eq!(parsed["summary"]["facts_reused"], 0);
 
         let first = &parsed["findings"][0];
         assert_eq!(first["rule_id"], "domain-entity-shape");
@@ -511,6 +526,55 @@ mod tests {
         });
 
         assert_eq!(sentence, "one of `types`, or `shared` as a warning");
+    }
+
+    /// A structural run reads no file, and its summary says nothing about a
+    /// cache -- there is nothing to say. The common line stays short.
+    #[test]
+    fn a_run_that_read_nothing_says_nothing_about_the_cache() {
+        let text = rendered(&report(Vec::new()), Format::Text);
+        assert_eq!(text, "0 errors, 0 warnings · 34 files, 12 directories\n");
+    }
+
+    /// When files were read, the split between parsed and reused is shown.
+    /// Otherwise a cache that silently stopped working is invisible until
+    /// someone thinks to time two runs.
+    #[test]
+    fn a_run_that_read_files_reports_the_cache_split() {
+        let cold = rendered(
+            &Report {
+                files_parsed: 34,
+                ..report(Vec::new())
+            },
+            Format::Text,
+        );
+        assert!(cold.ends_with("· 34 parsed, 0 reused\n"), "{cold}");
+
+        let warm = rendered(
+            &Report {
+                facts_reused: 34,
+                ..report(Vec::new())
+            },
+            Format::Text,
+        );
+        assert!(warm.ends_with("· 0 parsed, 34 reused\n"), "{warm}");
+    }
+
+    /// The counts reach JSON too, where a tool can chart them.
+    #[test]
+    fn the_json_summary_carries_the_cache_split() {
+        let json = rendered(
+            &Report {
+                files_parsed: 2,
+                facts_reused: 32,
+                ..report(Vec::new())
+            },
+            Format::Json,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        assert_eq!(parsed["summary"]["files_parsed"], 2);
+        assert_eq!(parsed["summary"]["facts_reused"], 32);
     }
 
     /// Lists read as prose rather than as a debug dump, at every length.
