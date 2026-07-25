@@ -266,6 +266,21 @@ fn facts_for(
     Ok((parse(path, &source, content)?, Source::Parsed))
 }
 
+/// Facts for one file, read and parsed now.
+///
+/// The uncached path, exposed for `check --file`: a pre-write hook checks one
+/// file, and opening a cache to read one entry costs more than the parse it
+/// would save.
+///
+/// # Errors
+/// A message naming what went wrong, when the file cannot be read or parsed.
+pub fn facts_of(root: &Utf8Path, path: &RepoRelPath) -> Result<FileFacts, String> {
+    let source =
+        std::fs::read_to_string(root.join(path.as_path())).map_err(|error| error.to_string())?;
+    let content = ContentHash::of(source.as_bytes());
+    parse(path, &source, content)
+}
+
 fn parse(path: &RepoRelPath, source: &str, content: ContentHash) -> Result<FileFacts, String> {
     archwarden_parser::oxc::OxcParser
         .parse(path, source, content)

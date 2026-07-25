@@ -131,28 +131,36 @@ fn render_json(report: &Report, out: &mut dyn std::io::Write) {
     }
 }
 
+/// One finding, in the shape a reader has learned to scan.
+///
+/// Shared by the full report and the single-file check, so a hook and a
+/// commit-time run word the same finding identically.
+fn render_finding(finding: &Finding, out: &mut dyn std::io::Write) {
+    let module = finding
+        .module_id
+        .as_ref()
+        .map_or_else(|| "*".to_owned(), ToString::to_string);
+
+    let _ = writeln!(
+        out,
+        "{:<7} {}\n        [{}] {} — {}",
+        finding.level,
+        finding.path,
+        module,
+        finding.rule_id,
+        describe_observed(&finding.observed),
+    );
+    let _ = writeln!(
+        out,
+        "        expected: {}",
+        describe_expectation(&finding.expected)
+    );
+    let _ = writeln!(out);
+}
+
 fn render_text(report: &Report, out: &mut dyn std::io::Write) {
     for finding in &report.findings {
-        let module = finding
-            .module_id
-            .as_ref()
-            .map_or_else(|| "*".to_owned(), ToString::to_string);
-
-        let _ = writeln!(
-            out,
-            "{:<7} {}\n        [{}] {} — {}",
-            finding.level,
-            finding.path,
-            module,
-            finding.rule_id,
-            describe_observed(&finding.observed),
-        );
-        let _ = writeln!(
-            out,
-            "        expected: {}",
-            describe_expectation(&finding.expected)
-        );
-        let _ = writeln!(out);
+        render_finding(finding, out);
     }
 
     for (path, reason) in &report.unreadable_files {
@@ -202,6 +210,80 @@ fn render_text(report: &Report, out: &mut dyn std::io::Write) {
     }
 
     let _ = writeln!(out);
+}
+
+/// The JSON envelope for a single-file check.
+#[derive(Debug, Serialize)]
+struct JsonSingle<'a> {
+    version: u32,
+    path: &'a archwarden_core::path::RepoRelPath,
+    findings: &'a [Finding],
+    /// Always present, even when empty. A caller needs to see that the list is
+    /// empty rather than infer it from absence -- that is the whole point of
+    /// reporting skips (correction C6).
+    skipped: Vec<JsonSkipped<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct JsonSkipped<'a> {
+    rule_id: &'a str,
+    reason: &'static str,
+}
+
+/// Writes a single-file check in the requested format.
+pub fn render_single(
+    single: &archwarden_engine::single::Single,
+    format: Format,
+    out: &mut dyn std::io::Write,
+) {
+    match format {
+        Format::Text => render_single_text(single, out),
+        Format::Json => render_single_json(single, out),
+    }
+}
+
+fn render_single_json(single: &archwarden_engine::single::Single, out: &mut dyn std::io::Write) {
+    let envelope = JsonSingle {
+        version: REPORT_VERSION,
+        path: &single.path,
+        findings: &single.findings,
+        skipped: single
+            .skipped
+            .iter()
+            .map(|skipped| JsonSkipped {
+                rule_id: skipped.rule_id.as_str(),
+                reason: skipped.reason.as_str(),
+            })
+            .collect(),
+    };
+
+    match serde_json::to_string_pretty(&envelope) {
+        Ok(json) => {
+            let _ = writeln!(out, "{json}");
+        }
+        Err(error) => {
+            let _ = writeln!(out, r#"{{"error":"cannot serialise report: {error}"}}"#);
+        }
+    }
+}
+
+fn render_single_text(single: &archwarden_engine::single::Single, out: &mut dyn std::io::Write) {
+    for finding in &single.findings {
+        render_finding(finding, out);
+    }
+
+    for skipped in &single.skipped {
+        let _ = writeln!(
+            out,
+            "note: rule `{}` was not checked — {}",
+            skipped.rule_id,
+            skipped.reason.explain()
+        );
+    }
+
+    if single.findings.is_empty() && single.skipped.is_empty() {
+        let _ = writeln!(out, "{} is fine.", single.path);
+    }
 }
 
 fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {

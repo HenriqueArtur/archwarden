@@ -40,6 +40,14 @@ pub struct Cli {
 pub enum Command {
     /// Check the repository against its rules.
     Check {
+        /// Check one file instead of the repository.
+        ///
+        /// For a pre-write hook: reads the file and the directories on the way
+        /// to it, rather than walking the repository. Rules it could not
+        /// evaluate are reported, never dropped.
+        #[arg(long, value_name = "PATH")]
+        file: Option<String>,
+
         /// How to render the report.
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
@@ -131,7 +139,20 @@ pub struct Output<'a> {
 /// interface and a stray `Err` bubbling to `main` would bypass it.
 pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
     match &cli.command {
-        Command::Check { format, no_cache } => check(
+        Command::Check {
+            file: Some(file),
+            format,
+            ..
+        } => check_one(
+            cli.config.as_deref(),
+            working_directory,
+            file,
+            *format,
+            output,
+        ),
+        Command::Check {
+            format, no_cache, ..
+        } => check(
             cli.config.as_deref(),
             working_directory,
             *format,
@@ -241,6 +262,40 @@ fn describe(
     let applies = crate::describe::describe(&compiled, &path);
     crate::describe::render(&path, &applies, format, output.out);
     Exit::Clean
+}
+
+/// Checks one file, for a pre-write hook.
+///
+/// Exits with findings the same way a full run does, so a harness can block on
+/// the exit code without parsing anything.
+fn check_one(
+    explicit: Option<&Utf8Path>,
+    working_directory: &Utf8Path,
+    argument: &str,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+        Ok(prepared) => prepared,
+        Err(exit) => return exit,
+    };
+
+    let path = match crate::describe::repo_relative(&merged.root, working_directory, argument) {
+        Ok(path) => path,
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    let single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
+    crate::report::render_single(&single, format, output.out);
+
+    if single.fails_build() {
+        Exit::Errors
+    } else {
+        Exit::Clean
+    }
 }
 
 /// Shows the smallest shape that would satisfy the rules at one path.
@@ -1201,9 +1256,9 @@ mod tests {
     fn agent_guide_can_be_restricted_to_a_scope() {
         let config = r#"{"version":0,"rules":[
             {"type":"structure","id":"domain-shape","level":"error",
-             "roots":"packages/domain/*","allow":["types"]},
+             "roots":"packages/domain/*","allowed_subfolders":["types"]},
             {"type":"structure","id":"web-shape","level":"error",
-             "roots":"apps/web/*","allow":["components"]}]}"#;
+             "roots":"apps/web/*","allowed_subfolders":["components"]}]}"#;
 
         let (_guard, result) = run_in(
             &[("arch.config.json", config)],
@@ -1215,6 +1270,104 @@ mod tests {
         assert!(!result.out.contains("web-shape"), "{}", result.out);
     }
 
+    /// Layer 4: the hook asks about one file and blocks on the exit code.
+    #[test]
+    fn check_file_reports_one_file_and_exits_one() {
+        let (_guard, result) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export const CreateClient = () => {};",
+                ),
+                ("src/user/other.use-case.ts", "export const Other = 1;"),
+            ],
+            &["check", "--file", "src/user/create-client.use-case.ts"],
+        );
+
+        assert_eq!(result.exit, Exit::Errors);
+        assert!(
+            result.out.contains("src/user/create-client.use-case.ts"),
+            "{}",
+            result.out
+        );
+        assert!(
+            !result.out.contains("other.use-case.ts"),
+            "the neighbour is not this write's problem: {}",
+            result.out
+        );
+    }
+
+    /// A clean file exits zero and says so, so a hook can tell "checked and
+    /// fine" from "nothing happened".
+    #[test]
+    fn check_file_says_when_a_file_is_fine() {
+        let (_guard, result) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export function CreateClient() {}",
+                ),
+            ],
+            &["check", "--file", "src/user/create-client.use-case.ts"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(result.out.contains("is fine"), "{}", result.out);
+    }
+
+    /// Correction C6: a rule that could not be evaluated is named. A file that
+    /// does not exist cannot be parsed, and passing quietly would let a hook
+    /// wave through a write it never checked.
+    #[test]
+    fn check_file_reports_what_it_could_not_check() {
+        let (_guard, result) = run_in(
+            &[("arch.config.json", NAMING)],
+            &[
+                "check",
+                "--file",
+                "src/user/create-client.use-case.ts",
+                "--format",
+                "json",
+            ],
+        );
+
+        assert_eq!(result.exit, Exit::Clean, "nothing was found");
+        let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("valid JSON");
+        assert_eq!(parsed["skipped"][0]["rule_id"], "usecase-name");
+        assert_eq!(parsed["skipped"][0]["reason"], "unreadable");
+    }
+
+    /// `skipped` is present even when empty: a caller has to see the list is
+    /// empty rather than infer it from absence.
+    #[test]
+    fn check_file_always_carries_the_skipped_list() {
+        let (_guard, result) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export function CreateClient() {}",
+                ),
+            ],
+            &[
+                "check",
+                "--file",
+                "src/user/create-client.use-case.ts",
+                "--format",
+                "json",
+            ],
+        );
+
+        let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("valid JSON");
+        assert!(
+            parsed["skipped"].as_array().is_some_and(Vec::is_empty),
+            "{}",
+            result.out
+        );
+    }
+
     /// A structural configuration reads no bytes, so it has nothing to cache
     /// and must not pay for opening one.
     #[test]
@@ -1224,7 +1377,7 @@ mod tests {
                 (
                     "arch.config.json",
                     r#"{"version":0,"rules":[{"type":"structure","id":"shape",
-                       "level":"error","roots":"src/*","allow":["types"]}]}"#,
+                       "level":"error","roots":"src/*","allowed_subfolders":["types"]}]}"#,
                 ),
                 ("src/user/types/user.ts", ""),
             ],

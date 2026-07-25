@@ -204,6 +204,35 @@ fn scaffold_answers_through_the_binary() {
         .stdout(contains("src/user/create-client.use-case.spec.ts"));
 }
 
+/// Layer 4 through the real process, on the write a hook most needs to stop:
+/// the file does not exist yet, and neither does the folder it would create.
+#[test]
+fn check_file_stops_a_write_that_would_create_a_forbidden_folder() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{
+                "type":"structure","id":"entity-shape","level":"error",
+                "roots":"src/*","allowed_subfolders":["types","calcs"]}]}"#,
+        ),
+        ("src/user/types/user.ts", ""),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--file", "src/user/helpers/thing.ts"])
+        .assert()
+        .code(1)
+        .stdout(contains("helpers"));
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--file", "src/user/types/address.ts"])
+        .assert()
+        .success()
+        .stdout(contains("is fine"));
+}
+
 /// Layer 3, redirected the way `AGENT-INTEGRATION.md` shows it: the guide goes
 /// to stdout, and the user chooses where it lands.
 #[test]

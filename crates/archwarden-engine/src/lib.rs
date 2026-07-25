@@ -13,4 +13,5 @@
 pub mod epoch;
 pub mod resolve;
 pub mod run;
+pub mod single;
 pub mod walk;

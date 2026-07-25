@@ -202,29 +202,44 @@ the block, never duplicates it. Uninstall with `archwarden install-hooks
 Same engine as `archwarden check`, restricted to a single file. Used by
 Layer 4 hooks.
 
-File-local rules (`structure`, `naming`, `spec-pair`, `call-obligation`)
-always run. Graph rules (`import-boundary`) need cross-file state, which is
-only available if the cache is warm — running the full graph on every agent
-write would blow the latency budget.
+**Every rule runs**, boundary rules included. An earlier draft of this
+document expected graph rules to need cross-file state and be skipped on a
+cold cache; that is not so. A boundary rule is file-local once its imports are
+resolved — it asks about *its own* imports — and resolving them costs a handful
+of filesystem probes. Measured at 3 ms per invocation against a real monorepo's
+`node_modules` and `tsconfig`, for a file with four imports.
 
-When a graph rule cannot run, it is **reported as skipped, never silently
-dropped**:
+Two of the five rule kinds report through a directory check: a forbidden folder
+and a missing spec are both facts about a directory's contents. Those run too,
+against one listing per ancestor directory, **with the write folded in** —
+neither the file nor the folders leading to it necessarily exist when a hook
+asks, and checking the tree as it stands would miss exactly what the hook is
+for. Their findings are then filtered to this path's own ancestry: an agent
+writing one file is not handed its neighbour's problems.
+
+What genuinely cannot run is a rule that reads a file this command could not.
+That is **reported, never silently dropped**:
 
 ```json
 {
+  "version": 0,
   "path": "...",
   "findings": [ ... ],
-  "skipped_rules": [
-    { "id": "ui-forbids-domain-direct", "reason": "cold-cache" }
+  "skipped": [
+    { "rule_id": "usecase-factory-name", "reason": "unreadable" }
   ]
 }
 ```
 
+Reasons are stable slugs: `unreadable` (the file could not be read or parsed)
+and `not-source` (the rule is pointed at a file that is not TypeScript or
+JavaScript, so there are no facts to read — the file is fine and the rule is
+not). `skipped` is always present, even when empty: a caller has to see the
+list is empty rather than infer it from absence.
+
 This matters because a silent skip would make the same write pass or fail
-depending on cache state, which contradicts the determinism goal in
-[`ARCHITECTURE.md`](ARCHITECTURE.md). With the field present, the caller can
-see exactly what was and was not checked. The graph rules run in full on
-`archwarden check` at commit time.
+depending on what the run happened to have available, which contradicts the
+determinism goal in [`ARCHITECTURE.md`](ARCHITECTURE.md).
 
 ## Recommended setup
 
