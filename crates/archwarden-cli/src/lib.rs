@@ -7,6 +7,7 @@ pub mod describe;
 pub mod diagnostic;
 pub mod doctor;
 pub mod exit;
+pub mod explain;
 pub mod guide;
 pub mod hook;
 pub mod hooks;
@@ -155,6 +156,17 @@ pub enum ConfigCommand {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
+
+    /// Show what one rule reaches, and what it is reporting.
+    Explain {
+        /// The rule's id, as written in the config.
+        #[arg(value_name = "RULE-ID")]
+        rule_id: String,
+
+        /// How to render the explanation.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
 }
 
 /// A harness archwarden can speak the hook protocol of.
@@ -238,6 +250,13 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             ConfigCommand::Doctor { format } => {
                 doctor(cli.config.as_deref(), working_directory, *format, output)
             }
+            ConfigCommand::Explain { rule_id, format } => explain(
+                cli.config.as_deref(),
+                working_directory,
+                rule_id,
+                *format,
+                output,
+            ),
         },
     }
 }
@@ -725,6 +744,46 @@ fn doctor(
 
     crate::doctor::render(&concerns, format, output.out);
     Exit::Clean
+}
+
+/// Shows what one rule reaches, and what it is reporting.
+fn explain(
+    explicit: Option<&Utf8Path>,
+    working_directory: &Utf8Path,
+    rule_id: &str,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let Ok((merged, compiled)) = prepare(explicit, working_directory, output) else {
+        return Exit::ConfigProblem;
+    };
+
+    let id = match archwarden_core::ids::RuleId::new(rule_id) {
+        Ok(id) => id,
+        Err(error) => {
+            let _ = writeln!(output.err, "`{rule_id}` is not a rule id: {error}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    let tree = match archwarden_engine::walk::walk(&merged.root, &compiled) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = writeln!(output.err, "{error}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    match crate::explain::explain(&merged.root, &compiled, &tree, &id) {
+        Ok(explanation) => {
+            crate::explain::render(&explanation, format, output.out);
+            Exit::Clean
+        }
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            Exit::ConfigProblem
+        }
+    }
 }
 
 fn validate(
@@ -1963,6 +2022,52 @@ mod tests {
         assert_eq!(parsed["version"], 0);
         assert_eq!(parsed["concerns"][0]["code"], "unreachable-scope");
         assert_eq!(parsed["concerns"][0]["rule_id"], "legacy-shape");
+    }
+
+    /// The command a user runs when a rule is not doing what they expected.
+    #[test]
+    fn explain_shows_what_a_rule_reaches_and_reports() {
+        let (_guard, result) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export const CreateClient = () => {};",
+                ),
+                ("src/user/helper.ts", "export const helper = 1;"),
+            ],
+            &["config", "explain", "usecase-name"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(
+            result.out.contains("usecase-name (naming)"),
+            "{}",
+            result.out
+        );
+        assert!(
+            result.out.contains("src/user/create-client.use-case.ts"),
+            "{}",
+            result.out
+        );
+        assert!(
+            !result.out.contains("helper.ts"),
+            "the rule does not cover it: {}",
+            result.out
+        );
+    }
+
+    /// A typo in the id is the likeliest way to get this wrong, so the answer
+    /// is the list of real ids.
+    #[test]
+    fn explain_lists_the_real_ids_for_an_unknown_one() {
+        let (_guard, result) = run_in(
+            &[("arch.config.json", NAMING)],
+            &["config", "explain", "usecase-naming"],
+        );
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.err.contains("usecase-name"), "{}", result.err);
     }
 
     /// A structural configuration reads no bytes, so it has nothing to cache

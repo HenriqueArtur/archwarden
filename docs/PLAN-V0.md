@@ -1691,7 +1691,51 @@ que ninguém precisa.
 
 **Se a árvore não caminha**, o comando ainda imprime o que a config sozinha já
 disse, com uma nota no stderr. Metade da resposta é melhor que nenhuma.
-- `config explain <rule-id>` (M8c).
+---
+
+#### M8c — `config explain` `✅`
+
+**Registro** — 2026-07-25
+
+O `describe` responde "o que se aplica a este caminho?". Este responde a
+direção contrária: "o que esta regra alcança, e o que ela está reportando?".
+É o comando para quem escreveu uma regra e não sabe dizer se ela está fazendo
+alguma coisa.
+
+```
+usecase-name (naming) — error
+  applies to: src/*
+
+  Covers 1 path:
+    src/user/create-client.use-case.ts
+
+  Flags 1 path:
+    src/user/create-client.use-case.ts — the only export is a default, ...
+```
+
+**Os flags vêm de um run de verdade, filtrado por id.** Não é uma segunda
+avaliação: o que o `explain` mostra é o que o `check` reporta, por construção,
+e os dois não têm como divergir. Custa checar todas as regras para mostrar uma
+— aceitável num comando que já é o caminho lento, e barato comparado a manter
+duas implementações em acordo.
+
+**"Cobre" quer dizer "tem exigência sobre"** — a mesma definição do `describe`.
+Uma regra cujo escopo casa um arquivo sobre o qual ela não tem nada a dizer não
+o cobre, e listá-lo diria ao usuário que a regra alcança mais do que alcança.
+
+**Regra que não cobre nada diz isso e aponta o `config doctor`.** É justamente
+o caso que faz alguém rodar este comando, e o porquê mora no outro.
+
+**Id desconhecido lista os ids reais.** Errar o id — typo, ou confundir o
+*kind* da regra com o id dela — é o jeito mais provável de chegar nesse erro, e
+a lista é a resposta.
+
+`cargo mutants`: 15 mutantes, **zero sobreviventes**. Cobertura 99,41%.
+
+Uma nota de processo: o `typos` reclamou de `usecase-nmae`, que era typo
+*deliberado* num teste. Troquei por `usecase-naming` — id errado que é palavra
+válida, e que representa melhor o erro real (confundir kind com id) do que uma
+letra trocada.
 - **Caret exato em erro de config (opção C), M8d.** Trocar o parse por uma AST com
   spans (`jsonc-parser` ou equivalente) e casar o caminho do
   `serde_path_to_error` contra ela. Fica aqui porque o doctor precisa de span
