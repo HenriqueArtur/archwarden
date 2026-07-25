@@ -91,6 +91,15 @@ pub enum Observed {
         /// The directory's name.
         name: String,
     },
+    /// A subdirectory on `warn_subfolders`: permitted, but documented debt.
+    ///
+    /// Distinct from [`Observed::UnexpectedSubfolder`] because the two need
+    /// different sentences. "Not allowed here" under a `warning` reads as a
+    /// contradiction, and a reader is right to wonder which half to believe.
+    DiscouragedSubfolder {
+        /// The directory's name.
+        name: String,
+    },
     /// A filename matching none of the rule's patterns.
     UnexpectedFilename {
         /// The file's name.

@@ -91,12 +91,15 @@ name = "archwarden-cli"
 version = "0.0.0"
 dependencies = [
  "archwarden-config",
+ "archwarden-core",
+ "archwarden-engine",
  "archwarden-resolver",
  "assert_cmd",
  "camino",
  "clap",
  "miette",
  "predicates",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
@@ -138,6 +141,7 @@ name = "archwarden-engine"
 version = "0.0.0"
 dependencies = [
  "archwarden-core",
+ "archwarden-rules",
  "camino",
  "ignore",
  "tempfile",

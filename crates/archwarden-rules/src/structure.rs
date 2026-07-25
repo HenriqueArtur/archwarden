@@ -113,20 +113,33 @@ impl StructureEngine {
         false
     }
 
-    /// The severity a subdirectory's name earns.
+    /// What a subdirectory's name earns: a level, and what to say about it.
     ///
     /// `None` means allowed. Naming a folder in `warn_subfolders` is a more
     /// specific declaration than the rule's blanket `level`, and the more
     /// specific one wins -- so a warn-listed folder reports as a warning even
     /// under an `error` rule. See decision 6.
-    fn verdict_for(&self, name: &str) -> Option<Level> {
+    ///
+    /// The two cases also carry different observations, because "not allowed
+    /// here" printed beside `warning` reads as a contradiction.
+    fn verdict_for(&self, name: &str) -> Option<(Level, Observed)> {
         if self.allowed_subfolders.iter().any(|a| a == name) {
             return None;
         }
         if self.warn_subfolders.iter().any(|w| w == name) {
-            return Some(Level::Warning);
+            return Some((
+                Level::Warning,
+                Observed::DiscouragedSubfolder {
+                    name: name.to_owned(),
+                },
+            ));
         }
-        Some(self.level)
+        Some((
+            self.level,
+            Observed::UnexpectedSubfolder {
+                name: name.to_owned(),
+            },
+        ))
     }
 
     fn finding(&self, path: RepoRelPath, level: Level, observed: Observed) -> Finding {
@@ -198,12 +211,8 @@ impl RuleEngine for StructureEngine {
                     continue;
                 }
 
-                if let Some(level) = self.verdict_for(name) {
-                    findings.push(self.finding(
-                        subdirectory,
-                        level,
-                        Observed::UnexpectedSubfolder { name: name.clone() },
-                    ));
+                if let Some((level, observed)) = self.verdict_for(name) {
+                    findings.push(self.finding(subdirectory, level, observed));
                 }
             }
         }
@@ -407,6 +416,18 @@ mod tests {
             ]
         );
         assert_eq!(engine.level(), Level::Error, "the rule itself is an error");
+
+        // The two cases say different things. "Not allowed here" printed
+        // beside `warning` would read as a contradiction.
+        let observations: Vec<_> = findings.iter().map(|f| &f.observed).collect();
+        assert!(matches!(
+            observations.first(),
+            Some(Observed::DiscouragedSubfolder { .. })
+        ));
+        assert!(matches!(
+            observations.get(1),
+            Some(Observed::UnexpectedSubfolder { .. })
+        ));
     }
 
     /// The escape hatch is structural only, so a `_`-prefixed folder is

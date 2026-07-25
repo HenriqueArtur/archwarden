@@ -147,3 +147,160 @@ fn help_lists_the_available_commands() {
         .stdout(contains("config"))
         .stdout(contains("--config"));
 }
+
+/// The repository shape the `check` tests share: a domain entity with one
+/// disallowed folder, one folder on the warn list, and one file missing its
+/// spec.
+fn repo_with_violations() -> tempfile::TempDir {
+    repo(&[
+        (
+            "arch.config.json",
+            r#"{
+              "version": 0,
+              "modules": [{"id":"domain","rules":[
+                {"type":"structure","id":"domain-entity-shape","level":"error",
+                 "roots":["packages/domain/src/*"],
+                 "allowed_subfolders":["types","calcs"],
+                 "warn_subfolders":["shared"]},
+                {"type":"spec-pair","id":"calcs-need-spec","level":"error",
+                 "roots":["packages/domain/src/*"],"subfolders":["calcs"]}
+              ]}]
+            }"#,
+        ),
+        ("packages/domain/src/user/types/id.ts", ""),
+        ("packages/domain/src/user/calcs/age.ts", ""),
+        ("packages/domain/src/user/shared/util.ts", ""),
+        ("packages/domain/src/user/wrong-folder/x.ts", ""),
+    ])
+}
+
+/// Findings at error level exit 1, which is what a CI gate branches on.
+#[test]
+fn a_repository_with_errors_exits_one() {
+    let dir = repo_with_violations();
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("wrong-folder"))
+        .stdout(contains("age.spec.ts"));
+}
+
+/// A clean repository exits 0 and says what it looked at, so a passing run is
+/// distinguishable from a run that examined nothing.
+#[test]
+fn a_clean_repository_exits_zero_and_reports_what_it_scanned() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"shape","level":"error",
+                 "roots":["src/*"],"allowed_subfolders":["types"]}]}"#,
+        ),
+        ("src/user/types/id.ts", ""),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success()
+        .stdout(contains("0 errors, 0 warnings"))
+        .stdout(contains("files"));
+}
+
+/// Decision 1: warnings are visible but do not block. A run whose worst
+/// finding is a warning still exits 0.
+#[test]
+fn warnings_alone_exit_zero() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"shape","level":"error",
+                 "roots":["src/*"],"allowed_subfolders":["types"],
+                 "warn_subfolders":["shared"]}]}"#,
+        ),
+        ("src/user/types/id.ts", ""),
+        ("src/user/shared/util.ts", ""),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success()
+        .stdout(contains("1 warning"))
+        .stdout(contains("documented debt"));
+}
+
+/// A broken config is exit 2 even from `check`, so a pipeline can still tell
+/// "your setup is wrong" from "your code is wrong".
+#[test]
+fn checking_with_a_broken_config_exits_two() {
+    let dir = repo(&[("arch.config.json", r#"{"version": 0,,}"#)]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(2);
+}
+
+/// The JSON shape is a contract with agents and other tools. Asserted field by
+/// field rather than eyeballed, and pinned at the top level by its version.
+#[test]
+fn the_json_report_has_the_documented_shape() {
+    let dir = repo_with_violations();
+
+    let output = archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--format", "json"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output).expect("the report is valid JSON");
+
+    assert_eq!(parsed["version"], 0);
+    assert_eq!(parsed["summary"]["errors"], 2);
+    assert_eq!(parsed["summary"]["warnings"], 1);
+
+    let findings = parsed["findings"].as_array().expect("findings is an array");
+    assert_eq!(findings.len(), 3);
+
+    // Worst first, then by path: the two errors precede the warning.
+    let levels: Vec<_> = findings.iter().map(|f| f["level"].as_str()).collect();
+    assert_eq!(levels, [Some("error"), Some("error"), Some("warning")]);
+
+    let first = &findings[0];
+    assert_eq!(first["rule_id"], "calcs-need-spec");
+    assert_eq!(first["module_id"], "domain");
+    assert_eq!(first["observed"]["type"], "sibling-missing");
+    assert_eq!(first["expected"]["type"], "required-sibling");
+}
+
+/// The same repository checked twice must produce byte-identical output, or
+/// snapshot tests and CI diffs become noise. This is design goal 3.
+#[test]
+fn two_runs_over_one_repository_agree_byte_for_byte() {
+    let dir = repo_with_violations();
+
+    let run = || {
+        archwarden()
+            .current_dir(dir.path())
+            .args(["check", "--format", "json"])
+            .assert()
+            .code(1)
+            .get_output()
+            .stdout
+            .clone()
+    };
+
+    assert_eq!(run(), run());
+}

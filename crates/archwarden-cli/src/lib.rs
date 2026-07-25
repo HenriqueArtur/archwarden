@@ -5,6 +5,7 @@
 
 pub mod diagnostic;
 pub mod exit;
+pub mod report;
 
 use archwarden_config::{
     compile,
@@ -15,7 +16,7 @@ use archwarden_resolver::preset::PresetResolver;
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 
-use crate::{diagnostic::ConfigDiagnostic, exit::Exit};
+use crate::{diagnostic::ConfigDiagnostic, exit::Exit, report::Format};
 
 /// A fast, declarative architecture linter for TypeScript and JavaScript.
 #[derive(Debug, Parser)]
@@ -33,6 +34,13 @@ pub struct Cli {
 /// The top-level commands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Check the repository against its rules.
+    Check {
+        /// How to render the report.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+
     /// Inspect the configuration itself.
     Config {
         /// Which config command to run.
@@ -67,9 +75,87 @@ pub struct Output<'a> {
 /// interface and a stray `Err` bubbling to `main` would bypass it.
 pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
     match &cli.command {
+        Command::Check { format } => {
+            check(cli.config.as_deref(), working_directory, *format, output)
+        }
         Command::Config { command } => match command {
             ConfigCommand::Validate => validate(cli.config.as_deref(), working_directory, output),
         },
+    }
+}
+
+/// Loads, merges and compiles a configuration, rendering any failure.
+///
+/// Shared by `check` and `config validate` so the two can never disagree about
+/// whether a configuration is usable.
+fn prepare(
+    explicit: Option<&Utf8Path>,
+    working_directory: &Utf8Path,
+    output: &mut Output<'_>,
+) -> Result<(MergedConfig, archwarden_core::compiled::CompiledConfig), Exit> {
+    let loaded = load(explicit, working_directory).map_err(|error| {
+        let report = miette::Report::new(ConfigDiagnostic::from_load_error(&error));
+        let _ = writeln!(output.err, "{report:?}");
+        Exit::ConfigProblem
+    })?;
+
+    // Checked before merging: an unsupported version means this build cannot
+    // be trusted to interpret the file at all, presets included.
+    if !loaded.config.version_is_supported() {
+        let _ = writeln!(
+            output.err,
+            "{}: config declares version {}, but this build understands version {}",
+            loaded.path,
+            loaded.config.version,
+            archwarden_config::config::SCHEMA_VERSION,
+        );
+        return Err(Exit::ConfigProblem);
+    }
+
+    let merged = extends::merge(loaded, &PresetResolver::new()).map_err(|error| {
+        let report = miette::Report::new(ConfigDiagnostic::from_extends_error(&error));
+        let _ = writeln!(output.err, "{report:?}");
+        Exit::ConfigProblem
+    })?;
+
+    // Compiling is what makes validation mean something beyond "the JSON
+    // parsed": every glob is built, every regex is compiled, and every export
+    // template is checked against the capture groups its pattern defines.
+    let compiled = compile::compile(&merged).map_err(|error| {
+        let report = miette::Report::new(ConfigDiagnostic::from_compile_error(&error));
+        let _ = writeln!(output.err, "{report:?}");
+        Exit::ConfigProblem
+    })?;
+
+    Ok((merged, compiled))
+}
+
+fn check(
+    explicit: Option<&Utf8Path>,
+    working_directory: &Utf8Path,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+        Ok(prepared) => prepared,
+        Err(exit) => return exit,
+    };
+
+    let tree = match archwarden_engine::walk::walk(&merged.root, &compiled) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = writeln!(output.err, "{error}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    let outcome = archwarden_engine::run::check(&compiled, &tree);
+    crate::report::render(&outcome, format, output.out);
+
+    if outcome.fails_build() {
+        Exit::Errors
+    } else {
+        Exit::Clean
     }
 }
 
@@ -94,51 +180,13 @@ fn validate(
     working_directory: &Utf8Path,
     output: &mut Output<'_>,
 ) -> Exit {
-    let loaded = match load(explicit, working_directory) {
-        Ok(loaded) => loaded,
-        Err(error) => {
-            let report = miette::Report::new(ConfigDiagnostic::from_load_error(&error));
-            let _ = writeln!(output.err, "{report:?}");
-            return Exit::ConfigProblem;
+    match prepare(explicit, working_directory, output) {
+        Ok((merged, compiled)) => {
+            report_valid(&merged, compiled.rule_count(), output);
+            Exit::Clean
         }
-    };
-
-    // Checked before merging: an unsupported version means this build cannot
-    // be trusted to interpret the file at all, presets included.
-    if !loaded.config.version_is_supported() {
-        let _ = writeln!(
-            output.err,
-            "{}: config declares version {}, but this build understands version {}",
-            loaded.path,
-            loaded.config.version,
-            archwarden_config::config::SCHEMA_VERSION,
-        );
-        return Exit::ConfigProblem;
+        Err(exit) => exit,
     }
-
-    let merged = match extends::merge(loaded, &PresetResolver::new()) {
-        Ok(merged) => merged,
-        Err(error) => {
-            let report = miette::Report::new(ConfigDiagnostic::from_extends_error(&error));
-            let _ = writeln!(output.err, "{report:?}");
-            return Exit::ConfigProblem;
-        }
-    };
-
-    // Compiling is what makes this command mean something beyond "the JSON
-    // parsed": every glob is built, every regex is compiled, and every export
-    // template is checked against the capture groups its pattern defines.
-    let compiled = match compile::compile(&merged) {
-        Ok(compiled) => compiled,
-        Err(error) => {
-            let report = miette::Report::new(ConfigDiagnostic::from_compile_error(&error));
-            let _ = writeln!(output.err, "{report:?}");
-            return Exit::ConfigProblem;
-        }
-    };
-
-    report_valid(&merged, compiled.rule_count(), output);
-    Exit::Clean
 }
 
 /// Says what was loaded, and from where.

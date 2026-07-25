@@ -10,4 +10,5 @@
 //! and independently replaceable.
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod run;
 pub mod walk;

@@ -469,7 +469,7 @@ entregues em momentos diferentes.
 
 ---
 
-### M2 — Walk + `structure` + `spec-pair` `⬜`
+### M2 — Walk + `structure` + `spec-pair` `⚠️`
 
 **Objetivo:** substituir o `check-structure.ts` do Flowmaatik. Sem parser, sem
 cache, sem grafo.
@@ -493,8 +493,60 @@ Flowmaatik e produz os mesmos findings que o script TS.
 `explain` nasce aqui, não no fim, senão o `explain` melhorado de v1
 (`ROADMAP.md:71-73`) vira refactor.
 
-**Registro**
-> _(pendente)_
+**Registro** — 2026-07-25 11:45 → 14:20 -03 · `⚠️ concluído com desvio`
+
+`archwarden check` roda contra um repositório de verdade. **342 testes**,
+workspace em 98,2%, core em 100% de linha e função. Todos os 11 checks do CI
+em 0.
+
+**1. O trait `RuleEngine` estava errado e foi alargado.** Era orientado a
+arquivo; `structure` e `spec-pair` perguntam sobre diretório. Ganhou
+`check_directory` e `check_file`, ambos com default vazio. Refactor guiado por
+uso real — o M1a desenhou o trait sem nenhuma engine para provar o desenho.
+
+**2. `Finding` perdeu `#[non_exhaustive]`.** O atributo bloqueia *construção*
+de outro crate, e toda engine constrói findings. Fica nos enums, que outros
+crates só casam.
+
+**3. `FileClass` mudou de crate.** Nasceu no `archwarden-engine`, que depende
+de `rules` — a seta apontava errado quando o `spec-pair` precisou dele.
+Classificação deriva só do path; foi para o `core`.
+
+**4. `spec_suffix` virou `spec_markers`, por revisão do Henrique.** O modelo de
+sufixo literal único não expressa o que vitest e jest aceitam
+(`{test,spec}` × extensões). Pior: a primeira implementação tinha um bug
+**codificado no próprio teste** — `Component.tsx` pedindo `Component.spec.ts`,
+com a asserção afirmando isso. O vermelho nunca veio, e o `cargo-mutants`
+também não pegaria: um teste que codifica a expectativa errada é consistente
+consigo mesmo. Só apareceu quando alguém que usa o formato olhou.
+
+**5. Todos os `Display` ignoravam largura de formatter.** `f.write_str()` não
+honra `{:<7}`, então o alinhamento do relatório não funcionava — em silêncio.
+Trocados por `f.pad()` nos sete tipos, com teste no `Level`.
+
+**6. `warn_subfolders` precisou de uma observação própria.** Saía como
+`warning` com a frase "is not allowed here", o que se contradiz. Virou
+`Observed::DiscouragedSubfolder`, que diz "allowed for now, as documented
+debt".
+
+**7. Não usei `insta`.** O plano previa snapshots do `check --format json`.
+Em vez disso: asserção campo a campo do envelope JSON, e um `assert_eq!` com
+o texto escrito à mão para o formato de terminal. Motivo: para um contrato,
+afirmar os campos declara o contrato, enquanto um snapshot só registra o que
+saiu — e o `insta` foi mantido fora porque sua afordância principal
+(`cargo insta review`) é exatamente o que inverte o ciclo TDD. Se você
+preferir snapshots do documento inteiro para pegar campo novo aparecendo, é
+adicionar depois; a dependência foi removida por ora.
+
+**8. Não hasheio no walk**, apesar de o plano dizer que sim. Hashear exige ler
+todo arquivo, e numa run só-estrutural são 30k leituras para nada. O M4 decide
+a estratégia — provavelmente pré-filtro por mtime e tamanho antes de qualquer
+leitura.
+
+**Correção de doc pendente:** `RULES.md` listava `DOC.md` e `README.md` como
+isenções embutidas do `spec-pair`. O filtro por `FileClass::Source` os cobre
+junto com `.json`, imagens e tudo mais, então as entradas nominais viraram
+letra morta. Já corrigido na reescrita da seção.
 
 ---
 

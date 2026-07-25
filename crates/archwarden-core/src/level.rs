@@ -41,7 +41,7 @@ impl Level {
 
 impl std::fmt::Display for Level {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        f.pad(self.as_str())
     }
 }
 
@@ -91,6 +91,16 @@ mod tests {
         assert!(serde_json::from_str::<Level>("\"Error\"").is_err());
         assert!(serde_json::from_str::<Level>("\"ERROR\"").is_err());
         assert!(serde_json::from_str::<Level>("\"info\"").is_err());
+    }
+
+    /// A report aligns levels into a column, and `{:<7}` only pads if the
+    /// `Display` impl honours the formatter's width. `write_str` does not;
+    /// `pad` does. The bug is silent, so it gets a test.
+    #[test]
+    fn display_honours_a_width_specifier() {
+        assert_eq!(format!("{:<7}|", Level::Error), "error  |");
+        assert_eq!(format!("{:<7}|", Level::Warning), "warning|");
+        assert_eq!(format!("{:>7}|", Level::Error), "  error|");
     }
 
     #[test]
