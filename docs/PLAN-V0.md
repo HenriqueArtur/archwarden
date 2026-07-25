@@ -1805,7 +1805,7 @@ falha o check; vale limpar quando alguém passar por lá.
 
 ---
 
-### M9 — Distribuição `∥` `⬜`
+### M9 — Distribuição `∥` `🟡`
 
 **Objetivo:** instalável sem toolchain (`ARCHITECTURE.md:199-206`).
 
@@ -1820,9 +1820,126 @@ de CI e não bloqueia nada.
 - Fórmula homebrew.
 
 **Pronto quando:** as três vias de instalação funcionam a partir de uma tag.
+**Não atendido daqui** — ver o registro.
 
-**Registro**
-> _(pendente)_
+**Registro** — 2026-07-25
+
+**A matriz não cross-compila; cada alvo builda num runner da própria
+arquitetura.** Descobri o porquê tentando: `cargo build --target
+aarch64-unknown-linux-musl` falha com
+`failed to find tool "aarch64-linux-musl-gcc"`. O **`blake3` compila C** para
+os caminhos SIMD, então cross-compilar exige um toolchain C por alvo — imagem
+docker ou instalação de linker, máquina para manter.
+
+O `ubuntu-24.04-arm` do GitHub tornou a metade arm64 nativa, e o musl só
+precisa do `musl-tools` da arquitetura em que já está. Sobrou **um**
+cross-compile de verdade: x86_64 macOS a partir de runner arm64, que o
+toolchain da Apple resolve sozinho porque o SDK carrega as duas arquiteturas.
+
+Alternativa considerada e descartada: a feature `pure` do `blake3`, que
+dispensa o C. O M4 mediu que ler+hashear são 22,8 ms em 10k arquivos — parte
+significativa do run —, então desligar SIMD para simplificar o CI seria pagar
+com o produto para economizar no build.
+
+**O que eu consegui verificar daqui, e verifiquei:**
+
+- **O empacotamento**, executando os mesmos comandos do workflow: o `.tar.gz`
+  contém `archwarden-{version}-{target}/archwarden`, o binário extraído roda,
+  e o `shasum -c` do checksum publicado bate.
+- **Que o `bin-dir` do `binstall` casa com esse layout** — a URL montada e o
+  caminho interno conferidos contra o que o workflow escreve. É o par que mais
+  facilmente sai de sincronia, e a falha seria um 404 que ninguém depura pela
+  mensagem.
+- **O shim npm, ponta a ponta.** Cinco testes nas funções que decidem *o quê*
+  baixar (plataforma → triple, detecção de musl, URL, caminho interno), e o
+  wrapper rodado contra o binário real: `--version` funciona, `check` devolve
+  **exit 1** com achado, o stdin chega no `hook claude-code`, e sem binário
+  instalado ele sai **2** com instrução em vez de stack trace. O código de
+  saída é a interface — perdê-lo transformaria um gate que falha num que
+  passa.
+- **O stamper da fórmula do Homebrew**, com seis testes, incluindo contra a
+  fórmula **real** deste repositório e não uma fixture: o padrão precisa casar
+  a indentação e as aspas dela, e uma fixture que divergisse passaria enquanto
+  o release quebrava. Ele recusa placeholder sobrevivente, alvo faltando e
+  arquivo de checksum malformado — porque um checksum errado só aparece na
+  máquina de um estranho, dias depois.
+
+**Um bug que eu escrevi e o próprio exercício pegou.** A primeira versão do job
+da fórmula tinha um heredoc Python indentado dentro de um `for` do shell — que
+não termina, porque `<<'PYTHON'` exige o delimitador na coluna zero. Extraí
+para `scripts/stamp-formula.py`, o que de quebra tornou a coisa testável. Um
+script de release embutido em YAML é um script que ninguém roda até o dia do
+release.
+
+**O CI ganhou um job `distribution`** que roda os testes do shim e do stamper
+em toda PR. O workflow de release não roda numa PR, mas as duas peças de que
+ele depende rodam.
+
+**O que continua não verificado, e não tem como daqui:**
+
+- O build real dos sete alvos. Só o `aarch64-unknown-linux-gnu` é nativo aqui;
+  musl não instala sem root, e macOS e Windows não existem nesta máquina.
+- O `softprops/action-gh-release`, o `npm publish` e o download que o
+  postinstall faz — todos precisam de uma tag de verdade no GitHub.
+- O `NPM_TOKEN` no repositório.
+
+**O critério "as três vias funcionam a partir de uma tag" só se fecha com uma
+tag.** O `workflow_dispatch` builda os sete alvos e **para antes de publicar**,
+o que testa a metade cara sem criar release nenhum — é o ensaio a fazer antes
+de qualquer anúncio.
+
+**Revisão depois da pergunta do Henrique ("merge na main já cria os
+binários?").** Não: o gatilho é tag, não push. A pergunta fez eu reler o
+workflow procurando o que quebraria na primeira execução, e achou duas coisas
+de verdade:
+
+1. **`shasum` no runner do Windows.** Sob `shell: bash` ali quem responde é o
+   Git for Windows, e o que ele instala varia. Virou `scripts/checksum.py`,
+   com 6 testes — incluindo um que entrega o arquivo gerado ao `shasum -c` de
+   verdade e confere que passa. Um formato que só concorda consigo mesmo é um
+   formato que falha na máquina do usuário.
+2. **`npm publish` sem `NPM_TOKEN`.** Falharia *depois* de o release já ter
+   sido publicado, deixando o workflow vermelho sobre um release que deu
+   certo. Agora avisa e pula.
+
+E uma que eu **achei que era bug e não era**: `[ -n "" ] && VERSION=...` sob
+`set -e`. Testei com a linha exata que o GitHub usa
+(`bash --noprofile --norc -eo pipefail`) e o bash isenta lista `&&` que não
+seja o último comando do script. Reescrevi como `if` mesmo assim, porque a
+isenção depende da posição da linha, mas registro que não era defeito.
+
+**Terceira revisão, quando o Henrique perguntou se os sete alvos sairiam
+mesmo.** A pergunta certa, e a resposta era não. O `aarch64-unknown-linux-musl`
+teria falhado.
+
+Fui ao código do `cc-rs` 1.4 em vez de supor. Dois achados:
+
+1. O prefixo de cross só é aplicado atrás de `get_is_cross_compile()`, e um
+   alvo musl num host gnu **conta como cross mesmo com a mesma arquitetura**.
+2. A tabela de prefixos trata os dois musl de formas diferentes:
+   `"x86_64-unknown-linux-musl" => find_working_gnu_prefix(["x86_64-linux-musl", "musl"])`
+   — com fallback para `musl`, que acha o `musl-gcc` do `musl-tools`. Mas
+   `"aarch64-unknown-linux-musl" => Some("aarch64-linux-musl")`, **sem
+   fallback**. É exatamente o `failed to find tool "aarch64-linux-musl-gcc"`
+   que eu tinha visto na tentativa local e atribuído a "falta toolchain".
+
+`CC_<target>` é lido **antes** dessa tabela, e num runner da mesma arquitetura
+o `musl-gcc` do `musl-tools` *é* o compilador certo. Verifiquei o mecanismo
+localmente apontando `CC_aarch64_unknown_linux_gnu` para um binário
+inexistente e vendo o `blake3` reclamar dele por nome — o override vence a
+derivação. Está setado para os dois alvos musl, não só o que precisa, para que
+nenhum dependa de uma tabela de lookup no crate de outra pessoa.
+
+**Risco restante, que não dá para verificar daqui:** os runners
+`ubuntu-24.04-arm` são gratuitos em repositório **público** — o archwarden é —,
+então devem resolver. O `fail-fast: false` garante que um alvo que falhe não
+derrube os outros seis.
+
+**Versão fixada em 0.1.0** (workspace, `npm/package.json`, fórmula). O caminho
+de empacotamento inteiro foi exercitado nessa versão no alvo nativo: arquivo
+gerado, checksum escrito, `shasum -c` aceita, binário extraído em
+`archwarden-0.1.0-aarch64-unknown-linux-gnu/archwarden` — que é exatamente o
+`bin-dir` que o `binstall` procura — e ele responde `archwarden 0.1.0`.
 
 ---
 

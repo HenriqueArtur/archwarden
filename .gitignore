@@ -28,6 +28,11 @@
 tmp/
 *.snap.new
 
+# The npm shim downloads the binary at install time; it is never committed.
+npm/bin/archwarden
+npm/bin/archwarden.exe
+npm/node_modules/
+
 # cargo-mutants scratch output
 mutants.out/
 mutants.out.old/

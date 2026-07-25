@@ -122,6 +122,24 @@ jobs:
       - run: cargo machete
       - run: typos
 
+  distribution:
+    name: the install routes
+    runs-on: ubuntu-latest
+    # The release workflow cannot be run on a pull request, but the pieces it
+    # depends on can: the shim that decides which archive to download, and the
+    # script that writes checksums into the formula. Both fail on a stranger's
+    # machine, days later, if they are wrong.
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: the npm shim
+        working-directory: npm
+        run: node --test "test/*.test.mjs"
+      - name: the homebrew stamper
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
   future-rust:
     name: latest stable (advisory)
     runs-on: ubuntu-latest
