@@ -44,18 +44,46 @@ impl ConfigDiagnostic {
             LoadError::Invalid {
                 path,
                 source_text,
+                pointer,
                 source,
-            } => Self {
-                message: format!("{path} is not a valid archwarden config: {source}"),
-                source_text: Some(NamedSource::new(path.as_str(), source_text.clone())),
-                span: byte_offset(source_text, source.line(), source.column())
-                    .map(|offset| SourceSpan::new(offset.into(), 1)),
-                help: Some(
-                    "check the field against the schema at \
-                     https://archwarden.dev/schema/v0.json"
-                        .to_owned(),
-                ),
-            },
+            } => {
+                // Only a syntax error can be pointed at. serde_json reports
+                // the parser's position, which for a schema violation has
+                // already moved past the offending value -- the caret would
+                // land on the next token and accuse innocent code. Measured
+                // across four error kinds; only one of them was accurate.
+                let pointable = matches!(
+                    source.classify(),
+                    serde_json::error::Category::Syntax | serde_json::error::Category::Eof
+                );
+
+                // serde_json appends its own position to every message. For a
+                // syntax error the caret already shows it; for a schema
+                // violation it is the untrustworthy number this whole change
+                // exists to stop showing. Either way it goes.
+                let reason = strip_position(&source.to_string());
+
+                let located = if pointer.is_empty() {
+                    reason
+                } else {
+                    format!("at `{pointer}`: {reason}")
+                };
+
+                Self {
+                    message: format!("{path} is not a valid archwarden config: {located}"),
+                    source_text: pointable
+                        .then(|| NamedSource::new(path.as_str(), source_text.clone())),
+                    span: pointable
+                        .then(|| byte_offset(source_text, source.line(), source.column()))
+                        .flatten()
+                        .map(|offset| SourceSpan::new(offset.into(), 1)),
+                    help: Some(
+                        "check the field against the schema at \
+                         https://archwarden.dev/schema/v0.json"
+                            .to_owned(),
+                    ),
+                }
+            }
 
             // `LoadError` is non_exhaustive, so a new variant lands here and
             // gets the bare rendering rather than failing to compile. That is
@@ -137,6 +165,18 @@ impl ConfigDiagnostic {
     }
 }
 
+/// Removes the ` at line N column M` suffix `serde_json` appends to every
+/// message.
+///
+/// The position is either redundant, because the caret shows it, or wrong,
+/// because a schema violation is reported after the parser has moved past the
+/// offending value. Neither case wants it in the sentence.
+fn strip_position(message: &str) -> String {
+    message
+        .rfind(" at line ")
+        .map_or_else(|| message.to_owned(), |cut| message[..cut].to_owned())
+}
+
 /// Converts `serde_json`'s 1-based line and column into a byte offset.
 ///
 /// Returns `None` when the position falls outside the text, which happens for
@@ -168,14 +208,35 @@ mod tests {
     use super::*;
     use camino::Utf8PathBuf;
 
+    /// Builds a real `LoadError::Invalid`, through the same parser the loader
+    /// uses, so the pointer and the error category are the genuine ones.
     fn invalid(text: &str) -> LoadError {
-        let source = serde_json::from_str::<archwarden_config::config::Config>(text)
-            .expect_err("should not parse");
-        LoadError::Invalid {
-            path: Utf8PathBuf::from("arch.config.json"),
-            source_text: text.to_owned(),
-            source,
-        }
+        archwarden_config::discovery::parse(camino::Utf8Path::new("arch.config.json"), text)
+            .expect_err("should not parse")
+    }
+
+    #[test]
+    fn the_trailing_position_is_removed_from_a_message() {
+        assert_eq!(
+            strip_position("missing field `level` at line 3 column 41"),
+            "missing field `level`"
+        );
+        assert_eq!(
+            strip_position("rule id `a b` contains ` ` at line 6 column 3"),
+            "rule id `a b` contains ` `"
+        );
+    }
+
+    /// A message that mentions a line for its own reasons keeps everything up
+    /// to the *last* suffix, so only `serde_json`'s own addition is removed.
+    #[test]
+    fn only_the_trailing_position_is_removed() {
+        assert_eq!(
+            strip_position("bad value at line 2 of the file at line 9 column 1"),
+            "bad value at line 2 of the file"
+        );
+        assert_eq!(strip_position("no position here"), "no position here");
+        assert_eq!(strip_position(""), "");
     }
 
     #[test]
@@ -234,15 +295,48 @@ mod tests {
         assert!(diagnostic.to_string().contains("arch.config.json"));
     }
 
-    /// A schema violation is not a syntax error, but it still has a position,
-    /// so it still gets a caret.
+    /// A schema violation gets **no** caret, on purpose.
+    ///
+    /// `serde_json` reports the parser's position, and by the time a schema
+    /// violation is raised the parser has moved past the offending value, so
+    /// the caret would land on the following token. Measured across four
+    /// error kinds and only one was accurate. The field path replaces it.
     #[test]
-    fn a_schema_violation_also_gets_a_span() {
+    fn a_schema_violation_gets_a_path_instead_of_a_caret() {
         let diagnostic =
             ConfigDiagnostic::from_load_error(&invalid(r#"{"version": 0, "rules": "nope"}"#));
 
-        assert!(diagnostic.span.is_some());
+        assert!(diagnostic.span.is_none(), "no caret under innocent code");
+        assert!(diagnostic.source_text.is_none());
+        assert!(diagnostic.to_string().contains("rules"), "{diagnostic}");
         assert!(diagnostic.help.is_some(), "points at the published schema");
+    }
+
+    /// The path is what makes a schema violation actionable in a config with
+    /// thirty rules: it says *which* one.
+    #[test]
+    fn the_path_names_the_offending_rule_by_index() {
+        let diagnostic = ConfigDiagnostic::from_load_error(&invalid(
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"fine","level":"error","roots":"a/*"},
+                {"type":"structure","id":"bad id","level":"error","roots":"b/*"}]}"#,
+        ));
+
+        let message = diagnostic.to_string();
+        assert!(message.contains("rules[1]"), "{message}");
+        assert!(message.contains("bad id"), "{message}");
+        assert!(diagnostic.span.is_none());
+    }
+
+    /// A failure at the root has no useful path, and an empty one is not
+    /// printed rather than rendering as a bare `.`.
+    #[test]
+    fn a_root_level_failure_prints_no_path() {
+        let diagnostic = ConfigDiagnostic::from_load_error(&invalid("[]"));
+
+        let message = diagnostic.to_string();
+        assert!(!message.contains("at `"), "{message}");
+        assert!(!message.contains('`'), "{message}");
     }
 
     /// An unreadable file has nothing to underline and nothing useful to

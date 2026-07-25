@@ -43,6 +43,14 @@ pub enum LoadError {
         path: Utf8PathBuf,
         /// The file's contents, for span rendering.
         source_text: String,
+        /// Where in the document the failure was, as a dotted path such as
+        /// `rules[1].type`. Empty when the failure was at the root.
+        ///
+        /// This exists because `serde_json`'s own line and column are only
+        /// trustworthy for syntax errors: for a schema violation the parser
+        /// has usually moved past the offending value by the time it reports,
+        /// so the position lands on the following token.
+        pointer: String,
         /// What serde objected to.
         #[source]
         source: serde_json::Error,
@@ -88,6 +96,36 @@ pub fn discover(start: &Utf8Path) -> Result<Utf8PathBuf, LoadError> {
     })
 }
 
+/// Parses config text, recording which field failed.
+///
+/// Goes through `serde_path_to_error` rather than calling `serde_json`
+/// directly: on its own, a schema violation says only what was wrong, and the
+/// position it reports points past the offending value. The path is what tells
+/// the user *which* of thirty rules to look at.
+///
+/// # Errors
+/// [`LoadError::Invalid`].
+pub fn parse(path: &Utf8Path, source_text: &str) -> Result<Config, LoadError> {
+    let deserializer = &mut serde_json::Deserializer::from_str(source_text);
+
+    serde_path_to_error::deserialize(deserializer).map_err(|error| {
+        let pointer = error.path().to_string();
+        LoadError::Invalid {
+            path: path.to_owned(),
+            source_text: source_text.to_owned(),
+            // `serde_path_to_error` renders a root-level failure as `.` and
+            // an unknown one as `?`. Neither tells a user anything, so both
+            // collapse to empty, which callers read as "no useful path".
+            pointer: if pointer == "." || pointer == "?" {
+                String::new()
+            } else {
+                pointer
+            },
+            source: error.into_inner(),
+        }
+    })
+}
+
 /// Reads and parses a config file.
 ///
 /// # Errors
@@ -98,12 +136,7 @@ pub fn load_file(path: &Utf8Path) -> Result<LoadedConfig, LoadError> {
         source,
     })?;
 
-    let config: Config =
-        serde_json::from_str(&source_text).map_err(|source| LoadError::Invalid {
-            path: path.to_owned(),
-            source_text: source_text.clone(),
-            source,
-        })?;
+    let config = parse(path, &source_text)?;
 
     let containing_directory = path.parent().unwrap_or(Utf8Path::new("")).to_owned();
     let root = match &config.root {
@@ -262,6 +295,37 @@ mod tests {
         };
         assert_eq!(path, &root.join(CONFIG_FILE_NAME));
         assert!(source_text.contains("version"), "text is carried back");
+    }
+
+    /// The path is the point of routing parsing through `serde_path_to_error`.
+    /// `serde_json`'s own position cannot be trusted for a schema violation, so
+    /// "which of the thirty rules" has to come from somewhere else.
+    #[test]
+    fn a_schema_violation_records_which_field_failed() {
+        let err = parse(
+            Utf8Path::new("arch.config.json"),
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"fine","level":"error","roots":"a/*"},
+                {"type":"structure","id":"bad id","level":"error","roots":"b/*"}]}"#,
+        )
+        .expect_err("should fail");
+
+        let LoadError::Invalid { pointer, .. } = &err else {
+            return assert!(matches!(err, LoadError::Invalid { .. }), "{err:?}");
+        };
+        assert_eq!(pointer, "rules[1]");
+    }
+
+    /// A failure at the document root has no useful path, and `.` is noise in
+    /// a message rather than information.
+    #[test]
+    fn a_root_level_failure_records_an_empty_path() {
+        let err = parse(Utf8Path::new("arch.config.json"), "[]").expect_err("should fail");
+
+        let LoadError::Invalid { pointer, .. } = &err else {
+            return assert!(matches!(err, LoadError::Invalid { .. }), "{err:?}");
+        };
+        assert!(pointer.is_empty(), "got `{pointer}`");
     }
 
     /// A config that parses as JSON but is not a config is still Invalid, not

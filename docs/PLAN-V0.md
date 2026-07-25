@@ -421,17 +421,42 @@ sob o `oxc_resolver`.
 `Deserialize` manual (descrito abaixo). Não foi decidido se vira step próprio
 ou se fica pro M8.
 
-**Achado a resolver (2026-07-25):** o caret do `miette` cai na linha errada
-quando o erro vem de um `Deserialize` manual — por exemplo um `RuleId`
-inválido. O `serde_json` reporta a posição onde o parser estava ao receber o
-erro, que já passou do campo ofensor, então a mensagem nomeia o valor certo
-(`rule id 'bad rule' contains ' '`) mas o caret aponta o `]` da linha seguinte.
-Erros nativos do serde (variante desconhecida, tipo errado) apontam certo.
-Isso contradiz o que o próprio `diagnostic.rs` diz — "caret errado é pior que
-caret nenhum" — e a correção precisa de parsing de JSON com spans
-(`jsonc-parser` ou equivalente), que é trabalho de um step próprio.
-Enquanto não for corrigido, a mensagem carrega o valor ofensor, então o
-usuário acha o lugar.
+**Caret do `miette` — resolvido em 2026-07-25 (opção B).**
+
+O problema era maior do que eu tinha descrito. Medi as quatro classes de erro
+e **três das quatro têm span errado**, não só as vindas de `Deserialize`
+manual:
+
+| Erro | Caret do `serde_json` |
+|---|---|
+| variante desconhecida (`"type":"graf"`) | ✅ correto |
+| tipo errado (`"id": 42`) | ❌ errado |
+| campo faltando | ❌ errado |
+| validação nossa (`RuleId` inválido) | ❌ errado |
+
+E as quatro são `Category::Data`, então `classify()` **não** separa as boas das
+ruins. Erros `Syntax`/`Eof` medi separadamente: esses apontam certo, porque o
+parser quebra exatamente ali.
+
+Opções levantadas: **(A)** caret só para `Syntax`, **(B)** A + caminho do campo
+via `serde_path_to_error`, **(C)** B + AST com spans (`jsonc-parser`) para
+caret exato em tudo, **(D)** nada. Henrique escolheu **B agora, C no M8**.
+
+Implementado: parsing passa por `serde_path_to_error`, o caret sai para erro de
+schema e fica para erro de sintaxe, e a mensagem ganha o caminho do campo. A
+posição que o `serde_json` anexa ao próprio texto também é removida — era o
+mesmo número não confiável, só que em prosa.
+
+    at `rules[1]`: rule id `bad rule` contains ` `; allowed characters are
+    letters, digits, `-`, `_`, `.` and `/`
+
+**Limitação medida:** para enum com tag interna (o nosso `Rule`), o caminho
+para no índice — `rules[1]`, não `rules[1].id`. O serde bufferiza o conteúdo da
+variante e perde o nome do campo. `rules[1]` já é o desambiguador que importa.
+
+**C fica como tarefa do M8**, junto com o `config doctor`, que vai precisar de
+span para "campo desconhecido `allowed_subfolder`, você quis dizer
+`allowed_subfolders`?" de qualquer forma.
 
 **Nota sobre o DAG (D7):** `config` depende de `resolver`, que depende só de
 `core` — acíclico. O crate `archwarden-resolver` nasce aqui com a configuração
@@ -585,6 +610,12 @@ que identifica regra e correção (`ROADMAP.md:55-57`).
 
 **Tarefas**
 - Todas as checagens de `CONFIG.md:227-233`.
+- **Caret exato em erro de config (opção C).** Trocar o parse por uma AST com
+  spans (`jsonc-parser` ou equivalente) e casar o caminho do
+  `serde_path_to_error` contra ela. Fica aqui porque o doctor precisa de span
+  para "campo desconhecido `allowed_subfolder`, você quis dizer
+  `allowed_subfolders`?" de qualquer forma, e fazer as duas coisas juntas evita
+  mexer na camada de diagnóstico duas vezes. Decidido em 2026-07-25.
 - Avisos novos das decisões: `skip_dirs.scope:"walk"` + `import-boundary` (D5);
   `roots` coberto por `ignore` (D6); preset declarando `root` e `disable` de id
   inexistente (D7); arquivo só com default export sob regra `naming` (D9).
