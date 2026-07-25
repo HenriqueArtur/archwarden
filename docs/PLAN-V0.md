@@ -1642,8 +1642,55 @@ sobre o mesmo escopo nem uma `structure` sobre escopo diferente. Os dois casos
 importam — o primeiro pegaria a regra errada, o segundo inventaria um achado
 sobre config correta. Dois testes, **zero sobreviventes**.
 
-**Tarefas restantes**
-- Checagens que precisam do repositório (M8b).
+---
+
+#### M8b — `config doctor`, checagens contra o repositório `✅`
+
+**Registro** — 2026-07-25
+
+Quatro checagens, a metade lenta — é por isso que o `CONFIG.md` chama o doctor
+de mais devagar que o `validate`: ele caminha a árvore e parseia os arquivos das
+regras que perguntam sobre conteúdo.
+
+| Código | O que pega |
+|---|---|
+| `scope-matches-nothing` | escopo apontando para diretório que não existe |
+| `pattern-matches-nothing` | regex que não casa nenhum arquivo do escopo |
+| `symbol-never-imported` | `call-obligation` com módulo que ninguém importa |
+| `only-a-default-export` | D9: arquivo só com default sob regra `naming` |
+
+**A distinção que faz o `symbol-never-imported` valer:** *um* arquivo sem o
+import é achado do `check` — é o código que está errado. **Nenhum** arquivo ter
+é outra afirmação: o nome do módulo na config provavelmente está errado, e todo
+arquivo do escopo está prestes a ser reportado por causa de um typo.
+
+**Dois testes acharam bugs de verdade, não só cobertura.**
+
+1. Escrevi um teste esperando `pattern-matches-nothing` para `user.ts` sob
+   `^[a-z]+\.ts$` — que **casa**. Meu próprio comentário no teste já duvidava
+   ("wait"). O teste estava errado, o código certo.
+
+2. O sério: o `in_scope` filtrava só pelo **escopo**, ignorando o
+   `file_pattern` da regra. Uma `call-obligation` com escopo `src/*` e pattern
+   `^route\.post\.ts$` contava também os `route.get.ts` do mesmo diretório —
+   e reportava "nenhum arquivo que esta regra cobre importa X" tendo olhado
+   arquivos que ela não cobre. **Falso positivo.**
+
+   O conserto foi parar de derivar aplicabilidade: o doctor agora pergunta ao
+   `applies_to` da própria engine, o mesmo seam que o `describe` usa. Uma
+   segunda implementação de "esta regra cobre este arquivo?" ia acabar
+   discordando do checker.
+
+**Um contador virou flag por causa de um mutante.** O `looked_at += 1` sobrevivia
+a virar `-=`, e o `[profile]` do workspace não liga `overflow-checks`, então o
+`usize` daria a volta em silêncio em vez de estourar. A pergunta é "esta regra
+cobriu alguma coisa?", que é um booleano — contador ali só convidava aritmética
+que ninguém precisa.
+
+`cargo mutants`: 55 mutantes, **zero sobreviventes**.
+
+**Se a árvore não caminha**, o comando ainda imprime o que a config sozinha já
+disse, com uma nota no stderr. Metade da resposta é melhor que nenhuma.
 - `config explain <rule-id>` (M8c).
 - **Caret exato em erro de config (opção C), M8d.** Trocar o parse por uma AST com
   spans (`jsonc-parser` ou equivalente) e casar o caminho do

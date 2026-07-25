@@ -697,11 +697,32 @@ fn doctor(
     format: Format,
     output: &mut Output<'_>,
 ) -> Exit {
-    let Ok((_, compiled)) = prepare(explicit, working_directory, output) else {
+    let Ok((merged, compiled)) = prepare(explicit, working_directory, output) else {
         return Exit::ConfigProblem;
     };
 
-    let concerns = crate::doctor::examine(&compiled);
+    let mut concerns = crate::doctor::examine(&compiled);
+
+    // The slow half. A tree that will not walk is a problem the user needs to
+    // hear about, but it does not invalidate what the config alone already
+    // said, so the answer so far is still printed.
+    match archwarden_engine::walk::walk(&merged.root, &compiled) {
+        Ok(tree) => {
+            concerns.extend(crate::doctor::examine_repository(
+                &merged.root,
+                &compiled,
+                &tree,
+            ));
+        }
+        Err(error) => {
+            let _ = writeln!(
+                output.err,
+                "note: the repository could not be walked, so only the \
+                 configuration was examined — {error}"
+            );
+        }
+    }
+
     crate::doctor::render(&concerns, format, output.out);
     Exit::Clean
 }
@@ -1851,13 +1872,66 @@ mod tests {
         assert!(result.out.contains("fix:"), "{}", result.out);
     }
 
-    /// A sound configuration says so.
+    /// A sound configuration over a matching repository says so.
     #[test]
     fn doctor_is_quiet_about_a_sound_configuration() {
-        let (_guard, result) = run_in(&[("arch.config.json", NAMING)], &["config", "doctor"]);
+        let (_guard, result) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export function CreateClient() {}",
+                ),
+            ],
+            &["config", "doctor"],
+        );
 
         assert_eq!(result.exit, Exit::Clean);
         assert!(result.out.contains("No concerns"), "{}", result.out);
+    }
+
+    /// The repository half, through the command line: decision 9's warning
+    /// about a file that exports only a default.
+    #[test]
+    fn doctor_examines_the_repository_too() {
+        let (_guard, result) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export default function () {}",
+                ),
+            ],
+            &["config", "doctor"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(
+            result.out.contains("only-a-default-export"),
+            "{}",
+            result.out
+        );
+        assert!(
+            result.out.contains("src/user/create-client.use-case.ts"),
+            "the file is named: {}",
+            result.out
+        );
+    }
+
+    /// A rule pointed at a directory that is not there is the commonest
+    /// configuration mistake, and the one `validate` cannot see.
+    #[test]
+    fn doctor_reports_a_scope_that_matches_nothing() {
+        let (_guard, result) = run_in(
+            &[("arch.config.json", NAMING), ("README.md", "")],
+            &["config", "doctor"],
+        );
+
+        assert!(
+            result.out.contains("scope-matches-nothing"),
+            "{}",
+            result.out
+        );
     }
 
     /// A broken config is still exit 2 here: the doctor cannot advise on a

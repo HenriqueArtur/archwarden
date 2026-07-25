@@ -16,9 +16,12 @@
 
 use archwarden_core::{
     compiled::{CompiledConfig, CompiledRule, CompiledRuleKind, SkipScope},
-    facts::{ExportKind, ExportTags, KindFilter},
+    facts::{ExportKind, ExportTags, FileFacts, KindFilter},
     ids::RuleId,
+    path::RepoRelPath,
 };
+use archwarden_engine::walk::RepoTree;
+use camino::Utf8Path;
 use serde::Serialize;
 
 /// The version of the `doctor` JSON shape.
@@ -32,6 +35,9 @@ pub struct Concern {
     /// The rule it is about, when it is about one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_id: Option<RuleId>,
+    /// The file it is about, when it is about one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<RepoRelPath>,
     /// What is wrong, in a sentence.
     pub message: String,
     /// What to do about it.
@@ -77,6 +83,7 @@ fn walk_scope_with_boundaries(config: &CompiledConfig, concerns: &mut Vec<Concer
     concerns.push(Concern {
         code: "walk-skip-hides-imports",
         rule_id: None,
+        path: None,
         message: format!(
             "`skip_dirs.scope` is `walk`, so skipped folders are invisible to \
              the whole run -- including to {}, which {} about imports that \
@@ -119,6 +126,7 @@ fn unreachable_scope(config: &CompiledConfig, rule: &CompiledRule, concerns: &mu
     concerns.push(Concern {
         code: "unreachable-scope",
         rule_id: Some(rule.id.clone()),
+        path: None,
         message: format!(
             "every path this rule covers is excluded by {}, so it can never \
              report anything",
@@ -172,6 +180,7 @@ fn spec_subfolder_not_allowed(
         concerns.push(Concern {
             code: "spec-folder-not-allowed",
             rule_id: Some(rule.id.clone()),
+            path: None,
             message: format!(
                 "it looks for specs in `{subfolder}`, which `{}` does not \
                  allow as a subfolder, so that folder cannot exist",
@@ -219,6 +228,7 @@ fn hint_disagrees_with_kind(rule: &CompiledRule, concerns: &mut Vec<Concern>) {
     concerns.push(Concern {
         code: "hint-disagrees-with-kind",
         rule_id: Some(rule.id.clone()),
+        path: None,
         message: format!(
             "its `signature_hint` is written as an arrow (`{hint}`) but the \
              rule requires a `function`, so `archwarden scaffold` emits a \
@@ -265,6 +275,220 @@ fn list(items: &[String]) -> String {
     }
 }
 
+/// The concerns that need the repository, not just the configuration.
+///
+/// The slow half of the doctor, and the reason `CONFIG.md` calls the command
+/// slower than `validate`: it walks, and parses the files the rules that ask
+/// about contents apply to.
+#[must_use]
+pub fn examine_repository(
+    root: &Utf8Path,
+    config: &CompiledConfig,
+    tree: &RepoTree,
+) -> Vec<Concern> {
+    let mut concerns = Vec::new();
+
+    // Zipped with the engines, so applicability is asked of the same code
+    // `check` asks. Re-deriving "does this rule cover this file?" here would
+    // be a second implementation, and the doctor would eventually disagree
+    // with the checker about which files a rule is even about.
+    for (rule, engine) in config.rules().zip(archwarden_rules::engines_for(config)) {
+        scope_matches_nothing(rule, tree, &mut concerns);
+        pattern_matches_nothing(config, rule, tree, &mut concerns);
+        symbol_never_imported(root, config, rule, engine.as_ref(), tree, &mut concerns);
+        only_a_default_export(root, config, rule, engine.as_ref(), tree, &mut concerns);
+    }
+
+    concerns
+}
+
+/// A scope naming a directory that is not there. Usually a typo, occasionally
+/// a folder someone renamed and a rule nobody updated.
+fn scope_matches_nothing(rule: &CompiledRule, tree: &RepoTree, concerns: &mut Vec<Concern>) {
+    if tree
+        .directories()
+        .any(|(path, _)| rule.scope.matches_dir(path.as_path()))
+    {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "scope-matches-nothing",
+        rule_id: Some(rule.id.clone()),
+        path: None,
+        message: format!(
+            "no directory in the repository matches {}",
+            list(rule.scope.patterns())
+        ),
+        fix: "check the glob against the tree -- a scope selects directories, \
+              so `src/*` means the folders inside `src`, not the files"
+            .to_owned(),
+    });
+}
+
+/// A filename regex that matches nothing in the rule's own scope. The rule
+/// loads, applies to a real directory, and still never looks at a file.
+fn pattern_matches_nothing(
+    config: &CompiledConfig,
+    rule: &CompiledRule,
+    tree: &RepoTree,
+    concerns: &mut Vec<Concern>,
+) {
+    let patterns: Vec<&archwarden_core::pattern::Pattern> = match &rule.kind {
+        CompiledRuleKind::Naming { file_pattern, .. }
+        | CompiledRuleKind::CallObligation { file_pattern, .. } => vec![file_pattern],
+        CompiledRuleKind::Structure {
+            filename_patterns, ..
+        } => filename_patterns.iter().collect(),
+        _ => Vec::new(),
+    };
+
+    for pattern in patterns {
+        if in_scope(config, rule, tree).any(|file| pattern.is_match(&file.name)) {
+            continue;
+        }
+
+        concerns.push(Concern {
+            code: "pattern-matches-nothing",
+            rule_id: Some(rule.id.clone()),
+            path: None,
+            message: format!(
+                "`{}` matches no file in {}",
+                pattern.as_str(),
+                list(rule.scope.patterns())
+            ),
+            fix: "check the regex against a real filename -- it is matched \
+                  against the name alone, not the path"
+                .to_owned(),
+        });
+    }
+}
+
+/// A `call-obligation` naming a module nothing in scope imports.
+///
+/// One file missing the import is a finding `check` already reports. *No* file
+/// having it is a different claim: the module name in the config is probably
+/// wrong, and every file in scope is about to be reported for a typo.
+fn symbol_never_imported(
+    root: &Utf8Path,
+    config: &CompiledConfig,
+    rule: &CompiledRule,
+    engine: &dyn archwarden_core::traits::RuleEngine,
+    tree: &RepoTree,
+    concerns: &mut Vec<Concern>,
+) {
+    let CompiledRuleKind::CallObligation {
+        symbol,
+        imported_from,
+        ..
+    } = &rule.kind
+    else {
+        return;
+    };
+
+    // A flag rather than a count: the question is "did this rule cover
+    // anything?", and a counter invites arithmetic nobody needs.
+    let mut covered_something = false;
+    for facts in facts_covered(root, config, engine, tree) {
+        covered_something = true;
+        if facts
+            .imports
+            .iter()
+            .any(|import| &import.specifier == imported_from)
+        {
+            return;
+        }
+    }
+
+    // Nothing to conclude when the rule covers nothing; `scope-matches-nothing`
+    // and `pattern-matches-nothing` are the concerns that apply, and saying
+    // all three would send the user chasing three problems that are one.
+    if !covered_something {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "symbol-never-imported",
+        rule_id: Some(rule.id.clone()),
+        path: None,
+        message: format!(
+            "no file this rule covers imports from `{imported_from}`, so every \
+             one of them will be reported for missing `{symbol}`"
+        ),
+        fix: format!("check `{imported_from}` against how the code spells it"),
+    });
+}
+
+/// Decision 9: a `naming` rule asks for a named export, and a file with only a
+/// default export can never satisfy one -- a default's local name does not
+/// bind the importer.
+fn only_a_default_export(
+    root: &Utf8Path,
+    config: &CompiledConfig,
+    rule: &CompiledRule,
+    engine: &dyn archwarden_core::traits::RuleEngine,
+    tree: &RepoTree,
+    concerns: &mut Vec<Concern>,
+) {
+    if !matches!(rule.kind, CompiledRuleKind::Naming { .. }) {
+        return;
+    }
+
+    for facts in facts_covered(root, config, engine, tree) {
+        if facts.exports.is_empty() || facts.exports.iter().any(|export| !export.is_default) {
+            continue;
+        }
+
+        concerns.push(Concern {
+            code: "only-a-default-export",
+            rule_id: Some(rule.id.clone()),
+            path: Some(facts.path.clone()),
+            message: "it exports only a default, whose name does not bind the \
+                      importer, so a rule asking for a named export can never \
+                      be satisfied here"
+                .to_owned(),
+            fix: "export the symbol by name, or take this file out of the \
+                  rule's scope"
+                .to_owned(),
+        });
+    }
+}
+
+/// Every file the rule applies to.
+fn in_scope<'a>(
+    config: &'a CompiledConfig,
+    rule: &'a CompiledRule,
+    tree: &'a RepoTree,
+) -> impl Iterator<Item = &'a archwarden_engine::walk::File> {
+    tree.files().filter(move |file| {
+        !config.is_ignored(&file.path) && rule.scope.contains_file(file.path.as_path())
+    })
+}
+
+/// The facts of every source file the rule actually covers.
+///
+/// Applicability comes from the engine, not from the scope alone: a
+/// `call-obligation` scoped to `src/*` with a `file_pattern` of
+/// `^route\.post\.ts$` covers the POST routes and nothing else, and counting
+/// the rest would have the doctor report a rule for files it never looks at.
+///
+/// Files that will not parse are skipped rather than reported: `check` says so
+/// already, and the doctor is here to talk about the configuration.
+fn facts_covered<'a>(
+    root: &'a Utf8Path,
+    config: &'a CompiledConfig,
+    engine: &'a dyn archwarden_core::traits::RuleEngine,
+    tree: &'a RepoTree,
+) -> impl Iterator<Item = FileFacts> + 'a {
+    tree.files()
+        .filter(move |file| {
+            !config.is_ignored(&file.path)
+                && file.class == archwarden_core::path::FileClass::Source
+                && engine.applies_to(&file.path)
+        })
+        .filter_map(|file| archwarden_engine::run::facts_of(root, &file.path).ok())
+}
+
 /// The JSON envelope.
 #[derive(Debug, Serialize)]
 struct JsonDoctor<'a> {
@@ -303,10 +527,11 @@ fn render_text(concerns: &[Concern], out: &mut dyn std::io::Write) {
     }
 
     for concern in concerns {
-        let subject = concern
-            .rule_id
-            .as_ref()
-            .map_or_else(|| "config".to_owned(), ToString::to_string);
+        let subject = match (&concern.rule_id, &concern.path) {
+            (Some(rule), Some(path)) => format!("{rule} · {path}"),
+            (Some(rule), None) => rule.to_string(),
+            (None, _) => "config".to_owned(),
+        };
         let _ = writeln!(out, "{} [{}]\n  {}", subject, concern.code, concern.message);
         let _ = writeln!(out, "  fix: {}\n", concern.fix);
     }
@@ -698,6 +923,312 @@ mod tests {
         )]);
 
         assert!(examine(&bare).is_empty());
+    }
+
+    // --- checks that need the repository --------------------------------
+
+    fn tree_at(entries: &[(&str, &str)]) -> (tempfile::TempDir, camino::Utf8PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                .expect("temp path is UTF-8");
+
+        for (relative, contents) in entries {
+            let file = root.join(relative);
+            std::fs::create_dir_all(file.parent().expect("a file has a parent"))
+                .expect("create dirs");
+            std::fs::write(&file, contents).expect("write file");
+        }
+
+        (dir, root)
+    }
+
+    fn repository_codes(entries: &[(&str, &str)], config: &CompiledConfig) -> Vec<&'static str> {
+        let (guard, root) = tree_at(entries);
+        let tree = archwarden_engine::walk::walk(&root, config).expect("walks");
+        let codes = examine_repository(&root, config, &tree)
+            .into_iter()
+            .map(|c| c.code)
+            .collect();
+        drop(guard);
+        codes
+    }
+
+    /// A scope naming a directory that is not there: usually a typo, sometimes
+    /// a folder someone renamed and a rule nobody updated.
+    #[test]
+    fn a_scope_matching_no_directory_is_reported() {
+        assert_eq!(
+            repository_codes(
+                &[("src/user/user.ts", "export class User {}")],
+                &config(vec![rule(
+                    "shape",
+                    &["packages/*"],
+                    structure(&["types"], &[])
+                )]),
+            ),
+            ["scope-matches-nothing"]
+        );
+    }
+
+    /// A scope that does match is not reported, even when nothing inside it
+    /// interests the rule.
+    #[test]
+    fn a_scope_that_matches_is_not_reported() {
+        let codes = repository_codes(
+            &[("src/user/user.ts", "export class User {}")],
+            &config(vec![rule("shape", &["src/*"], structure(&["types"], &[]))]),
+        );
+
+        assert!(!codes.contains(&"scope-matches-nothing"), "{codes:?}");
+    }
+
+    /// A regex that matches nothing in the rule's own scope: the rule loads,
+    /// applies to a real directory, and still never looks at a file.
+    #[test]
+    fn a_pattern_matching_no_file_is_reported() {
+        assert_eq!(
+            repository_codes(
+                // The pattern wants a lowercase `.ts`; this directory has
+                // neither.
+                &[("src/user/User.tsx", "export class User {}")],
+                &config(vec![rule(
+                    "name",
+                    &["src/*"],
+                    naming(None, KindFilter::Any)
+                )]),
+            ),
+            ["pattern-matches-nothing"]
+        );
+    }
+
+    /// And one that does match is quiet.
+    #[test]
+    fn a_pattern_that_matches_is_not_reported() {
+        let codes = repository_codes(
+            &[("src/user/thing.ts", "export const Thing = 1;")],
+            &config(vec![rule(
+                "name",
+                &["src/*"],
+                naming(None, KindFilter::Any),
+            )]),
+        );
+
+        assert!(!codes.contains(&"pattern-matches-nothing"), "{codes:?}");
+    }
+
+    /// A `structure` rule's `filename_patterns` are regexes too, and one that
+    /// matches nothing means the rule reports every file in the folder.
+    #[test]
+    fn a_structure_filename_pattern_matching_nothing_is_reported() {
+        assert_eq!(
+            repository_codes(
+                &[("src/user/user.ts", "export class User {}")],
+                &config(vec![rule(
+                    "shape",
+                    &["src/*"],
+                    CompiledRuleKind::Structure {
+                        allowed_subfolders: Vec::new(),
+                        warn_subfolders: Vec::new(),
+                        recurse_into: Vec::new(),
+                        filename_patterns: vec![
+                            Pattern::compile(r"^[a-z-]+\.use-case\.ts$").expect("valid"),
+                        ],
+                    },
+                )]),
+            ),
+            ["pattern-matches-nothing"]
+        );
+    }
+
+    /// A pattern is judged against the rule's own scope. One that matches a
+    /// file somewhere else in the repository has still matched nothing here,
+    /// and the rule still never looks at anything.
+    #[test]
+    fn a_pattern_is_judged_against_its_own_scope() {
+        assert_eq!(
+            repository_codes(
+                &[
+                    ("src/user/User.tsx", "export class User {}"),
+                    // Matches the pattern, but lives outside `src/*`.
+                    ("apps/web/thing.ts", "export const Thing = 1;"),
+                ],
+                &config(vec![rule(
+                    "name",
+                    &["src/*"],
+                    naming(None, KindFilter::Any)
+                )]),
+            ),
+            ["pattern-matches-nothing"]
+        );
+    }
+
+    /// A file outside the rule's scope is not the rule's business, even when
+    /// it would raise a concern if it were.
+    #[test]
+    fn a_file_outside_the_scope_is_not_examined() {
+        let codes = repository_codes(
+            &[
+                ("src/user/thing.ts", "export const Thing = 1;"),
+                ("apps/web/other.ts", "export default class {}"),
+            ],
+            &config(vec![rule(
+                "name",
+                &["src/*"],
+                naming(None, KindFilter::Any),
+            )]),
+        );
+
+        assert!(
+            !codes.contains(&"only-a-default-export"),
+            "`apps/web/other.ts` is outside `src/*`: {codes:?}"
+        );
+    }
+
+    /// With nothing in scope there is nothing to conclude about a module
+    /// nobody imports -- `pattern-matches-nothing` is the concern that
+    /// applies, and saying both would send the user chasing two problems.
+    #[test]
+    fn an_empty_scope_concludes_nothing_about_the_module() {
+        let codes = repository_codes(
+            &[("src/api/route.get.ts", "export function GET() {}")],
+            &config(vec![rule(
+                "audit",
+                &["src/*"],
+                CompiledRuleKind::CallObligation {
+                    file_pattern: Pattern::compile(r"^route\.post\.ts$").expect("valid"),
+                    symbol: "Event.save".to_owned(),
+                    imported_from: "@org/domain/event".to_owned(),
+                },
+            )]),
+        );
+
+        assert_eq!(codes, ["pattern-matches-nothing"]);
+    }
+
+    /// A `call-obligation` naming a module nothing in scope imports. One file
+    /// missing the import is a finding `check` already reports; *no* file
+    /// having it means the config's module name is probably wrong.
+    #[test]
+    fn a_module_nothing_imports_is_reported_as_a_likely_typo() {
+        let obligation = |module: &str| {
+            config(vec![rule(
+                "audit",
+                &["src/*"],
+                CompiledRuleKind::CallObligation {
+                    file_pattern: Pattern::compile(r"^route\.post\.ts$").expect("valid"),
+                    symbol: "Event.save".to_owned(),
+                    imported_from: module.to_owned(),
+                },
+            )])
+        };
+        let files = [(
+            "src/api/route.post.ts",
+            "import { Event } from '@org/domain/event';\nexport function POST() {}",
+        )];
+
+        assert_eq!(
+            repository_codes(&files, &obligation("@org/domain/evnt")),
+            ["symbol-never-imported"],
+            "the misspelled module is the config's fault"
+        );
+        assert!(
+            !repository_codes(&files, &obligation("@org/domain/event"))
+                .contains(&"symbol-never-imported"),
+            "the right module is not reported"
+        );
+    }
+
+    /// One file having it is enough: then the missing calls are the code's
+    /// problem, and `check` is the command that says so.
+    #[test]
+    fn one_file_importing_it_settles_the_question() {
+        let codes = repository_codes(
+            &[
+                (
+                    "src/api/route.post.ts",
+                    "import { Event } from '@org/domain/event';\nexport function POST() {}",
+                ),
+                ("src/api/route.put.ts", "export function PUT() {}"),
+            ],
+            &config(vec![rule(
+                "audit",
+                &["src/*"],
+                CompiledRuleKind::CallObligation {
+                    file_pattern: Pattern::compile(r"^route\.(post|put)\.ts$").expect("valid"),
+                    symbol: "Event.save".to_owned(),
+                    imported_from: "@org/domain/event".to_owned(),
+                },
+            )]),
+        );
+
+        assert!(!codes.contains(&"symbol-never-imported"), "{codes:?}");
+    }
+
+    /// Decision 9: a default export's name does not bind the importer, so a
+    /// rule asking for a named export can never be satisfied by a file that
+    /// has only one.
+    #[test]
+    fn a_file_with_only_a_default_export_is_reported() {
+        let (guard, root) = tree_at(&[("src/user/thing.ts", "export default class {}")]);
+        let config = config(vec![rule(
+            "name",
+            &["src/*"],
+            naming(None, KindFilter::Any),
+        )]);
+        let tree = archwarden_engine::walk::walk(&root, &config).expect("walks");
+        let concerns = examine_repository(&root, &config, &tree);
+        drop(guard);
+
+        let default_export: Vec<_> = concerns
+            .iter()
+            .filter(|c| c.code == "only-a-default-export")
+            .collect();
+        assert_eq!(default_export.len(), 1, "{concerns:?}");
+        assert_eq!(
+            default_export[0].path.as_ref().map(RepoRelPath::as_str),
+            Some("src/user/thing.ts"),
+            "the file is named, because that is what the user has to open"
+        );
+    }
+
+    /// A file with a named export beside the default is fine: the rule has
+    /// something to match.
+    #[test]
+    fn a_named_export_beside_a_default_is_fine() {
+        let codes = repository_codes(
+            &[(
+                "src/user/thing.ts",
+                "export const Thing = 1;\nexport default Thing;",
+            )],
+            &config(vec![rule(
+                "name",
+                &["src/*"],
+                naming(None, KindFilter::Any),
+            )]),
+        );
+
+        assert!(!codes.contains(&"only-a-default-export"), "{codes:?}");
+    }
+
+    /// An ignored file is not the rule's business, so it raises nothing.
+    #[test]
+    fn an_ignored_file_is_not_examined() {
+        let config = CompiledConfig::new(
+            vec![rule("name", &["src/*"], naming(None, KindFilter::Any))],
+            PathSet::compile(["src/user/thing.ts".to_owned()]).expect("valid globs"),
+            SkipDirs::default(),
+            ContentHash::of(b"doctor"),
+        );
+        let (guard, root) = tree_at(&[("src/user/thing.ts", "export default class {}")]);
+        let tree = archwarden_engine::walk::walk(&root, &config).expect("walks");
+        let concerns = examine_repository(&root, &config, &tree);
+        drop(guard);
+
+        assert!(
+            !concerns.iter().any(|c| c.code == "only-a-default-export"),
+            "{concerns:?}"
+        );
     }
 
     fn rendered(config: &CompiledConfig, format: crate::report::Format) -> String {
