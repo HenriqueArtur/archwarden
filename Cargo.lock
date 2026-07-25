@@ -141,6 +141,7 @@ name = "archwarden-engine"
 version = "0.0.0"
 dependencies = [
  "archwarden-core",
+ "archwarden-parser",
  "archwarden-rules",
  "camino",
  "ignore",

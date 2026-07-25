@@ -550,7 +550,7 @@ letra morta. Já corrigido na reescrita da seção.
 
 ---
 
-### M3 — Parser + `naming` `⬜`
+### M3 — Parser + `naming` `⚠️`
 
 **Objetivo:** substituir o `lint-naming.ts`.
 
@@ -565,8 +565,52 @@ letra morta. Já corrigido na reescrita da seção.
 **Pronto quando:** a tabela de D9 inteira tem teste; `naming` reproduz o
 comportamento do script TS.
 
-**Registro**
-> _(pendente)_
+**Registro** — 2026-07-25 14:25 → 16:10 -03 · `⚠️ concluído com desvio`
+
+`archwarden check` agora lê código. **381 testes**, workspace em 98%, core em
+100% de linha e função. Todos os 11 checks do CI em 0.
+
+**1. Explorei a API do `oxc` antes de escrever**, e isso mudou o desenho. Ela
+tem **duas** fontes: o `module_record` sabe semântica de módulo (o que é
+exportado, sob que nome, é default, veio de onde) e o AST sabe forma de
+declaração. Nenhuma sozinha resolve o D9. Uso as duas e junto pelo nome do
+binding local — que é o que faz `export { Local }` funcionar, com as duas
+informações em statements diferentes. Escrever só o walker teria me obrigado a
+reimplementar renomes, defaults e re-exports que o `oxc` já acerta.
+
+**2. Três coisas que a exploração corrigiu antes de virarem bug:**
+`logger.audit.write` saía como `?.write` (cadeia aninhada, e o `RULES.md` cita
+esse formato como `must_call.symbol` válido); `.tsx` é gramática diferente e
+JSX num `.ts` faz o parser desistir corretamente; e `panicked` é a falha dura,
+não `diagnostics` — medi que decorators, generics e `declare module` produzem
+zero diagnostics, então recusar por diagnostic recuperável estaria recusando
+código que o `tsc` aceita.
+
+**3. O trait ganhou `needs_facts()`.** Sem ele o runner teria que parsear todo
+arquivo-fonte quando qualquer regra precisa de fatos. Com ele a decisão é por
+arquivo: só lê o que uma regra que se aplica àquele arquivo realmente abre.
+Numa config só-estrutural, nenhum byte é lido.
+
+**4. Dois bugs que só apareceram rodando o binário**, nenhum teste unitário
+teria pego:
+
+- **`signature_hint` não era renderizado.** Saía `{{pascal(name)}}` literal no
+  finding. Nunca é verificado, mas é *mostrado* — e mostrar o template ao
+  usuário é mostrar nossas entranhas.
+- **O spec vazio não era detectado.** O runner só oferece um arquivo à regra
+  que diz aplicar-se a ele, e o `applies_to` do `spec-pair` devolvia `false`
+  para specs (eles são isentos de precisar de spec próprio). Com
+  `require_non_empty_spec` a regra *tem* o que dizer sobre o spec, então
+  `applies_to` precisou distinguir os dois casos. Ambos com teste de regressão.
+
+**5. Novos campos no `Report`: `unreadable_files`.** Um arquivo que não parseia
+não foi checado, e um relatório limpo estaria mentindo. Reportado nos dois
+formatos, junto com `unimplemented_rules`.
+
+**Artefato local, não risco de CI:** intercalar `cargo llvm-cov` com builds
+não-instrumentados na mesma sessão faz o piso falhar esporadicamente. Testei a
+sequência exata do job de cobertura (só invocações de `llvm-cov`, nas duas
+ordens) e passa. O job do CI é isolado, então não afeta o build.
 
 ---
 

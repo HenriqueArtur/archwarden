@@ -15,7 +15,7 @@ use archwarden_core::{
     level::Level,
     path::{FileClass, RepoRelPath},
     scope::Scope,
-    traits::{DirectoryContext, RuleEngine},
+    traits::{DirectoryContext, FileContext, RuleEngine},
 };
 
 /// Barrel files, which re-export and hold no behaviour of their own.
@@ -195,8 +195,71 @@ impl RuleEngine for SpecPairEngine {
         let Some(name) = path.file_name() else {
             return false;
         };
+        if !self.governs(&parent) {
+            return false;
+        }
 
-        self.governs(&parent) && !self.is_exempt(path, name)
+        // A spec is exempt from needing a spec of its own, but when
+        // `require_non_empty_spec` is set the rule has something to say about
+        // the spec itself -- and a rule that claimed not to apply would never
+        // be offered the file.
+        if self.require_non_empty_spec && self.is_spec(name) {
+            return true;
+        }
+
+        !self.is_exempt(path, name)
+    }
+
+    fn needs_facts(&self) -> bool {
+        self.require_non_empty_spec
+    }
+
+    /// Reports a spec that exists but contains no test cases.
+    ///
+    /// The finding is about the spec file, not the unit file: the unit file
+    /// has its sibling, and what is missing is inside it. This is the flag
+    /// that separates "a spec file exists" from "a spec was written".
+    fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {
+        if !self.require_non_empty_spec {
+            return Vec::new();
+        }
+        let Some(name) = ctx.path.file_name() else {
+            return Vec::new();
+        };
+        if !self.is_spec(name) {
+            return Vec::new();
+        }
+        let Some(parent) = ctx.path.parent() else {
+            return Vec::new();
+        };
+        if !self.governs(&parent) {
+            return Vec::new();
+        }
+        let Some(facts) = ctx.facts else {
+            return Vec::new();
+        };
+
+        // `describe` deliberately does not count. An empty describe block
+        // satisfies the letter of the rule while defeating its entire purpose.
+        if facts
+            .calls
+            .iter()
+            .any(|call| matches!(call.callee.as_str(), "it" | "test"))
+        {
+            return Vec::new();
+        }
+
+        vec![Finding {
+            rule_id: self.id.clone(),
+            module_id: self.module.clone(),
+            level: self.level,
+            path: ctx.path.clone(),
+            span: None,
+            observed: Observed::SpecIsEmpty {
+                path: ctx.path.clone(),
+            },
+            expected: self.expectation(ctx.path.clone()),
+        }]
     }
 
     fn check_directory(&self, ctx: DirectoryContext<'_>) -> Vec<Finding> {
@@ -673,6 +736,92 @@ mod tests {
         };
 
         assert!(SpecPairEngine::from_rule(&structure).is_none());
+    }
+
+    /// The runner only offers a file to a rule that says it applies. A spec is
+    /// exempt from needing a spec of its own, so a rule that stopped there
+    /// would never be handed the spec -- and the non-empty check would never
+    /// run. It shipped that way, and only running it against a real repository
+    /// showed it.
+    #[test]
+    fn a_spec_is_in_scope_for_the_non_empty_check_despite_being_exempt() {
+        let lenient = engine(&["src/*"], &["."], &[]);
+        assert!(
+            !lenient.applies_to(&path("src/user/thing.spec.ts")),
+            "without the flag, a spec is simply exempt"
+        );
+
+        let rule = CompiledRule {
+            id: RuleId::new("tdd-gate").expect("valid"),
+            module: None,
+            level: Level::Error,
+            scope: Scope::compile(["src/*"]).expect("valid"),
+            kind: CompiledRuleKind::SpecPair {
+                subfolders: owned(["."].as_slice()),
+                spec_markers: owned(&["spec"]),
+                ignore_files: PathSet::default(),
+                require_non_empty_spec: true,
+            },
+        };
+        let strict = SpecPairEngine::from_rule(&rule).expect("is a spec-pair rule");
+
+        assert!(strict.applies_to(&path("src/user/thing.spec.ts")));
+        assert!(strict.needs_facts());
+    }
+
+    /// The flag's whole purpose: a spec with a `describe` and no test cases
+    /// satisfies "a file exists" and defeats what the rule is for.
+    #[test]
+    fn a_spec_with_no_test_cases_is_reported() {
+        use archwarden_core::{
+            facts::{CallFact, FileFacts, Span},
+            hash::ContentHash,
+        };
+
+        let rule = CompiledRule {
+            id: RuleId::new("tdd-gate").expect("valid"),
+            module: None,
+            level: Level::Error,
+            scope: Scope::compile(["src/*"]).expect("valid"),
+            kind: CompiledRuleKind::SpecPair {
+                subfolders: owned(["."].as_slice()),
+                spec_markers: owned(&["spec"]),
+                ignore_files: PathSet::default(),
+                require_non_empty_spec: true,
+            },
+        };
+        let engine = SpecPairEngine::from_rule(&rule).expect("is a spec-pair rule");
+
+        let check_spec = |callees: &[&str]| {
+            let spec = path("src/user/thing.spec.ts");
+            let mut facts = FileFacts::unparsed(spec.clone(), ContentHash::of(b""));
+            facts.calls = callees
+                .iter()
+                .map(|callee| CallFact {
+                    callee: (*callee).to_owned(),
+                    span: Span::new(0, 1),
+                })
+                .collect();
+
+            engine.check_file(FileContext {
+                path: &spec,
+                facts: Some(&facts),
+                siblings: &[],
+            })
+        };
+
+        assert!(check_spec(&["it"]).is_empty());
+        assert!(check_spec(&["describe", "test"]).is_empty());
+
+        let findings = check_spec(&["describe"]);
+        assert_eq!(
+            findings.first().expect("one").observed,
+            Observed::SpecIsEmpty {
+                path: path("src/user/thing.spec.ts")
+            },
+            "a describe alone satisfies the letter and defeats the purpose"
+        );
+        assert_eq!(check_spec(&[]).len(), 1, "no calls at all is empty too");
     }
 
     #[test]

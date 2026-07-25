@@ -122,6 +122,16 @@ pub trait RuleEngine: Send + Sync {
     /// files that do not exist yet.
     fn applies_to(&self, path: &RepoRelPath) -> bool;
 
+    /// Whether this rule reads inside a file.
+    ///
+    /// The runner uses this to decide what to parse. A structure-only
+    /// configuration should never open a source file, and on a large
+    /// repository that is the difference between a walk and thirty thousand
+    /// reads.
+    fn needs_facts(&self) -> bool {
+        false
+    }
+
     /// Evaluates the rule against one directory.
     fn check_directory(&self, ctx: DirectoryContext<'_>) -> Vec<Finding> {
         let _ = ctx;
@@ -169,6 +179,10 @@ mod tests {
 
         fn applies_to(&self, path: &RepoRelPath) -> bool {
             path.as_str().ends_with(".use-case.ts")
+        }
+
+        fn needs_facts(&self) -> bool {
+            true
         }
 
         fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {
@@ -236,6 +250,7 @@ mod tests {
         assert_eq!(engines[0].id().as_str(), "usecase-factory-name");
         assert_eq!(engines[0].level(), Level::Error);
         assert_eq!(engines[0].module(), None);
+        assert!(engines[0].needs_facts(), "it reads exports");
     }
 
     /// `applies_to` answers for a path with no file behind it, which is what
@@ -408,6 +423,10 @@ mod tests {
         assert_eq!(directory_rule.level(), Level::Error);
         assert!(directory_rule.applies_to(&path));
         assert_eq!(directory_rule.describe_expectation(&path).len(), 1);
+        assert!(
+            !directory_rule.needs_facts(),
+            "a directory rule reads names, not contents"
+        );
     }
 
     #[test]

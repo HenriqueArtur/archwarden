@@ -13,6 +13,7 @@
 //! See `docs/RULES.md`.
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod naming;
 pub mod spec_pair;
 pub mod structure;
 
@@ -38,6 +39,8 @@ pub fn engines_for(config: &CompiledConfig) -> (Vec<Box<dyn RuleEngine>>, Vec<St
         {
             engines.push(Box::new(engine));
         } else if let Some(engine) = spec_pair::SpecPairEngine::from_rule(rule) {
+            engines.push(Box::new(engine));
+        } else if let Some(engine) = naming::NamingEngine::from_rule(rule) {
             engines.push(Box::new(engine));
         } else {
             unimplemented.push(rule.id.to_string());

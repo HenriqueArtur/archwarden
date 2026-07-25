@@ -1,11 +1,24 @@
 //! Running the rules over a walked tree.
 //!
-//! The pipeline's last stage, and deliberately dull: it owns no rule logic and
-//! no filesystem access. It offers each directory to each engine and collects
-//! what comes back, which is what keeps every interesting decision inside a
-//! rule where it can be tested on its own.
+//! The pipeline's last stage, and deliberately dull: it owns no rule logic. It
+//! offers each directory and each file to each engine and collects what comes
+//! back, which is what keeps every interesting decision inside a rule where it
+//! can be tested on its own.
+//!
+//! It does touch the filesystem, but only to read back a file some rule wants
+//! to look inside. A configuration whose rules are all structural never reads
+//! a byte.
 
-use archwarden_core::{compiled::CompiledConfig, finding::Finding, level::Level};
+use archwarden_core::{
+    compiled::CompiledConfig,
+    facts::FileFacts,
+    finding::Finding,
+    hash::ContentHash,
+    level::Level,
+    path::{FileClass, RepoRelPath},
+    traits::{FileContext, Parser as _},
+};
+use camino::Utf8Path;
 
 use crate::walk::RepoTree;
 
@@ -23,6 +36,12 @@ pub struct Report {
     /// Reported rather than dropped: a run that silently skipped a rule would
     /// print a clean result the user has no reason to distrust.
     pub unimplemented_rules: Vec<String>,
+    /// Files a rule wanted to read but could not, with why.
+    ///
+    /// Also reported rather than dropped, and for the same reason: a file that
+    /// did not parse was not checked, and a clean report would be lying about
+    /// it.
+    pub unreadable_files: Vec<(RepoRelPath, String)>,
 }
 
 impl Report {
@@ -49,13 +68,17 @@ impl Report {
             .any(|finding| finding.level.fails_build())
     }
 }
-
 /// Runs every rule in `config` against `tree`.
+///
+/// `root` is where the tree was walked from, and is needed only to read files
+/// back for the rules that look inside one. A configuration whose rules are
+/// all structural never reads a byte.
 #[must_use]
-pub fn check(config: &CompiledConfig, tree: &RepoTree) -> Report {
+pub fn check(root: &Utf8Path, config: &CompiledConfig, tree: &RepoTree) -> Report {
     let (engines, unimplemented_rules) = archwarden_rules::engines_for(config);
 
     let mut findings = Vec::new();
+    let mut unreadable_files = Vec::new();
     let mut files_scanned = 0;
 
     for (path, directory) in tree.directories() {
@@ -71,18 +94,65 @@ pub fn check(config: &CompiledConfig, tree: &RepoTree) -> Report {
                 }),
             );
         }
+
+        for file in &directory.files {
+            let wanted_by: Vec<_> = engines
+                .iter()
+                .filter(|engine| engine.applies_to(&file.path))
+                .collect();
+            if wanted_by.is_empty() {
+                continue;
+            }
+
+            // Read the file only if a rule that applies to it actually looks
+            // inside. Deciding this per file rather than per run is what keeps
+            // a mostly-structural configuration off the disk.
+            let facts = if file.class == FileClass::Source
+                && wanted_by.iter().any(|engine| engine.needs_facts())
+            {
+                match parse(root, &file.path) {
+                    Ok(facts) => Some(facts),
+                    Err(message) => {
+                        unreadable_files.push((file.path.clone(), message));
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+
+            for engine in wanted_by {
+                findings.extend(engine.check_file(FileContext {
+                    path: &file.path,
+                    facts: facts.as_ref(),
+                    siblings: &file_names,
+                }));
+            }
+        }
     }
 
     // Determinism is a design goal: the same inputs must produce byte-identical
     // output, or every snapshot test and CI diff becomes noise.
     findings.sort();
+    unreadable_files.sort();
 
     Report {
         findings,
         directories_scanned: tree.directory_count(),
         files_scanned,
         unimplemented_rules,
+        unreadable_files,
     }
+}
+
+/// Reads and parses one file.
+fn parse(root: &Utf8Path, path: &RepoRelPath) -> Result<FileFacts, String> {
+    let source =
+        std::fs::read_to_string(root.join(path.as_path())).map_err(|error| error.to_string())?;
+
+    archwarden_parser::oxc::OxcParser
+        .parse(path, &source, ContentHash::of(source.as_bytes()))
+        .map_err(|error| error.to_string())
 }
 
 /// The level a report should be summarised at, for a caller choosing an exit
@@ -169,7 +239,7 @@ mod tests {
     fn run(entries: &[(&str, &str)], config: &CompiledConfig) -> Report {
         let (guard, root) = tree_at(entries);
         let tree = crate::walk::walk(&root, config).expect("walks");
-        let report = check(config, &tree);
+        let report = check(&root, config, &tree);
         drop(guard);
         report
     }

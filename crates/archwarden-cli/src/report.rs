@@ -39,6 +39,14 @@ struct JsonReport<'a> {
     findings: &'a [Finding],
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     unimplemented_rules: &'a [String],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unreadable_files: Vec<UnreadableFile<'a>>,
+}
+
+#[derive(Debug, Serialize)]
+struct UnreadableFile<'a> {
+    path: &'a archwarden_core::path::RepoRelPath,
+    reason: &'a str,
 }
 
 #[derive(Debug, Serialize)]
@@ -74,6 +82,14 @@ fn render_json(report: &Report, out: &mut dyn std::io::Write) {
         summary: Summary::of(report),
         findings: &report.findings,
         unimplemented_rules: &report.unimplemented_rules,
+        unreadable_files: report
+            .unreadable_files
+            .iter()
+            .map(|(path, reason)| UnreadableFile {
+                path,
+                reason: reason.as_str(),
+            })
+            .collect(),
     };
 
     // A report that cannot be serialised is a bug in these types, not
@@ -111,6 +127,10 @@ fn render_text(report: &Report, out: &mut dyn std::io::Write) {
             describe_expectation(&finding.expected)
         );
         let _ = writeln!(out);
+    }
+
+    for (path, reason) in &report.unreadable_files {
+        let _ = writeln!(out, "note: `{path}` was not checked — {reason}");
     }
 
     for rule in &report.unimplemented_rules {
@@ -284,6 +304,7 @@ mod tests {
             directories_scanned: 12,
             files_scanned: 34,
             unimplemented_rules: Vec::new(),
+            unreadable_files: Vec::new(),
         }
     }
 
@@ -346,6 +367,7 @@ mod tests {
             directories_scanned: 1,
             files_scanned: 1,
             unimplemented_rules: Vec::new(),
+            unreadable_files: Vec::new(),
         };
         assert!(
             rendered(&singular, Format::Text).ends_with("1 file, 1 directory\n"),
@@ -363,6 +385,7 @@ mod tests {
             directories_scanned: 1,
             files_scanned: 1,
             unimplemented_rules: vec!["future-rule".to_owned()],
+            unreadable_files: Vec::new(),
         };
 
         let text = rendered(&report, Format::Text);

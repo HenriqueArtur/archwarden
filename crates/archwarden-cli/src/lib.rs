@@ -149,7 +149,7 @@ fn check(
         }
     };
 
-    let outcome = archwarden_engine::run::check(&compiled, &tree);
+    let outcome = archwarden_engine::run::check(&merged.root, &compiled, &tree);
     crate::report::render(&outcome, format, output.out);
 
     if outcome.fails_build() {
