@@ -86,11 +86,23 @@ Verificação objetiva, não sistema de honra:
 - **`cargo-mutants`** — injeta bugs e checa se a suíte pega. Meta: zero
   sobreviventes em `archwarden-rules`, `archwarden-config`, `archwarden-core`.
   Nightly no CI; por crate durante o desenvolvimento.
-- **`cargo-llvm-cov`** — piso de **100% no `archwarden-core`** e **95% no
-  workspace**, meta 100%. Números fixados pelo Henrique em 2026-07-25.
+- **`cargo-llvm-cov`** — piso de **99% de linha + 100% de função** no
+  `archwarden-core`, **95% de linha** no workspace, meta 100%. Números
+  fixados pelo Henrique em 2026-07-25.
+
   Chegar a 100% num crate de lógica pura significa, em boa parte, apagar
   branch defensivo que nenhuma entrada alcança — o que é uma melhora, mas é
   mudança de código motivada por métrica e precisa ser revisada como tal.
+
+  **O piso de linha é 99 e não 100 por limitação da ferramenta, não por
+  concessão.** O resumo do `cargo-llvm-cov` acusa 1 linha descoberta no
+  `glob.rs` que os relatórios detalhados dele mesmo — lcov, JSON e HTML —
+  mostram como coberta. É fantasma em código expandido por macro. Investigado
+  a fundo (derive `Default` removido, instanciação genérica variada, `Debug`,
+  `Clone` e `source()` cobertos): o número não se moveu, mas a caça produziu
+  testes reais que ficaram. O piso de **função em 100%** é a metade mais
+  rígida do par: apagar um teste derruba cobertura de função na hora, o que um
+  piso de linha em 99 absorveria.
 - **Armadilha do `insta`:** snapshot esperado é escrito **à mão antes**
   (inline snapshot). `cargo insta review` só para revisar mudança intencional
   em snapshot existente — nunca para criar o primeiro.
