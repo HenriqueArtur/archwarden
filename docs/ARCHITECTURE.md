@@ -5,7 +5,8 @@ document, not a spec of shipped behaviour.
 
 ## Design goals
 
-1. **Sub-second full runs on 100k-file repos**, sub-100ms watch-mode updates.
+1. **Sub-second full runs on 100k-file repos.** Sub-100 ms incremental updates
+   once watch mode lands in v1.
 2. **Cache-first**: incremental analysis is a requirement, not an optimisation.
 3. **Deterministic**: same inputs produce the same output and the same exit code.
 4. **Swappable parser and resolver**: the JS/TS front-end must be replaceable
@@ -57,19 +58,53 @@ Planned Cargo workspace layout:
 
 ```
 crates/
-  archwarden-core/       # types, traits, rule engine interfaces
-  archwarden-config/     # config schema, loading, validation, doctor
+  archwarden-core/       # types, traits, path matcher, case transforms
+  archwarden-config/     # config schema, loading, extends, validation, doctor
   archwarden-parser/     # oxc_parser wrapper, AST facts extraction
   archwarden-resolver/   # Resolver trait + oxc_resolver impl
   archwarden-rules/      # rule engines (one module per category)
-  archwarden-cache/      # on-disk cache (content-hash keyed)
+  archwarden-cache/      # on-disk cache (redb, content-hash keyed)
+  archwarden-engine/     # pipeline orchestration: walk → parse → resolve → rules
   archwarden-cli/        # binary crate, arg parsing, output formats
-  archwarden-lsp/        # (post-v1) language server for editor integration
+                         # archwarden-lsp/ arrives in v1 and depends on engine
 ```
+
+Dependency direction:
+
+```
+core   ← config ← engine ← cli
+  ↑        ↑        ↑
+  └── parser, resolver, rules, cache
+```
+
+`archwarden-core` has no internal dependencies. Everything else depends on it.
+
+`archwarden-engine` exists so that the pipeline is not owned by the binary
+crate: `archwarden-lsp` (v1) needs the same pipeline, and depending on a
+binary crate to get it would be backwards.
+
+`archwarden-config` depends on `archwarden-resolver` because `extends`
+accepts npm package names (`"@myorg/arch-preset"`), and turning one into a
+file path is full Node module resolution — `node_modules` lookup, `exports`
+conditions, pnpm symlinks, yarn PnP. `oxc_resolver` already does this
+correctly and there is no reason to hand-roll a second, worse copy. The
+dependency is acyclic (`config → resolver → core`).
 
 The rule engines depend on `archwarden-core` types only, never on the parser
 or resolver directly. They receive already-extracted facts. This is the
 seam that lets us swap the parser later.
+
+### Wire types vs compiled types
+
+`archwarden-config` owns the *wire format*: the structs that carry
+`Deserialize` and `JsonSchema`, where a glob is a `String`. It lowers them
+into `archwarden-core`'s *compiled* types, where a glob is a built `GlobSet`
+and a pattern is a compiled `Regex`.
+
+This is not boilerplate — it is compilation that has to happen anyway, and it
+buys a real invariant: a `CompiledRule` cannot exist unless its globs and
+regexes are valid, so no downstream code ever has to ask. It is also why
+`archwarden-rules` can depend on `core` alone, exactly as claimed above.
 
 ## Resolver abstraction
 
@@ -125,33 +160,61 @@ engine needs to know where the facts came from.
 
 ## Cache design
 
-Content-addressed, on-disk, one entry per file per config version.
+Content-addressed, on-disk, at `.archwarden/cache/` in the repo root.
+Gitignored. Stored in a **redb** database — small records, high read volume,
+cheap random access. Random access matters specifically for
+`check --file`: the Layer 4 pre-write hook spawns one process per agent write
+and must read a single entry out of tens of thousands inside a ~20 ms budget,
+without deserialising the rest.
 
-- Cache key: `blake3(file_content) ++ blake3(effective_rules_for_file)`.
-- Cache value: serialised `FileFacts` and the rule findings against that file.
-- Invalidation: if the config hash changes, the whole cache is stale. If a
-  file's content hash changes, only that file (and files whose findings
-  depend on its exports) are recomputed.
-- Storage: `.archwarden/cache/` at the repo root. Gitignored. Structured as
-  a sled or redb database — small files, high read volume, cheap random
-  access.
-- Watch mode subscribes to filesystem events via `notify` and re-runs
-  affected files only.
+### Two tables, two keys
+
+Facts and findings have different invalidation triggers, so they are keyed
+separately. Storing both under one combined key would throw away every parse
+result in the repo whenever a single rule changes.
+
+| Table | Key | Value |
+|---|---|---|
+| `facts` | `blake3(file_content)` | serialised `FileFacts` |
+| `findings` | `blake3(content_hash ++ rules_hash ++ resolution_epoch)` | findings for that file |
+
+- `rules_hash` — hash of the effective rules for that file, so a config edit
+  invalidates only the findings, not the parse.
+- `resolution_epoch` — hash of every `tsconfig*.json`, `package.json`, and
+  lockfile in the repo. Import-boundary findings depend on how specifiers
+  resolve, and resolution depends on those files. Without this component,
+  changing `tsconfig.paths` and running warm serves stale boundary findings.
+
+### Invalidation
+
+- Cache format version bumps invalidate everything (decision 3).
+- A changed file content hash recomputes that file's facts and findings, plus
+  the findings of files whose boundary rules depend on its resolved path.
+- A changed `resolution_epoch` invalidates findings only; facts survive.
 
 Cross-file dependencies (import boundaries) require a small reverse-index:
 "if file A's exports changed, which files import A?" This index is rebuilt
 lazily from the cache on startup.
 
+In v1, watch mode subscribes to filesystem events via `notify` and re-runs
+only the affected files against this same cache. It is not in v0
+(see [`ROADMAP.md`](ROADMAP.md)).
+
 ## Concurrency
 
-- File walk: parallel via `ignore::WalkBuilder` (uses `rayon` internally).
+- File walk: parallel via `ignore::WalkBuilder`. Note that `ignore` runs its
+  own thread pool (crossbeam channels over std threads), *not* rayon. The walk
+  pool and the rayon pool are separate and must be sized together, or they
+  oversubscribe the machine.
 - Parsing and fact extraction: parallel via `rayon`, one task per file.
 - Rule engines run against the fact set. Structure, naming, and spec-pair
   rules are file-local and trivially parallel. Import boundaries and call
   obligations need the assembled graph and run after fact extraction
   completes.
-- Cache reads and writes: `dashmap` for in-memory sharing during a run,
-  batch-flushed to disk at the end.
+- The pipeline is a `par_iter().map().collect()` over the file list: each
+  stage takes owned inputs and returns owned outputs, so no stage needs
+  shared mutable state. Cache writes are collected and batch-flushed once at
+  the end of the run.
 
 ## Config loading
 
@@ -211,6 +274,8 @@ from the same code.
   is a v2 topic — the internal rule engine interface must stabilise first.
 - Non-JS/TS languages. The parser trait exists to allow it later, but no
   other language ships in v0.
-- LSP server. Watch mode covers the local-feedback need in v0.
+- Watch mode and the LSP server. Both are v1. In v0 the local-feedback need
+  is covered by `check` on a warm cache, which is fast enough for a
+  `pre-commit` hook.
 - Auto-fix. archwarden reports; Biome fixes what it can fix. Auto-fixing
   architectural violations is rarely safe.

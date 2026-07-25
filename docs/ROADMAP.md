@@ -45,6 +45,11 @@ Non-goals for v0:
 
 Success criteria:
 
+All timings below are stated against a **reference machine**: 8 performance
+cores, 16 GB RAM, NVMe SSD, warm page cache. Benchmark baselines are per
+machine and not comparable across them — the CI job compares against its own
+previous baseline, never against these numbers.
+
 - Full-repo check on Flowmaatik (~2.8k TS files) completes in under
   500 ms cold, under 100 ms warm.
 - Full-repo check on the larger sibling project (~30k files, growing at

@@ -180,8 +180,30 @@ the block, never duplicates it. Uninstall with `archwarden install-hooks
 ### `archwarden check --file <path>`
 
 Same engine as `archwarden check`, restricted to a single file. Used by
-Layer 4 hooks. Bypasses graph rules that require cross-file state unless
-the file's cached facts already exist; the graph rules run in full on
+Layer 4 hooks.
+
+File-local rules (`structure`, `naming`, `spec-pair`, `call-obligation`)
+always run. Graph rules (`import-boundary`) need cross-file state, which is
+only available if the cache is warm — running the full graph on every agent
+write would blow the latency budget.
+
+When a graph rule cannot run, it is **reported as skipped, never silently
+dropped**:
+
+```json
+{
+  "path": "...",
+  "findings": [ ... ],
+  "skipped_rules": [
+    { "id": "ui-forbids-domain-direct", "reason": "cold-cache" }
+  ]
+}
+```
+
+This matters because a silent skip would make the same write pass or fail
+depending on cache state, which contradicts the determinism goal in
+[`ARCHITECTURE.md`](ARCHITECTURE.md). With the field present, the caller can
+see exactly what was and was not checked. The graph rules run in full on
 `archwarden check` at commit time.
 
 ## Recommended setup

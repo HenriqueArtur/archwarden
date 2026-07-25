@@ -17,6 +17,48 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 12 — Dependency licences are a separate list from fixture licences
+Status: accepted.
+Context: decision 11 fixed an allowlist of MIT, Apache-2.0, BSD-2, BSD-3 and
+0BSD. That list governs **fixture data imported into our test suite** — a
+directory of fake `package.json` and `.ts` files representing a tricky
+resolution scenario, copied with a `LICENSE-3RD-PARTY` marker. It has never
+governed test *code*, which is always clean-room reimplemented and never
+copied.
+`cargo-deny` enforces an allowlist over something unrelated: the ~230 crates
+downloaded from crates.io and compiled into the archwarden binary. Both are
+"a list of acceptable licences", which makes them easy to confuse, and the
+confusion is expensive because the two lists cannot be the same. Restricting
+dependencies to decision 11's five licences makes archwarden unbuildable.
+Decision: `deny.toml` carries its own allowlist for the dependency graph:
+the five from decision 11 plus three that no Rust dependency tree can avoid.
+
+- `Unicode-3.0` — `unicode-ident`, which sits under `proc-macro2` and `syn`
+  and therefore under every `#[derive(...)]` in the language. Without it there
+  is no `#[derive(Deserialize)]`, and no way to read `arch.config.json`.
+- `ISC` — functionally identical to MIT, shorter text. Used by several small
+  utility crates.
+- `Apache-2.0 WITH LLVM-exception` — the terms of the Rust standard library
+  itself. The exception removes an attribution requirement when distributing
+  compiled binaries, so it is *more* permissive for us than plain Apache-2.0.
+
+Copyleft is excluded from **both** lists, MPL-2.0 included.
+Alternatives:
+- One shared list for fixtures and dependencies. Rejected: archwarden does not
+  compile under decision 11's five, so a shared list means either an
+  unbuildable project or a fixture policy loosened for reasons that have
+  nothing to do with fixtures.
+- No dependency allowlist at all. Rejected: a copyleft crate could then be
+  linked into the distributed binary without anyone noticing, which is a
+  licensing problem users would inherit from us.
+- Allow MPL-2.0 among dependencies. Rejected for the same reason decision 10
+  rejected MPL for archwarden's own licence: file-level copyleft inside a
+  statically linked binary is a question no user should have to answer.
+Consequences: two allowlists exist and must not be conflated. The fixture list
+stays strict and lives in decision 11 and `TESTING.md`. The dependency list
+lives in `deny.toml` and is enforced on every CI run. Adding a licence to
+either one is a deliberate change, not a fix for a red build.
+
 ### 11 — Testing strategy: clean-room reimplementation of prior tests
 Status: accepted.
 Context: prior tools in this space (dependency-cruiser, ESLint
