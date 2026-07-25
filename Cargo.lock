@@ -194,6 +194,7 @@ dependencies = [
 name = "archwarden-resolver"
 version = "0.0.0"
 dependencies = [
+ "archwarden-core",
  "camino",
  "oxc_resolver",
  "tempfile",

@@ -10,6 +10,7 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+archwarden-core = { workspace = true }
 camino = { workspace = true }
 oxc_resolver = { workspace = true }
 thiserror = { workspace = true }

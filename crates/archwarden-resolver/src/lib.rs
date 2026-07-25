@@ -14,4 +14,6 @@
 //! swapping the implementation never touches rule code (decision 6).
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod imports;
+pub mod memory;
 pub mod preset;

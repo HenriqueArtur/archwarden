@@ -1,0 +1,498 @@
+//! Resolving import specifiers to files.
+//!
+//! A boundary rule matches globs against where an import *lands*, not against
+//! what was written. `@/domain/user` and `../../domain/user` are the same edge
+//! in the graph, and only a resolver can say so.
+//!
+//! Everything hard about this -- `tsconfig.paths`, `exports` conditions, the
+//! `.js`-means-`.ts` convention, pnpm's symlink layout, workspace links --
+//! `oxc_resolver` already does (decision 7). What this module owns is the
+//! configuration for TypeScript source and the classification of the answer:
+//! inside the repository, a dependency, or a runtime builtin.
+
+use archwarden_core::{
+    path::RepoRelPath,
+    traits::{Resolved, Resolver},
+};
+use camino::{Utf8Path, Utf8PathBuf};
+
+/// Extensions tried for a specifier written without one.
+///
+/// TypeScript before JavaScript: in a repository that ships both `user.ts` and
+/// a compiled `user.js`, the source is the file a rule is about.
+const EXTENSIONS: [&str; 9] = [
+    ".ts", ".tsx", ".mts", ".cts", ".d.ts", ".js", ".jsx", ".mjs", ".cjs",
+];
+
+/// Fields consulted in a dependency's `package.json`, best first.
+///
+/// `types` first because a dependency's type declarations are what a
+/// TypeScript file actually imports from; `module` before `main` because the
+/// ESM entry point is the one a bundler picks.
+const MAIN_FIELDS: [&str; 3] = ["types", "module", "main"];
+
+/// `exports` conditions, in the order a TypeScript ESM build would apply them.
+const CONDITIONS: [&str; 4] = ["types", "import", "require", "default"];
+
+/// The directory whose presence makes a resolved file a dependency rather than
+/// part of the repository.
+const DEPENDENCY_DIRECTORY: &str = "node_modules";
+
+/// Why an import could not be resolved.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ImportError {
+    /// The specifier did not resolve to anything.
+    #[error("cannot resolve `{specifier}` from `{importer}`")]
+    Unresolved {
+        /// The specifier, as written in the source.
+        specifier: String,
+        /// The file that imported it.
+        importer: RepoRelPath,
+        /// What the resolver said. Boxed because `ResolveError` is large
+        /// enough to bloat every `Result` this module returns, successful ones
+        /// included.
+        #[source]
+        source: Box<oxc_resolver::ResolveError>,
+    },
+
+    /// It resolved, but to a path archwarden cannot represent.
+    #[error("`{specifier}` from `{importer}` resolved to a path that is not valid UTF-8")]
+    NonUtf8Path {
+        /// The specifier, as written in the source.
+        specifier: String,
+        /// The file that imported it.
+        importer: RepoRelPath,
+    },
+}
+
+/// Resolves import specifiers against a repository.
+#[derive(Debug)]
+pub struct ImportResolver {
+    inner: oxc_resolver::Resolver,
+    root: Utf8PathBuf,
+}
+
+impl ImportResolver {
+    /// Builds a resolver for TypeScript and JavaScript source under `root`.
+    ///
+    /// `tsconfig` discovery is automatic: the nearest one to the importing file
+    /// wins, which is what a monorepo where every package has its own
+    /// `compilerOptions.paths` needs.
+    #[must_use]
+    pub fn new(root: &Utf8Path) -> Self {
+        let options = oxc_resolver::ResolveOptions {
+            extensions: EXTENSIONS.iter().map(|e| (*e).to_owned()).collect(),
+            main_fields: MAIN_FIELDS.iter().map(|f| (*f).to_owned()).collect(),
+            condition_names: CONDITIONS.iter().map(|c| (*c).to_owned()).collect(),
+            // TypeScript's ESM convention: `./user.js` in a `.ts` file means
+            // `./user.ts`. Without this, half a NodeNext repository resolves to
+            // nothing.
+            extension_alias: vec![
+                (
+                    ".js".to_owned(),
+                    vec![".ts".to_owned(), ".tsx".to_owned(), ".js".to_owned()],
+                ),
+                (
+                    ".mjs".to_owned(),
+                    vec![".mts".to_owned(), ".mjs".to_owned()],
+                ),
+                (
+                    ".cjs".to_owned(),
+                    vec![".cts".to_owned(), ".cjs".to_owned()],
+                ),
+            ],
+            // A builtin comes back as a distinguishable error rather than as
+            // "unresolved", which is the only way to tell `node:fs` from a
+            // dependency someone forgot to install.
+            builtin_modules: true,
+            tsconfig: Some(oxc_resolver::TsconfigDiscovery::Auto),
+            ..oxc_resolver::ResolveOptions::default()
+        };
+
+        Self {
+            inner: oxc_resolver::Resolver::new(options),
+            root: root.to_owned(),
+        }
+    }
+
+    /// Decides what a resolved absolute path is, from archwarden's point of
+    /// view.
+    ///
+    /// A file under the root is part of the repository *unless* it sits in a
+    /// `node_modules`, which is where a workspace link stops being interesting
+    /// and a dependency starts. Symlinks are followed first, so a workspace
+    /// package linked into `node_modules` classifies by where it really lives
+    /// -- which is the whole point in a monorepo.
+    fn classify(&self, path: Utf8PathBuf) -> Resolved {
+        let Ok(relative) = path.strip_prefix(&self.root) else {
+            return Resolved::External(path);
+        };
+
+        if relative
+            .components()
+            .any(|component| component.as_str() == DEPENDENCY_DIRECTORY)
+        {
+            return Resolved::External(path);
+        }
+
+        RepoRelPath::new(relative.as_str()).map_or(Resolved::External(path), Resolved::InRepo)
+    }
+}
+
+impl Resolver for ImportResolver {
+    type Error = ImportError;
+
+    fn resolve(&self, importer: &RepoRelPath, specifier: &str) -> Result<Resolved, ImportError> {
+        // `resolve_file`, not `resolve`: automatic `tsconfig` discovery only
+        // works from a file path, because the config that applies is the
+        // nearest one *above the importer* -- which in a monorepo is a
+        // different file for every package.
+        let file = self.root.join(importer.as_path());
+
+        let resolution = match self.inner.resolve_file(file.as_std_path(), specifier) {
+            Ok(resolution) => resolution,
+            // Not a failure: a builtin has no file, and saying so is the
+            // answer. A boundary rule that forbids `node:fs` needs to see it.
+            Err(oxc_resolver::ResolveError::Builtin { resolved, .. }) => {
+                return Ok(Resolved::Builtin(resolved));
+            }
+            Err(source) => {
+                return Err(ImportError::Unresolved {
+                    specifier: specifier.to_owned(),
+                    importer: importer.clone(),
+                    source: Box::new(source),
+                });
+            }
+        };
+
+        let path = Utf8PathBuf::from_path_buf(resolution.into_path_buf()).map_err(|_| {
+            ImportError::NonUtf8Path {
+                specifier: specifier.to_owned(),
+                importer: importer.clone(),
+            }
+        })?;
+
+        Ok(self.classify(path))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a temporary repository and returns its canonical UTF-8 root.
+    fn repo(entries: &[(&str, &str)]) -> (tempfile::TempDir, Utf8PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+
+        for (relative, contents) in entries {
+            let path = root.join(relative);
+            // Every entry is `directory/file`, so the parent is never absent.
+            // Written as an `expect` rather than an `if let` because the
+            // negative arm no execution reaches is dead code that drags the
+            // coverage floor down -- see the convention in docs/PLAN-V0.md.
+            std::fs::create_dir_all(path.parent().expect("a file has a parent"))
+                .expect("create dirs");
+            std::fs::write(&path, contents).expect("write file");
+        }
+
+        (dir, root)
+    }
+
+    fn path(p: &str) -> RepoRelPath {
+        RepoRelPath::new(p).expect("valid path")
+    }
+
+    /// Resolves `specifier` as written in `importer`, and says in one line
+    /// where it landed *and* how it was classified.
+    ///
+    /// A string rather than the value itself, because the classification is
+    /// half of what these tests are about and an assertion that spells it out
+    /// reads as the behaviour: `"in-repo src/user.ts"`, `"builtin fs"`.
+    /// Absolute paths are made relative to the repository so an assertion does
+    /// not contain a temporary directory name.
+    fn landed(entries: &[(&str, &str)], importer: &str, specifier: &str) -> String {
+        let (guard, root) = repo(entries);
+        let described = describe(
+            &root,
+            ImportResolver::new(&root).resolve(&path(importer), specifier),
+        );
+        drop(guard);
+        described
+    }
+
+    fn describe(root: &Utf8Path, resolved: Result<Resolved, ImportError>) -> String {
+        match resolved {
+            Ok(Resolved::InRepo(landed)) => format!("in-repo {landed}"),
+            Ok(Resolved::External(landed)) => {
+                format!("external {}", landed.strip_prefix(root).unwrap_or(&landed))
+            }
+            Ok(Resolved::Builtin(name)) => format!("builtin {name}"),
+            // `Resolved` is non_exhaustive; a variant added later says what it
+            // is rather than failing to compile here.
+            Ok(other) => format!("{other:?}"),
+            Err(error) => format!("error {error}"),
+        }
+    }
+
+    const TS: &str = "export const value = 1;";
+
+    /// The plain case, and the reason the resolver exists: a rule matches
+    /// globs against where an import lands, not against what was written.
+    #[test]
+    fn a_relative_specifier_lands_on_a_repository_file() {
+        assert_eq!(
+            landed(
+                &[
+                    ("src/user/create.ts", "import { value } from '../shared/x';"),
+                    ("src/shared/x.ts", TS),
+                ],
+                "src/user/create.ts",
+                "../shared/x",
+            ),
+            "in-repo src/shared/x.ts"
+        );
+    }
+
+    /// TypeScript source is written without extensions. Trying `.ts` before
+    /// `.js` matters in a repository that ships both.
+    #[test]
+    fn typescript_wins_over_compiled_javascript() {
+        assert_eq!(
+            landed(
+                &[
+                    ("src/app.ts", ""),
+                    ("src/user.ts", TS),
+                    ("src/user.js", "exports.value = 1;"),
+                ],
+                "src/app.ts",
+                "./user",
+            ),
+            "in-repo src/user.ts"
+        );
+    }
+
+    /// The `NodeNext` convention: a `.ts` file importing `./user.js` means
+    /// `./user.ts`. Without the extension alias, half of a modern repository
+    /// resolves to nothing.
+    #[test]
+    fn a_js_specifier_finds_the_ts_source() {
+        assert_eq!(
+            landed(
+                &[("src/app.ts", ""), ("src/user.ts", TS)],
+                "src/app.ts",
+                "./user.js",
+            ),
+            "in-repo src/user.ts"
+        );
+    }
+
+    /// A directory import lands on its `index`, which is how a folder-as-module
+    /// is spelled everywhere in the ecosystem.
+    #[test]
+    fn a_directory_lands_on_its_index() {
+        assert_eq!(
+            landed(
+                &[("src/app.ts", ""), ("src/user/index.ts", TS)],
+                "src/app.ts",
+                "./user",
+            ),
+            "in-repo src/user/index.ts"
+        );
+    }
+
+    /// `tsconfig.paths` is the whole reason an alias and a relative path have
+    /// to become the same edge. This is the case a boundary rule cannot see
+    /// without a resolver.
+    #[test]
+    fn a_tsconfig_path_alias_resolves_to_the_same_file_as_the_relative_form() {
+        let entries = [
+            (
+                "tsconfig.json",
+                r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+            ),
+            ("src/user/create.ts", ""),
+            ("src/domain/user.ts", TS),
+        ];
+
+        assert_eq!(
+            landed(&entries, "src/user/create.ts", "@/domain/user"),
+            "in-repo src/domain/user.ts"
+        );
+        assert_eq!(
+            landed(&entries, "src/user/create.ts", "../domain/user"),
+            "in-repo src/domain/user.ts"
+        );
+    }
+
+    /// A monorepo gives each package its own `tsconfig`, and the same alias
+    /// means different things in each. Discovery is per importer for exactly
+    /// this reason.
+    #[test]
+    fn each_package_gets_its_own_tsconfig() {
+        let entries = [
+            (
+                "packages/app/tsconfig.json",
+                r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]}}}"#,
+            ),
+            ("packages/app/src/main.ts", ""),
+            ("packages/app/src/thing.ts", TS),
+            (
+                "packages/api/tsconfig.json",
+                r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["lib/*"]}}}"#,
+            ),
+            ("packages/api/src/main.ts", ""),
+            ("packages/api/lib/thing.ts", TS),
+        ];
+
+        assert_eq!(
+            landed(&entries, "packages/app/src/main.ts", "@/thing"),
+            "in-repo packages/app/src/thing.ts"
+        );
+        assert_eq!(
+            landed(&entries, "packages/api/src/main.ts", "@/thing"),
+            "in-repo packages/api/lib/thing.ts"
+        );
+    }
+
+    /// A workspace package is linked into `node_modules`, but it is source in
+    /// this repository. Following the link is what lets a boundary rule written
+    /// against `packages/domain/**` see an import of `@org/domain`.
+    #[cfg(unix)]
+    #[test]
+    fn a_workspace_package_resolves_to_its_source_not_its_link() {
+        let (guard, root) = repo(&[
+            ("packages/app/src/main.ts", ""),
+            (
+                "packages/domain/package.json",
+                r#"{"name":"@org/domain","types":"src/index.ts"}"#,
+            ),
+            ("packages/domain/src/index.ts", TS),
+        ]);
+        std::fs::create_dir_all(root.join("node_modules/@org")).expect("create dirs");
+        std::os::unix::fs::symlink(
+            root.join("packages/domain"),
+            root.join("node_modules/@org/domain"),
+        )
+        .expect("symlink");
+
+        let resolved = describe(
+            &root,
+            ImportResolver::new(&root).resolve(&path("packages/app/src/main.ts"), "@org/domain"),
+        );
+        drop(guard);
+
+        assert_eq!(resolved, "in-repo packages/domain/src/index.ts");
+    }
+
+    /// A real dependency is not part of the repository, so no boundary glob
+    /// should ever match it as a path.
+    #[test]
+    fn an_installed_dependency_is_external() {
+        let (guard, root) = repo(&[
+            ("src/app.ts", ""),
+            (
+                "node_modules/lodash/package.json",
+                r#"{"name":"lodash","main":"index.js"}"#,
+            ),
+            ("node_modules/lodash/index.js", "module.exports = {};"),
+        ]);
+
+        let resolved = describe(
+            &root,
+            ImportResolver::new(&root).resolve(&path("src/app.ts"), "lodash"),
+        );
+        drop(guard);
+
+        assert_eq!(resolved, "external node_modules/lodash/index.js");
+    }
+
+    /// A builtin has no file at all. Reporting it as unresolved would make a
+    /// rule that forbids `node:fs` impossible to write, and would drown a real
+    /// missing dependency in noise.
+    #[test]
+    fn a_node_builtin_is_reported_as_a_builtin() {
+        let (guard, root) = repo(&[("src/app.ts", "")]);
+        let resolver = ImportResolver::new(&root);
+
+        let prefixed = describe(&root, resolver.resolve(&path("src/app.ts"), "node:fs"));
+        let bare = describe(&root, resolver.resolve(&path("src/app.ts"), "fs"));
+        drop(guard);
+
+        // Both forms normalise to the prefixed name, so a rule that forbids
+        // `node:fs` catches the bare `fs` too without saying so twice.
+        assert_eq!(prefixed, "builtin node:fs");
+        assert_eq!(bare, "builtin node:fs");
+    }
+
+    /// The error names the specifier and the file that wrote it, which together
+    /// are what a user needs to find the line.
+    #[test]
+    fn an_unresolvable_specifier_names_the_specifier_and_the_importer() {
+        let (guard, root) = repo(&[("src/app.ts", "")]);
+        let described = describe(
+            &root,
+            ImportResolver::new(&root).resolve(&path("src/app.ts"), "./nowhere"),
+        );
+        drop(guard);
+
+        assert_eq!(
+            described,
+            "error cannot resolve `./nowhere` from `src/app.ts`"
+        );
+    }
+
+    /// A file above the repository root is external even though no
+    /// `node_modules` is involved: it is not a file any rule can be about.
+    #[test]
+    fn a_file_outside_the_root_is_external() {
+        let (guard, outer) = repo(&[("shared/x.ts", TS), ("repo/src/app.ts", "")]);
+        let root = outer.join("repo");
+
+        let resolved = describe(
+            &root,
+            ImportResolver::new(&root).resolve(&path("src/app.ts"), "../../shared/x"),
+        );
+        drop(guard);
+
+        assert_eq!(resolved, format!("external {}", outer.join("shared/x.ts")));
+    }
+
+    /// A dependency's type declarations are what a TypeScript file imports
+    /// from, so `types` is consulted before `main`.
+    #[test]
+    fn a_dependency_resolves_through_its_types_field() {
+        let (guard, root) = repo(&[
+            ("src/app.ts", ""),
+            (
+                "node_modules/dep/package.json",
+                r#"{"name":"dep","main":"dist/index.js","types":"dist/index.d.ts"}"#,
+            ),
+            ("node_modules/dep/dist/index.js", "module.exports = {};"),
+            (
+                "node_modules/dep/dist/index.d.ts",
+                "export const x: number;",
+            ),
+        ]);
+
+        let resolved = describe(
+            &root,
+            ImportResolver::new(&root).resolve(&path("src/app.ts"), "dep"),
+        );
+        drop(guard);
+
+        assert_eq!(resolved, "external node_modules/dep/dist/index.d.ts");
+    }
+
+    /// An import written from a file at the repository root resolves against
+    /// the root itself, rather than falling over on a missing parent.
+    #[test]
+    fn a_file_at_the_root_resolves_against_the_root() {
+        assert_eq!(
+            landed(&[("main.ts", ""), ("helper.ts", TS)], "main.ts", "./helper"),
+            "in-repo helper.ts"
+        );
+    }
+}

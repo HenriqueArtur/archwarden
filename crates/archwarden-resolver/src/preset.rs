@@ -137,9 +137,12 @@ mod tests {
 
         for (relative, contents) in entries {
             let path = root.join(relative);
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).expect("create dirs");
-            }
+            // Every entry is `directory/file`, so the parent is never absent.
+            // Written as an `expect` rather than an `if let` because the
+            // negative arm no execution reaches is dead code that drags the
+            // coverage floor down -- see the convention in docs/PLAN-V0.md.
+            std::fs::create_dir_all(path.parent().expect("a file has a parent"))
+                .expect("create dirs");
             std::fs::write(&path, contents).expect("write file");
         }
 
@@ -285,15 +288,10 @@ mod tests {
             .resolve(&root, "@myorg/never-installed")
             .expect_err("nothing to resolve");
 
-        let PresetError::Unresolved {
-            specifier, from, ..
-        } = &err
-        else {
-            panic!("expected Unresolved, got {err:?}");
-        };
-        assert_eq!(specifier, "@myorg/never-installed");
-        assert_eq!(from, &root);
-        assert!(err.to_string().contains("@myorg/never-installed"), "{err}");
+        assert_eq!(
+            err.to_string(),
+            format!("cannot resolve preset `@myorg/never-installed` from `{root}`")
+        );
     }
 
     /// A relative path that does not exist fails the same way a missing
@@ -302,10 +300,35 @@ mod tests {
     fn a_missing_relative_preset_fails_at_resolution() {
         let (_guard, root) = tree(&[("arch.config.json", PRESET)]);
 
-        assert!(matches!(
-            PresetResolver::new().resolve(&root, "./nope.json"),
-            Err(PresetError::Unresolved { .. })
-        ));
+        let err = PresetResolver::new()
+            .resolve(&root, "./nope.json")
+            .expect_err("nothing to resolve");
+
+        assert_eq!(
+            err.to_string(),
+            format!("cannot resolve preset `./nope.json` from `{root}`")
+        );
+    }
+
+    /// `Default` and `new` are the same resolver. Worth pinning because they
+    /// are two doors into one configuration, and a divergence would show up as
+    /// presets resolving differently depending on which door a caller used.
+    #[test]
+    fn the_default_resolver_is_the_configured_one() {
+        let (_guard, root) = tree(&[
+            (
+                "node_modules/preset-pkg/package.json",
+                r#"{"name": "preset-pkg", "main": "preset.json"}"#,
+            ),
+            ("node_modules/preset-pkg/preset.json", PRESET),
+        ]);
+
+        assert_eq!(
+            PresetResolver::default()
+                .resolve(&root, "preset-pkg")
+                .expect("the default resolver finds it"),
+            root.join("node_modules/preset-pkg/preset.json")
+        );
     }
 
     /// Only JSON. A preset that resolved to JavaScript would make the config
@@ -324,10 +347,12 @@ mod tests {
             .resolve(&root, "js-preset")
             .expect_err("a JS entry point must not be accepted as a preset");
 
-        let PresetError::NotJson { path, .. } = &err else {
-            panic!("expected NotJson, got {err:?}");
-        };
-        assert!(path.as_str().ends_with("preset.js"), "{path}");
-        assert!(err.to_string().contains("not a JSON file"), "{err}");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "preset `js-preset` resolved to `{}`, which is not a JSON file",
+                root.join("node_modules/js-preset/preset.js")
+            )
+        );
     }
 }

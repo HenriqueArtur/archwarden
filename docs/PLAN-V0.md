@@ -765,28 +765,107 @@ O crate `engine` não está no conjunto de zero-sobreviventes do plano
 
 ---
 
-### M5 — Resolver + `import-boundary` `⬜`
+### M5 — Resolver + `import-boundary`
 
-**Objetivo:** grafo de imports próprio (ADR#7).
+**Objetivo:** grafo de imports próprio (ADR#7). Dividido em quatro por
+tamanho, como o M1.
+
+**Depende de:** resolução de C2 (shape do `import-boundary` no config) — feito.
+
+---
+
+#### M5a — Resolver `✅`
 
 **Tarefas**
-- `resolver`: configuração TS-aware do `OxcResolver` já existente do M1 —
-  `tsconfig.paths`, extensões, condicionais de `exports`, workspaces.
-- `resolver`: `InMemoryResolver` para fixture (`ARCHITECTURE.md:98`).
-- `parser`: `ImportFact` com marcação type-only (`RULES.md:123-126`).
-- `engine`: montagem do grafo, índice reverso (`ARCHITECTURE.md:141-144`).
-- `rules`: `import-boundary` — `forbid_import_from`, `must_import_from`,
-  `except`, `include_type_only` + `describe_expectation`.
-- Tier 3: harness differential vs `dependency-cruiser`,
+- ✅ `resolver`: `ImportResolver` TS-aware sobre o `oxc_resolver` —
+  `tsconfig.paths`, extensões, `extension_alias`, condicionais de `exports`,
+  workspaces, builtins.
+- ✅ `resolver`: `InMemoryResolver` para fixture (`ARCHITECTURE.md:133`).
+
+**Registro** — 2026-07-25
+
+Duas descobertas de API, ambas achadas por teste vermelho e não por leitura:
+
+1. **`resolve()` não faz descoberta automática de `tsconfig`.** Os dois testes
+   de alias falharam com `NotFound` enquanto os outros onze passavam. O
+   `oxc_resolver` documenta que `TsconfigDiscovery::Auto` **só funciona com
+   `resolve_file()`** — a que recebe o caminho do *arquivo* importador, não do
+   diretório. Faz sentido: o `tsconfig` que vale é o mais próximo acima do
+   importador, e num monorepo isso é um arquivo diferente por pacote. De
+   quebra o código ficou menor (some o cálculo do diretório pai).
+2. **`import 'fs'` e `import 'node:fs'` normalizam para o mesmo nome.** O teste
+   esperava `builtin fs` para a forma nua e veio `builtin node:fs`. É melhor
+   assim — uma regra que proíbe `node:fs` pega as duas formas sem dizer duas
+   vezes — mas era suposição minha e virou asserção explícita.
+
+**Classificação.** `Resolved::InRepo` exige estar sob a raiz **e** não ter
+`node_modules` em nenhum componente. Como o `oxc_resolver` segue symlink antes,
+um pacote de workspace linkado em `node_modules/@org/domain` classifica pelo
+lugar onde ele realmente mora — `packages/domain/src/index.ts`. É exatamente o
+que uma regra de boundary escrita contra `packages/domain/**` precisa, e tem
+teste (`#[cfg(unix)]`).
+
+**Ordem das extensões e dos campos** é decisão, não acaso: `.ts` antes de `.js`
+(num repo que tem os dois, a fonte é o arquivo sobre o qual a regra fala), e
+`types` antes de `module` antes de `main` (o que um arquivo TS importa de uma
+dependência são as declarações).
+
+**Dívida da convenção, paga.** O `preset.rs` do M1 tinha dois
+`let ... else { panic!() }` — a exata armadilha que virou convenção depois
+dele. Trocados por asserção da mensagem inteira, que de quebra fixa a frase que
+o usuário lê. O helper de teste `in_repo` que eu tinha acabado de escrever caiu
+na mesma armadilha; virou `landed()`, que devolve `"in-repo src/x.ts"` /
+`"external ..."` / `"builtin ..."` / `"error ..."`. A classificação passou a ser
+metade da asserção em vez de ficar implícita num `matches!`.
+
+Também troquei `if let Some(parent) = path.parent()` por `expect` nos helpers
+de árvore temporária: o braço negativo nunca executa. O mesmo padrão está em
+mais quatro crates e vale limpar quando eu passar por eles.
+
+**Cobertura:** 98,42% linha no crate. Os 12 restantes são os dois braços
+`NonUtf8Path` (`imports.rs` e `preset.rs`) — inalcançáveis porque a raiz é
+`Utf8PathBuf` e o specifier é `&str`, mas exigidos pelo tipo de retorno do
+`oxc_resolver`. `cargo mutants` nos dois arquivos novos: 3 mortos, 3 inviáveis,
+**zero sobreviventes**.
+
+**Fui rápido demais e escrevi a implementação antes do teste.** Percebi antes
+de rodar qualquer coisa, salvei o esboço fora da árvore, reduzi o módulo a
+stub que compila e falha, escrevi os 13 testes, vi os 13 vermelhos pelos
+motivos certos, e só então restaurei. O ciclo foi cumprido, mas registro
+porque a tentação de pular o vermelho quando o desenho já está na cabeça é o
+modo de falha mais provável deste projeto.
+
+---
+
+#### M5b — Grafo `⬜`
+
+**Tarefas**
+- `engine`: passe de resolução preenchendo `ImportFact.resolved`.
+- `engine`: montagem do grafo e índice reverso (`ARCHITECTURE.md:141-144`).
+
+O `ImportFact` já sai do parser com specifier, `type_only` e nomes desde o M3;
+o que falta é resolvê-lo. Decisão a tomar aqui: os `facts` vão para o cache com
+`resolved: None` (saída pura do parser, chave só de conteúdo) e a resolução
+roda todo run, ou vão resolvidos e a chave passa a incluir o
+`resolution_epoch`. Inclino para a primeira — o `oxc_resolver` tem cache
+próprio e a chave por conteúdo fica honesta.
+
+---
+
+#### M5c — `import-boundary` `⬜`
+
+- `rules`: `forbid_import_from`, `must_import_from`, `except`,
+  `include_type_only` + `describe_expectation`.
+
+---
+
+#### M5d — Tier 3 `⬜`
+
+- Harness differential vs `dependency-cruiser`,
   `tests/differential/known-divergences.md`.
 
 **Pronto quando:** Tier 3 roda contra o Flowmaatik sem divergência não
 justificada.
-
-**Depende de:** resolução de C2 (shape do `import-boundary` no config).
-
-**Registro**
-> _(pendente)_
 
 ---
 
