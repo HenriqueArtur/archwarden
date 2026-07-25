@@ -62,8 +62,17 @@ impl SkipDirs {
 }
 
 /// What a compiled rule requires, by category.
+///
+/// Deliberately **not** `#[non_exhaustive]`, unlike [`Observed`] and
+/// [`Expectation`](crate::finding::Expectation). Those two are matched by
+/// downstream code that must keep compiling when a variant appears;
+/// `archwarden-rules` matches this one exhaustively *on purpose*, so that a
+/// kind added without an engine fails to build. The eight crates version in
+/// lockstep and there is no independent downstream, so the attribute would buy
+/// nothing and would cost that guarantee.
+///
+/// [`Observed`]: crate::finding::Observed
 #[derive(Debug, Clone)]
-#[non_exhaustive]
 pub enum CompiledRuleKind {
     /// Which subdirectories may exist, and which filenames.
     Structure {

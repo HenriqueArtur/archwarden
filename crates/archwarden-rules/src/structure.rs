@@ -57,17 +57,42 @@ impl StructureEngine {
             return None;
         };
 
-        Some(Self {
+        Some(Self::build(
+            rule,
+            allowed_subfolders,
+            warn_subfolders,
+            recurse_into,
+            filename_patterns,
+            skip_dirs,
+        ))
+    }
+
+    /// Builds an engine from a rule whose kind is already known.
+    ///
+    /// Infallible, and that is the point: `engines_for` matches every
+    /// `CompiledRuleKind` exhaustively and calls the matching constructor, so
+    /// a kind added without an engine fails to compile. There is no runtime
+    /// state in which a rule goes unchecked, which is why a run has nothing to
+    /// report as unimplemented.
+    pub(crate) fn build(
+        rule: &CompiledRule,
+        allowed_subfolders: &[String],
+        warn_subfolders: &[String],
+        recurse_into: &[String],
+        filename_patterns: &[Pattern],
+        skip_dirs: SkipDirs,
+    ) -> Self {
+        Self {
             id: rule.id.clone(),
             module: rule.module.clone(),
             level: rule.level,
             scope: rule.scope.clone(),
-            allowed_subfolders: allowed_subfolders.clone(),
-            warn_subfolders: warn_subfolders.clone(),
-            recurse_into: recurse_into.clone(),
-            filename_patterns: filename_patterns.clone(),
+            allowed_subfolders: allowed_subfolders.to_vec(),
+            warn_subfolders: warn_subfolders.to_vec(),
+            recurse_into: recurse_into.to_vec(),
+            filename_patterns: filename_patterns.to_vec(),
             skip_dirs,
-        })
+        }
     }
 
     /// Whether this rule governs `directory`.

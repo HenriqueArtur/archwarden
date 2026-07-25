@@ -19,6 +19,12 @@ use serde::Serialize;
 ///
 /// Bumped when a consumer would have to change to keep reading it. Adding a
 /// field is not a bump; removing or repurposing one is.
+///
+/// Not bumped when `unimplemented_rules` was removed in M6, and the exception
+/// is worth stating: the field was omitted from every clean report anyway, it
+/// could only ever appear in a state no released build could reach, and
+/// archwarden has not been released. Version 0 is still the first shape any
+/// consumer will see. A field removal after release is a bump.
 pub const REPORT_VERSION: u32 = 0;
 
 /// How to render a report.
@@ -37,8 +43,6 @@ struct JsonReport<'a> {
     version: u32,
     summary: Summary,
     findings: &'a [Finding],
-    #[serde(skip_serializing_if = "<[String]>::is_empty")]
-    unimplemented_rules: &'a [String],
     #[serde(skip_serializing_if = "Vec::is_empty")]
     unreadable_files: Vec<UnreadableFile<'a>>,
 }
@@ -104,7 +108,6 @@ fn render_json(report: &Report, out: &mut dyn std::io::Write) {
         version: REPORT_VERSION,
         summary: Summary::of(report),
         findings: &report.findings,
-        unimplemented_rules: &report.unimplemented_rules,
         unreadable_files: report
             .unreadable_files
             .iter()
@@ -154,13 +157,6 @@ fn render_text(report: &Report, out: &mut dyn std::io::Write) {
 
     for (path, reason) in &report.unreadable_files {
         let _ = writeln!(out, "note: `{path}` was not checked — {reason}");
-    }
-
-    for rule in &report.unimplemented_rules {
-        let _ = writeln!(
-            out,
-            "note: rule `{rule}` was not checked — its kind is not implemented yet"
-        );
     }
 
     // An import a boundary rule could not place is an import it did not check.
@@ -356,7 +352,6 @@ mod tests {
             findings,
             directories_scanned: 12,
             files_scanned: 34,
-            unimplemented_rules: Vec::new(),
             unreadable_files: Vec::new(),
             files_parsed: 0,
             facts_reused: 0,
@@ -442,22 +437,31 @@ mod tests {
         );
     }
 
-    /// A rule that was not checked is said out loud. A clean-looking report
-    /// that quietly skipped a rule is worse than no report.
+    /// A file that was not checked is said out loud, in both formats. A
+    /// clean-looking report that quietly skipped a file is worse than no
+    /// report -- and this is now the only way a run can admit it saw less than
+    /// everything, since every rule kind reaches an engine.
     #[test]
-    fn an_unchecked_rule_is_announced_in_both_formats() {
+    fn an_unchecked_file_is_announced_in_both_formats() {
         let report = Report {
-            unimplemented_rules: vec!["future-rule".to_owned()],
+            unreadable_files: vec![(
+                path("src/user/broken.ts"),
+                "stream did not contain valid UTF-8".to_owned(),
+            )],
             ..report(Vec::new())
         };
 
         let text = rendered(&report, Format::Text);
-        assert!(text.contains("future-rule"), "{text}");
-        assert!(text.contains("not implemented yet"), "{text}");
+        assert!(text.contains("src/user/broken.ts"), "{text}");
+        assert!(text.contains("was not checked"), "{text}");
 
         let json = rendered(&report, Format::Json);
-        assert!(json.contains("\"unimplemented_rules\""), "{json}");
-        assert!(json.contains("future-rule"), "{json}");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed["unreadable_files"][0]["path"], "src/user/broken.ts");
+        assert_eq!(
+            parsed["unreadable_files"][0]["reason"],
+            "stream did not contain valid UTF-8"
+        );
     }
 
     /// The JSON shape is a contract with agents, so its envelope is asserted
@@ -487,12 +491,12 @@ mod tests {
         assert_eq!(first["expected"]["type"], "allowed-subfolders");
     }
 
-    /// An empty `unimplemented_rules` is absent rather than an empty array, so
+    /// An empty `unreadable_files` is absent rather than an empty array, so
     /// the common report stays small.
     #[test]
     fn a_clean_json_report_omits_the_empty_list() {
         let json = rendered(&report(Vec::new()), Format::Json);
-        assert!(!json.contains("unimplemented_rules"), "{json}");
+        assert!(!json.contains("unreadable_files"), "{json}");
     }
 
     /// The prose comes from the same values the JSON carries, so the two can

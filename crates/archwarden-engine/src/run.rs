@@ -32,11 +32,6 @@ pub struct Report {
     pub directories_scanned: usize,
     /// How many files were examined.
     pub files_scanned: usize,
-    /// Rules whose kind has no engine yet, by id.
-    ///
-    /// Reported rather than dropped: a run that silently skipped a rule would
-    /// print a clean result the user has no reason to distrust.
-    pub unimplemented_rules: Vec<String>,
     /// Files a rule wanted to read but could not, with why.
     ///
     /// Also reported rather than dropped, and for the same reason: a file that
@@ -106,8 +101,9 @@ pub struct Run<'a> {
 /// leave a file behind for someone to wonder about.
 #[must_use]
 pub fn reads_files(config: &CompiledConfig) -> bool {
-    let (engines, _) = archwarden_rules::engines_for(config);
-    engines.iter().any(|engine| engine.needs_facts())
+    archwarden_rules::engines_for(config)
+        .iter()
+        .any(|engine| engine.needs_facts())
 }
 
 /// Whether any rule in this configuration asks where an import lands.
@@ -117,8 +113,9 @@ pub fn reads_files(config: &CompiledConfig) -> bool {
 /// rule should not pay it.
 #[must_use]
 pub fn resolves_imports(config: &CompiledConfig) -> bool {
-    let (engines, _) = archwarden_rules::engines_for(config);
-    engines.iter().any(|engine| engine.needs_resolution())
+    archwarden_rules::engines_for(config)
+        .iter()
+        .any(|engine| engine.needs_resolution())
 }
 
 /// Runs every rule against the walked tree.
@@ -133,7 +130,7 @@ pub fn check(run: Run<'_>) -> Report {
         tree,
         mut cache,
     } = run;
-    let (engines, unimplemented_rules) = archwarden_rules::engines_for(config);
+    let engines = archwarden_rules::engines_for(config);
 
     let mut findings = Vec::new();
     let mut unreadable_files = Vec::new();
@@ -225,7 +222,6 @@ pub fn check(run: Run<'_>) -> Report {
         findings,
         directories_scanned: tree.directory_count(),
         files_scanned,
-        unimplemented_rules,
         unreadable_files,
         files_parsed,
         facts_reused,
@@ -555,27 +551,95 @@ mod tests {
         );
     }
 
-    /// A rule kind with no engine yet is named, so a caller can say what was
-    /// not checked rather than presenting a clean run.
+    /// Every rule kind v0 defines has an engine, so a run can no longer report
+    /// one as unchecked. This test says so out loud rather than leaving the
+    /// question open: it used `call-obligation` as its example of an
+    /// unimplemented kind until M6 implemented it, and a test that encodes
+    /// "not yet" has an expiry date.
+    ///
+    /// It cannot be reintroduced by accident either: `engines_for` matches
+    /// `CompiledRuleKind` exhaustively, so a kind without an engine fails to
+    /// compile rather than producing a rule nobody checks.
     #[test]
-    fn a_rule_with_no_engine_is_named_in_the_report() {
+    fn every_rule_kind_reaches_an_engine() {
         let report = run(
-            &[("src/user/a.ts", "")],
+            &[(
+                "apps/api/route.post.ts",
+                "import { Event } from '@org/domain/event';\nexport function POST() { Event.save(); }",
+            )],
             &config(vec![rule(
-                "future-rule",
+                "must-audit",
                 None,
-                &["src/*"],
+                &["apps/*"],
                 CompiledRuleKind::CallObligation {
-                    file_pattern: archwarden_core::pattern::Pattern::compile("^a\\.ts$")
+                    file_pattern: archwarden_core::pattern::Pattern::compile(r"^route\.post\.ts$")
                         .expect("valid pattern"),
                     symbol: "Event.save".to_owned(),
-                    imported_from: "@org/domain".to_owned(),
+                    imported_from: "@org/domain/event".to_owned(),
                 },
             )]),
         );
 
-        assert_eq!(report.unimplemented_rules, ["future-rule"]);
-        assert!(report.findings.is_empty());
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+        assert_eq!(report.files_parsed, 1, "the rule read the file");
+    }
+
+    /// The whole point of the rule, through the real parser: importing the
+    /// recorder and never calling it.
+    #[test]
+    fn a_route_that_imports_without_calling_is_reported() {
+        let report = run(
+            &[(
+                "apps/api/route.post.ts",
+                "import { Event } from '@org/domain/event';\nexport function POST() { return Event; }",
+            )],
+            &config(vec![rule(
+                "must-audit",
+                None,
+                &["apps/*"],
+                CompiledRuleKind::CallObligation {
+                    file_pattern: archwarden_core::pattern::Pattern::compile(r"^route\.post\.ts$")
+                        .expect("valid pattern"),
+                    symbol: "Event.save".to_owned(),
+                    imported_from: "@org/domain/event".to_owned(),
+                },
+            )]),
+        );
+
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(
+            report.findings.first().map(|f| &f.observed),
+            Some(&archwarden_core::finding::Observed::RequiredCallMissing {
+                symbol: "Event.save".to_owned()
+            })
+        );
+    }
+
+    /// And the case the plan asks for: the export delegates to a helper in the
+    /// same file, and the helper is what calls the symbol.
+    #[test]
+    fn a_call_from_a_local_helper_satisfies_the_obligation() {
+        let report = run(
+            &[(
+                "apps/api/route.post.ts",
+                "import { Event } from '@org/domain/event';\n\
+                 export function POST() { return handle(); }\n\
+                 function handle() { Event.save(); }",
+            )],
+            &config(vec![rule(
+                "must-audit",
+                None,
+                &["apps/*"],
+                CompiledRuleKind::CallObligation {
+                    file_pattern: archwarden_core::pattern::Pattern::compile(r"^route\.post\.ts$")
+                        .expect("valid pattern"),
+                    symbol: "Event.save".to_owned(),
+                    imported_from: "@org/domain/event".to_owned(),
+                },
+            )]),
+        );
+
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
     }
 
     /// The point of the cache: a second run over unchanged files reuses their

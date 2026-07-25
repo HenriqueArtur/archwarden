@@ -52,7 +52,30 @@ impl ImportBoundaryEngine {
             return None;
         };
 
-        Some(Self {
+        Some(Self::build(
+            rule,
+            forbid,
+            require,
+            except,
+            *include_type_only,
+        ))
+    }
+
+    /// Builds an engine from a rule whose kind is already known.
+    ///
+    /// Infallible, and that is the point: `engines_for` matches every
+    /// `CompiledRuleKind` exhaustively and calls the matching constructor, so
+    /// a kind added without an engine fails to compile. There is no runtime
+    /// state in which a rule goes unchecked, which is why a run has nothing to
+    /// report as unimplemented.
+    pub(crate) fn build(
+        rule: &CompiledRule,
+        forbid: &PathSet,
+        require: &PathSet,
+        except: &PathSet,
+        include_type_only: bool,
+    ) -> Self {
+        Self {
             id: rule.id.clone(),
             module: rule.module.clone(),
             level: rule.level,
@@ -60,8 +83,8 @@ impl ImportBoundaryEngine {
             forbid: forbid.clone(),
             require: require.clone(),
             except: except.clone(),
-            include_type_only: *include_type_only,
-        })
+            include_type_only,
+        }
     }
 
     /// Whether this import is one the rule looks at.

@@ -242,10 +242,19 @@ The semantic rule that no lint plugin does well:
 }
 ```
 
-The engine performs an AST call-graph walk within the file (following local
-function definitions) to check that at least one reachable path from the
-top-level export calls `Event.save`. Cross-file call-graph analysis is out
-of scope for v0 — the obligation must be satisfied within the file itself.
+The obligation is satisfied when the call appears **anywhere in the file**.
+That includes a local helper the export delegates to, which is the case this
+rule has to get right — demanding the call at the top level would fire on
+well-factored code.
+
+It deliberately stops there. A file that calls `Event.save` only from a
+function nothing reaches still passes, in the same way `RULES.md` declines to
+filter calls inside `if (false)`: archwarden is a structural linter, not a
+reachability analyser, and a rule that were sometimes right about dead code
+would be harder to trust than one that is never asked.
+
+Cross-file analysis is out of scope for v0 — the obligation must be satisfied
+within the file itself.
 
 ## Presets
 

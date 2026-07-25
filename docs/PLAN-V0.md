@@ -1130,21 +1130,116 @@ acordada — mas é lacuna de teste real e fica registrada aqui em vez de sumir.
 
 ---
 
-### M6 — `call-obligation` `⬜`
+### M6 — `call-obligation` `✅`
 
 **Objetivo:** a regra que nenhum outro tool faz.
 
 **Tarefas**
-- `parser`: `CallFact`, incluindo method chains (`Event.save`).
-- `rules`: call-graph intra-arquivo a partir dos exports top-level
-  (`CONFIG.md:197-200`); checagem de `imported_from`; falha específica
-  "expected import missing" (`RULES.md:153-155`) + `describe_expectation`.
+- ✅ `parser`: `CallFact` com method chains — já vinha do M3, reaproveitado
+  sem mudança.
+- ✅ `rules`: `CallObligationEngine` — checagem de `imported_from`, falha
+  específica "expected import missing", `describe_expectation`.
 
 **Pronto quando:** obrigação satisfeita via helper local é detectada;
-cross-file continua fora de escopo, com mensagem clara.
+cross-file continua fora de escopo, com mensagem clara. **Atendido.**
 
-**Registro**
-> _(pendente)_
+**Registro** — 2026-07-25
+
+Primeira regra sobre **comportamento** e não sobre forma. Todo o resto checa
+onde o arquivo está, como se chama, o que exporta, o que alcança. Esta checa se
+ele *fez* uma coisa.
+
+**Duas falhas, mantidas distintas de propósito.** "Você não importou
+`Event.save`" e "você importou e nunca chamou" são erros diferentes com
+correções diferentes. A checagem do import vem primeiro e a falha dela encerra
+o exame: dizer que um arquivo nunca chama um símbolo que ele nunca importou
+manda o leitor procurar um call site em vez de um import.
+
+Verificado no binário:
+
+```
+error   .../route.delete.ts
+        [*] non-get-routes-must-audit — `Event.save` is not imported from `@flowmaatik/domain/event`
+error   .../route.put.ts
+        [*] non-get-routes-must-audit — `Event.save` is imported but never called
+
+2 errors, 0 warnings · 5 files, 7 directories · 3 parsed, 0 reused
+```
+
+O `route.post.ts`, que chama via helper local, passa. O `route.get.ts` não casa
+o `file_pattern` e não é examinado.
+
+**Decisões de desenho**
+
+- **`imported_from` casa o specifier como escrito**, não o caminho resolvido.
+  É o que a palavra diz — *de qual pacote* o símbolo vem — e é por isso que
+  esta regra tem `needs_resolution() == false`, ao contrário da
+  `import-boundary`. Custo: quem importar por caminho relativo em vez do nome
+  do pacote não casa. Está documentado.
+- **Import type-only não satisfaz.** Não se chama um tipo, e um
+  `import type { Event }` satisfazendo a metade-import de uma regra cuja razão
+  de existir é a chamada seria a pior espécie de falso negativo.
+- **A raiz do símbolo é o que o import precisa dar.** `Event.save` é chamado
+  através do binding `Event`; `saveEvent` é raiz de si mesmo.
+- **Method chain casa exatamente.** `Event.saveDraft`, `save`, `Other.save` e
+  `Event.save.later` não satisfazem `Event.save`.
+
+**Correção C10 — `CONFIG.md:245` prometia mais do que o v0 faz.** O texto dizia
+*"AST call-graph walk within the file (following local function definitions) to
+check that at least one reachable path from the top-level export calls
+`Event.save`"*. O que está implementado é **contenção plana**: a chamada em
+qualquer lugar do arquivo satisfaz.
+
+A diferença é só código morto — uma função que ninguém alcança e que chama o
+símbolo. E o `RULES.md:170-172` já abria mão disso explicitamente ("calls
+inside `if (false)` ... are not filtered out. archwarden is a structural
+linter, not a taint analyser"). Os dois documentos se contradiziam; o
+`CONFIG.md` foi corrigido para descrever o que existe, e a razão ficou escrita
+ao lado. Contenção plana também é o que atende o critério do plano
+(helper local detectado) sem máquina nenhuma de grafo.
+
+**Um teste com prazo de validade venceu, de novo.** O
+`a_rule_with_no_engine_is_named_in_the_report` do `run.rs` usava
+`call-obligation` como exemplo de kind sem engine — segunda vez que isso
+acontece (a primeira foi o `import-boundary` no M5c). Substituído por três
+testes ponta a ponta da regra através do parser real.
+
+**E isso levanta uma decisão que é sua.** Com o M6, **todos os cinco kinds do
+v0 têm engine**, então o braço `else` do `engines_for` e o campo
+`unimplemented_rules` do `Report` viraram inalcançáveis — código que nenhuma
+execução atinge, que é exatamente o que a convenção deste projeto condena.
+
+**Henrique escolheu (a) em 2026-07-25:** `engines_for` virou `match` exaustivo
+em `CompiledRuleKind`, e "kind sem engine" deixou de ser estado possível.
+
+**O que isso exigiu, e não era óbvio.** O `match` exaustivo não compilava:
+`CompiledRuleKind` era `#[non_exhaustive]`, e essa marca obriga um braço
+curinga em *qualquer outro crate* — que é exatamente o `else` que se queria
+eliminar. A marca saiu, com a razão escrita ao lado do tipo: ela existe para
+que um variante novo não quebre quem casa o enum de fora, e aqui **queremos**
+que quebre. Os oito crates versionam em lockstep e não há downstream
+independente, então ela não comprava nada e custava a garantia.
+
+Isso é a mesma distinção já registrada no M2 — `#[non_exhaustive]` é certo para
+enum que outros só **casam** (`Observed`, `Expectation`, que o `report.rs`
+renderiza e precisa continuar compilando), e errado quando o casamento
+exaustivo é o mecanismo. Anotado no próprio tipo para o próximo leitor.
+
+Os construtores de todas as cinco engines ganharam um `build(...)` infalível
+que recebe o payload já desestruturado; o `from_rule(&rule) -> Option<Self>`
+continua como API pública e é o que os testes usam, incluindo o caso "kind
+errado devolve `None`". Nada ficou inalcançável.
+
+**Saiu do `Report` e do JSON:** `unimplemented_rules`.
+
+**`REPORT_VERSION` não foi bumpado**, e a exceção está escrita no código: o
+campo já era omitido de todo relatório limpo, só podia aparecer num estado que
+nenhuma build publicada alcança, e o archwarden não foi publicado. A versão 0
+continua sendo a primeira forma que qualquer consumidor vai ver. Remoção de
+campo **depois** do release é bump.
+
+O `unreadable_files` continua e ganhou teste próprio nos dois formatos: agora
+é o único jeito de um run admitir que viu menos do que tudo.
 
 ---
 

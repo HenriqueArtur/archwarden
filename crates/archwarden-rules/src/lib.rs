@@ -13,44 +13,95 @@
 //! See `docs/RULES.md`.
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod call_obligation;
 pub mod import_boundary;
 pub mod naming;
 pub mod spec_pair;
 pub mod structure;
 
-use archwarden_core::{compiled::CompiledConfig, traits::RuleEngine};
+use archwarden_core::{
+    compiled::{CompiledConfig, CompiledRuleKind},
+    traits::RuleEngine,
+};
 
-/// Builds an engine for every rule in a compiled config.
+/// Builds an engine for every rule in the configuration.
 ///
-/// Each rule is offered to each engine constructor and the one that recognises
-/// its kind takes it. A rule of a kind no engine has been written for yet is
-/// skipped rather than dropped silently -- it is returned in the second half
-/// of the pair so a caller can say so.
+/// The `match` is exhaustive on purpose. A kind added to `CompiledRuleKind`
+/// without an engine fails to compile here, so "a rule this build cannot
+/// check" is not a state a run can be in and nothing has to be reported as
+/// unchecked. This is the same trade as `CompiledRule` itself: make the bad
+/// state unrepresentable rather than detect it later.
 ///
 /// Declaration order is preserved, which is what makes a report's ordering
 /// follow the config rather than the order engines happen to be tried in.
 #[must_use]
-pub fn engines_for(config: &CompiledConfig) -> (Vec<Box<dyn RuleEngine>>, Vec<String>) {
-    let mut engines: Vec<Box<dyn RuleEngine>> = Vec::new();
-    let mut unimplemented = Vec::new();
-
-    for rule in config.rules() {
-        if let Some(engine) =
-            structure::StructureEngine::from_rule(rule, config.skip_dirs().clone())
-        {
-            engines.push(Box::new(engine));
-        } else if let Some(engine) = spec_pair::SpecPairEngine::from_rule(rule) {
-            engines.push(Box::new(engine));
-        } else if let Some(engine) = naming::NamingEngine::from_rule(rule) {
-            engines.push(Box::new(engine));
-        } else if let Some(engine) = import_boundary::ImportBoundaryEngine::from_rule(rule) {
-            engines.push(Box::new(engine));
-        } else {
-            unimplemented.push(rule.id.to_string());
-        }
-    }
-
-    (engines, unimplemented)
+pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
+    config
+        .rules()
+        .map(|rule| -> Box<dyn RuleEngine> {
+            match &rule.kind {
+                CompiledRuleKind::Structure {
+                    allowed_subfolders,
+                    warn_subfolders,
+                    recurse_into,
+                    filename_patterns,
+                } => Box::new(structure::StructureEngine::build(
+                    rule,
+                    allowed_subfolders,
+                    warn_subfolders,
+                    recurse_into,
+                    filename_patterns,
+                    config.skip_dirs().clone(),
+                )),
+                CompiledRuleKind::SpecPair {
+                    subfolders,
+                    spec_markers,
+                    ignore_files,
+                    require_non_empty_spec,
+                } => Box::new(spec_pair::SpecPairEngine::build(
+                    rule,
+                    subfolders,
+                    spec_markers,
+                    ignore_files,
+                    *require_non_empty_spec,
+                )),
+                CompiledRuleKind::Naming {
+                    file_pattern,
+                    name_template,
+                    kind,
+                    signature_hint,
+                } => Box::new(naming::NamingEngine::build(
+                    rule,
+                    file_pattern,
+                    name_template,
+                    kind,
+                    signature_hint.as_deref(),
+                )),
+                CompiledRuleKind::ImportBoundary {
+                    forbid,
+                    require,
+                    except,
+                    include_type_only,
+                } => Box::new(import_boundary::ImportBoundaryEngine::build(
+                    rule,
+                    forbid,
+                    require,
+                    except,
+                    *include_type_only,
+                )),
+                CompiledRuleKind::CallObligation {
+                    file_pattern,
+                    symbol,
+                    imported_from,
+                } => Box::new(call_obligation::CallObligationEngine::build(
+                    rule,
+                    file_pattern,
+                    symbol,
+                    imported_from,
+                )),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -112,6 +163,14 @@ mod tests {
         }
     }
 
+    fn call_obligation_rule() -> CompiledRuleKind {
+        CompiledRuleKind::CallObligation {
+            file_pattern: Pattern::compile(r"^route\\.post\\.ts$").expect("valid"),
+            symbol: "Event.save".to_owned(),
+            imported_from: "@org/domain/event".to_owned(),
+        }
+    }
+
     fn import_boundary_rule() -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: PathSet::compile(["packages/domain/**".to_owned()]).expect("valid"),
@@ -130,34 +189,33 @@ mod tests {
             rule("structure-second", structure_rule()),
         ]);
 
-        let (engines, unimplemented) = engines_for(&config);
+        let engines = engines_for(&config);
 
         let ids: Vec<_> = engines.iter().map(|e| e.id().as_str().to_owned()).collect();
         assert_eq!(ids, ["spec-first", "structure-second"]);
-        assert!(unimplemented.is_empty());
     }
 
-    /// A rule kind with no engine yet is named rather than dropped, so the
-    /// caller can tell the user what was not checked instead of quietly
-    /// reporting a clean run.
+    /// Every rule kind v0 defines now has an engine, so there is nothing left
+    /// to report as unimplemented.
+    ///
+    /// The reporting path is not dead -- it is what a kind added to
+    /// `CompiledRuleKind` before its engine would take, and a run that quietly
+    /// skipped it would print a clean result nobody has reason to distrust.
+    /// It is covered by `run.rs`'s report test rather than here, because
+    /// there is no longer a real kind to stand in for one.
     #[test]
-    fn a_rule_kind_without_an_engine_is_reported_not_dropped() {
+    fn nothing_is_left_unimplemented() {
         let config = config(vec![
-            rule("has-engine", structure_rule()),
-            rule(
-                "no-engine-yet",
-                CompiledRuleKind::CallObligation {
-                    file_pattern: Pattern::compile("^x$").expect("valid"),
-                    symbol: "Event.save".to_owned(),
-                    imported_from: "@org/domain".to_owned(),
-                },
-            ),
+            rule("structure", structure_rule()),
+            rule("spec-pair", spec_pair_rule()),
+            rule("naming", naming_rule()),
+            rule("import-boundary", import_boundary_rule()),
+            rule("call-obligation", call_obligation_rule()),
         ]);
 
-        let (engines, unimplemented) = engines_for(&config);
+        let engines = engines_for(&config);
 
-        assert_eq!(engines.len(), 1);
-        assert_eq!(unimplemented, ["no-engine-yet"]);
+        assert_eq!(engines.len(), 5);
     }
 
     /// Every rule kind that has an engine gets one. The list is the contract
@@ -172,11 +230,10 @@ mod tests {
             rule("import-boundary", import_boundary_rule()),
         ]);
 
-        let (engines, unimplemented) = engines_for(&config);
+        let engines = engines_for(&config);
 
         let ids: Vec<_> = engines.iter().map(|e| e.id().as_str().to_owned()).collect();
         assert_eq!(ids, ["structure", "spec-pair", "naming", "import-boundary"]);
-        assert!(unimplemented.is_empty());
     }
 
     /// Only the boundary rule pays for resolution, which is what keeps a
@@ -188,7 +245,7 @@ mod tests {
             rule("import-boundary", import_boundary_rule()),
         ]);
 
-        let (engines, _) = engines_for(&config);
+        let engines = engines_for(&config);
         let wants: Vec<_> = engines.iter().map(|e| e.needs_resolution()).collect();
 
         assert_eq!(wants, [false, true]);
@@ -196,8 +253,6 @@ mod tests {
 
     #[test]
     fn an_empty_config_builds_no_engines() {
-        let (engines, unimplemented) = engines_for(&config(Vec::new()));
-        assert!(engines.is_empty());
-        assert!(unimplemented.is_empty());
+        assert!(engines_for(&config(Vec::new())).is_empty());
     }
 }

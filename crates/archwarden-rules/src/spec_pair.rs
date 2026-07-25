@@ -54,16 +54,39 @@ impl SpecPairEngine {
             return None;
         };
 
-        Some(Self {
+        Some(Self::build(
+            rule,
+            subfolders,
+            spec_markers,
+            ignore_files,
+            *require_non_empty_spec,
+        ))
+    }
+
+    /// Builds an engine from a rule whose kind is already known.
+    ///
+    /// Infallible, and that is the point: `engines_for` matches every
+    /// `CompiledRuleKind` exhaustively and calls the matching constructor, so
+    /// a kind added without an engine fails to compile. There is no runtime
+    /// state in which a rule goes unchecked, which is why a run has nothing to
+    /// report as unimplemented.
+    pub(crate) fn build(
+        rule: &CompiledRule,
+        subfolders: &[String],
+        spec_markers: &[String],
+        ignore_files: &PathSet,
+        require_non_empty_spec: bool,
+    ) -> Self {
+        Self {
             id: rule.id.clone(),
             module: rule.module.clone(),
             level: rule.level,
             scope: rule.scope.clone(),
-            subfolders: subfolders.clone(),
-            spec_markers: spec_markers.clone(),
+            subfolders: subfolders.to_vec(),
+            spec_markers: spec_markers.to_vec(),
             ignore_files: ignore_files.clone(),
-            require_non_empty_spec: *require_non_empty_spec,
-        })
+            require_non_empty_spec,
+        }
     }
 
     /// Whether this rule governs `directory`.

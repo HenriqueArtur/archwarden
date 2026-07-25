@@ -47,16 +47,39 @@ impl NamingEngine {
             return None;
         };
 
-        Some(Self {
+        Some(Self::build(
+            rule,
+            file_pattern,
+            name_template,
+            kind,
+            signature_hint.as_deref(),
+        ))
+    }
+
+    /// Builds an engine from a rule whose kind is already known.
+    ///
+    /// Infallible, and that is the point: `engines_for` matches every
+    /// `CompiledRuleKind` exhaustively and calls the matching constructor, so
+    /// a kind added without an engine fails to compile. There is no runtime
+    /// state in which a rule goes unchecked, which is why a run has nothing to
+    /// report as unimplemented.
+    pub(crate) fn build(
+        rule: &CompiledRule,
+        file_pattern: &Pattern,
+        name_template: &str,
+        kind: &KindFilter,
+        signature_hint: Option<&str>,
+    ) -> Self {
+        Self {
             id: rule.id.clone(),
             module: rule.module.clone(),
             level: rule.level,
             scope: rule.scope.clone(),
             file_pattern: file_pattern.clone(),
-            name_template: name_template.clone(),
+            name_template: name_template.to_owned(),
             kind: kind.clone(),
-            signature_hint: signature_hint.clone(),
-        })
+            signature_hint: signature_hint.map(str::to_owned),
+        }
     }
 
     /// The export name this file must carry, if the rule applies to it.
