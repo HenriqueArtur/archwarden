@@ -68,6 +68,8 @@ macro_rules! id_newtype {
     ($name:ident, $kind:literal, $doc:literal) => {
         #[doc = $doc]
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+        #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+        #[cfg_attr(feature = "schema", schemars(transparent))]
         #[serde(transparent)]
         pub struct $name(String);
 

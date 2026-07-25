@@ -86,7 +86,11 @@ Verificação objetiva, não sistema de honra:
 - **`cargo-mutants`** — injeta bugs e checa se a suíte pega. Meta: zero
   sobreviventes em `archwarden-rules`, `archwarden-config`, `archwarden-core`.
   Nightly no CI; por crate durante o desenvolvimento.
-- **`cargo-llvm-cov`** — piso de 90% em `core`/`config`/`rules`, 70% no workspace.
+- **`cargo-llvm-cov`** — piso de **100% no `archwarden-core`** e **95% no
+  workspace**, meta 100%. Números fixados pelo Henrique em 2026-07-25.
+  Chegar a 100% num crate de lógica pura significa, em boa parte, apagar
+  branch defensivo que nenhuma entrada alcança — o que é uma melhora, mas é
+  mudança de código motivada por métrica e precisa ser revisada como tal.
 - **Armadilha do `insta`:** snapshot esperado é escrito **à mão antes**
   (inline snapshot). `cargo insta review` só para revisar mudança intencional
   em snapshot existente — nunca para criar o primeiro.
@@ -337,10 +341,10 @@ regiões), resíduo de curto-circuito e instanciação de genéricos que o
 **Objetivo:** a fatia vertical — do JSON no disco até um comando que responde.
 
 **Tarefas**
-- `config`: tipos de wire format com `Deserialize` + `JsonSchema` — enum `Rule`
-  de 5 variantes (D14), array `rules` de topo + `modules[].rules`, helper
-  `OneOrMany` para todo campo de glob.
-- `config`: discovery subindo do CWD (ADR#4), `--config` override.
+- ✅ `config`: tipos de wire format com `Deserialize` + `JsonSchema` — enum
+  `Rule` de 5 variantes (D14), array `rules` de topo + `modules[].rules`,
+  helper `OneOrMany` para todo campo de glob.
+- ✅ `config`: discovery subindo do CWD (ADR#4), `--config` override.
 - **`resolver`: trait `Resolver` + `OxcResolver` configurado só para resolução
   de pacote** (achar `<pkg>/package.json` e o entry point). Antecipado do M5
   por causa de D7 — ver nota abaixo.
@@ -349,11 +353,11 @@ regiões), resíduo de curto-circuito e instanciação de genéricos que o
 - `config`: lowering para `core::CompiledConfig` (compila globs e regexes).
 - `config`: erro de regex com lookahead com mensagem explicativa (D3).
 - `xtask gen-schema` → `schema/v0.json`.
-- `cli`: `clap`, `archwarden config validate`, exit codes 0/1/2.
+- ✅ `cli`: `clap`, `archwarden config validate`, exit codes 0/1/2, render
+  `miette`. Crate reestruturado com `lib.rs` testável e `main.rs` fino.
 - Tier 1 em tudo. `proptest`: config loading nunca panica (`TESTING.md:150`).
-- **Remover `--no-tests=pass` do job `test` em `.github/workflows/ci.yml`.**
-  Foi muleta do M0 (workspace sem teste algum). Com TDD obrigatório, "nenhum
-  teste rodou" tem que quebrar o build.
+- ✅ **`--no-tests=pass` removido** do job `test`. A muleta do M0 saiu assim
+  que passou a existir teste.
 - ✅ **Piso de cobertura ligado** no job `coverage`, com os números que o
   Henrique fixou em 2026-07-25: **100% no `archwarden-core`**, **95% no
   workspace** (meta 100%). Dois invocações do `llvm-cov`, uma por piso.
@@ -361,6 +365,18 @@ regiões), resíduo de curto-circuito e instanciação de genéricos que o
 **Pronto quando:** `archwarden config validate` roda contra config válido e
 inválido com exit code e mensagem `miette` corretos; schema gerado valida os
 exemplos do `CONFIG.md`; `extends` resolve preset em npm, pnpm e yarn PnP.
+
+**Achado a resolver (2026-07-25):** o caret do `miette` cai na linha errada
+quando o erro vem de um `Deserialize` manual — por exemplo um `RuleId`
+inválido. O `serde_json` reporta a posição onde o parser estava ao receber o
+erro, que já passou do campo ofensor, então a mensagem nomeia o valor certo
+(`rule id 'bad rule' contains ' '`) mas o caret aponta o `]` da linha seguinte.
+Erros nativos do serde (variante desconhecida, tipo errado) apontam certo.
+Isso contradiz o que o próprio `diagnostic.rs` diz — "caret errado é pior que
+caret nenhum" — e a correção precisa de parsing de JSON com spans
+(`jsonc-parser` ou equivalente), que é trabalho de um step próprio.
+Enquanto não for corrigido, a mensagem carrega o valor ofensor, então o
+usuário acha o lugar.
 
 **Nota sobre o DAG (D7):** `config` depende de `resolver`, que depende só de
 `core` — acíclico. O crate `archwarden-resolver` nasce aqui com a configuração

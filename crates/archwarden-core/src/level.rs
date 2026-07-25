@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// How seriously a finding is taken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Level {
     /// Reported and visible, but the run still succeeds. For technical debt

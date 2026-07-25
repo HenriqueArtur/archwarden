@@ -9,3 +9,9 @@
 //! This crate depends on `archwarden-resolver` because `extends` accepts npm
 //! package names, and turning one into a file path is full Node module
 //! resolution. See `docs/CONFIG.md`.
+
+// Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod config;
+pub mod discovery;
+pub mod one_or_many;
+pub mod rule;

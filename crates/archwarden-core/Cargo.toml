@@ -17,6 +17,14 @@ heck = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 
+# Only archwarden-config needs to describe these types as JSON Schema. Keeping
+# it optional means the cache, the engine and the future language server do not
+# pull a schema generator they never call.
+schemars = { workspace = true, optional = true }
+
+[features]
+schema = ["dep:schemars"]
+
 [dev-dependencies]
 serde_json = { workspace = true }
 
