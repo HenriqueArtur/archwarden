@@ -57,6 +57,19 @@ struct Summary {
     directories_scanned: usize,
     files_parsed: usize,
     facts_reused: usize,
+    /// Absent when no rule needed resolution, so a consumer can tell "no
+    /// boundary rule ran" from "every import resolved".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    imports: Option<Imports>,
+}
+
+/// Where a run's imports went.
+#[derive(Debug, Serialize)]
+struct Imports {
+    in_repo: usize,
+    external: usize,
+    builtin: usize,
+    unresolved: usize,
 }
 
 impl Summary {
@@ -68,6 +81,12 @@ impl Summary {
             directories_scanned: report.directories_scanned,
             files_parsed: report.files_parsed,
             facts_reused: report.facts_reused,
+            imports: (report.imports.total() > 0).then_some(Imports {
+                in_repo: report.imports.in_repo,
+                external: report.imports.external,
+                builtin: report.imports.builtin,
+                unresolved: report.imports.unresolved,
+            }),
         }
     }
 }
@@ -141,6 +160,24 @@ fn render_text(report: &Report, out: &mut dyn std::io::Write) {
         let _ = writeln!(
             out,
             "note: rule `{rule}` was not checked — its kind is not implemented yet"
+        );
+    }
+
+    // An import a boundary rule could not place is an import it did not check.
+    // Counted rather than listed: on a repository whose dependencies are not
+    // installed this is every bare specifier, and a line each would bury the
+    // findings the user came for.
+    let unresolved = report.imports.unresolved;
+    if unresolved > 0 {
+        let _ = writeln!(
+            out,
+            "note: {unresolved} {} not resolve, so boundary rules did not see {}",
+            if unresolved == 1 {
+                "import could"
+            } else {
+                "imports could"
+            },
+            if unresolved == 1 { "it" } else { "them" },
         );
     }
 
@@ -323,6 +360,19 @@ mod tests {
             unreadable_files: Vec::new(),
             files_parsed: 0,
             facts_reused: 0,
+            imports: archwarden_engine::resolve::Outcomes::default(),
+        }
+    }
+
+    fn outcomes(in_repo: usize, external: usize, builtin: usize, unresolved: usize) -> Report {
+        Report {
+            imports: archwarden_engine::resolve::Outcomes {
+                in_repo,
+                external,
+                builtin,
+                unresolved,
+            },
+            ..report(Vec::new())
         }
     }
 
@@ -575,6 +625,47 @@ mod tests {
 
         assert_eq!(parsed["summary"]["files_parsed"], 2);
         assert_eq!(parsed["summary"]["facts_reused"], 32);
+    }
+
+    /// An import a boundary rule could not place is an import it did not
+    /// check. A clean report that stayed quiet about it would be lying about
+    /// its own coverage, which is the same reason unreadable files are named.
+    #[test]
+    fn imports_that_did_not_resolve_are_announced() {
+        let text = rendered(&outcomes(40, 12, 3, 7), Format::Text);
+        assert!(text.contains("7 imports"), "{text}");
+        assert!(text.contains("not resolve"), "{text}");
+
+        let json = rendered(&outcomes(40, 12, 3, 7), Format::Json);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed["summary"]["imports"]["in_repo"], 40);
+        assert_eq!(parsed["summary"]["imports"]["external"], 12);
+        assert_eq!(parsed["summary"]["imports"]["builtin"], 3);
+        assert_eq!(parsed["summary"]["imports"]["unresolved"], 7);
+    }
+
+    /// One is one. The note is read by someone deciding whether to trust the
+    /// run, so its grammar has to be right.
+    #[test]
+    fn a_single_unresolved_import_reads_as_singular() {
+        let text = rendered(&outcomes(1, 0, 0, 1), Format::Text);
+        assert!(text.contains("1 import could not"), "{text}");
+    }
+
+    /// A run where everything resolved says nothing, and a run with no
+    /// boundary rule resolved nothing at all -- neither should raise a note.
+    #[test]
+    fn a_run_with_nothing_unresolved_stays_quiet() {
+        assert!(!rendered(&outcomes(40, 12, 3, 0), Format::Text).contains("resolve"));
+        assert!(!rendered(&report(Vec::new()), Format::Text).contains("resolve"));
+    }
+
+    /// A run that resolved nothing carries no `imports` object at all, so a
+    /// consumer can tell "no boundary rule" from "everything resolved".
+    #[test]
+    fn a_run_that_resolved_nothing_omits_the_import_summary() {
+        let json = rendered(&report(Vec::new()), Format::Json);
+        assert!(!json.contains("\"imports\""), "{json}");
     }
 
     /// Lists read as prose rather than as a debug dump, at every length.

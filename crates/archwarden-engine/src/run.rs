@@ -50,6 +50,13 @@ pub struct Report {
     /// Reported so a user can see the cache working -- and notice when it is
     /// not, which is otherwise invisible until someone times two runs.
     pub facts_reused: usize,
+    /// Where the imports went, by kind.
+    ///
+    /// All zero when no rule needed resolution. The `unresolved` count is the
+    /// one that matters to a reader: a boundary rule cannot see an import it
+    /// could not place, so a clean report over a repository whose dependencies
+    /// are not installed means less than it looks like.
+    pub imports: crate::resolve::Outcomes,
 }
 
 impl Report {
@@ -103,6 +110,17 @@ pub fn reads_files(config: &CompiledConfig) -> bool {
     engines.iter().any(|engine| engine.needs_facts())
 }
 
+/// Whether any rule in this configuration asks where an import lands.
+///
+/// Resolution is a second cost on top of parsing: it probes the filesystem for
+/// every specifier in every file the rule applies to. A run with no boundary
+/// rule should not pay it.
+#[must_use]
+pub fn resolves_imports(config: &CompiledConfig) -> bool {
+    let (engines, _) = archwarden_rules::engines_for(config);
+    engines.iter().any(|engine| engine.needs_resolution())
+}
+
 /// Runs every rule against the walked tree.
 ///
 /// A configuration whose rules are all structural never reads a byte, cache or
@@ -122,6 +140,15 @@ pub fn check(run: Run<'_>) -> Report {
     let mut files_scanned = 0;
     let mut files_parsed = 0;
     let mut facts_reused = 0;
+    let mut imports = crate::resolve::Outcomes::default();
+
+    // Built once per run, not once per file: `oxc_resolver` caches
+    // `tsconfig` and `package.json` reads internally, and a fresh resolver
+    // per file would throw that away thousands of times.
+    let resolver = engines
+        .iter()
+        .any(|engine| engine.needs_resolution())
+        .then(|| archwarden_resolver::imports::ImportResolver::new(root));
 
     for (path, directory) in tree.directories() {
         let file_names = directory.file_names();
@@ -149,7 +176,7 @@ pub fn check(run: Run<'_>) -> Report {
             // Read the file only if a rule that applies to it actually looks
             // inside. Deciding this per file rather than per run is what keeps
             // a mostly-structural configuration off the disk.
-            let facts = if file.class == FileClass::Source
+            let mut facts = if file.class == FileClass::Source
                 && wanted_by.iter().any(|engine| engine.needs_facts())
             {
                 match facts_for(root, &file.path, cache.as_deref_mut()) {
@@ -169,6 +196,15 @@ pub fn check(run: Run<'_>) -> Report {
             } else {
                 None
             };
+
+            // After the cache, never before: what is stored is the parser's
+            // output, keyed by content alone. Resolution depends on files no
+            // content hash covers -- `tsconfig`, lockfiles -- so caching a
+            // resolved fact would need the epoch in the key and would serve
+            // stale paths the day someone edits an alias.
+            if let (Some(resolver), Some(facts)) = (resolver.as_ref(), facts.as_mut()) {
+                imports.absorb(crate::resolve::resolve_imports(resolver, facts));
+            }
 
             for engine in wanted_by {
                 findings.extend(engine.check_file(FileContext {
@@ -193,6 +229,7 @@ pub fn check(run: Run<'_>) -> Report {
         unreadable_files,
         files_parsed,
         facts_reused,
+        imports,
     }
 }
 
@@ -308,6 +345,18 @@ mod tests {
             warn_subfolders: Vec::new(),
             recurse_into: Vec::new(),
             filename_patterns: Vec::new(),
+        }
+    }
+
+    fn boundary(forbid: &[&str], require: &[&str], except: &[&str]) -> CompiledRuleKind {
+        let set = |patterns: &[&str]| {
+            PathSet::compile(patterns.iter().map(|p| (*p).to_owned())).expect("valid globs")
+        };
+        CompiledRuleKind::ImportBoundary {
+            forbid: set(forbid),
+            require: set(require),
+            except: set(except),
+            include_type_only: true,
         }
     }
 
@@ -516,11 +565,11 @@ mod tests {
                 "future-rule",
                 None,
                 &["src/*"],
-                CompiledRuleKind::ImportBoundary {
-                    forbid: PathSet::default(),
-                    require: PathSet::default(),
-                    except: PathSet::default(),
-                    include_type_only: true,
+                CompiledRuleKind::CallObligation {
+                    file_pattern: archwarden_core::pattern::Pattern::compile("^a\\.ts$")
+                        .expect("valid pattern"),
+                    symbol: "Event.save".to_owned(),
+                    imported_from: "@org/domain".to_owned(),
                 },
             )]),
         );
@@ -640,6 +689,90 @@ mod tests {
         assert_eq!(uncached.files_parsed, 1);
         assert_eq!(uncached.facts_reused, 0);
         assert_eq!(uncached.findings.len(), 1);
+    }
+
+    /// The end-to-end shape of a boundary rule: a real tree, a real resolver,
+    /// an alias that has to be resolved before any glob can match.
+    #[test]
+    fn a_forbidden_import_is_found_through_a_tsconfig_alias() {
+        let report = run(
+            &[
+                (
+                    "tsconfig.json",
+                    r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["packages/*"]}}}"#,
+                ),
+                (
+                    "packages/ui/button.tsx",
+                    "import { User } from '@/domain/user';\nexport const Button = () => User;",
+                ),
+                ("packages/domain/user.ts", "export const User = 1;"),
+            ],
+            &config(vec![rule(
+                "ui-forbids-domain",
+                None,
+                &["packages/ui/**"],
+                boundary(&["packages/domain/**"], &[], &[]),
+            )]),
+        );
+
+        assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+        let finding = report.findings.first().expect("one finding");
+        assert_eq!(finding.path.as_str(), "packages/ui/button.tsx");
+        assert_eq!(
+            finding.observed,
+            archwarden_core::finding::Observed::ForbiddenImport {
+                specifier: "@/domain/user".to_owned(),
+                resolved: RepoRelPath::new("packages/domain/user.ts").expect("valid"),
+            }
+        );
+        assert_eq!(
+            report.imports,
+            crate::resolve::Outcomes {
+                in_repo: 1,
+                ..crate::resolve::Outcomes::default()
+            }
+        );
+    }
+
+    /// A configuration with no boundary rule never resolves anything. Probing
+    /// the filesystem for every specifier in every file is a cost a naming
+    /// rule has no use for.
+    #[test]
+    fn a_configuration_without_a_boundary_rule_resolves_nothing() {
+        let report = run(
+            &[(
+                "src/user/create-client.use-case.ts",
+                "import { thing } from './nowhere';\nexport function CreateClient() {}",
+            )],
+            &config(vec![rule("usecase-name", None, &["src/*"], naming())]),
+        );
+
+        assert_eq!(report.files_parsed, 1, "it still parsed");
+        assert_eq!(report.imports, crate::resolve::Outcomes::default());
+    }
+
+    /// An import nothing could resolve is counted. A boundary rule is blind to
+    /// it, and a clean report that did not say so would be lying about what it
+    /// checked.
+    #[test]
+    fn imports_that_did_not_resolve_are_counted() {
+        let report = run(
+            &[(
+                "packages/ui/button.tsx",
+                "import { x } from '@org/never-installed';\nimport y from 'node:fs';\nexport const B = 1;",
+            )],
+            &config(vec![rule(
+                "ui-forbids-domain",
+                None,
+                &["packages/ui/**"],
+                boundary(&["packages/domain/**"], &[], &[]),
+            )]),
+        );
+
+        assert!(report.findings.is_empty(), "nothing matchable was imported");
+        assert_eq!(report.imports.unresolved, 1);
+        assert_eq!(report.imports.builtin, 1);
+        assert_eq!(report.imports.in_repo, 0);
     }
 
     /// `FileFacts` come from a TypeScript parser, so only a source file may

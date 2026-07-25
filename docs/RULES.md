@@ -279,6 +279,11 @@ accepted; module membership is only a label for output.
 the *resolved* import path. Common use: "UI may not import domain, except
 type-only imports from `domain/*/types/**`".
 
+`except` shields against `forbid_import_from` only. A rule that both requires
+and forbids reads as "must reach A, must not reach B, and here are the corners
+of B that are allowed" — an exception to a *requirement* would be a
+requirement nobody has to meet.
+
 **Path matching semantics**. Globs are applied against the repo-relative
 resolved path (never against the specifier string). This means aliases,
 `tsconfig` paths, and workspace symlinks are resolved before matching —
@@ -291,6 +296,12 @@ are extracted separately. Rules may opt in with `include_type_only: false`
 **Cannot express**: transitive prohibitions ("X may not reach Y through
 any chain"). That is a graph reachability question and belongs to a future
 rule if there is demand.
+
+**Also cannot express, in v0**: a prohibition on a *dependency* or a runtime
+builtin — "the UI may not import `lodash` directly", "nobody imports
+`node:fs`". Globs are matched against repo-relative paths, and neither an
+installed package nor a builtin has one. The run counts them separately, so
+the information is there when a rule for it is designed.
 
 ---
 

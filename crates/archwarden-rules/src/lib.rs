@@ -13,6 +13,7 @@
 //! See `docs/RULES.md`.
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod import_boundary;
 pub mod naming;
 pub mod spec_pair;
 pub mod structure;
@@ -41,6 +42,8 @@ pub fn engines_for(config: &CompiledConfig) -> (Vec<Box<dyn RuleEngine>>, Vec<St
         } else if let Some(engine) = spec_pair::SpecPairEngine::from_rule(rule) {
             engines.push(Box::new(engine));
         } else if let Some(engine) = naming::NamingEngine::from_rule(rule) {
+            engines.push(Box::new(engine));
+        } else if let Some(engine) = import_boundary::ImportBoundaryEngine::from_rule(rule) {
             engines.push(Box::new(engine));
         } else {
             unimplemented.push(rule.id.to_string());
@@ -100,6 +103,24 @@ mod tests {
         }
     }
 
+    fn naming_rule() -> CompiledRuleKind {
+        CompiledRuleKind::Naming {
+            file_pattern: Pattern::compile("^(?<name>[a-z]+)\\.ts$").expect("valid"),
+            name_template: "{{pascal(name)}}".to_owned(),
+            kind: archwarden_core::facts::KindFilter::Any,
+            signature_hint: None,
+        }
+    }
+
+    fn import_boundary_rule() -> CompiledRuleKind {
+        CompiledRuleKind::ImportBoundary {
+            forbid: PathSet::compile(["packages/domain/**".to_owned()]).expect("valid"),
+            require: PathSet::default(),
+            except: PathSet::default(),
+            include_type_only: true,
+        }
+    }
+
     /// Declaration order survives, so a report follows the config rather than
     /// the order the engine constructors happen to be tried in.
     #[test]
@@ -137,6 +158,40 @@ mod tests {
 
         assert_eq!(engines.len(), 1);
         assert_eq!(unimplemented, ["no-engine-yet"]);
+    }
+
+    /// Every rule kind that has an engine gets one. The list is the contract
+    /// `config doctor` and the unimplemented-rule note are both built on, so
+    /// an engine that exists but is never reached would be invisible.
+    #[test]
+    fn every_implemented_kind_is_reachable() {
+        let config = config(vec![
+            rule("structure", structure_rule()),
+            rule("spec-pair", spec_pair_rule()),
+            rule("naming", naming_rule()),
+            rule("import-boundary", import_boundary_rule()),
+        ]);
+
+        let (engines, unimplemented) = engines_for(&config);
+
+        let ids: Vec<_> = engines.iter().map(|e| e.id().as_str().to_owned()).collect();
+        assert_eq!(ids, ["structure", "spec-pair", "naming", "import-boundary"]);
+        assert!(unimplemented.is_empty());
+    }
+
+    /// Only the boundary rule pays for resolution, which is what keeps a
+    /// naming-only run off the filesystem a second time.
+    #[test]
+    fn only_the_boundary_rule_asks_for_resolution() {
+        let config = config(vec![
+            rule("naming", naming_rule()),
+            rule("import-boundary", import_boundary_rule()),
+        ]);
+
+        let (engines, _) = engines_for(&config);
+        let wants: Vec<_> = engines.iter().map(|e| e.needs_resolution()).collect();
+
+        assert_eq!(wants, [false, true]);
     }
 
     #[test]

@@ -813,6 +813,82 @@ mod tests {
         drop(guard);
     }
 
+    /// A boundary rule, through the real binary path: config, walk, parse,
+    /// resolve, check, render. The alias is what makes this worth a test at
+    /// this level -- nothing below the resolver could tell that
+    /// `@/domain/user` is the file the rule forbids.
+    #[test]
+    fn a_forbidden_import_is_reported_end_to_end() {
+        let (guard, result) = run_in(
+            &[
+                (
+                    "arch.config.json",
+                    r#"{"version":0,"rules":[{
+                        "type":"import-boundary","id":"ui-forbids-domain","level":"error",
+                        "from":"packages/ui/**","forbid_import_from":"packages/domain/**"}]}"#,
+                ),
+                (
+                    "tsconfig.json",
+                    r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["packages/*"]}}}"#,
+                ),
+                (
+                    "packages/ui/button.tsx",
+                    "import { User } from '@/domain/user';\nexport const Button = () => User;",
+                ),
+                ("packages/domain/user.ts", "export const User = 1;"),
+            ],
+            &["check"],
+        );
+
+        assert_eq!(result.exit, Exit::Errors, "{}", result.out);
+        assert!(
+            result.out.contains("packages/ui/button.tsx"),
+            "{}",
+            result.out
+        );
+        assert!(
+            result
+                .out
+                .contains("imports `@/domain/user`, which resolves to"),
+            "{}",
+            result.out
+        );
+        assert!(
+            result.out.contains("packages/domain/user.ts"),
+            "the resolved path is shown: {}",
+            result.out
+        );
+        drop(guard);
+    }
+
+    /// The other half of the same run: an import nothing could place is said
+    /// out loud, because a boundary rule did not check it.
+    #[test]
+    fn unresolved_imports_are_noted_in_the_report() {
+        let (_guard, result) = run_in(
+            &[
+                (
+                    "arch.config.json",
+                    r#"{"version":0,"rules":[{
+                        "type":"import-boundary","id":"ui-forbids-domain","level":"error",
+                        "from":"packages/ui/**","forbid_import_from":"packages/domain/**"}]}"#,
+                ),
+                (
+                    "packages/ui/button.tsx",
+                    "import { x } from '@org/never-installed';\nexport const B = x;",
+                ),
+            ],
+            &["check"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(
+            result.out.contains("1 import could not resolve"),
+            "{}",
+            result.out
+        );
+    }
+
     /// A structural configuration reads no bytes, so it has nothing to cache
     /// and must not pay for opening one.
     #[test]

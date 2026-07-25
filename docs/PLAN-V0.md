@@ -897,14 +897,79 @@ Vai junto com a engine que o liga, que é onde ele passa a ter consumidor.
 
 ---
 
-#### M5c — `import-boundary` `⬜`
+#### M5c — `import-boundary` `✅`
 
-- `rules`: `forbid_import_from`, `must_import_from`, `except`,
-  `include_type_only` + `describe_expectation`.
-- `engine`: ligar `resolve_imports` no runner (`ImportResolver` construído uma
-  vez por run, só quando alguma engine pede), `Outcomes` no `Report`.
-- `cli`: relatar imports não resolvidos — uma boundary rule que não enxergou
-  nada é um relatório limpo mentindo.
+**Tarefas**
+- ✅ `rules`: `ImportBoundaryEngine` — `forbid_import_from`,
+  `must_import_from`, `except`, `include_type_only` + `describe_expectation`.
+- ✅ `engine`: `resolve_imports` ligado no runner, `ImportResolver` construído
+  uma vez por run e só quando alguma engine pede, `Outcomes` no `Report`.
+- ✅ `cli`: nota de imports não resolvidos, resumo `imports` no JSON.
+
+**Registro** — 2026-07-25
+
+Primeira regra que é sobre uma *relação* e não sobre um arquivo. Tudo antes
+dela se decide com o nome e o conteúdo de um arquivo só.
+
+**Dois desvios, ambos apontados por teste.**
+
+1. **Meus dados de teste estavam errados, não o código.** Oito de dezesseis
+   testes falharam depois de restaurar a implementação. A causa era o escopo
+   que eu escrevi: `packages/ui/*` seleciona *diretórios um nível abaixo* de
+   `packages/ui` (D4), então `packages/ui/a.ts` — cujo pai é `packages/ui` —
+   ficava fora. O único teste que passava usava
+   `packages/ui/button/button.tsx`. Um boundary é sobre um pacote inteiro, e a
+   grafia certa é `packages/ui/**`. Anotado no helper para o próximo não cair.
+2. **A suíte pegou um teste que virou mentira.** `a_rule_with_no_engine_is_
+   named_in_the_report` usava `import-boundary` como exemplo de "kind sem
+   engine" — o que deixou de ser verdade no instante em que registrei a
+   engine. Trocado para `call-obligation`, que é o último sem engine. Um teste
+   que codifica "ainda não implementado" tem prazo de validade, e é bom que
+   ele falhe alto quando vence.
+
+**Decisões de desenho**
+
+- **`except` só protege contra `forbid`.** Uma exceção a um *requisito* seria
+  um requisito que ninguém precisa cumprir. Documentado no `RULES.md`.
+- **A resolução roda depois do cache, nunca antes.** O que é guardado é a
+  saída do parser, com chave só de conteúdo. Resolver depende de arquivos que
+  nenhum hash de conteúdo cobre (`tsconfig`, lockfile), então cachear fato
+  resolvido exigiria o `resolution_epoch` na chave e serviria caminho velho no
+  dia em que alguém mexesse num alias. Verificado no binário: a segunda rodada
+  reusa os fatos do cache e resolve tudo de novo, com o mesmo resultado.
+- **O `ImportResolver` é construído uma vez por run**, não por arquivo — o
+  `oxc_resolver` cacheia leituras de `tsconfig` e `package.json` internamente,
+  e um resolver novo por arquivo jogaria isso fora milhares de vezes.
+- **O finding carrega o span do `import`.** Primeira regra em que o span é
+  útil de verdade: aponta para a linha exata que o usuário tem que apagar.
+- **Specifier e caminho resolvido, os dois no finding.** Com alias eles não se
+  parecem: o usuário precisa do specifier para achar a linha e do caminho para
+  entender por que a regra disparou.
+
+**Verificado no binário**, num repo com alias, `except`, builtin e dependência
+faltando:
+
+```
+error   packages/ui/button.tsx
+        [*] ui-forbids-domain — imports `@/domain/user/user.entity`,
+            which resolves to `packages/domain/user/user.entity.ts`
+        expected: no import from `packages/domain/**`,
+                  except `packages/domain/*/types/**`
+
+note: 1 import could not resolve, so boundary rules did not see it
+1 error, 0 warnings · 5 files, 6 directories · 1 parsed, 0 reused
+```
+
+O `import type` do `types/` não disparou, o `node:fs` foi contado como builtin
+e o `@org/never-installed` como não resolvido.
+
+`cargo mutants` no `import_boundary.rs`: 34 mutantes, **24 mortos, 10
+inviáveis, zero sobreviventes** — depois de matar um: o acessor `module()`
+sobrevivia porque nenhum teste declarava a regra dentro de um módulo.
+
+**`RULES.md` ganhou duas limitações explícitas:** `except` não vale para
+`must_import_from`, e no v0 não dá para proibir uma dependência ou um builtin
+pelo nome.
 
 ---
 
