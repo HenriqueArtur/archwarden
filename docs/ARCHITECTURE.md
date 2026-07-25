@@ -249,8 +249,20 @@ They reuse the same rule-matching engine used by `check`:
   rule into its "minimal satisfying shape" description. This is a pure
   function of the rule definition — every rule kind implements a
   `describe_expectation()` method that scaffold consumes.
-- `agent-guide` iterates every rule in the config and calls the same
-  `describe_expectation()` per rule, formatted as markdown or JSON.
+- `agent-guide` iterates every rule in the config and renders the compiled
+  rule itself — its scope globs, filename patterns, name template, import
+  globs — as markdown or JSON.
+
+  It does **not** go through `describe_expectation()`, and cannot: that method
+  takes a path, deliberately, because a `naming` rule's expectation carries the
+  *rendered* export name and the name comes from the filename. A guide has no
+  filename. Inventing one would fill the digest with names derived from a path
+  nobody will create.
+
+  The property this section is about survives anyway. The compiled rule is the
+  same value the engines consume, so the guide cannot misstate a rule's globs,
+  patterns or templates; and the precise per-path answers are `describe` and
+  `scaffold`, which do go through the expectation seam.
 
 This means adding a new rule kind requires implementing both the check
 logic and the expectation description in the same place, which keeps

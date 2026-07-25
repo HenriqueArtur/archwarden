@@ -64,6 +64,7 @@ Sair num commit de docs **antes** do M0, para as docs pararem de se contradizer.
 | C5 | `ARCHITECTURE.md:131` | Separar `facts[content_hash]` de `findings[content+rules+epoch]` |
 | C6 | `AGENT-INTEGRATION.md:182` | `check --file` deve reportar `"skipped": [...]`, nunca pular regra em silêncio |
 | C11 | `AGENT-INTEGRATION.md:145` | Shape do `scaffold` precisa de `filename_patterns` e `allowed_subfolders` |
+| C12 | `ARCHITECTURE.md:252` | `agent-guide` não pode usar `describe_expectation` — ela é por caminho |
 | C7 | `.gitignore:8` | Ignorar `.archwarden/cache/`, não `.archwarden/` inteiro |
 | C8 | `.gitignore:5` | **Remover `Cargo.lock`** — workspace com binário commita o lock |
 | C9 | `ARCHITECTURE.md:147` | `ignore` não usa rayon; tem threadpool próprio |
@@ -1354,9 +1355,53 @@ lido.
 
 ---
 
-#### M7c — `agent-guide` `⬜`
+#### M7c — `agent-guide` `✅`
 
-- `cli`: `agent-guide --format markdown|json --scope <glob>`, determinístico.
+**Tarefas**
+- ✅ `cli`: `agent-guide --format markdown|json --scope <path>`,
+  determinístico, Tier 2 incluído.
+
+**Registro** — 2026-07-25
+
+**Correção C12 — o mecanismo que o `ARCHITECTURE.md:252` descrevia não é
+implementável.** O texto dizia que o `agent-guide` "itera cada regra da config e
+chama o mesmo `describe_expectation()` por regra". Ele não pode: aquele método
+recebe um **caminho**, e de propósito — a expectativa de uma regra `naming`
+carrega o nome do export **já renderizado**, e o nome vem do nome do arquivo.
+Um guia não tem nome de arquivo. Inventar um encheria o digest de nomes
+derivados de um caminho que ninguém vai criar.
+
+Verifiquei antes de desenhar, no `naming.rs`: `expectation(&self, path)` começa
+com `path.file_name()?`. Não é detalhe de implementação, é a natureza da coisa.
+
+**A propriedade que aquela seção queria sobrevive assim mesmo.** O guia
+renderiza a `CompiledRule` — que é o mesmo valor que as engines consomem —,
+então ele não consegue errar as globs, os patterns ou os templates de uma
+regra. E as respostas precisas por caminho continuam sendo o `describe` e o
+`scaffold`, que passam pelo seam das expectativas. Documento corrigido com o
+raciocínio junto.
+
+**Determinismo é requisito, não consequência.** O `AGENT-INTEGRATION.md:184`
+diz que a saída pode ser commitada ou regenerada sob demanda. Se um dos dois
+gerasse bytes diferentes, quem escolheu o outro veria diff que ninguém fez. Por
+isso não há timestamp, versão nem nome de máquina na saída — e tem teste de
+duas execuções byte a byte, mais um assertando que nenhum "202" aparece.
+
+**`--scope` olha nas duas direções.** Quem pede "o guia de `packages/domain`"
+quer tanto a regra com escopo `packages/**` (que governa aquele diretório)
+quanto a com escopo `packages/domain/src/*` (que vive dentro dele). Uma direção
+só deixaria metade das regras de fora, e a metade que falta muda conforme como
+o usuário escreveu a config — pior que não filtrar.
+
+**Sai por stdout, não para arquivo.** O próprio doc mostra
+`agent-guide > .archwarden/AGENT_RULES.md`; um comando que escolhesse o destino
+sozinho escreveria onde o usuário não pediu, e o `AGENT-INTEGRATION.md:229`
+lista isso como não-objetivo explícito.
+
+`cargo mutants`: 26 mutantes, 4 sobreviventes na primeira rodada — o braço da
+raiz no `--scope`, e as três metades de uma regra `structure` que constrange só
+uma coisa (só `warn`, só filenames, só subfolders). Três testes fecharam os
+quatro. **Zero sobreviventes.**
 
 ---
 

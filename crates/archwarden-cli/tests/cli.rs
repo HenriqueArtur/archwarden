@@ -147,6 +147,7 @@ fn help_lists_the_available_commands() {
         .stdout(contains("check"))
         .stdout(contains("describe"))
         .stdout(contains("scaffold"))
+        .stdout(contains("agent-guide"))
         .stdout(contains("config"))
         .stdout(contains("--config"));
 }
@@ -201,6 +202,28 @@ fn scaffold_answers_through_the_binary() {
             "export function CreateClient(deps: Deps): UseCase",
         ))
         .stdout(contains("src/user/create-client.use-case.spec.ts"));
+}
+
+/// Layer 3, redirected the way `AGENT-INTEGRATION.md` shows it: the guide goes
+/// to stdout, and the user chooses where it lands.
+#[test]
+fn agent_guide_writes_a_digest_to_stdout() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"naming","id":"usecase-name","level":"error","roots":"src/*",
+             "file_pattern":"^(?<name>[a-z0-9-]+)\\.use-case\\.ts$",
+             "must_export":{"name":"{{pascal(name)}}","kind":"function"}}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("agent-guide")
+        .assert()
+        .success()
+        .stdout(contains("# Architecture rules"))
+        .stdout(contains("`usecase-name` (naming)"))
+        .stdout(contains("archwarden describe <path>"));
 }
 
 /// The working directory is read by `main`, so a relative path typed from a
