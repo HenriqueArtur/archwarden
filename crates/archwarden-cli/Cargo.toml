@@ -9,22 +9,6 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
-# `cargo binstall archwarden-cli` downloads the release archive instead of
-# building from source. The strings below have to match what
-# `.github/workflows/release.yml` names its assets, exactly; when one changes
-# the other is wrong, and the failure is a 404 nobody can debug from the
-# error.
-#
-# `{ name }` is the crate name, which is not the binary's name, so the archive
-# stem is written out rather than interpolated.
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/archwarden-{ version }-{ target }{ archive-suffix }"
-pkg-fmt = "tgz"
-bin-dir = "archwarden-{ version }-{ target }/{ bin }{ binary-ext }"
-
-[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
-pkg-fmt = "zip"
-
 [dependencies]
 archwarden-config = { workspace = true }
 archwarden-core = { workspace = true }

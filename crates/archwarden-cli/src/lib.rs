@@ -419,13 +419,17 @@ fn hook(
     };
 
     let single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
+    // Probed at the config root rather than the working directory: that is
+    // where `node_modules` sits in a monorepo, and where the harness will be
+    // when it runs what this message suggests.
+    let invocation = crate::hooks::invocation(&merged.root);
     let decision = if single.fails_build() {
-        crate::hook::Decision::Deny(crate::hook::explain(&single))
+        crate::hook::Decision::Deny(crate::hook::explain(&single, &invocation))
     } else if single.findings.is_empty() {
         crate::hook::Decision::Allow
     } else {
         // Decision 1: warnings are visible and do not gate.
-        crate::hook::Decision::Note(crate::hook::explain(&single))
+        crate::hook::Decision::Note(crate::hook::explain(&single, &invocation))
     };
 
     let _ = write!(output.out, "{}", crate::hook::respond(&decision));
@@ -459,10 +463,11 @@ fn install_hooks(
     let settings = working_directory.join(crate::hooks::CLAUDE_SETTINGS);
     let current = std::fs::read_to_string(&settings).ok();
 
+    let command = crate::hooks::hook_command(working_directory);
     let edited = if remove {
         crate::hooks::remove(current.as_deref())
     } else {
-        crate::hooks::install(current.as_deref())
+        crate::hooks::install(current.as_deref(), &command)
     };
 
     let (contents, outcome) = match edited {
@@ -495,6 +500,12 @@ fn install_hooks(
     }
 
     let _ = writeln!(output.out, "{}", describe_outcome(outcome, &settings));
+    // Naming the command is the point: a hook that resolves to nothing fails
+    // silently, at someone else's next write rather than here. Only on the
+    // way in — after a removal there is no command to name.
+    if outcome == crate::hooks::Outcome::Installed {
+        let _ = writeln!(output.out, "  {command}");
+    }
     Exit::Clean
 }
 
@@ -1824,6 +1835,37 @@ mod tests {
         assert!(written.contains(crate::hooks::HOOK_COMMAND), "{written}");
     }
 
+    /// A node project gets a command a harness can run, and is told which one.
+    ///
+    /// The bare `archwarden` was wrong here: as a dev dependency it is in
+    /// `node_modules/.bin`, which is on the PATH of a `package.json` script
+    /// and of nothing else. The message names the command because a hook that
+    /// resolves to nothing fails silently, at someone else's next write.
+    #[test]
+    fn install_hooks_in_a_node_project_installs_a_command_that_resolves() {
+        let (guard, result) = run_in(
+            &[
+                ("arch.config.json", MINIMAL),
+                ("package.json", r#"{"name":"app"}"#),
+            ],
+            &["install-hooks", "--claude-code"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(
+            result.out.contains("npx archwarden hook claude-code"),
+            "{}",
+            result.out
+        );
+
+        let written = std::fs::read_to_string(guard.path().join(crate::hooks::CLAUDE_SETTINGS))
+            .expect("the file exists");
+        assert!(
+            written.contains("npx archwarden hook claude-code"),
+            "{written}"
+        );
+    }
+
     /// Idempotent, and it does not touch the file when there is nothing to
     /// change: rewriting to the same bytes still shows up in `git status`.
     #[test]
@@ -1861,6 +1903,11 @@ mod tests {
         let removed = run_at(&root, &["install-hooks", "--claude-code", "--remove"]);
         assert_eq!(removed.exit, Exit::Clean);
         assert!(removed.out.contains("removed"), "{}", removed.out);
+        assert!(
+            !removed.out.contains("hook claude-code"),
+            "a removal has no command to name: {}",
+            removed.out
+        );
 
         let written = std::fs::read_to_string(root.join(crate::hooks::CLAUDE_SETTINGS))
             .expect("the file is still there");
