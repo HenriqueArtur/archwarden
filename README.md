@@ -10,9 +10,37 @@ It is a single binary. It reads one JSON config from your repo root. It runs
 in milliseconds on caches. It is meant to be paired with [Biome](https://biomejs.dev/)
 for formatting and code-style — archwarden does not overlap with Biome.
 
+## Install
+
+archwarden is a dev dependency, pinned per repository like Biome — not a
+globally installed tool.
+
+```bash
+pnpm add -D archwarden     # or: npm i -D archwarden / bun add -d archwarden
+```
+
+The package carries no binary of its own. It declares one optional dependency
+per platform, and your package manager downloads the single one your machine
+needs. There is no postinstall script and nothing to compile.
+
+```json
+{
+  "scripts": {
+    "check:arch": "archwarden check"
+  }
+}
+```
+
+Then `pnpm check:arch`. Outside a script, use `pnpm exec archwarden` /
+`npx archwarden`.
+
+Prebuilt binaries for macOS, Linux (glibc and musl) and Windows are also
+attached to every [release](https://github.com/HenriqueArtur/archwarden/releases),
+with `.sha256` files beside them.
+
 ## Status
 
-Design phase. No code yet. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+v0, in development. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Why
 
@@ -46,7 +74,18 @@ Five rule categories in v0:
 See [`docs/RULES.md`](docs/RULES.md) for semantics of each.
 
 Beyond gating, archwarden is designed to be **queried by coding agents
-before they write code**, not just consulted after. See
+before they write code**, not just consulted after.
+
+## For coding agents
+
+**[`AGENTS.md`](AGENTS.md)** is written for the agent, not about it: the
+ask-before-you-write loop, every command with its real JSON output, the exit
+codes, and what each rule kind wants. It ships inside the package, so a
+repository that installs archwarden has it at
+`node_modules/archwarden/AGENTS.md`, matched to the version it installed.
+
+Point your agent at it, or paste it into `CLAUDE.md` / your own `AGENTS.md`.
+For the design behind the integration, see
 [`docs/AGENT-INTEGRATION.md`](docs/AGENT-INTEGRATION.md).
 
 ## What it does not do
@@ -60,43 +99,40 @@ before they write code**, not just consulted after. See
 archwarden intentionally has a narrow surface. Every rule it ships must be
 something no other mainstream tool does well.
 
-## Quick start (planned)
+## Quick start
 
 ```bash
-# install (planned distribution channels)
-npm install -D @archwarden/cli
-# or
-cargo binstall archwarden
-# or
-brew install archwarden
-
 # scaffold a config
-archwarden init
+npx archwarden init
 
 # run the gate
-archwarden check
+npx archwarden check
 
 # validate the config itself
-archwarden config doctor
+npx archwarden config validate      # schema only, fast
+npx archwarden config doctor        # semantic: does it mean what you think?
 
-# ---- agent-facing commands (see docs/AGENT-INTEGRATION.md) ----
+# ---- agent-facing commands (see AGENTS.md) ----
 
 # "what rules apply to this path?" — call before writing a file
-archwarden describe packages/application/src/use-cases/foo/foo.use-case.ts
+npx archwarden describe packages/application/src/use-cases/foo/foo.use-case.ts
 
 # "what does a valid file at this path look like?" — minimal shape
-archwarden scaffold packages/application/src/use-cases/foo/foo.use-case.ts
+npx archwarden scaffold packages/application/src/use-cases/foo/foo.use-case.ts
 
-# generate a human-readable rules digest for CLAUDE.md / AGENTS.md
-archwarden agent-guide --format markdown > .archwarden/AGENT_RULES.md
+# verify one file, without walking the repository
+npx archwarden check --file packages/application/src/use-cases/foo/foo.use-case.ts
 
-# install pre-write hooks for supported harnesses (Claude Code, Cursor, ...)
-archwarden install-hooks --claude-code
+# generate a rules digest for CLAUDE.md / AGENTS.md
+npx archwarden agent-guide > .archwarden/AGENT_RULES.md
+
+# install pre-write hooks for supported harnesses
+npx archwarden install-hooks --claude-code
 
 # ---- diagnostics ----
 
-# why is this file failing?
-archwarden explain packages/application/src/use-cases/foo/foo.use-case.ts
+# what does this rule reach, and what is it flagging?
+npx archwarden config explain usecase-export-name
 ```
 
 ## Config
@@ -115,10 +151,12 @@ See [`docs/CONFIG.md`](docs/CONFIG.md).
 
 - **Exit code** for CI gates (`0` clean, `1` errors, `2` config problem).
 - **JSON output** (`--format json`) for coding agents and other tooling.
-- **`explain` command** returns a human-readable reason for any offending file,
-  so an agent can answer "why is this invalid?" without re-reading the rules.
+- **`config explain <rule-id>`** lists every path a rule covers and every one it
+  flags, so "why is this invalid?" is answerable without re-reading the config.
 - **`describe` / `scaffold`** let an agent ask what applies to a file *before*
   writing it, avoiding the write–fail–retry loop.
+- **`check --file`** verifies one file without walking the repository, and
+  reports the rules it could not evaluate rather than dropping them.
 - **`agent-guide`** produces a markdown digest of every active rule, meant to
   be referenced from `CLAUDE.md` or `AGENTS.md`. Regenerated deterministically
   from the config.

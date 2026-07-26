@@ -134,10 +134,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: the npm shim
-        working-directory: npm
+      - name: the npm wrapper
+        working-directory: npm/archwarden
         run: node --test "test/*.test.mjs"
-      - name: the homebrew stamper
+      - name: the release scripts
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
   future-rust:

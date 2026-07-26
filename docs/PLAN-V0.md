@@ -1822,6 +1822,11 @@ de CI e não bloqueia nada.
 **Pronto quando:** as três vias de instalação funcionam a partir de uma tag.
 **Não atendido daqui** — ver o registro.
 
+**Duas das três vias foram aposentadas no M10** (`binstall` e Homebrew), depois
+que a premissa mudou de ferramenta de máquina para dependência de repositório.
+O que segue vale como registro do que foi feito e do que se aprendeu; a via
+viva é a do M10.
+
 **Registro** — 2026-07-25
 
 **A matriz não cross-compila; cada alvo builda num runner da própria
@@ -1943,8 +1948,181 @@ gerado, checksum escrito, `shasum -c` aceita, binário extraído em
 
 ---
 
+### M10 — Distribuição como dependência de repositório `✅`
+
+**Objetivo:** `pnpm add -D archwarden` e um `pnpm check:arch` que roda —
+sem instalação global, sem toolchain, sem script de postinstall.
+
+**Por que existe.** O M9 assumiu ferramenta de máquina: `binstall`, Homebrew,
+shim npm que baixava o binário no postinstall. O Henrique corrigiu a premissa
+depois de a v0.1.0 estar publicada: *"a ideia não é que essa lib seja instalada
+globalmente, ela só seja usada dentro dos repositórios"*. Uma versão da
+arquitetura por repositório, travada no lockfile, igual ao Biome.
+
+**Registro** — 2026-07-25
+
+**O postinstall não funcionava, e não era teoria.** `pnpm add -D
+@archwarden/cli@0.1.0` num diretório limpo instalou **nenhum binário**, com um
+aviso que é fácil não ler:
+
+```
+╭ Warning ─────────────────────────────────────╮
+│   Ignored build scripts: @archwarden/cli.    │
+╰──────────────────────────────────────────────╯
+```
+
+O **pnpm 10 bloqueia scripts de instalação de dependências por padrão**. O npm
+ainda roda, então o mesmo pacote funcionava num gerenciador e falhava em outro.
+A v0.1.0 estava publicada com esse defeito.
+
+**A troca: `optionalDependencies` por plataforma.** É o formato do esbuild e do
+Biome, e não executa nada. Oito pacotes: `archwarden`, que as pessoas instalam,
+e sete `@archwarden/cli-<plataforma>` carregando um binário cada. Cada um
+declara `os`, `cpu` e `libc`; o gerenciador resolve os sete, baixa **um**, e
+ignora os outros seis sem erro — é o que `optional` significa. O wrapper faz
+`createRequire(import.meta.url).resolve(...)` para achar o binário que sobrou.
+
+Sem `scripts` em lugar nenhum. Nada para o pnpm bloquear.
+
+**O nome.** Era `@archwarden/cli`. O Henrique perguntou: *"não precisamos da
+cli como dep? Porque o Biome nós só instalamos `biomejs/biome`"* — e está
+certo, `cli` é detalhe de implementação nosso, não vocabulário de quem instala.
+Virou `archwarden`, sem escopo. O `@archwarden/cli@0.1.0` continua publicado
+sob o nome errado e precisa de um `npm deprecate`.
+
+**Verificado nos três gerenciadores**, contra um verdaccio local com os oito
+pacotes em 0.1.1 e um repositório de mentira com uma regra que falha:
+
+| | instalou | pacotes de plataforma | `check:arch` |
+|---|---|---|---|
+| npm 10 | `added 2 packages` | só `cli-linux-arm64` | exit **1** |
+| pnpm 10 | sem aviso de build script | só `cli-linux-arm64` | exit **1** |
+| bun 1.3 | `with binaries: archwarden` | `cli-linux-arm64` **e** `-musl` | exit **1** |
+
+O exit 1 é a interface: um gate que falha virando um que passa é a falha que
+ninguém percebe.
+
+**O bun ignora o campo `libc`** e instala as duas variantes da arquitetura —
+~4 MB a mais, sem erro de execução, porque o wrapper escolhe por
+`process.report.getReport().header.glibcVersionRuntime`, que existe tanto no
+node quanto no bun (`2.39` nesta máquina). Anotado, não corrigido: o formato é
+o do Biome e o bun é quem diverge dele.
+
+**Um falso positivo que quase passou.** O primeiro teste do bun "funcionou"
+antes de a instalação existir: o `bun add` tinha falhado com
+`GET https://registry.npmjs.org/archwarden - 404` — a chave `registry` do
+`bunfig.toml` estava no topo em vez de sob `[install]` — e mesmo assim o
+`bun run check:arch` rodou. Havia um `~/.cargo/bin/archwarden` **versão 0.0.0**
+no PATH, de um `cargo install` antigo.
+
+Peguei porque a saída não tinha o segmento `· 1 parsed, 0 reused` que a versão
+atual imprime. É a lição de teste de distribuição: **um teste que roda o binário
+errado passa**. Removi o binário perdido e agora as três verificações rodam num
+diretório onde `which archwarden` não acha nada.
+
+**O README, que o Henrique pegou:** *"tem que adicionar o readme no build para
+aparecer no npm, porque tava sem nada"*. O pacote publicado não tinha descrição
+alguma na página do npm. O `npm/build.mjs` agora copia o `README.md` da raiz
+para dentro do pacote principal — `npm notice 5.8kB README.md`, 4 arquivos no
+tarball.
+
+**Um teste que não olha código nenhum, e é o mais útil dos doze:** ele afirma
+que o mapa do `resolve.mjs`, as `optionalDependencies` do `package.json` e a
+lista `PLATFORMS` do `build.mjs` descrevem o **mesmo** conjunto de plataformas.
+São três lugares que precisam concordar e que ninguém releem juntos; a
+divergência apareceria como "unsupported platform" na máquina de um estranho.
+
+**Vias aposentadas:** `[package.metadata.binstall]` e a fórmula do Homebrew
+(com o `scripts/stamp-formula.py` e seus seis testes). Nenhuma das duas serve
+para dependência de repositório, e o `binstall` ainda exigiria publicação no
+crates.io, cuja API está bloqueada nesta máquina. O `scripts/checksum.py`
+ficou — os arquivos `.sha256` continuam saindo no release para quem baixa o
+binário direto.
+
+**Também nesta passagem:** o `scripts/__pycache__/` estava **versionado** desde
+o M9 — bytecode específico da versão do Python, regerado a cada execução.
+Destrackeado e ignorado.
+
+**Workspace em 0.1.1.** Bateria completa verde: `fmt`, `clippy --all-features`,
+**688 testes Rust**, `machete`, `deny`, `typos`, **12 testes npm**, **6 testes**
+do `checksum.py`.
+
+**O que continua sem verificação daqui:** o `npm publish` real dos oito pacotes
+a partir de uma tag. O job publica **os de plataforma primeiro e o principal
+depois** — as `optionalDependencies` os nomeiam em versão exata, então a ordem
+inversa abriria uma janela em que instalar o pacote principal não resolve nada.
+
+**Adendo — `AGENTS.md` e o README que estava mentindo** (mesma passagem)
+
+Pedido do Henrique: um arquivo para o agente de IA saber usar a ferramenta,
+publicado junto e referenciado no README, para testar nos pacotes dele.
+
+**`AGENTS.md` na raiz**, ~9 kB, escrito *para* o agente e não sobre ele: o loop
+`describe → escrever → check --file`, cada comando com a saída JSON **real**
+(capturada de um repositório de mentira com as cinco categorias de regra, não
+inventada), a tabela de exit codes, as cinco categorias e o que cada uma quer,
+e cinco regras de conduta — a primeira sendo perguntar antes de escrever, a
+segunda **não editar `arch.config.json` para o check passar**.
+
+Verifiquei cada afirmação do arquivo contra o binário antes de escrever: exit 2
+sem config, `rules: []` para caminho sem regra, `.tsx` pareando com
+`.spec.tsx`, warning sozinho saindo **0**, `module_id: null` em regra de topo,
+`path` do finding sendo o *diretório* numa regra de estrutura. Um doc que
+nomeia comando que não existe é pior que doc nenhum: o agente tenta, leva
+exit 2 e improvisa.
+
+**O README ia para o npm dizendo "Design phase. No code yet."** e mandando
+`npm install -D @archwarden/cli` — o nome aposentado —, além de citar um
+`archwarden explain <path>` que nunca existiu (é `config explain <rule-id>`).
+É a página do pacote; corrigi junto, porque referenciar o `AGENTS.md` a partir
+de um README que ensina a instalar o pacote errado não faz sentido.
+
+**Dois testes novos**, ambos sobre promessas que vivem em arquivos diferentes:
+
+1. O `files` do manifesto é uma promessa feita num arquivo e cumprida noutro.
+   O teste roda o `build()` de verdade contra um release de mentira e lê
+   **cada entrada** de `files` no pacote gerado. Confirmei que ele pega o caso:
+   tirando `AGENTS.md` do `FROM_ROOT`, fica vermelho. O README já tinha sumido
+   exatamente assim uma vez.
+2. O `AGENTS.md` está no `files` **e** nomeia comandos que o binário tem.
+
+O `main()` do `build.mjs` virou `build(dist, out, version)` exportado — um
+script de release que só roda pela linha de comando é um script que ninguém
+testa.
+
+**Outro falso positivo, da mesma família do binário perdido no PATH.**
+`pnpm exec archwarden --version` respondeu **0.1.0** com 0.1.1 instalado, e o
+bun também. Causa: eu republiquei bytes diferentes sob o **mesmo
+`name@version`** no verdaccio depois de apagar o storage, e o store
+endereçado por conteúdo do pnpm/bun serviu o tarball que já tinha em cache. O
+npm real proíbe republicar versão, então isso não acontece em produção — mas
+acontece em bancada, e **a bancada é onde eu declaro que funciona**. Refiz as
+duas instalações com store e cache limpos (`npm_config_store_dir`,
+`BUN_INSTALL_CACHE_DIR`) e aí sim o binário é o da versão.
+
+Registro a regra que sai daí: **teste de distribuição só vale se disser qual
+binário rodou.** Duas vezes seguidas a saída "certa" veio de um artefato
+errado.
+
+**Fim a fim, com cache limpo**, publicando 0.1.2 no verdaccio: o
+`node_modules/archwarden/AGENTS.md` chega com 9295 bytes, `pnpm exec archwarden
+describe/scaffold/check --file` respondem o JSON documentado, e o gate sai 1.
+
+Bateria: `fmt`, `clippy`, **688 testes Rust**, `typos`, **14 testes npm**
+(eram 12), **6 testes** do `checksum.py`.
+
+---
+
 ## Follow-ups pós-v0
 
 - `.md` no walk e regras que operem sobre ele (D10).
 - Reavaliar `dashmap` se algum estágio precisar de estado compartilhado (D2).
 - `archwarden-lsp` (v1, `ROADMAP.md:68`).
+- **`npm deprecate @archwarden/cli`** — a 0.1.0 continua publicada sob o nome
+  antigo, com o postinstall que o pnpm bloqueia (M10).
+- **`install-hooks --claude-code` escreve `archwarden hook claude-code`**, um
+  comando que não está no PATH do processo do harness quando o archwarden é
+  dependência de dev. Precisa de `npx archwarden` ou do caminho em
+  `node_modules/.bin` (achado no M10, não corrigido).
+- **Node 20 deprecado** em `actions/checkout@v4` e `actions/upload-artifact@v4`
+  (annotations do release da v0.1.0).

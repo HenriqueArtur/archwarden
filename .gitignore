@@ -28,11 +28,14 @@
 tmp/
 *.snap.new
 
-# The npm shim downloads the binary at install time; it is never committed.
-npm/bin/archwarden
-npm/bin/archwarden.exe
-npm/node_modules/
+# The platform packages are generated from release artifacts at publish time.
+npm/dist/
+npm/**/node_modules/
 
 # cargo-mutants scratch output
 mutants.out/
 mutants.out.old/
+
+# Python bytecode from the release scripts. Version-specific, regenerated on
+# every run, and committed by accident in M9.
+__pycache__/
