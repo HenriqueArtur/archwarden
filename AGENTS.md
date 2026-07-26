@@ -276,7 +276,9 @@ still means the project would rather you did it the other way.
 ## The pre-write hook
 
 A repository may wire archwarden into a harness so invalid writes are rejected
-before they land. For Claude Code, in `.claude/settings.json`:
+before they land. `npx archwarden install-hooks --claude-code` writes it and
+prints the command it installed. For Claude Code that is
+`.claude/settings.json`:
 
 ```json
 {
@@ -294,7 +296,7 @@ before they land. For Claude Code, in `.claude/settings.json`:
 ```
 
 If a write is denied, the message names the rules and points at
-`archwarden scaffold <path>`. Ask for the shape rather than trying variations.
+`scaffold <path>`. Ask for the shape rather than trying variations.
 
 ## Rules for you
 

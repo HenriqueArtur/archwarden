@@ -15,6 +15,25 @@
 //! payload itself. One binary and no shell quoting, rather than a one-liner
 //! that would need `jq` the user may not have.
 //!
+//! # Naming a command the harness can actually run
+//!
+//! That bare command was wrong for the way archwarden is installed. As a dev
+//! dependency it lives in `node_modules/.bin`, which is on the PATH of a
+//! `package.json` script and of nothing else — and a harness runs a hook as
+//! its own process, not through npm. The hook would have failed with "command
+//! not found" on every write.
+//!
+//! So a project with a `package.json` gets `npx archwarden hook claude-code`.
+//! `npx` resolves `node_modules/.bin` itself, walks up for a hoisted install,
+//! and works the same on Windows, where `.bin` holds `.cmd` shims a bare path
+//! would miss. An absolute path to the binary would have been faster and
+//! unshareable: `.claude/settings.json` is committed, and that path names this
+//! machine and this platform's package.
+//!
+//! A project with no `package.json` did not install archwarden from npm, so
+//! the binary is on the PATH already and the bare command is right. Prefixing
+//! `npx` there would ask npm to fetch a package the user never installed.
+//!
 //! # Editing a file that is not ours
 //!
 //! `.claude/settings.json` belongs to the user. Everything here is
@@ -28,9 +47,34 @@ use serde_json::{Map, Value, json};
 /// Where Claude Code keeps its project settings.
 pub const CLAUDE_SETTINGS: &str = ".claude/settings.json";
 
-/// The command archwarden installs, and the key it recognises its own entry
-/// by.
+/// The command, and the key archwarden recognises its own entry by.
+///
+/// Every form it installs ends in this, so matching on it as a substring
+/// recognises the `npx` one, a path someone wrote by hand, and the bare
+/// command alike. An entry it failed to recognise would be duplicated on the
+/// next run, and every write checked twice.
 pub const HOOK_COMMAND: &str = "archwarden hook claude-code";
+
+/// How to invoke archwarden from a process the harness starts, rather than
+/// from an npm script.
+///
+/// See the module docs for why a node project gets `npx` and nothing else
+/// does. Used for the installed command and for the commands archwarden
+/// suggests in its own messages: telling an agent to run something it cannot
+/// run is the same defect, one layer further out.
+#[must_use]
+pub fn invocation(root: &camino::Utf8Path) -> String {
+    if root.join("package.json").is_file() {
+        return "npx archwarden".to_owned();
+    }
+    "archwarden".to_owned()
+}
+
+/// The command to install in `root`.
+#[must_use]
+pub fn hook_command(root: &camino::Utf8Path) -> String {
+    format!("{} hook claude-code", invocation(root))
+}
 
 /// The tools whose writes are worth intercepting.
 const MATCHER: &str = "Write|Edit|MultiEdit";
@@ -55,11 +99,12 @@ pub enum Outcome {
 /// there.
 ///
 /// `settings` is the file's current contents, or `None` when there is no file
-/// yet. Returns the contents to write, and what happened.
+/// yet. `command` is what to install, from [`hook_command`]. Returns the
+/// contents to write, and what happened.
 ///
 /// # Errors
 /// A message naming the problem, when the file is not a JSON object.
-pub fn install(settings: Option<&str>) -> Result<(String, Outcome), String> {
+pub fn install(settings: Option<&str>, command: &str) -> Result<(String, Outcome), String> {
     let mut root = parse(settings)?;
 
     let hooks = object_at(&mut root, "hooks")?;
@@ -71,7 +116,7 @@ pub fn install(settings: Option<&str>) -> Result<(String, Outcome), String> {
 
     entries.push(json!({
         "matcher": MATCHER,
-        "hooks": [{ "type": "command", "command": HOOK_COMMAND }],
+        "hooks": [{ "type": "command", "command": command }],
     }));
 
     Ok((render(&root), Outcome::Installed))
@@ -176,7 +221,75 @@ mod tests {
     use super::*;
 
     fn installed(settings: Option<&str>) -> String {
-        install(settings).expect("installs").0
+        install(settings, HOOK_COMMAND).expect("installs").0
+    }
+
+    /// A directory holding whatever entries the case needs.
+    fn project(entries: &[&str]) -> (tempfile::TempDir, camino::Utf8PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf())
+            .expect("temp path is UTF-8");
+        for entry in entries {
+            std::fs::write(root.join(entry), "{}").expect("write");
+        }
+        (dir, root)
+    }
+
+    /// The bug this replaces: as a dev dependency archwarden is in
+    /// `node_modules/.bin`, which is on the PATH of a `package.json` script
+    /// and of nothing else. A harness runs the hook as its own process, so a
+    /// bare `archwarden` is a command that does not exist.
+    #[test]
+    fn a_node_project_gets_a_command_that_resolves() {
+        let (_guard, root) = project(&["package.json"]);
+
+        assert_eq!(hook_command(&root), "npx archwarden hook claude-code");
+    }
+
+    /// Without a `package.json` there is no `node_modules/.bin` to reach, so
+    /// the binary came from a release archive and is on the PATH already.
+    /// Prefixing `npx` there would ask npm to fetch a package this user never
+    /// installed.
+    #[test]
+    fn a_project_with_no_package_json_calls_the_binary_directly() {
+        let (_guard, root) = project(&[]);
+
+        assert_eq!(hook_command(&root), HOOK_COMMAND);
+    }
+
+    /// Both forms have to be recognised as ours, or the next `install-hooks`
+    /// adds a second entry and every write is checked twice.
+    #[test]
+    fn every_form_of_the_command_is_recognised_as_ours() {
+        for command in [
+            HOOK_COMMAND,
+            "npx archwarden hook claude-code",
+            "pnpm exec archwarden hook claude-code",
+            "./node_modules/.bin/archwarden hook claude-code",
+        ] {
+            let settings = format!(
+                r#"{{"hooks":{{"PreToolUse":[{{"matcher":"Write","hooks":[
+                    {{"type":"command","command":"{command}"}}]}}]}}}}"#
+            );
+
+            let (_, outcome) = install(Some(&settings), HOOK_COMMAND).expect("installs");
+            assert_eq!(outcome, Outcome::AlreadyInstalled, "{command}");
+
+            let (_, outcome) = remove(Some(&settings)).expect("removes");
+            assert_eq!(outcome, Outcome::Removed, "{command}");
+        }
+    }
+
+    /// What `install` writes is what it was handed. The probe decides the
+    /// form; this module does not second-guess it.
+    #[test]
+    fn the_command_handed_in_is_the_command_written() {
+        let (written, _) = install(None, "npx archwarden hook claude-code").expect("installs");
+
+        assert_eq!(
+            entries(&written)[0]["hooks"][0]["command"],
+            "npx archwarden hook claude-code"
+        );
     }
 
     fn entries(settings: &str) -> Vec<Value> {
@@ -187,7 +300,7 @@ mod tests {
     /// The first install, into a project that has no settings file at all.
     #[test]
     fn installing_into_nothing_creates_the_hook() {
-        let (written, outcome) = install(None).expect("installs");
+        let (written, outcome) = install(None, HOOK_COMMAND).expect("installs");
 
         assert_eq!(outcome, Outcome::Installed);
         let hooks = entries(&written);
@@ -202,7 +315,7 @@ mod tests {
     #[test]
     fn installing_twice_changes_nothing() {
         let once = installed(None);
-        let (twice, outcome) = install(Some(&once)).expect("installs");
+        let (twice, outcome) = install(Some(&once), HOOK_COMMAND).expect("installs");
 
         assert_eq!(outcome, Outcome::AlreadyInstalled);
         assert_eq!(twice, once, "byte-identical");
@@ -269,7 +382,7 @@ mod tests {
             {"matcher":"Write","hooks":[
                 {"type":"command","command":"archwarden hook claude-code","timeout":5}]}]}}"#;
 
-        let (written, outcome) = install(Some(edited)).expect("installs");
+        let (written, outcome) = install(Some(edited), HOOK_COMMAND).expect("installs");
 
         assert_eq!(outcome, Outcome::AlreadyInstalled);
         let hooks = entries(&written);
@@ -329,11 +442,11 @@ mod tests {
     #[test]
     fn a_settings_file_we_cannot_read_is_refused() {
         assert_eq!(
-            install(Some("[1, 2]")).expect_err("not an object"),
+            install(Some("[1, 2]"), HOOK_COMMAND).expect_err("not an object"),
             "`.claude/settings.json` is not a JSON object"
         );
         assert!(
-            install(Some("{ oops"))
+            install(Some("{ oops"), HOOK_COMMAND)
                 .expect_err("not JSON")
                 .contains("is not valid JSON"),
         );
@@ -344,11 +457,12 @@ mod tests {
     #[test]
     fn a_hooks_key_of_the_wrong_shape_is_named() {
         assert_eq!(
-            install(Some(r#"{"hooks":"none"}"#)).expect_err("not an object"),
+            install(Some(r#"{"hooks":"none"}"#), HOOK_COMMAND).expect_err("not an object"),
             "`hooks` in `.claude/settings.json` is not an object"
         );
         assert_eq!(
-            install(Some(r#"{"hooks":{"PreToolUse":{}}}"#)).expect_err("not an array"),
+            install(Some(r#"{"hooks":{"PreToolUse":{}}}"#), HOOK_COMMAND)
+                .expect_err("not an array"),
             "`hooks.PreToolUse` in `.claude/settings.json` is not an array"
         );
     }
@@ -357,7 +471,7 @@ mod tests {
     /// because of a stray `touch` would be unkind.
     #[test]
     fn an_empty_file_is_treated_as_empty_settings() {
-        let (written, outcome) = install(Some("   \n")).expect("installs");
+        let (written, outcome) = install(Some("   \n"), HOOK_COMMAND).expect("installs");
 
         assert_eq!(outcome, Outcome::Installed);
         assert_eq!(entries(&written).len(), 1);

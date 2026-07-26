@@ -73,9 +73,16 @@ pub fn respond(decision: &Decision) -> String {
     format!("{response}\n")
 }
 
-/// The message a blocked write carries: what broke, and what was expected.
+/// The message a blocked write carries: what broke, what was expected, and how
+/// to ask for the whole shape.
+///
+/// `invocation` is how archwarden can be run from here — see
+/// [`crate::hooks::invocation`]. It is a parameter rather than a constant
+/// because this message is read by an agent, which will run what it is told
+/// verbatim, and a bare `archwarden` is not a command in a repository where it
+/// is a dev dependency.
 #[must_use]
-pub fn explain(single: &archwarden_engine::single::Single) -> String {
+pub fn explain(single: &archwarden_engine::single::Single, invocation: &str) -> String {
     use std::fmt::Write as _;
 
     let mut message = format!("archwarden: `{}` would break these rules.\n", single.path);
@@ -91,9 +98,11 @@ pub fn explain(single: &archwarden_engine::single::Single) -> String {
         );
     }
 
-    message.push_str("\nRun `archwarden scaffold ");
-    message.push_str(single.path.as_str());
-    message.push_str("` for the shape it should have.\n");
+    let _ = write!(
+        message,
+        "\nRun `{invocation} scaffold {}` for the shape it should have.\n",
+        single.path
+    );
     message
 }
 
@@ -201,7 +210,7 @@ mod tests {
             skipped: Vec::new(),
         };
 
-        let message = explain(&single);
+        let message = explain(&single, "archwarden");
 
         assert!(message.contains("usecase-name"), "the rule: {message}");
         assert!(message.contains("CreateClient"), "the symbol: {message}");
@@ -209,6 +218,49 @@ mod tests {
         assert!(
             message.contains("archwarden scaffold src/user/create-client.use-case.ts"),
             "where to get the whole shape: {message}"
+        );
+    }
+
+    /// The suggestion has to be a command the reader can run. In a repository
+    /// where archwarden is a dev dependency, a bare `archwarden` is not one —
+    /// and this message is read by an agent, which will try it verbatim.
+    #[test]
+    fn the_suggestion_uses_the_invocation_it_is_given() {
+        use archwarden_core::{
+            facts::{ExportKind, ExportTags, KindFilter},
+            finding::{Expectation, Finding, Observed},
+            ids::RuleId,
+            level::Level,
+            path::RepoRelPath,
+        };
+        use archwarden_engine::single::Single;
+
+        let path = RepoRelPath::new("src/user/create-client.use-case.ts").expect("valid");
+        let single = Single {
+            path: path.clone(),
+            findings: vec![Finding {
+                rule_id: RuleId::new("usecase-name").expect("valid"),
+                module_id: None,
+                level: Level::Error,
+                path,
+                span: None,
+                observed: Observed::ExportMissing {
+                    name: "CreateClient".to_owned(),
+                },
+                expected: Expectation::RequiredExport {
+                    kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
+                    name: "CreateClient".to_owned(),
+                    signature_hint: None,
+                },
+            }],
+            skipped: Vec::new(),
+        };
+
+        let message = explain(&single, "npx archwarden");
+
+        assert!(
+            message.contains("npx archwarden scaffold src/user/create-client.use-case.ts"),
+            "{message}"
         );
     }
 }

@@ -2111,6 +2111,57 @@ describe/scaffold/check --file` respondem o JSON documentado, e o gate sai 1.
 Bateria: `fmt`, `clippy`, **688 testes Rust**, `typos`, **14 testes npm**
 (eram 12), **6 testes** do `checksum.py`.
 
+**Adendo 2 — o hook mandava rodar um comando que não existe**
+
+Achado ao escrever o `AGENTS.md`: o `install-hooks --claude-code` escrevia
+`archwarden hook claude-code` no `.claude/settings.json`. Como dependência de
+dev o binário está em `node_modules/.bin`, que é o PATH de um script do
+`package.json` e de mais nada — e o harness roda o hook como processo próprio.
+Todo write ia falhar com "command not found", e um hook que não roda é um hook
+que **libera** a escrita.
+
+Nunca disparou porque só existiu no M9, quando a premissa ainda era binário
+global. Nasceu errado junto com a mudança de premissa.
+
+**A forma escolhida foi `npx archwarden hook claude-code`** para projeto com
+`package.json`, e o comando cru para o resto. As alternativas e por que não:
+
+- **Caminho absoluto do binário** (`current_exe()`): mais rápido e
+  **impartilhável**. O `.claude/settings.json` é commitado, e esse caminho
+  nomeia esta máquina e o pacote desta plataforma.
+- **`node_modules/.bin/archwarden` relativo**: quebra com dependência içada
+  para a raiz do monorepo, e no Windows o `.bin` guarda shims `.cmd` que um
+  caminho cru não acha. O `npx` resolve os dois casos sozinho.
+- O risco de o `npx` baixar da rede não se aplica: sem pacote instalado e sem
+  TTY ele **falha**, não instala em silêncio.
+
+O sinal é `package.json`, não `node_modules` — este último é gitignorado e não
+existe num clone novo.
+
+**O mesmo defeito estava uma camada adiante**, e eu só vi porque rodei o hook
+de verdade em vez de acreditar no teste: a mensagem de deny terminava com
+``Run `archwarden scaffold <path>` ``. É a linha que o **agente** lê e executa
+literalmente. Agora o `hooks::invocation(root)` decide as duas — comando
+instalado e comando sugerido — e o `explain` recebe o prefixo como parâmetro em
+vez de embutir a string.
+
+O `install-hooks` passou a **imprimir o comando que instalou**. Um hook que não
+resolve falha em silêncio, no próximo write de outra pessoa; a única defesa é
+mostrar na hora.
+
+O reconhecimento não mudou: `has_our_command` compara por `contains` do
+`HOOK_COMMAND`, e todas as formas terminam nele — `npx …`, `pnpm exec …`,
+caminho escrito à mão. Um teste percorre as quatro e exige `AlreadyInstalled`
+no reinstalar e `Removed` no remover. Se alguma escapasse, o segundo
+`install-hooks` deixaria duas entradas e todo write seria checado duas vezes.
+
+Verificado nos dois formatos com o binário recém-compilado, em consumidor de
+verdade: projeto com `package.json` instala e sugere `npx archwarden …`,
+projeto sem instala e sugere `archwarden …`.
+
+Bateria: `fmt`, `clippy`, **694 testes Rust** (eram 688), `machete`, `deny`,
+`typos`, **14 testes npm**, **6 testes** do `checksum.py`.
+
 ---
 
 ## Follow-ups pós-v0
@@ -2120,9 +2171,5 @@ Bateria: `fmt`, `clippy`, **688 testes Rust**, `typos`, **14 testes npm**
 - `archwarden-lsp` (v1, `ROADMAP.md:68`).
 - **`npm deprecate @archwarden/cli`** — a 0.1.0 continua publicada sob o nome
   antigo, com o postinstall que o pnpm bloqueia (M10).
-- **`install-hooks --claude-code` escreve `archwarden hook claude-code`**, um
-  comando que não está no PATH do processo do harness quando o archwarden é
-  dependência de dev. Precisa de `npx archwarden` ou do caminho em
-  `node_modules/.bin` (achado no M10, não corrigido).
 - **Node 20 deprecado** em `actions/checkout@v4` e `actions/upload-artifact@v4`
   (annotations do release da v0.1.0).
