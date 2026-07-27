@@ -100,6 +100,13 @@ npx archwarden describe packages/domain/src/order/calcs/discount.ts --format jso
 An empty `rules` array means nothing constrains that path. That is an answer,
 not a failure.
 
+**Paths are read either way.** From inside `packages/domain`, both
+`src/order/x.ts` and `packages/domain/src/order/x.ts` reach the same file — the
+first is what an editor or `git diff` hands you, the second is what every
+archwarden report prints. Absolute paths work too. When both readings name
+something real, the one relative to where you are standing wins. Check the
+`path` field in the reply: it is what was actually resolved.
+
 ### `scaffold <path>` — the shape it should have
 
 ```bash
@@ -191,6 +198,7 @@ The gate. Run it before saying you are done.
     "directories_scanned": 11,
     "files_parsed": 0,
     "facts_reused": 3,
+    "checks_skipped": 0,
     "duration_ms": 1
   },
   "findings": [ ... ]
@@ -203,6 +211,18 @@ The text format ends with the same numbers on one line, how long it took last:
 1 error, 0 warnings · 4 files, 11 directories · 0 parsed, 3 reused · 1ms
 ```
 
+**`checks_skipped` is the number to watch.** It counts checks nobody could
+make — one per rule that wanted a file whose facts were unavailable, usually
+because the file would not parse. It appears in the text line only when it is
+not zero:
+
+```
+1 error, 0 warnings, 2 skipped · 3 files, 3 directories · 1 parsed · 2ms
+```
+
+A run with skips is a run that decided less than it looks like. Do not report
+it as clean.
+
 `files_parsed` and `facts_reused` are the cache working. A warm run parses
 nothing and is not much faster in wall clock — it still reads and hashes every
 file, because that is the only honest way to know one did not change. The cache
@@ -213,7 +233,7 @@ a run that disagrees with `--no-cache` is a bug worth reporting.
 
 #### Filtering what the report shows
 
-Four flags narrow the output. **None of them narrows what is checked.** Every
+Five flags narrow the output. **None of them narrows what is checked.** Every
 rule runs, every finding is computed, and the exit code is identical with them
 and without — so a filter is safe to leave in a command that gates a build.
 
@@ -221,18 +241,36 @@ and without — so a filter is safe to leave in a command that gates a build.
 |---|---|
 | `--summary` | per-rule counts instead of every finding |
 | `--rules <id>[,<id>]` | only these rules |
-| `--paths <glob>[,<glob>]` | only findings under these paths |
+| `--paths <path>[,<path>]` | only findings under these paths |
 | `--level error\|warning` | only this level |
+| `--changed [<ref>]` | only files that differ from `<ref>` (default `HEAD`) |
 
 All four compose with AND, and both list flags are repeatable as well as
 comma-separated.
+
+`--paths` takes either form. **A plain path selects that path and everything
+under it** — paste the one from a finding and it works. A pattern containing `*`,
+`?`, `[` or `{` is used exactly as written, so `'src/*'` stays one level.
 
 ```bash
 npx archwarden check --summary                       # what rule is dominating?
 npx archwarden check --level error                   # warnings are known debt
 npx archwarden check --paths 'packages/domain/**'    # I just touched domain
 npx archwarden check --summary --rules usecase-name  # one rule, counted
+npx archwarden check --changed                       # what I have not committed
+npx archwarden check --changed main                  # what this branch does
 ```
+
+`--changed` asks git. Untracked files count — a file you just created is the
+one most worth checking — and gitignored ones do not. The directories a file
+lives in count too, because a `structure` finding names the directory, not the
+file that made it exist.
+
+**It does not narrow the gate.** A run filtered to your own changes still fails
+on somebody else's regression elsewhere; you just do not see it listed. That is
+deliberate, and it means `--changed` cannot be used to make a build pass. If
+the repository has accepted debt you want the build to ignore, that is a
+different feature and archwarden does not have it yet.
 
 `--summary` in text:
 
@@ -269,7 +307,13 @@ repository.
 ```bash
 npx archwarden agent-guide                          # markdown
 npx archwarden agent-guide --scope packages/domain  # only what can fire there
+npx archwarden agent-guide --kind import-boundary   # only that kind
 ```
+
+`--kind` is repeatable and comma-separated, and composes with `--scope`:
+`--scope packages/domain --kind import-boundary` answers "the import boundaries
+that affect this directory" in one question. A kind no rule type has is exit 2,
+not an empty digest.
 
 Deterministic: same config, same bytes. Safe to commit or to regenerate.
 Reach for it when you need the whole rule set at once — for one path,
@@ -326,7 +370,9 @@ change.
 
 `span` is a byte range into the file when the rule found something at a
 position, and `null` when the finding is about the file's existence or
-location.
+location. In the text output a finding with a span is printed as
+`path:line:column`, which an editor and most terminals turn into a link. The
+JSON keeps the byte range, which is what a tool wants.
 
 `module_id` is `null` for a rule declared in the top-level `rules` array rather
 than inside a module — import boundaries usually are. In text output that rule

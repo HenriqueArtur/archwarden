@@ -54,9 +54,35 @@ pub fn describe<'a>(config: &'a CompiledConfig, path: &RepoRelPath) -> Vec<Appli
 
 /// Turns a path as typed on the command line into a repository-relative one.
 ///
-/// Never touches the filesystem: `describe` and `scaffold` are asked about
-/// files that do not exist yet, so `canonicalize` is not available and
-/// normalisation has to be lexical.
+/// # Two readings of one relative path
+///
+/// Standing in `packages/domain`, `src/order/x.ts` means the file under
+/// here — that is what `git diff` and an editor hand a developer. But every
+/// path archwarden *prints* is repository-relative, so the one an agent copies
+/// out of a report is `packages/domain/src/order/x.ts`, and reading that
+/// against the working directory gives `packages/domain/packages/domain/...`.
+///
+/// That did not fail. It resolved to a path no rule selects and answered "no
+/// rule applies", which reads exactly like "nothing constrains this file" —
+/// the wrong answer that looks like good news.
+///
+/// So both readings are tried, in this order:
+///
+/// 1. Against the working directory, when that names something on disk. It is
+///    the reading a developer means, and it wins whenever both are real.
+/// 2. Against the repository root, when *that* names something on disk.
+/// 3. Otherwise, whichever the argument's own shape indicates: a path already
+///    beginning with where the user is standing is repository-relative, since
+///    nobody nests `packages/domain` inside `packages/domain`.
+/// 4. Failing all of that, against the working directory, as before.
+///
+/// Steps 1 and 2 touch the filesystem, which this function used to avoid.
+/// Existence is the only evidence available about which reading was meant, and
+/// steps 3 and 4 are what keep `describe` and `scaffold` answering about files
+/// that do not exist yet — which is most of what they are for.
+///
+/// From the repository root both readings are the same question, so none of
+/// this costs the common case anything.
 ///
 /// # Errors
 /// A message naming the path, when it falls outside the repository.
@@ -72,16 +98,38 @@ pub fn repo_relative(
             .map_err(|_| format!("`{argument}` is outside the repository at `{root}`"))?
             .to_string()
     } else {
-        // A relative argument is relative to where the user is standing, and
-        // the user may be standing in a subdirectory.
         let inside = working_directory.strip_prefix(root).map_err(|_| {
             format!("the working directory `{working_directory}` is outside `{root}`")
         })?;
-        inside.join(raw).to_string()
+
+        let here = inside.join(raw).to_string();
+        if inside.as_str().is_empty() {
+            here
+        } else {
+            disambiguate(root, inside, raw, here)
+        }
     };
 
     RepoRelPath::new(&relative)
         .map_err(|error| format!("`{argument}` is not a path inside the repository: {error}"))
+}
+
+/// Picks between the two readings. See [`repo_relative`].
+fn disambiguate(root: &Utf8Path, inside: &Utf8Path, raw: &Utf8Path, here: String) -> String {
+    let there = raw.to_string();
+
+    if root.join(&here).exists() {
+        return here;
+    }
+    if root.join(&there).exists() {
+        return there;
+    }
+    // Nothing on disk to go by, which is the case `describe` exists for. A
+    // path that already carries the way here was written from the root.
+    if raw.starts_with(inside) {
+        return there;
+    }
+    here
 }
 
 /// The JSON envelope.
@@ -102,6 +150,17 @@ struct JsonRule<'a> {
     expectations: &'a [Expectation],
 }
 
+/// The JSON envelope for many paths at once.
+///
+/// A different shape from the one-path answer, because a different question
+/// was asked. A consumer that passed a glob knows to expect it.
+#[derive(Debug, Serialize)]
+struct JsonScope<'a> {
+    version: u32,
+    scope: &'a str,
+    paths: Vec<JsonDescribe<'a>>,
+}
+
 /// Writes what applies, in the requested format.
 pub fn render(
     path: &RepoRelPath,
@@ -112,6 +171,110 @@ pub fn render(
     match format {
         crate::report::Format::Text => render_text(path, applies, out),
         crate::report::Format::Json => render_json(path, applies, out),
+    }
+}
+
+/// Writes what applies across many paths.
+///
+/// The terminal gets one line per path: the whole point of asking about an
+/// area is not to scroll past a block each. The JSON keeps every expectation,
+/// because an agent asking about an area still needs the detail it would have
+/// got asking one path at a time.
+pub fn render_many(
+    scope: &str,
+    answers: &[(RepoRelPath, Vec<Applies<'_>>)],
+    format: crate::report::Format,
+    out: &mut dyn std::io::Write,
+) {
+    match format {
+        crate::report::Format::Text => render_many_text(scope, answers, out),
+        crate::report::Format::Json => {
+            let envelope = JsonScope {
+                version: DESCRIBE_VERSION,
+                scope,
+                paths: answers
+                    .iter()
+                    .map(|(path, applies)| envelope_for(path, applies))
+                    .collect(),
+            };
+            match serde_json::to_string_pretty(&envelope) {
+                Ok(json) => {
+                    let _ = writeln!(out, "{json}");
+                }
+                Err(error) => {
+                    let _ = writeln!(out, r#"{{"error":"cannot serialise: {error}"}}"#);
+                }
+            }
+        }
+    }
+}
+
+fn render_many_text(
+    scope: &str,
+    answers: &[(RepoRelPath, Vec<Applies<'_>>)],
+    out: &mut dyn std::io::Write,
+) {
+    // A glob that matched nothing is said out loud. An empty list would read
+    // as "every path here is unconstrained", which is a different answer.
+    if answers.is_empty() {
+        let _ = writeln!(out, "Nothing matches `{scope}`.");
+        return;
+    }
+
+    let width = answers
+        .iter()
+        .map(|(path, _)| path.as_str().len())
+        .max()
+        .unwrap_or(0);
+
+    let _ = writeln!(out, "Rules that apply under `{scope}`:\n");
+
+    let mut distinct: Vec<&str> = Vec::new();
+    for (path, applies) in answers {
+        let ids: Vec<&str> = applies.iter().map(|entry| entry.rule.id.as_str()).collect();
+        for id in &ids {
+            if !distinct.contains(id) {
+                distinct.push(id);
+            }
+        }
+        // An em dash rather than a blank: a path nothing constrains keeps its
+        // line, because dropping it would read as the glob not matching it.
+        let listed = if ids.is_empty() {
+            "—".to_owned()
+        } else {
+            ids.join(", ")
+        };
+        let _ = writeln!(out, "  {:<width$}  {listed}", path.as_str());
+    }
+
+    let _ = writeln!(
+        out,
+        "\n{} {}, {} {}.",
+        answers.len(),
+        if answers.len() == 1 { "path" } else { "paths" },
+        distinct.len(),
+        if distinct.len() == 1 { "rule" } else { "rules" },
+    );
+}
+
+fn envelope_for<'a>(path: &'a RepoRelPath, applies: &'a [Applies<'a>]) -> JsonDescribe<'a> {
+    JsonDescribe {
+        version: DESCRIBE_VERSION,
+        path,
+        rules: applies
+            .iter()
+            .map(|entry| JsonRule {
+                id: entry.rule.id.as_str(),
+                kind: entry.rule.kind.type_name(),
+                level: entry.rule.level.as_str(),
+                module: entry
+                    .rule
+                    .module
+                    .as_ref()
+                    .map(archwarden_core::ids::ModuleId::as_str),
+                expectations: &entry.expectations,
+            })
+            .collect(),
     }
 }
 
@@ -468,6 +631,234 @@ mod tests {
         assert_eq!(
             repo_relative(&root(), &root(), ".").expect("resolves"),
             path("")
+        );
+    }
+
+    // --- many paths at once ----------------------------------------------
+
+    fn rendered_many(
+        answers: &[(RepoRelPath, Vec<Applies<'_>>)],
+        format: crate::report::Format,
+    ) -> String {
+        let mut out = Vec::new();
+        render_many("packages/domain/src/*", answers, format, &mut out);
+        String::from_utf8(out).expect("output is UTF-8")
+    }
+
+    fn config_of(rules: Vec<CompiledRule>) -> CompiledConfig {
+        config(rules, &[])
+    }
+
+    fn structure() -> CompiledRuleKind {
+        CompiledRuleKind::Structure {
+            allowed_subfolders: vec!["types".to_owned()],
+            warn_subfolders: Vec::new(),
+            recurse_into: Vec::new(),
+            filename_patterns: Vec::new(),
+        }
+    }
+
+    /// One line per path, which is the point: the alternative is scrolling
+    /// past a block of three lines each.
+    #[test]
+    fn many_paths_render_one_line_each() {
+        let config = config_of(vec![
+            rule("shape", None, &["packages/domain/src/*"], structure()),
+            rule("names", None, &["packages/domain/src/*"], naming()),
+        ]);
+        let answers: Vec<_> = ["packages/domain/src/invoice", "packages/domain/src/order"]
+            .iter()
+            .map(|p| {
+                let path = path(p);
+                let applies = describe(&config, &path);
+                (path, applies)
+            })
+            .collect();
+
+        let text = rendered_many(&answers, crate::report::Format::Text);
+
+        assert_eq!(
+            text,
+            "Rules that apply under `packages/domain/src/*`:\n\
+             \n\
+             \x20 packages/domain/src/invoice  shape\n\
+             \x20 packages/domain/src/order    shape\n\
+             \n\
+             2 paths, 1 rule.\n"
+        );
+    }
+
+    /// A path nothing constrains keeps its line, saying so. Dropping it would
+    /// make a reader think the glob did not match it.
+    #[test]
+    fn a_path_with_no_rules_still_has_a_line() {
+        let config = config_of(vec![rule("shape", None, &["src/*"], structure())]);
+        let path = path("packages/other");
+        let answers = vec![(path.clone(), describe(&config, &path))];
+
+        let text = rendered_many(&answers, crate::report::Format::Text);
+
+        assert!(text.contains("packages/other  —"), "{text}");
+        assert!(text.contains("1 path, 0 rules."), "{text}");
+    }
+
+    /// A glob matching nothing says so, rather than printing an empty list
+    /// that reads like every path is unconstrained.
+    #[test]
+    fn a_glob_that_matches_nothing_says_so() {
+        let text = rendered_many(&[], crate::report::Format::Text);
+
+        assert_eq!(text, "Nothing matches `packages/domain/src/*`.\n");
+    }
+
+    /// The JSON keeps every expectation, because an agent asking about an
+    /// area still needs the detail it would have got asking one path at a
+    /// time. Only the terminal wants it short.
+    #[test]
+    fn the_json_carries_the_full_answer_per_path() {
+        let config = config_of(vec![rule(
+            "shape",
+            None,
+            &["packages/domain/src/*"],
+            structure(),
+        )]);
+        let path = path("packages/domain/src/invoice");
+        let answers = vec![(path.clone(), describe(&config, &path))];
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&rendered_many(&answers, crate::report::Format::Json))
+                .expect("valid JSON");
+
+        assert_eq!(parsed["scope"], "packages/domain/src/*");
+        assert_eq!(parsed["paths"][0]["path"], "packages/domain/src/invoice");
+        assert_eq!(parsed["paths"][0]["rules"][0]["id"], "shape");
+        assert!(
+            parsed["paths"][0]["rules"][0]["expectations"].is_array(),
+            "the detail is there"
+        );
+        assert!(
+            parsed.get("path").is_none(),
+            "a different shape, because a different question was asked"
+        );
+    }
+
+    // --- the two readings of one relative path ---------------------------
+
+    /// A tree on disk, because existence is what tells the two readings apart.
+    fn tree(entries: &[&str]) -> (tempfile::TempDir, Utf8PathBuf) {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root =
+            Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("temp path is UTF-8");
+        for entry in entries {
+            let file = root.join(entry);
+            std::fs::create_dir_all(file.parent().expect("a file has a parent"))
+                .expect("create dirs");
+            std::fs::write(&file, "export const a = 1;\n").expect("write");
+        }
+        (guard, root)
+    }
+
+    /// The defect this replaces. Every path archwarden prints is
+    /// repository-relative, so the one an agent copies out of a report is too
+    /// — and pasting it back while standing in a subdirectory used to resolve
+    /// to `packages/domain/packages/domain/...`, which does not exist.
+    ///
+    /// It did not fail. It answered "no rule applies", which reads exactly
+    /// like "nothing constrains this file".
+    #[test]
+    fn a_repository_relative_path_pasted_from_a_report_resolves() {
+        let (_guard, root) = tree(&["packages/domain/src/order/calcs/x.ts"]);
+        let inside = root.join("packages/domain");
+
+        assert_eq!(
+            repo_relative(&root, &inside, "packages/domain/src/order/calcs/x.ts")
+                .expect("resolves"),
+            path("packages/domain/src/order/calcs/x.ts")
+        );
+    }
+
+    /// And the reading that was always right stays right. This is the path a
+    /// developer has in hand from `git diff` or an editor, and it wins when
+    /// both readings name something real.
+    #[test]
+    fn a_path_relative_to_where_you_stand_still_wins() {
+        let (_guard, root) = tree(&[
+            "packages/domain/src/order/calcs/x.ts",
+            // The same relative path, real from the root as well. Whoever is
+            // standing in `packages/domain` means theirs.
+            "src/order/calcs/x.ts",
+        ]);
+        let inside = root.join("packages/domain");
+
+        assert_eq!(
+            repo_relative(&root, &inside, "src/order/calcs/x.ts").expect("resolves"),
+            path("packages/domain/src/order/calcs/x.ts")
+        );
+    }
+
+    /// A path only the root reading finds is the root reading's, even though
+    /// it does not begin with where the user is standing.
+    #[test]
+    fn a_path_only_the_repository_reading_finds_is_taken() {
+        let (_guard, root) = tree(&["src/shared/b.ts"]);
+        let inside = root.join("packages/domain");
+        std::fs::create_dir_all(&inside).expect("create dirs");
+
+        assert_eq!(
+            repo_relative(&root, &inside, "src/shared/b.ts").expect("resolves"),
+            path("src/shared/b.ts")
+        );
+    }
+
+    /// `describe` is asked about files that do not exist yet -- that is what
+    /// it is for. With nothing on disk to go by, a path that already starts
+    /// with where the user is standing is repository-relative: nobody nests
+    /// `packages/domain` inside `packages/domain`.
+    #[test]
+    fn a_file_that_does_not_exist_yet_is_read_by_its_prefix() {
+        let (_guard, root) = tree(&[]);
+        let inside = root.join("packages/domain");
+        std::fs::create_dir_all(&inside).expect("create dirs");
+
+        assert_eq!(
+            repo_relative(&root, &inside, "packages/domain/src/new/thing.ts").expect("resolves"),
+            path("packages/domain/src/new/thing.ts")
+        );
+        // And one that does not carry the prefix is where the user is standing,
+        // which is the older behaviour and the common case.
+        assert_eq!(
+            repo_relative(&root, &inside, "src/new/thing.ts").expect("resolves"),
+            path("packages/domain/src/new/thing.ts")
+        );
+    }
+
+    /// From the root the two readings are the same question, so nothing here
+    /// costs the common case anything.
+    #[test]
+    fn from_the_root_there_is_only_one_reading() {
+        let (_guard, root) = tree(&["src/user/a.ts"]);
+
+        assert_eq!(
+            repo_relative(&root, &root, "src/user/a.ts").expect("resolves"),
+            path("src/user/a.ts")
+        );
+        assert_eq!(
+            repo_relative(&root, &root, "src/nothing/here.ts").expect("resolves"),
+            path("src/nothing/here.ts")
+        );
+    }
+
+    /// A directory answers the same way a file does: `describe` and `scaffold`
+    /// both take one, and a structure rule has more to say about a directory
+    /// than about anything in it.
+    #[test]
+    fn a_directory_resolves_by_the_same_rules() {
+        let (_guard, root) = tree(&["packages/domain/src/order/calcs/x.ts"]);
+        let inside = root.join("packages/domain");
+
+        assert_eq!(
+            repo_relative(&root, &inside, "packages/domain/src/order").expect("resolves"),
+            path("packages/domain/src/order")
         );
     }
 }

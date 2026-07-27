@@ -46,7 +46,32 @@ impl LevelFilter {
 pub struct Filters {
     rules: Option<Vec<RuleId>>,
     paths: Option<PathSet>,
+    /// The files `--changed` named.
+    ///
+    /// Its own field rather than more entries in `paths`, and the distinction
+    /// is load-bearing: `--changed` on a clean working tree yields an *empty*
+    /// list, which folded into `paths` would be indistinguishable from no
+    /// `--paths` at all. The filter would switch off and show everything --
+    /// the opposite of what was asked.
+    changed: Option<PathSet>,
     level: Option<Level>,
+}
+
+/// The filters as written on the command line.
+///
+/// A struct because there are four of them and they are all lists of strings,
+/// which at a call site is where a transposition hides.
+#[derive(Debug, Default)]
+pub struct Arguments<'a> {
+    /// `--rules`.
+    pub rules: &'a [String],
+    /// `--paths`.
+    pub paths: &'a [String],
+    /// The files `--changed` found, when it was given. `Some(empty)` means it
+    /// was asked for and nothing had changed.
+    pub changed: Option<Vec<String>>,
+    /// `--level`.
+    pub level: Option<LevelFilter>,
 }
 
 impl Filters {
@@ -55,12 +80,14 @@ impl Filters {
     /// # Errors
     /// A message naming the problem: a rule id no rule has, or a glob that is
     /// not one.
-    pub fn compile(
-        rules: &[String],
-        paths: &[String],
-        level: Option<LevelFilter>,
-        config: &CompiledConfig,
-    ) -> Result<Self, String> {
+    pub fn compile(arguments: Arguments<'_>, config: &CompiledConfig) -> Result<Self, String> {
+        let Arguments {
+            rules,
+            paths,
+            changed,
+            level,
+        } = arguments;
+
         let compiled_rules = if rules.is_empty() {
             None
         } else {
@@ -70,12 +97,21 @@ impl Filters {
         let compiled_paths = if paths.is_empty() {
             None
         } else {
-            Some(PathSet::compile(paths).map_err(|error| error.to_string())?)
+            Some(compile_paths(paths)?)
         };
+
+        // Matched exactly, never widened. `collect` already enumerates every
+        // directory a change touched, so adding `/**` to each would turn the
+        // ancestor `packages` into `packages/**` and drag in every finding in
+        // the repository -- which is what a first run of this actually did.
+        let compiled_changed = changed
+            .map(|paths| PathSet::compile(&paths).map_err(|error| error.to_string()))
+            .transpose()?;
 
         Ok(Self {
             rules: compiled_rules,
             paths: compiled_paths,
+            changed: compiled_changed,
             level: level.map(LevelFilter::level),
         })
     }
@@ -83,7 +119,10 @@ impl Filters {
     /// Whether anything is being filtered at all.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.rules.is_none() && self.paths.is_none() && self.level.is_none()
+        self.rules.is_none()
+            && self.paths.is_none()
+            && self.changed.is_none()
+            && self.level.is_none()
     }
 
     /// The rule ids the user named, if any.
@@ -108,6 +147,11 @@ impl Filters {
         {
             return false;
         }
+        if let Some(changed) = &self.changed
+            && !changed.is_match(finding.path.as_path())
+        {
+            return false;
+        }
         if let Some(level) = self.level
             && finding.level != level
         {
@@ -115,6 +159,44 @@ impl Filters {
         }
         true
     }
+}
+
+/// Compiles a list of `--paths`-style entries into one set.
+fn compile_paths(paths: &[String]) -> Result<PathSet, String> {
+    let expanded: Vec<String> = paths.iter().flat_map(|path| expand(path)).collect();
+    PathSet::compile(&expanded).map_err(|error| error.to_string())
+}
+
+/// Whether a string is a pattern rather than a path.
+///
+/// One convention, used by `--paths` and by `describe`, so a user who learns
+/// it once has learned it everywhere.
+#[must_use]
+pub fn looks_like_a_glob(pattern: &str) -> bool {
+    const GLOB_CHARS: [char; 5] = ['*', '?', '[', ']', '{'];
+    pattern.contains(GLOB_CHARS)
+}
+
+/// What a `--paths` entry has to match.
+///
+/// A glob is left exactly as written: someone who wrote `src/*` means one
+/// level, and quietly widening it to `src/*/**` would be archwarden overruling
+/// them.
+///
+/// A plain path is not a glob and is not treated as one. It selects that path
+/// and everything under it, because the path a user has to hand is the one
+/// they copied out of a finding, and making them remember to append `/**`
+/// turns "look closer at this" into an empty report — which reads like the
+/// problem went away.
+fn expand(pattern: &str) -> Vec<String> {
+    if looks_like_a_glob(pattern) {
+        return vec![pattern.to_owned()];
+    }
+
+    let trimmed = pattern.trim_end_matches('/');
+    // Both, so a structure finding -- which names the directory itself, not a
+    // file in it -- is kept alongside everything inside.
+    vec![trimmed.to_owned(), format!("{trimmed}/**")]
 }
 
 /// Turns the ids the user wrote into ids the config has, or says which one it
@@ -224,9 +306,12 @@ mod tests {
         let owned_rules: Vec<String> = rules.iter().map(|id| (*id).to_owned()).collect();
         let owned_paths: Vec<String> = paths.iter().map(|glob| (*glob).to_owned()).collect();
         Filters::compile(
-            &owned_rules,
-            &owned_paths,
-            level,
+            Arguments {
+                rules: &owned_rules,
+                paths: &owned_paths,
+                changed: None,
+                level,
+            },
             &config(&["shape", "spec", "boundary"]),
         )
         .expect("compiles")
@@ -270,6 +355,163 @@ mod tests {
 
         assert!(filters.keep(&finding("shape", "packages/domain/src/a.ts", Level::Error)));
         assert!(!filters.keep(&finding("shape", "packages/app/src/a.ts", Level::Error)));
+    }
+
+    /// A path with no glob in it is a path, and it selects what is under it.
+    ///
+    /// The one a user has to hand is the one they just copied out of a
+    /// finding. Requiring them to remember `/**` turns "look closer at this"
+    /// into an empty report, which reads like the problem went away.
+    #[test]
+    fn a_plain_path_selects_what_is_under_it() {
+        let filters = compile(&[], &["packages/domain/src/order"], None);
+
+        assert!(filters.keep(&finding(
+            "shape",
+            "packages/domain/src/order/calcs/a.ts",
+            Level::Error
+        )));
+        // And the directory itself, which is what a structure finding names.
+        assert!(filters.keep(&finding("shape", "packages/domain/src/order", Level::Error)));
+
+        assert!(!filters.keep(&finding(
+            "shape",
+            "packages/domain/src/invoice/calcs/a.ts",
+            Level::Error
+        )));
+    }
+
+    /// A file path selects that file, and nothing that merely starts with its
+    /// name. `order.ts` must not drag in `order.spec.ts`.
+    #[test]
+    fn a_plain_file_path_is_not_a_prefix_of_its_neighbours() {
+        let filters = compile(&[], &["packages/domain/src/order.ts"], None);
+
+        assert!(filters.keep(&finding(
+            "shape",
+            "packages/domain/src/order.ts",
+            Level::Error
+        )));
+        assert!(!filters.keep(&finding(
+            "shape",
+            "packages/domain/src/order.spec.ts",
+            Level::Error
+        )));
+    }
+
+    /// The dangerous case, and the reason `changed` is its own field rather
+    /// than more entries in `paths`.
+    ///
+    /// `--changed` on a clean working tree yields an empty list. Folded into
+    /// `paths`, an empty list is indistinguishable from "no `--paths` was
+    /// given", so the filter would switch off and the report would show
+    /// everything — the opposite of what was asked, and it would look like the
+    /// flag simply did not apply.
+    #[test]
+    fn changed_with_nothing_changed_shows_nothing() {
+        let filters = Filters::compile(
+            Arguments {
+                changed: Some(Vec::new()),
+                ..Arguments::default()
+            },
+            &config(&["shape"]),
+        )
+        .expect("compiles");
+
+        assert!(!filters.is_empty(), "a filter was asked for");
+        assert!(!filters.keep(&finding("shape", "src/a.ts", Level::Error)));
+    }
+
+    /// A changed file is kept, and so is anything under it -- a directory git
+    /// reports as touched is a directory a structure finding can be about.
+    #[test]
+    fn changed_keeps_the_files_git_named() {
+        let filters = Filters::compile(
+            Arguments {
+                changed: Some(vec!["packages/domain/src/order/a.ts".to_owned()]),
+                ..Arguments::default()
+            },
+            &config(&["shape"]),
+        )
+        .expect("compiles");
+
+        assert!(filters.keep(&finding(
+            "shape",
+            "packages/domain/src/order/a.ts",
+            Level::Error
+        )));
+        assert!(!filters.keep(&finding(
+            "shape",
+            "packages/domain/src/order/b.ts",
+            Level::Error
+        )));
+    }
+
+    /// The second defect a first run found: `--changed` entries are matched
+    /// exactly, never widened.
+    ///
+    /// The changed list already names every directory a change touched, so
+    /// treating each as a prefix turns the ancestor `packages` into
+    /// `packages/**` — and the report shows every finding in the repository
+    /// while claiming to show only what you touched.
+    #[test]
+    fn a_changed_directory_does_not_drag_in_its_whole_subtree() {
+        let filters = Filters::compile(
+            Arguments {
+                // What `collect` produces for one file under `packages/app`.
+                changed: Some(vec![
+                    "packages".to_owned(),
+                    "packages/app".to_owned(),
+                    "packages/app/services".to_owned(),
+                    "packages/app/services/z.ts".to_owned(),
+                ]),
+                ..Arguments::default()
+            },
+            &config(&["shape"]),
+        )
+        .expect("compiles");
+
+        assert!(filters.keep(&finding("shape", "packages/app/services", Level::Error)));
+        assert!(
+            !filters.keep(&finding(
+                "shape",
+                "packages/domain/src/order/handlers",
+                Level::Error
+            )),
+            "a directory nobody touched"
+        );
+    }
+
+    /// And it ANDs with the others, like every filter does.
+    #[test]
+    fn changed_composes_with_the_other_filters() {
+        let filters = Filters::compile(
+            Arguments {
+                rules: &["shape".to_owned()],
+                changed: Some(vec!["src/a.ts".to_owned(), "src/b.ts".to_owned()]),
+                ..Arguments::default()
+            },
+            &config(&["shape", "spec"]),
+        )
+        .expect("compiles");
+
+        assert!(filters.keep(&finding("shape", "src/a.ts", Level::Error)));
+        assert!(!filters.keep(&finding("spec", "src/a.ts", Level::Error)));
+        assert!(!filters.keep(&finding("shape", "src/c.ts", Level::Error)));
+    }
+
+    /// A pattern with a glob character in it is left exactly as written. A
+    /// user who wrote `src/*` means one level, and quietly turning it into
+    /// `src/*/**` would be archwarden overruling them.
+    #[test]
+    fn a_pattern_with_a_glob_is_left_alone() {
+        let filters = compile(&[], &["packages/*"], None);
+
+        assert!(filters.keep(&finding("shape", "packages/domain", Level::Error)));
+        assert!(
+            !filters.keep(&finding("shape", "packages/domain/src/a.ts", Level::Error)),
+            "`packages/*` is one level, and stays one level"
+        );
     }
 
     /// Any of the globs, not all of them -- a path cannot be under two
@@ -320,9 +562,14 @@ mod tests {
     /// would read the second as good news.
     #[test]
     fn an_unknown_rule_id_is_refused_and_says_what_there_is() {
-        let message =
-            Filters::compile(&["shpe".to_owned()], &[], None, &config(&["shape", "spec"]))
-                .expect_err("no such rule");
+        let message = Filters::compile(
+            Arguments {
+                rules: &["shpe".to_owned()],
+                ..Arguments::default()
+            },
+            &config(&["shape", "spec"]),
+        )
+        .expect_err("no such rule");
 
         assert_eq!(
             message,
@@ -337,8 +584,14 @@ mod tests {
         let many: Vec<String> = (0..20).map(|index| format!("rule-{index}")).collect();
         let ids: Vec<&str> = many.iter().map(String::as_str).collect();
 
-        let message = Filters::compile(&["nope".to_owned()], &[], None, &config(&ids))
-            .expect_err("no such rule");
+        let message = Filters::compile(
+            Arguments {
+                rules: &["nope".to_owned()],
+                ..Arguments::default()
+            },
+            &config(&ids),
+        )
+        .expect_err("no such rule");
 
         assert_eq!(
             message,
@@ -350,8 +603,14 @@ mod tests {
     /// rather than one ending in an empty list.
     #[test]
     fn an_empty_configuration_says_it_has_no_rules() {
-        let message = Filters::compile(&["anything".to_owned()], &[], None, &config(&[]))
-            .expect_err("no such rule");
+        let message = Filters::compile(
+            Arguments {
+                rules: &["anything".to_owned()],
+                ..Arguments::default()
+            },
+            &config(&[]),
+        )
+        .expect_err("no such rule");
 
         assert_eq!(
             message,
@@ -363,8 +622,14 @@ mod tests {
     /// fields use, because it is the same compiler behind both.
     #[test]
     fn a_malformed_glob_is_refused() {
-        let message = Filters::compile(&[], &["packages/[".to_owned()], None, &config(&["shape"]))
-            .expect_err("not a glob");
+        let message = Filters::compile(
+            Arguments {
+                paths: &["packages/[".to_owned()],
+                ..Arguments::default()
+            },
+            &config(&["shape"]),
+        )
+        .expect_err("not a glob");
 
         assert!(message.contains("packages/["), "{message}");
         assert!(message.contains("invalid glob"), "{message}");

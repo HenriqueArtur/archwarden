@@ -3,6 +3,7 @@
 //! The binary is a four-line shim over [`run`]. Everything that decides
 //! anything lives here so it can be tested without spawning a process.
 
+pub mod changed;
 pub mod describe;
 pub mod diagnostic;
 pub mod doctor;
@@ -135,6 +136,19 @@ pub enum Command {
         /// `--summary`, and still not what fails the build.
         #[arg(long, value_enum, value_name = "LEVEL")]
         level: Option<crate::filter::LevelFilter>,
+
+        /// Show only findings in files that differ from this ref.
+        ///
+        /// Without a ref, the working tree against `HEAD` — what you have not
+        /// committed. With one, everything this branch does:
+        /// `--changed main`. Untracked files count; ignored ones do not.
+        ///
+        /// A filter like the rest. Every rule still runs over the whole
+        /// repository and the exit code is unchanged, so this shows you your
+        /// own regressions without hiding anyone else's from the build.
+        #[arg(long, value_name = "REF", num_args = 0..=1,
+              default_missing_value = crate::changed::DEFAULT_REF)]
+        changed: Option<String>,
     },
 
     /// Say what the rules require of a path, which need not exist yet.
@@ -180,6 +194,16 @@ pub enum Command {
         /// Restrict the digest to rules that can fire under this directory.
         #[arg(long, value_name = "PATH")]
         scope: Option<String>,
+
+        /// Restrict the digest to rules of these kinds.
+        ///
+        /// Repeatable and comma-separated. Composes with `--scope`, so
+        /// `--scope packages/domain --kind import-boundary` answers "the
+        /// import boundaries that affect this directory" in one question.
+        ///
+        /// A kind no rule type has is an error, not an empty digest.
+        #[arg(long, value_name = "KIND", value_delimiter = ',')]
+        kind: Vec<String>,
     },
 
     /// Answer a harness's pre-write question, reading the event from stdin.
@@ -287,6 +311,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             rules,
             paths,
             level,
+            changed,
             ..
         } => check(
             cli.config.as_deref(),
@@ -297,6 +322,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
                 summary: *summary,
                 rules,
                 paths,
+                changed: changed.as_deref(),
                 level: *level,
             },
             output,
@@ -315,11 +341,16 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             *format,
             output,
         ),
-        Command::AgentGuide { format, scope } => agent_guide(
+        Command::AgentGuide {
+            format,
+            scope,
+            kind,
+        } => agent_guide(
             cli.config.as_deref(),
             working_directory,
             *format,
             scope.as_deref(),
+            kind,
             output,
         ),
         Command::Init => init(working_directory, output),
@@ -410,6 +441,13 @@ fn describe(
         Ok(prepared) => prepared,
         Err(exit) => return exit,
     };
+
+    // A glob asks about an area rather than a path, which is a different
+    // question with a different answer shape. Detected the same way `--paths`
+    // does it, so one convention covers both.
+    if crate::filter::looks_like_a_glob(argument) {
+        return describe_many(&merged.root, &compiled, argument, format, output);
+    }
 
     let path = match crate::describe::repo_relative(&merged.root, working_directory, argument) {
         Ok(path) => path,
@@ -651,6 +689,58 @@ fn check_one(
     }
 }
 
+/// Answers about every path a glob matches.
+///
+/// Only paths that exist, necessarily: a glob can match nothing else. That is
+/// the one thing this cannot do that single-path `describe` can, and it is
+/// worth stating because answering about a file nobody has created is most of
+/// what `describe` is for.
+fn describe_many(
+    root: &Utf8Path,
+    compiled: &archwarden_core::compiled::CompiledConfig,
+    glob: &str,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let set = match archwarden_core::glob::PathSet::compile([glob.to_owned()]) {
+        Ok(set) => set,
+        Err(error) => {
+            let _ = writeln!(output.err, "{error}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    let tree = match archwarden_engine::walk::walk(root, compiled) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = writeln!(output.err, "{error}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    // Directories and files both, because a rule can be about either and the
+    // user does not have to know which before asking.
+    let mut matched: Vec<archwarden_core::path::RepoRelPath> = tree
+        .directories()
+        .map(|(path, _)| path.clone())
+        .chain(tree.files().map(|file| file.path.clone()))
+        .filter(|path| set.is_match(path.as_path()))
+        .collect();
+    matched.sort();
+    matched.dedup();
+
+    let answers: Vec<_> = matched
+        .into_iter()
+        .map(|path| {
+            let applies = crate::describe::describe(compiled, &path);
+            (path, applies)
+        })
+        .collect();
+
+    crate::describe::render_many(glob, &answers, format, output.out);
+    Exit::Clean
+}
+
 /// Shows the smallest shape that would satisfy the rules at one path.
 ///
 /// Shares `describe`'s path resolution and config loading, and is built on its
@@ -691,8 +781,14 @@ fn agent_guide(
     working_directory: &Utf8Path,
     format: crate::guide::GuideFormat,
     scope: Option<&str>,
+    kinds: &[String],
     output: &mut Output<'_>,
 ) -> Exit {
+    if let Err(message) = crate::guide::guide_kinds(kinds) {
+        let _ = writeln!(output.err, "{message}");
+        return Exit::ConfigProblem;
+    }
+
     let (merged, compiled) = match prepare(explicit, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
@@ -709,7 +805,7 @@ fn agent_guide(
         }
     };
 
-    let guide = crate::guide::guide(&compiled, scope.as_ref());
+    let guide = crate::guide::guide(&compiled, scope.as_ref(), kinds);
     crate::guide::render(&guide, format, output.out);
     Exit::Clean
 }
@@ -735,6 +831,7 @@ struct CheckOptions<'a> {
     summary: bool,
     rules: &'a [String],
     paths: &'a [String],
+    changed: Option<&'a str>,
     level: Option<crate::filter::LevelFilter>,
 }
 
@@ -754,12 +851,27 @@ fn check(
         Err(exit) => return exit,
     };
 
-    // Before the walk, so a mistyped rule id costs a message rather than a
+    // Asked of git before the walk, so a bad ref costs a message rather than a
     // full run the user then has to repeat.
+    let changed = match options.changed {
+        Some(reference) => match crate::changed::changed_files(&merged.root, reference) {
+            Ok(paths) => Some(paths),
+            Err(message) => {
+                let _ = writeln!(output.err, "{message}");
+                return Exit::ConfigProblem;
+            }
+        },
+        None => None,
+    };
+
+    // Before the walk too, so a mistyped rule id costs the same.
     let filters = match crate::filter::Filters::compile(
-        options.rules,
-        options.paths,
-        options.level,
+        crate::filter::Arguments {
+            rules: options.rules,
+            paths: options.paths,
+            changed,
+            level: options.level,
+        },
         &compiled,
     ) {
         Ok(filters) => filters,
@@ -828,10 +940,13 @@ fn check(
     };
 
     crate::report::render(
-        &outcome,
-        &view,
+        &crate::report::Rendered {
+            root: &merged.root,
+            report: &outcome,
+            view: &view,
+            elapsed: started.elapsed(),
+        },
         options.format,
-        started.elapsed(),
         output.out,
     );
 
