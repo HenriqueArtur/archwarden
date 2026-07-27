@@ -233,7 +233,7 @@ a run that disagrees with `--no-cache` is a bug worth reporting.
 
 #### Filtering what the report shows
 
-Four flags narrow the output. **None of them narrows what is checked.** Every
+Five flags narrow the output. **None of them narrows what is checked.** Every
 rule runs, every finding is computed, and the exit code is identical with them
 and without — so a filter is safe to leave in a command that gates a build.
 
@@ -243,12 +243,13 @@ and without — so a filter is safe to leave in a command that gates a build.
 | `--rules <id>[,<id>]` | only these rules |
 | `--paths <path>[,<path>]` | only findings under these paths |
 | `--level error\|warning` | only this level |
+| `--changed [<ref>]` | only files that differ from `<ref>` (default `HEAD`) |
 
 All four compose with AND, and both list flags are repeatable as well as
 comma-separated.
 
-`--paths` takes either. **A plain path selects that path and everything under
-it** — paste the one from a finding and it works. A pattern containing `*`,
+`--paths` takes either form. **A plain path selects that path and everything
+under it** — paste the one from a finding and it works. A pattern containing `*`,
 `?`, `[` or `{` is used exactly as written, so `'src/*'` stays one level.
 
 ```bash
@@ -256,7 +257,20 @@ npx archwarden check --summary                       # what rule is dominating?
 npx archwarden check --level error                   # warnings are known debt
 npx archwarden check --paths 'packages/domain/**'    # I just touched domain
 npx archwarden check --summary --rules usecase-name  # one rule, counted
+npx archwarden check --changed                       # what I have not committed
+npx archwarden check --changed main                  # what this branch does
 ```
+
+`--changed` asks git. Untracked files count — a file you just created is the
+one most worth checking — and gitignored ones do not. The directories a file
+lives in count too, because a `structure` finding names the directory, not the
+file that made it exist.
+
+**It does not narrow the gate.** A run filtered to your own changes still fails
+on somebody else's regression elsewhere; you just do not see it listed. That is
+deliberate, and it means `--changed` cannot be used to make a build pass. If
+the repository has accepted debt you want the build to ignore, that is a
+different feature and archwarden does not have it yet.
 
 `--summary` in text:
 

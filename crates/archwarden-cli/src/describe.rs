@@ -150,6 +150,17 @@ struct JsonRule<'a> {
     expectations: &'a [Expectation],
 }
 
+/// The JSON envelope for many paths at once.
+///
+/// A different shape from the one-path answer, because a different question
+/// was asked. A consumer that passed a glob knows to expect it.
+#[derive(Debug, Serialize)]
+struct JsonScope<'a> {
+    version: u32,
+    scope: &'a str,
+    paths: Vec<JsonDescribe<'a>>,
+}
+
 /// Writes what applies, in the requested format.
 pub fn render(
     path: &RepoRelPath,
@@ -160,6 +171,110 @@ pub fn render(
     match format {
         crate::report::Format::Text => render_text(path, applies, out),
         crate::report::Format::Json => render_json(path, applies, out),
+    }
+}
+
+/// Writes what applies across many paths.
+///
+/// The terminal gets one line per path: the whole point of asking about an
+/// area is not to scroll past a block each. The JSON keeps every expectation,
+/// because an agent asking about an area still needs the detail it would have
+/// got asking one path at a time.
+pub fn render_many(
+    scope: &str,
+    answers: &[(RepoRelPath, Vec<Applies<'_>>)],
+    format: crate::report::Format,
+    out: &mut dyn std::io::Write,
+) {
+    match format {
+        crate::report::Format::Text => render_many_text(scope, answers, out),
+        crate::report::Format::Json => {
+            let envelope = JsonScope {
+                version: DESCRIBE_VERSION,
+                scope,
+                paths: answers
+                    .iter()
+                    .map(|(path, applies)| envelope_for(path, applies))
+                    .collect(),
+            };
+            match serde_json::to_string_pretty(&envelope) {
+                Ok(json) => {
+                    let _ = writeln!(out, "{json}");
+                }
+                Err(error) => {
+                    let _ = writeln!(out, r#"{{"error":"cannot serialise: {error}"}}"#);
+                }
+            }
+        }
+    }
+}
+
+fn render_many_text(
+    scope: &str,
+    answers: &[(RepoRelPath, Vec<Applies<'_>>)],
+    out: &mut dyn std::io::Write,
+) {
+    // A glob that matched nothing is said out loud. An empty list would read
+    // as "every path here is unconstrained", which is a different answer.
+    if answers.is_empty() {
+        let _ = writeln!(out, "Nothing matches `{scope}`.");
+        return;
+    }
+
+    let width = answers
+        .iter()
+        .map(|(path, _)| path.as_str().len())
+        .max()
+        .unwrap_or(0);
+
+    let _ = writeln!(out, "Rules that apply under `{scope}`:\n");
+
+    let mut distinct: Vec<&str> = Vec::new();
+    for (path, applies) in answers {
+        let ids: Vec<&str> = applies.iter().map(|entry| entry.rule.id.as_str()).collect();
+        for id in &ids {
+            if !distinct.contains(id) {
+                distinct.push(id);
+            }
+        }
+        // An em dash rather than a blank: a path nothing constrains keeps its
+        // line, because dropping it would read as the glob not matching it.
+        let listed = if ids.is_empty() {
+            "—".to_owned()
+        } else {
+            ids.join(", ")
+        };
+        let _ = writeln!(out, "  {:<width$}  {listed}", path.as_str());
+    }
+
+    let _ = writeln!(
+        out,
+        "\n{} {}, {} {}.",
+        answers.len(),
+        if answers.len() == 1 { "path" } else { "paths" },
+        distinct.len(),
+        if distinct.len() == 1 { "rule" } else { "rules" },
+    );
+}
+
+fn envelope_for<'a>(path: &'a RepoRelPath, applies: &'a [Applies<'a>]) -> JsonDescribe<'a> {
+    JsonDescribe {
+        version: DESCRIBE_VERSION,
+        path,
+        rules: applies
+            .iter()
+            .map(|entry| JsonRule {
+                id: entry.rule.id.as_str(),
+                kind: entry.rule.kind.type_name(),
+                level: entry.rule.level.as_str(),
+                module: entry
+                    .rule
+                    .module
+                    .as_ref()
+                    .map(archwarden_core::ids::ModuleId::as_str),
+                expectations: &entry.expectations,
+            })
+            .collect(),
     }
 }
 
@@ -516,6 +631,114 @@ mod tests {
         assert_eq!(
             repo_relative(&root(), &root(), ".").expect("resolves"),
             path("")
+        );
+    }
+
+    // --- many paths at once ----------------------------------------------
+
+    fn rendered_many(
+        answers: &[(RepoRelPath, Vec<Applies<'_>>)],
+        format: crate::report::Format,
+    ) -> String {
+        let mut out = Vec::new();
+        render_many("packages/domain/src/*", answers, format, &mut out);
+        String::from_utf8(out).expect("output is UTF-8")
+    }
+
+    fn config_of(rules: Vec<CompiledRule>) -> CompiledConfig {
+        config(rules, &[])
+    }
+
+    fn structure() -> CompiledRuleKind {
+        CompiledRuleKind::Structure {
+            allowed_subfolders: vec!["types".to_owned()],
+            warn_subfolders: Vec::new(),
+            recurse_into: Vec::new(),
+            filename_patterns: Vec::new(),
+        }
+    }
+
+    /// One line per path, which is the point: the alternative is scrolling
+    /// past a block of three lines each.
+    #[test]
+    fn many_paths_render_one_line_each() {
+        let config = config_of(vec![
+            rule("shape", None, &["packages/domain/src/*"], structure()),
+            rule("names", None, &["packages/domain/src/*"], naming()),
+        ]);
+        let answers: Vec<_> = ["packages/domain/src/invoice", "packages/domain/src/order"]
+            .iter()
+            .map(|p| {
+                let path = path(p);
+                let applies = describe(&config, &path);
+                (path, applies)
+            })
+            .collect();
+
+        let text = rendered_many(&answers, crate::report::Format::Text);
+
+        assert_eq!(
+            text,
+            "Rules that apply under `packages/domain/src/*`:\n\
+             \n\
+             \x20 packages/domain/src/invoice  shape\n\
+             \x20 packages/domain/src/order    shape\n\
+             \n\
+             2 paths, 1 rule.\n"
+        );
+    }
+
+    /// A path nothing constrains keeps its line, saying so. Dropping it would
+    /// make a reader think the glob did not match it.
+    #[test]
+    fn a_path_with_no_rules_still_has_a_line() {
+        let config = config_of(vec![rule("shape", None, &["src/*"], structure())]);
+        let path = path("packages/other");
+        let answers = vec![(path.clone(), describe(&config, &path))];
+
+        let text = rendered_many(&answers, crate::report::Format::Text);
+
+        assert!(text.contains("packages/other  —"), "{text}");
+        assert!(text.contains("1 path, 0 rules."), "{text}");
+    }
+
+    /// A glob matching nothing says so, rather than printing an empty list
+    /// that reads like every path is unconstrained.
+    #[test]
+    fn a_glob_that_matches_nothing_says_so() {
+        let text = rendered_many(&[], crate::report::Format::Text);
+
+        assert_eq!(text, "Nothing matches `packages/domain/src/*`.\n");
+    }
+
+    /// The JSON keeps every expectation, because an agent asking about an
+    /// area still needs the detail it would have got asking one path at a
+    /// time. Only the terminal wants it short.
+    #[test]
+    fn the_json_carries_the_full_answer_per_path() {
+        let config = config_of(vec![rule(
+            "shape",
+            None,
+            &["packages/domain/src/*"],
+            structure(),
+        )]);
+        let path = path("packages/domain/src/invoice");
+        let answers = vec![(path.clone(), describe(&config, &path))];
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&rendered_many(&answers, crate::report::Format::Json))
+                .expect("valid JSON");
+
+        assert_eq!(parsed["scope"], "packages/domain/src/*");
+        assert_eq!(parsed["paths"][0]["path"], "packages/domain/src/invoice");
+        assert_eq!(parsed["paths"][0]["rules"][0]["id"], "shape");
+        assert!(
+            parsed["paths"][0]["rules"][0]["expectations"].is_array(),
+            "the detail is there"
+        );
+        assert!(
+            parsed.get("path").is_none(),
+            "a different shape, because a different question was asked"
         );
     }
 

@@ -355,7 +355,23 @@ archwarden check --summary                        # per-rule counts, no listing
 archwarden check --rules domain-entity-shape      # one rule's findings
 archwarden check --paths 'packages/domain/**'     # one area of the repo
 archwarden check --level error                    # warnings are known debt
+archwarden check --changed                        # uncommitted work
+archwarden check --changed main                   # everything this branch does
 ```
+
+`--changed` asks git which files differ from a ref, defaulting to `HEAD`.
+Untracked files count; gitignored ones do not. So do the directories those
+files live in, because a `structure` finding names the directory rather than
+the file that brought it into existence.
+
+It is a filter like the rest, which is the point: decision 12 says `check`
+covers the repository, and a `--changed` that narrowed what is *evaluated*
+would let a pull request touching only `apps/web` pass with a regression
+sitting in `packages/domain`. Here the build still fails; the report just shows
+the part you asked about, and `hidden` says how much it left out.
+
+For the same reason it is not "fail only on new violations". That is a
+baseline — a committed record of accepted debt — and it is a different feature.
 
 `--rules` and `--paths` are repeatable and comma-separated; `--rules a,b` and
 `--rules a --rules b` are the same thing. All four compose with AND. `--paths`
@@ -438,9 +454,26 @@ Three commands cover the config itself:
   Every finding carries a code, a sentence, and a fix. The command exits 0 even
   with findings: they are advice about a configuration, not findings about
   code, and a non-zero exit would put a deliberate choice into a CI gate.
-- `archwarden config explain <rule-id>` — lists every file the rule currently
-  covers and, if applicable, every file it currently flags. Useful for a
-  coding agent that needs to understand a rule before writing code.
+- `archwarden config explain <rule-id>` — lists every path the rule currently
+  covers and every one it currently flags, one line each. This is the compact
+  answer to "which paths did that rule flag?" after a `--summary`.
+
+`archwarden describe` asks the same question from the other end. Given a glob
+rather than a path, it answers for every path that matches:
+
+```
+$ archwarden describe 'packages/domain/src/*'
+Rules that apply under `packages/domain/src/*`:
+
+  packages/domain/src/invoice  domain-entity-shape
+  packages/domain/src/order    domain-entity-shape, calcs-need-spec
+
+2 paths, 2 rules.
+```
+
+Only paths that exist, necessarily — a glob can match nothing else. Asking
+about a single path still answers for one that does not exist yet, which is
+most of what `describe` is for.
 
 ## Minimal config
 
