@@ -211,6 +211,59 @@ saves the parse, not the read.
 `--no-cache` re-parses everything. Use it only if you suspect a stale result;
 a run that disagrees with `--no-cache` is a bug worth reporting.
 
+#### Filtering what the report shows
+
+Four flags narrow the output. **None of them narrows what is checked.** Every
+rule runs, every finding is computed, and the exit code is identical with them
+and without — so a filter is safe to leave in a command that gates a build.
+
+| flag | shows |
+|---|---|
+| `--summary` | per-rule counts instead of every finding |
+| `--rules <id>[,<id>]` | only these rules |
+| `--paths <glob>[,<glob>]` | only findings under these paths |
+| `--level error\|warning` | only this level |
+
+All four compose with AND, and both list flags are repeatable as well as
+comma-separated.
+
+```bash
+npx archwarden check --summary                       # what rule is dominating?
+npx archwarden check --level error                   # warnings are known debt
+npx archwarden check --paths 'packages/domain/**'    # I just touched domain
+npx archwarden check --summary --rules usecase-name  # one rule, counted
+```
+
+`--summary` in text:
+
+```
+domain-entity-shape  3 errors
+types-need-spec      3 errors
+app-shape            1 error
+calcs-need-spec      3 warnings
+
+7 errors, 3 warnings · 8 files, 20 directories · 1ms
+```
+
+Worst first: errors descending, then warnings, then by rule id. **A rule with
+no findings keeps its row** — that it was evaluated is an answer, and a missing
+row would read as a rule someone disabled. `--rules` narrows the rows, because
+it is the one filter that names rules; `--paths` and `--level` leave every row
+in place with a zero.
+
+In JSON, `--summary` adds `summary.by_rule` and **omits the `findings` array**.
+
+```json
+{ "summary": { "errors": 7, "by_rule": { "domain-entity-shape": { "errors": 3, "warnings": 0 } } } }
+```
+
+**Two things to read carefully when you filter.** The counts describe what you
+asked to see, not what was checked — so `0 errors` with exit 1 is possible and
+correct. `summary.hidden`, and a `note:` line in text, say how many findings
+the filter removed. And an unknown rule id is **exit 2**, never an empty
+report: a filter matching nothing would otherwise look exactly like a clean
+repository.
+
 ### `agent-guide` — every rule, as context
 
 ```bash

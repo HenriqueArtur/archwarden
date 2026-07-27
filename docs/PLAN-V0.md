@@ -2207,6 +2207,94 @@ falharia por ambiente e não por código.
 
 ---
 
+## v0.2 — o que o uso real pediu
+
+Primeira leva depois de a 0.1.1 entrar num repositório de verdade. Três pedidos
+do Henrique e um do outro agente.
+
+### V2.1 — `$schema` apontando para algo que responde `✅`
+
+**Registro** — 2026-07-26
+
+`archwarden.dev` **não resolve em DNS**. O schema em si estava certo o tempo
+todo — gerado dos tipos Rust pelo `cargo xtask gen-schema`, versionado, e o CI
+falhando se ele divergir — mas ninguém alcançava o arquivo. O autocomplete que
+o campo existe para dar nunca funcionou para ninguém, e a ajuda do erro de
+config apontava para o nada.
+
+Virou o raw do repositório. E, onde se aplica, algo melhor que URL: **o schema
+viaja dentro do pacote npm**, e o `init` escreve caminho relativo quando acha
+uma instalação — `./node_modules/archwarden/schema/v0.json`. É o schema da
+versão que está no lockfile, funciona offline, e não pode descrever um build
+diferente do que está rodando. Relativo, não absoluto: `arch.config.json` é
+commitado.
+
+Três fatos em duas linguagens precisam concordar para esse caminho resolver.
+Um teste de cada lado fixa a sua metade.
+
+### V2.2 — a duração no fim do check `✅`
+
+Linha de totais termina com quanto levou; JSON ganha `summary.duration_ms`. A
+escala segue a magnitude, e **`0ms` nunca é impresso**.
+
+**O harness diferencial pegou na hora** — dois runs deixaram de bater byte a
+byte. Em vez de enfraquecer o teste, ele agora zera o `duration_ms` e compara o
+resto: "idêntico exceto um campo nomeado" é afirmação mais forte que "os campos
+que eu lembrei de comparar são iguais".
+
+Um número que a saída agora deixa ver: **o run quente quase não é mais rápido
+em wall clock** (20ms cold, 22ms warm em 4000 arquivos). Ele ainda lê e hasheia
+todo arquivo — o cache economiza o parse, não a leitura. Estava na doc do bench
+desde o M4; agora está no `AGENTS.md` para o agente não interpretar mal.
+
+### V2.3 — filtros de saída no `check` `✅`
+
+Quatro flags: `--summary`, `--rules`, `--paths`, `--level`.
+
+**A invariante que sustenta tudo:** filtro decide o que é *impresso*, nunca o
+que é *avaliado*. Toda regra roda, todo finding é computado, e o exit code é
+idêntico com e sem. Um teste percorre cinco combinações — incluindo a mais
+estreita possível, onde nada sobra para imprimir — e exige `Exit::Errors` em
+todas. Sem isso, `--rules` num comando de CI transformaria build vermelho em
+verde e ninguém descobriria.
+
+**A spec do outro agente se contradizia** sobre `--summary` + `--rules`: dizia
+"restricted to the intersection" e, três parágrafos depois, "always shows every
+rule". Resolvi assim: `--rules` é o usuário nomeando regras, então estreita as
+linhas; `--paths` e `--level` não nomeiam regra, então toda linha fica com o seu
+zero — que é onde o argumento "zero é a resposta" vale.
+
+**A ordenação declarada também contradizia o próprio exemplo dela** ("by count
+descending" com 32 errors acima de 37 warnings). O exemplo estava certo e a
+regra escrita, errada: a ordem é **errors desc, warnings desc, id asc** — a
+mesma ordem worst-first em que os findings já saem. Duas ordenações num
+relatório é coisa que alguém eventualmente reporta como bug.
+
+**Uma coisa que a spec não pedia e sem a qual o recurso mente.** Com filtro, a
+linha de totais conta o que foi *mostrado*, então `0 errors` ao lado de exit 1
+é possível — e, sozinho, é uma contradição que o leitor não consegue resolver.
+Agora há `summary.hidden` no JSON e uma linha `note: N findings hidden by the
+filters given` no texto. Os dois números sempre se reconciliam.
+
+**Id de regra desconhecido é exit 2**, seguindo o `disable` e o `config
+explain`. Um filtro que não casa nada é indistinguível de repositório limpo —
+a única resposta errada que o usuário lê como boa notícia. A mensagem lista as
+regras quando são poucas e conta quando são muitas.
+
+Sem bump do `REPORT_VERSION`: `by_rule` e `hidden` são adições, e a omissão do
+`findings` sob `--summary` é opt-in — quem nunca passa a flag vê o que sempre
+viu.
+
+Bateria: `fmt`, `clippy --all-features`, **732 testes Rust** (eram 705),
+`machete`, `deny`, `typos`, **15 testes npm**, **6 testes** do `checksum.py`,
+`xtask check-schema`.
+
+### V2.4 — actions no runtime Node 24 `✅`
+
+Ver o adendo 3 do M10.
+
+---
+
 ## Follow-ups pós-v0
 
 - `.md` no walk e regras que operem sobre ele (D10).

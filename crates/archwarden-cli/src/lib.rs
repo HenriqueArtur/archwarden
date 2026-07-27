@@ -8,6 +8,7 @@ pub mod diagnostic;
 pub mod doctor;
 pub mod exit;
 pub mod explain;
+pub mod filter;
 pub mod guide;
 pub mod hook;
 pub mod hooks;
@@ -41,10 +42,39 @@ pub struct Cli {
     pub command: Command,
 }
 
+/// What the filters look like together.
+///
+/// Shown under `check --help`, because a flag nobody finds is a flag nobody
+/// uses, and the useful shapes are the combinations rather than any one flag.
+const CHECK_EXAMPLES: &str = "\
+Examples:
+  # what rule is dominating this output?
+  archwarden check --summary
+
+  # only the errors; the warnings are known debt
+  archwarden check --level error
+
+  # I just touched domain
+  archwarden check --paths 'packages/domain/**'
+
+  # both, and counted rather than listed
+  archwarden check --summary --level error --paths 'packages/domain/**'
+
+  # one rule at a time, while fixing it
+  archwarden check --rules domain-entity-shape
+
+Filters change what is shown, never what is checked. The exit code is 0 when
+nothing failed, 1 when a rule did, and 2 when archwarden could not run.";
+
 /// The top-level commands.
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Check the repository against its rules.
+    ///
+    /// The filters below decide what is *printed*. Every rule runs, every
+    /// finding is computed, and the exit code is the same with them and
+    /// without them — which is what makes one safe to leave in a CI command.
+    #[command(after_long_help = CHECK_EXAMPLES)]
     Check {
         /// Check one file instead of the repository.
         ///
@@ -64,6 +94,47 @@ pub enum Command {
         /// `--no-cache`, the cache is wrong and that is worth a report.
         #[arg(long)]
         no_cache: bool,
+
+        /// Print per-rule counts instead of every finding.
+        ///
+        /// The answer to "what rule is dominating this output?", which on a
+        /// first migration is a question about hundreds of lines. Rules that
+        /// found nothing keep their row: that they were evaluated is an
+        /// answer too.
+        #[arg(long)]
+        summary: bool,
+
+        /// Show only findings from these rules.
+        ///
+        /// Repeatable, and comma-separated. These two are the same:
+        ///
+        /// `--rules domain-entity-shape,actions-need-spec`
+        ///
+        /// `--rules domain-entity-shape --rules actions-need-spec`
+        ///
+        /// Every rule still runs and the exit code is unchanged. An id no
+        /// rule has is an error, not an empty report.
+        #[arg(long, value_name = "ID", value_delimiter = ',')]
+        rules: Vec<String>,
+
+        /// Show only findings under these paths.
+        ///
+        /// Globs, repeatable and comma-separated, matched against the
+        /// finding's path:
+        ///
+        /// `--paths 'packages/domain/**'`
+        ///
+        /// `--paths 'packages/domain/**,packages/application/**'`
+        #[arg(long, value_name = "GLOB", value_delimiter = ',')]
+        paths: Vec<String>,
+
+        /// Show only findings of this level.
+        ///
+        /// `--level error` is the one to reach for when the warnings are
+        /// known debt. They are still evaluated, still counted in
+        /// `--summary`, and still not what fails the build.
+        #[arg(long, value_enum, value_name = "LEVEL")]
+        level: Option<crate::filter::LevelFilter>,
     },
 
     /// Say what the rules require of a path, which need not exist yet.
@@ -210,12 +281,24 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             output,
         ),
         Command::Check {
-            format, no_cache, ..
+            format,
+            no_cache,
+            summary,
+            rules,
+            paths,
+            level,
+            ..
         } => check(
             cli.config.as_deref(),
             working_directory,
-            *format,
-            *no_cache,
+            &CheckOptions {
+                format: *format,
+                no_cache: *no_cache,
+                summary: *summary,
+                rules,
+                paths,
+                level: *level,
+            },
             output,
         ),
         Command::Describe { path, format } => describe(
@@ -641,11 +724,24 @@ const CACHE_DIRECTORY: &str = ".archwarden/cache";
 /// does not change when the shape does.
 const CACHE_FILE: &str = "cache.redb";
 
+/// What `check` was asked to do.
+///
+/// A struct because the four filters plus the two switches are six arguments,
+/// and six positional booleans and slices at a call site is a place transposed
+/// arguments go to hide.
+struct CheckOptions<'a> {
+    format: Format,
+    no_cache: bool,
+    summary: bool,
+    rules: &'a [String],
+    paths: &'a [String],
+    level: Option<crate::filter::LevelFilter>,
+}
+
 fn check(
     explicit: Option<&Utf8Path>,
     working_directory: &Utf8Path,
-    format: Format,
-    no_cache: bool,
+    options: &CheckOptions<'_>,
     output: &mut Output<'_>,
 ) -> Exit {
     // From here rather than from `main`: argument parsing is not the run, and
@@ -656,6 +752,21 @@ fn check(
     let (merged, compiled) = match prepare(explicit, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
+    };
+
+    // Before the walk, so a mistyped rule id costs a message rather than a
+    // full run the user then has to repeat.
+    let filters = match crate::filter::Filters::compile(
+        options.rules,
+        options.paths,
+        options.level,
+        &compiled,
+    ) {
+        Ok(filters) => filters,
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
     };
 
     let tree = match archwarden_engine::walk::walk(&merged.root, &compiled) {
@@ -669,7 +780,7 @@ fn check(
     // Opened only when a rule will actually look inside a file. A purely
     // structural configuration reads no bytes, and a cache it never consults
     // would just be a file someone has to wonder about.
-    let mut cache = if no_cache || !archwarden_engine::run::reads_files(&compiled) {
+    let mut cache = if options.no_cache || !archwarden_engine::run::reads_files(&compiled) {
         None
     } else {
         open_cache(&merged.root, output)
@@ -690,8 +801,43 @@ fn check(
         let _ = writeln!(output.err, "note: the cache was not written — {error}");
     }
 
-    crate::report::render(&outcome, format, started.elapsed(), output.out);
+    let shown: Vec<&archwarden_core::finding::Finding> = outcome
+        .findings
+        .iter()
+        .filter(|finding| filters.keep(finding))
+        .collect();
+    let hidden = outcome.findings.len() - shown.len();
 
+    let view = if options.summary {
+        // Rows come from the config, not from what fired. `--rules` is the one
+        // filter that names *rules*, so it is the one that narrows the rows;
+        // `--paths` and `--level` leave every row in place, because "this rule
+        // found nothing here" is the answer the reader wanted.
+        let ids: Vec<String> = filters.named_rules().map_or_else(
+            || {
+                compiled
+                    .rules()
+                    .map(|rule| rule.id.as_str().to_owned())
+                    .collect()
+            },
+            |named| named.iter().map(|id| id.as_str().to_owned()).collect(),
+        );
+        crate::report::View::summarised(&shown, crate::report::Breakdown::over(ids, &shown), hidden)
+    } else {
+        crate::report::View::filtered(&shown, hidden)
+    };
+
+    crate::report::render(
+        &outcome,
+        &view,
+        options.format,
+        started.elapsed(),
+        output.out,
+    );
+
+    // From the whole report, never from the view. A filter narrows what is
+    // printed and nothing else -- otherwise `--rules` in a CI command would
+    // quietly turn a failing build green.
     if outcome.fails_build() {
         Exit::Errors
     } else {
@@ -929,6 +1075,154 @@ mod tests {
         "must_export":{"name":"{{pascal(name)}}","kind":"function"}}]}"#;
 
     const MINIMAL: &str = r#"{"version": 0}"#;
+
+    /// Two rules of different levels over two packages, which is the smallest
+    /// repository where every filter has something to do.
+    const FILTERABLE: &str = r#"{"version":0,"rules":[
+        {"type":"structure","id":"domain-shape","level":"error",
+         "roots":"packages/domain/src/*","allowed_subfolders":["types"]},
+        {"type":"structure","id":"app-shape","level":"warning",
+         "roots":"packages/app/src/*","allowed_subfolders":["use-cases"]}]}"#;
+
+    /// A tree that breaks both rules, once each.
+    fn filterable() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("arch.config.json", FILTERABLE),
+            (
+                "packages/domain/src/order/handlers/a.ts",
+                "export const a=1;",
+            ),
+            (
+                "packages/app/src/billing/controllers/b.ts",
+                "export const b=1;",
+            ),
+        ]
+    }
+
+    /// The invariant the whole feature rests on. A filter narrows what is
+    /// printed; if it could also narrow what fails, then `--rules` in a CI
+    /// command would quietly turn a failing build green, and nobody would
+    /// find out until something broke in production.
+    #[test]
+    fn no_filter_can_change_the_exit_code() {
+        let (guard, unfiltered) = run_in(&filterable(), &["check"]);
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        assert_eq!(unfiltered.exit, Exit::Errors);
+
+        for narrowing in [
+            vec!["check", "--rules", "app-shape"],
+            vec!["check", "--level", "warning"],
+            vec!["check", "--paths", "packages/app/**"],
+            vec!["check", "--summary", "--rules", "app-shape"],
+            // The narrowest possible: a rule that fired, a path it did not
+            // fire on, and the wrong level. Nothing survives to be printed.
+            vec![
+                "check",
+                "--rules",
+                "app-shape",
+                "--paths",
+                "packages/domain/**",
+                "--level",
+                "error",
+            ],
+        ] {
+            let filtered = run_at(&root, &narrowing);
+            assert_eq!(
+                filtered.exit,
+                Exit::Errors,
+                "{narrowing:?} changed the gate:\n{}",
+                filtered.out
+            );
+        }
+    }
+
+    /// And when a filter hides everything, the report says so rather than
+    /// leaving `0 errors` next to exit 1 as a contradiction the reader cannot
+    /// resolve.
+    #[test]
+    fn a_filter_that_hides_everything_admits_it() {
+        let (_guard, result) = run_in(
+            &filterable(),
+            &["check", "--rules", "domain-shape", "--level", "warning"],
+        );
+
+        assert_eq!(result.exit, Exit::Errors);
+        assert!(
+            result.out.contains("0 errors, 0 warnings"),
+            "{}",
+            result.out
+        );
+        assert!(
+            result.out.contains("note: 2 findings hidden"),
+            "{}",
+            result.out
+        );
+    }
+
+    /// A mistyped rule id fails where the user is looking. Printing nothing
+    /// and exiting 0 would be indistinguishable from a clean repository --
+    /// the one wrong answer that reads as good news.
+    #[test]
+    fn an_unknown_rule_id_stops_the_run() {
+        let (_guard, result) = run_in(&filterable(), &["check", "--rules", "domain-shpe"]);
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(
+            result.err.contains("no rule is called `domain-shpe`"),
+            "{}",
+            result.err
+        );
+        assert!(result.err.contains("`app-shape`"), "{}", result.err);
+    }
+
+    #[test]
+    fn a_malformed_glob_stops_the_run() {
+        let (_guard, result) = run_in(&filterable(), &["check", "--paths", "packages/["]);
+
+        assert_eq!(result.exit, Exit::ConfigProblem);
+        assert!(result.err.contains("invalid glob"), "{}", result.err);
+    }
+
+    /// `--rules` names rules, so it narrows the rows. `--paths` and `--level`
+    /// do not, so every rule keeps its row and answers with a zero -- which is
+    /// the answer, and reads differently from a rule that is not there.
+    #[test]
+    fn only_naming_rules_narrows_the_breakdown() {
+        let (guard, named) = run_in(
+            &filterable(),
+            &["check", "--summary", "--rules", "app-shape"],
+        );
+        assert!(named.out.contains("app-shape"), "{}", named.out);
+        assert!(
+            !named.out.contains("domain-shape"),
+            "a rule the user did not name: {}",
+            named.out
+        );
+
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        let by_path = run_at(&root, &["check", "--summary", "--paths", "packages/app/**"]);
+        assert!(by_path.out.contains("app-shape"), "{}", by_path.out);
+        assert!(
+            by_path.out.contains("domain-shape  0"),
+            "a rule that found nothing here still says so: {}",
+            by_path.out
+        );
+    }
+
+    /// `--summary` in JSON drops the findings array. A summary that still
+    /// emitted every finding would give a piping user no size benefit, which
+    /// is the whole reason to reach for the flag.
+    #[test]
+    fn a_json_summary_is_counts_without_findings() {
+        let (_guard, result) = run_in(&filterable(), &["check", "--summary", "--format", "json"]);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&result.out).expect("the report is JSON");
+
+        assert!(parsed.get("findings").is_none(), "{}", result.out);
+        assert_eq!(parsed["summary"]["by_rule"]["domain-shape"]["errors"], 1);
+        assert_eq!(parsed["summary"]["by_rule"]["app-shape"]["warnings"], 1);
+        assert_eq!(parsed["summary"]["errors"], 1);
+    }
 
     #[test]
     fn validating_a_good_config_is_clean_and_says_so() {

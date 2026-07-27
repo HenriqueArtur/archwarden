@@ -40,12 +40,156 @@ pub enum Format {
     Json,
 }
 
+/// What of a report to show.
+///
+/// A run always evaluates every rule and computes every finding. This is the
+/// part the user asked to look at, and nothing in it can change the exit code
+/// — see [`crate::filter`].
+#[derive(Debug)]
+pub struct View<'a> {
+    /// The findings that survived the filters, in the report's own order.
+    findings: Vec<&'a Finding>,
+    /// The per-rule counts, when `--summary` was asked for.
+    breakdown: Option<Breakdown>,
+    /// How many findings the filters removed.
+    hidden: usize,
+}
+
+impl<'a> View<'a> {
+    /// Everything, which is what an unfiltered run shows.
+    #[must_use]
+    pub fn everything(report: &'a Report) -> Self {
+        Self {
+            findings: report.findings.iter().collect(),
+            breakdown: None,
+            hidden: 0,
+        }
+    }
+
+    /// A filtered listing.
+    #[must_use]
+    pub fn filtered(findings: &[&'a Finding], hidden: usize) -> Self {
+        Self {
+            findings: findings.to_vec(),
+            breakdown: None,
+            hidden,
+        }
+    }
+
+    /// Counts instead of a listing.
+    #[must_use]
+    pub fn summarised(findings: &[&'a Finding], breakdown: Breakdown, hidden: usize) -> Self {
+        Self {
+            findings: findings.to_vec(),
+            breakdown: Some(breakdown),
+            hidden,
+        }
+    }
+
+    fn count(&self, level: archwarden_core::level::Level) -> usize {
+        self.findings
+            .iter()
+            .filter(|finding| finding.level == level)
+            .count()
+    }
+}
+
+/// How many findings each rule produced.
+///
+/// Rows come from the configuration, counts from the findings being shown. A
+/// rule that fired nothing keeps its row: that it was evaluated is an answer,
+/// and a missing row reads as a rule someone disabled.
+#[derive(Debug)]
+pub struct Breakdown {
+    rows: Vec<Row>,
+}
+
+#[derive(Debug, Serialize)]
+struct Row {
+    #[serde(skip)]
+    rule_id: String,
+    errors: usize,
+    warnings: usize,
+}
+
+impl Breakdown {
+    /// Counts `findings` against every rule in `ids`.
+    ///
+    /// Ordered worst-first: errors descending, then warnings descending, then
+    /// by id. The same order the findings themselves are in — two orderings
+    /// for one report is a thing someone eventually reports as a bug.
+    #[must_use]
+    pub fn over<I, S>(ids: I, findings: &[&Finding]) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let mut rows: Vec<Row> = ids
+            .into_iter()
+            .map(|id| {
+                let id = id.as_ref();
+                let mine = findings.iter().filter(|f| f.rule_id.as_str() == id);
+                let (errors, warnings) =
+                    mine.fold((0, 0), |(errors, warnings), finding| match finding.level {
+                        archwarden_core::level::Level::Error => (errors + 1, warnings),
+                        archwarden_core::level::Level::Warning => (errors, warnings + 1),
+                    });
+                Row {
+                    rule_id: id.to_owned(),
+                    errors,
+                    warnings,
+                }
+            })
+            .collect();
+
+        rows.sort_by(|a, b| {
+            b.errors
+                .cmp(&a.errors)
+                .then_with(|| b.warnings.cmp(&a.warnings))
+                .then_with(|| a.rule_id.cmp(&b.rule_id))
+        });
+
+        Self { rows }
+    }
+
+    /// The map the JSON carries, in the order the text uses.
+    fn as_map(&self) -> serde_json::Map<String, serde_json::Value> {
+        self.rows
+            .iter()
+            .map(|row| {
+                (
+                    row.rule_id.clone(),
+                    serde_json::json!({ "errors": row.errors, "warnings": row.warnings }),
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    fn ids(&self) -> Vec<&str> {
+        self.rows.iter().map(|row| row.rule_id.as_str()).collect()
+    }
+
+    #[cfg(test)]
+    fn rows_for_test(&self) -> Vec<(&str, usize, usize)> {
+        self.rows
+            .iter()
+            .map(|row| (row.rule_id.as_str(), row.errors, row.warnings))
+            .collect()
+    }
+}
+
 /// The JSON envelope.
 #[derive(Debug, Serialize)]
 struct JsonReport<'a> {
     version: u32,
     summary: Summary,
-    findings: &'a [Finding],
+    /// Absent under `--summary`, which is the point of the flag: a summary
+    /// that still emitted every finding would give a piping consumer no size
+    /// benefit at all. Absence is opt-in — a consumer that never passes the
+    /// flag sees the field it always saw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    findings: Option<&'a [&'a Finding]>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     unreadable_files: Vec<UnreadableFile<'a>>,
 }
@@ -69,10 +213,32 @@ struct Summary {
     /// The raw number rather than the prose the text format prints: a consumer
     /// comparing two runs needs to subtract them.
     duration_ms: u128,
+    /// How many findings the filters removed from this report.
+    ///
+    /// Zero unless a filter was given. A consumer comparing `errors` against
+    /// the exit code needs this: the gate counts what was evaluated, and these
+    /// counts describe what was asked for.
+    #[serde(skip_serializing_if = "is_zero")]
+    hidden: usize,
+    /// Per-rule counts, present only under `--summary`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    by_rule: Option<serde_json::Map<String, serde_json::Value>>,
     /// Absent when no rule needed resolution, so a consumer can tell "no
     /// boundary rule ran" from "every import resolved".
     #[serde(skip_serializing_if = "Option::is_none")]
     imports: Option<Imports>,
+}
+
+/// Whether to leave `hidden` out of a report nothing was hidden from.
+///
+/// By reference because that is the signature `skip_serializing_if` calls,
+/// not because a `usize` wants one.
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's `skip_serializing_if` takes `&T`"
+)]
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 /// Where a run's imports went.
@@ -85,15 +251,22 @@ struct Imports {
 }
 
 impl Summary {
-    fn of(report: &Report, elapsed: std::time::Duration) -> Self {
+    /// Counts come from the view, everything else from the report.
+    ///
+    /// Deliberately: the counts describe what the user asked to see, and the
+    /// rest describes the run that happened. `hidden` is what keeps the two
+    /// reconcilable.
+    fn of(report: &Report, view: &View<'_>, elapsed: std::time::Duration) -> Self {
         Self {
-            errors: report.error_count(),
-            warnings: report.warning_count(),
+            errors: view.count(archwarden_core::level::Level::Error),
+            warnings: view.count(archwarden_core::level::Level::Warning),
             files_scanned: report.files_scanned,
             directories_scanned: report.directories_scanned,
             files_parsed: report.files_parsed,
             facts_reused: report.facts_reused,
             duration_ms: elapsed.as_millis(),
+            hidden: view.hidden,
+            by_rule: view.breakdown.as_ref().map(Breakdown::as_map),
             imports: (report.imports.total() > 0).then_some(Imports {
                 in_repo: report.imports.in_repo,
                 external: report.imports.external,
@@ -112,13 +285,14 @@ impl Summary {
 /// fix it could not assert on the format.
 pub fn render(
     report: &Report,
+    view: &View<'_>,
     format: Format,
     elapsed: std::time::Duration,
     out: &mut dyn std::io::Write,
 ) {
     match format {
-        Format::Text => render_text(report, elapsed, out),
-        Format::Json => render_json(report, elapsed, out),
+        Format::Text => render_text(report, view, elapsed, out),
+        Format::Json => render_json(report, view, elapsed, out),
     }
 }
 
@@ -146,11 +320,16 @@ fn human_duration(elapsed: std::time::Duration) -> String {
     format!("{}m {}s", whole / 60, whole % 60)
 }
 
-fn render_json(report: &Report, elapsed: std::time::Duration, out: &mut dyn std::io::Write) {
+fn render_json(
+    report: &Report,
+    view: &View<'_>,
+    elapsed: std::time::Duration,
+    out: &mut dyn std::io::Write,
+) {
     let envelope = JsonReport {
         version: REPORT_VERSION,
-        summary: Summary::of(report, elapsed),
-        findings: &report.findings,
+        summary: Summary::of(report, view, elapsed),
+        findings: view.breakdown.is_none().then_some(view.findings.as_slice()),
         unreadable_files: report
             .unreadable_files
             .iter()
@@ -201,13 +380,86 @@ fn render_finding(finding: &Finding, out: &mut dyn std::io::Write) {
     let _ = writeln!(out);
 }
 
-fn render_text(report: &Report, elapsed: std::time::Duration, out: &mut dyn std::io::Write) {
-    for finding in &report.findings {
-        render_finding(finding, out);
+/// The per-rule listing `--summary` prints in place of the findings.
+///
+/// The rule id sets the left column and the count is right-aligned inside it,
+/// so the numbers read as a column rather than as prose to scan.
+fn render_breakdown(breakdown: &Breakdown, out: &mut dyn std::io::Write) {
+    // A configuration with no rules has nothing to break down, and a blank
+    // line above the totals would be the only thing `--summary` contributed.
+    if breakdown.rows.is_empty() {
+        return;
+    }
+
+    let id_width = breakdown
+        .rows
+        .iter()
+        .map(|row| row.rule_id.len())
+        .max()
+        .unwrap_or(0);
+    let count_width = breakdown
+        .rows
+        .iter()
+        .map(|row| row.errors.max(row.warnings).to_string().len())
+        .max()
+        .unwrap_or(1);
+
+    for row in &breakdown.rows {
+        let (count, tail) = match (row.errors, row.warnings) {
+            (0, 0) => (0, String::new()),
+            (errors, 0) => (errors, format!(" {}", plural(errors, "error", "errors"))),
+            (0, warnings) => (
+                warnings,
+                format!(" {}", plural(warnings, "warning", "warnings")),
+            ),
+            (errors, warnings) => (
+                errors,
+                format!(
+                    " {}, {warnings} {}",
+                    plural(errors, "error", "errors"),
+                    plural(warnings, "warning", "warnings")
+                ),
+            ),
+        };
+
+        let _ = writeln!(
+            out,
+            "{:<id_width$}  {count:>count_width$}{tail}",
+            row.rule_id
+        );
+    }
+
+    let _ = writeln!(out);
+}
+
+fn render_text(
+    report: &Report,
+    view: &View<'_>,
+    elapsed: std::time::Duration,
+    out: &mut dyn std::io::Write,
+) {
+    if let Some(breakdown) = &view.breakdown {
+        render_breakdown(breakdown, out);
+    } else {
+        for finding in &view.findings {
+            render_finding(finding, out);
+        }
     }
 
     for (path, reason) in &report.unreadable_files {
         let _ = writeln!(out, "note: `{path}` was not checked — {reason}");
+    }
+
+    // Without this, `0 errors` beside exit 1 is a contradiction the reader
+    // cannot resolve: the gate counts what was evaluated, and the line above
+    // counts what was asked for.
+    if view.hidden > 0 {
+        let _ = writeln!(
+            out,
+            "note: {} {} hidden by the filters given",
+            view.hidden,
+            plural(view.hidden, "finding", "findings")
+        );
     }
 
     // An import a boundary rule could not place is an import it did not check.
@@ -228,7 +480,7 @@ fn render_text(report: &Report, elapsed: std::time::Duration, out: &mut dyn std:
         );
     }
 
-    let summary = Summary::of(report, elapsed);
+    let summary = Summary::of(report, view, elapsed);
     let _ = write!(
         out,
         "{} {}, {} {} · {} {}, {} {}",
@@ -515,9 +767,244 @@ mod tests {
     }
 
     fn rendered_after(report: &Report, format: Format, elapsed: std::time::Duration) -> String {
+        rendered_view(report, &View::everything(report), format, elapsed)
+    }
+
+    fn rendered_view(
+        report: &Report,
+        view: &View<'_>,
+        format: Format,
+        elapsed: std::time::Duration,
+    ) -> String {
         let mut out = Vec::new();
-        render(report, format, elapsed, &mut out);
+        render(report, view, format, elapsed, &mut out);
         String::from_utf8(out).expect("output is UTF-8")
+    }
+
+    /// A finding of a named rule, at a named path.
+    fn from(rule_id: &str, level: Level, at: &str) -> Finding {
+        Finding {
+            rule_id: RuleId::new(rule_id).expect("valid"),
+            path: path(at),
+            ..finding(level, None)
+        }
+    }
+
+    /// A breakdown over four rules, of which two fired.
+    fn four_rules() -> (Report, Breakdown) {
+        let findings = vec![
+            from("domain-entity-shape", Level::Error, "packages/domain/a"),
+            from("domain-entity-shape", Level::Error, "packages/domain/b"),
+            from("actions-need-spec", Level::Warning, "packages/domain/c"),
+        ];
+        let report = report(findings);
+        let breakdown = Breakdown::over(
+            [
+                "domain-entity-shape",
+                "actions-need-spec",
+                "calcs-need-spec",
+                "variants-need-spec",
+            ],
+            &report.findings.iter().collect::<Vec<_>>(),
+        );
+        (report, breakdown)
+    }
+
+    /// The breakdown answers "what rule is dominating this output?", so the
+    /// worst rule is the first line. Errors outrank warnings however many
+    /// warnings there are: it is the same worst-first order the findings
+    /// themselves are in, and two orderings for one report would be a bug
+    /// someone eventually reports as one.
+    #[test]
+    fn the_breakdown_puts_the_worst_rule_first() {
+        let (_report, breakdown) = four_rules();
+
+        assert_eq!(
+            breakdown.ids(),
+            [
+                "domain-entity-shape", // 2 errors
+                "actions-need-spec",   // 1 warning
+                "calcs-need-spec",     // nothing, and then by id
+                "variants-need-spec",
+            ]
+        );
+    }
+
+    /// A rule that fired nothing keeps its row. That it was evaluated is the
+    /// answer to a question a reader is asking, and a missing row reads as a
+    /// disabled rule.
+    #[test]
+    fn a_rule_with_no_findings_still_has_a_row() {
+        let (report, breakdown) = four_rules();
+        let text = rendered_view(
+            &report,
+            &View::summarised(&report.findings.iter().collect::<Vec<_>>(), breakdown, 0),
+            Format::Text,
+            TOOK,
+        );
+
+        assert_eq!(
+            text,
+            "domain-entity-shape  2 errors\n\
+             actions-need-spec    1 warning\n\
+             calcs-need-spec      0\n\
+             variants-need-spec   0\n\
+             \n\
+             2 errors, 1 warning · 34 files, 12 directories · 12ms\n"
+        );
+    }
+
+    /// `--summary` suppresses the per-finding listing. That is the whole
+    /// point: on a first migration the listing is hundreds of lines.
+    #[test]
+    fn a_summary_does_not_list_the_findings() {
+        let (report, breakdown) = four_rules();
+        let text = rendered_view(
+            &report,
+            &View::summarised(&report.findings.iter().collect::<Vec<_>>(), breakdown, 0),
+            Format::Text,
+            TOOK,
+        );
+
+        assert!(!text.contains("expected:"), "{text}");
+        assert!(!text.contains("packages/domain/a"), "{text}");
+    }
+
+    /// A rule with both is described with both, rather than the reader having
+    /// to run it again the other way round.
+    #[test]
+    fn a_rule_with_errors_and_warnings_says_so() {
+        let findings = vec![
+            from("mixed", Level::Error, "a"),
+            from("mixed", Level::Warning, "b"),
+            from("mixed", Level::Warning, "c"),
+        ];
+        let report = report(findings);
+        let breakdown = Breakdown::over(["mixed"], &report.findings.iter().collect::<Vec<_>>());
+
+        assert_eq!(breakdown.rows_for_test(), [("mixed", 1, 2)]);
+        let text = rendered_view(
+            &report,
+            &View::summarised(&report.findings.iter().collect::<Vec<_>>(), breakdown, 0),
+            Format::Text,
+            TOOK,
+        );
+        assert!(text.starts_with("mixed  1 error, 2 warnings\n"), "{text}");
+    }
+
+    /// The JSON half of `--summary`: a map beside the counts, and no
+    /// `findings` array. Omitting it is the point -- a `--summary` that still
+    /// emitted every finding would give a piping user no size benefit at all.
+    #[test]
+    fn a_json_summary_carries_the_breakdown_and_drops_the_findings() {
+        let (report, breakdown) = four_rules();
+        let json = rendered_view(
+            &report,
+            &View::summarised(&report.findings.iter().collect::<Vec<_>>(), breakdown, 0),
+            Format::Json,
+            TOOK,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        assert!(parsed.get("findings").is_none(), "{json}");
+        assert_eq!(
+            parsed["summary"]["by_rule"]["domain-entity-shape"]["errors"],
+            2
+        );
+        assert_eq!(
+            parsed["summary"]["by_rule"]["domain-entity-shape"]["warnings"],
+            0
+        );
+        assert_eq!(parsed["summary"]["by_rule"]["calcs-need-spec"]["errors"], 0);
+
+        // The order the text uses, kept: a consumer that iterates the map gets
+        // the worst rule first, like a reader does.
+        let order: Vec<&str> = parsed["summary"]["by_rule"]
+            .as_object()
+            .expect("an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(order[0], "domain-entity-shape");
+    }
+
+    /// Without `--summary` the findings array is there, as it always was. A
+    /// consumer that never passes the flag sees no change at all.
+    #[test]
+    fn an_unfiltered_json_report_still_carries_its_findings() {
+        let json = rendered(&report(vec![finding(Level::Error, None)]), Format::Json);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        assert!(parsed["findings"].is_array(), "{json}");
+        assert!(parsed["summary"].get("by_rule").is_none(), "{json}");
+    }
+
+    /// The line that stops "0 errors" and exit 1 from being a contradiction
+    /// the reader cannot resolve. The gate saw findings the filter hid, and
+    /// the report has to say so.
+    #[test]
+    fn hidden_findings_are_admitted() {
+        let report = report(vec![
+            from("shape", Level::Error, "a"),
+            from("spec", Level::Error, "b"),
+        ]);
+        let shown: Vec<&Finding> = report.findings.iter().take(1).collect();
+
+        let text = rendered_view(&report, &View::filtered(&shown, 1), Format::Text, TOOK);
+
+        assert!(
+            text.contains("note: 1 finding hidden by the filters given"),
+            "{text}"
+        );
+    }
+
+    /// A configuration with no rules has nothing to break down, and a stray
+    /// blank line above the totals would be the only thing `--summary` added.
+    #[test]
+    fn a_configuration_with_no_rules_summarises_to_nothing() {
+        let report = report(Vec::new());
+        let text = rendered_view(
+            &report,
+            &View::summarised(&[], Breakdown::over(Vec::<String>::new(), &[]), 0),
+            Format::Text,
+            TOOK,
+        );
+
+        assert_eq!(
+            text,
+            "0 errors, 0 warnings · 34 files, 12 directories · 12ms\n"
+        );
+    }
+
+    /// And says nothing when nothing was hidden, including when filters were
+    /// given and everything matched.
+    #[test]
+    fn nothing_hidden_is_not_mentioned() {
+        let report = report(vec![from("shape", Level::Error, "a")]);
+        let shown: Vec<&Finding> = report.findings.iter().collect();
+
+        let text = rendered_view(&report, &View::filtered(&shown, 0), Format::Text, TOOK);
+
+        assert!(!text.contains("hidden"), "{text}");
+    }
+
+    /// The counts describe what is shown, and the JSON says how many were
+    /// not: a consumer comparing `errors` against the exit code needs the
+    /// number, not the prose.
+    #[test]
+    fn the_json_reports_what_the_filters_hid() {
+        let report = report(vec![
+            from("shape", Level::Error, "a"),
+            from("spec", Level::Warning, "b"),
+        ]);
+        let shown: Vec<&Finding> = report.findings.iter().take(1).collect();
+
+        let json = rendered_view(&report, &View::filtered(&shown, 1), Format::Json, TOOK);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        assert_eq!(parsed["summary"]["errors"], 1);
+        assert_eq!(parsed["summary"]["warnings"], 0, "the warning was filtered");
+        assert_eq!(parsed["summary"]["hidden"], 1);
     }
 
     /// A run that says nothing about how long it took invites the question,

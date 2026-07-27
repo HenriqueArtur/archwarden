@@ -343,6 +343,58 @@ Without this, one unwanted rule makes a whole preset unusable. Disabling an
 id that does not exist is a doctor error, so a typo fails loudly instead of
 silently disabling nothing.
 
+## Filtering the report
+
+Four flags on `check` decide what is **printed**. None of them decides what is
+**checked**: every rule runs, every finding is computed, and the exit code is
+identical with them and without. That is what makes one safe to leave in a
+command that gates a build.
+
+```bash
+archwarden check --summary                        # per-rule counts, no listing
+archwarden check --rules domain-entity-shape      # one rule's findings
+archwarden check --paths 'packages/domain/**'     # one area of the repo
+archwarden check --level error                    # warnings are known debt
+```
+
+`--rules` and `--paths` are repeatable and comma-separated; `--rules a,b` and
+`--rules a --rules b` are the same thing. All four compose with AND. `--paths`
+takes globs matched against the finding's path, through the same glob engine
+`ignore`, `roots` and `forbid_import_from` use — there is only one matcher.
+
+`--summary` prints one row per rule, worst first: errors descending, then
+warnings, then by id.
+
+```
+domain-entity-shape  3 errors
+types-need-spec      3 errors
+app-shape            1 error
+calcs-need-spec      3 warnings
+
+7 errors, 3 warnings · 8 files, 20 directories · 1ms
+```
+
+A rule that found nothing keeps its row with a `0`. That it was evaluated is
+an answer; a missing row would read as a rule someone disabled. `--rules`
+narrows the rows — it is the one filter that names rules — while `--paths` and
+`--level` leave every row in place.
+
+In `--format json`, `--summary` adds a `by_rule` map beside the counts and
+**omits the `findings` array**. A summary that still emitted every finding
+would give a piping consumer no size benefit, which is most of the reason to
+ask for one.
+
+Two behaviours worth knowing:
+
+- **The counts describe what you asked to see.** `0 errors` beside exit code 1
+  is possible and correct: the gate counts what was evaluated. `summary.hidden`
+  and a `note:` line in the text output say how many findings the filter
+  removed, so the two are always reconcilable.
+- **An unknown rule id is an error (exit 2)**, not an empty report — the same
+  way `disable` and `config explain` refuse one. A filter that silently matched
+  nothing would look exactly like a clean repository, which is the one wrong
+  answer a user reads as good news.
+
 ## Config validation commands
 
 Three commands cover the config itself:
