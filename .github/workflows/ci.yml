@@ -20,7 +20,7 @@ jobs:
   # second version in play.
 
   lint:
-    name: format, clippy, docs
+    name: 🎨 format, clippy, docs
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -37,7 +37,7 @@ jobs:
       - run: cargo xtask check-schema
 
   test:
-    name: tests
+    name: 🧪 tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -54,7 +54,7 @@ jobs:
       - run: cargo test --workspace --doc
 
   coverage:
-    name: coverage
+    name: 📊 coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -99,7 +99,7 @@ jobs:
           --fail-under-lines 95
 
   supply-chain:
-    name: licences and advisories
+    name: ⚖️ licences and advisories
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -111,7 +111,7 @@ jobs:
       - run: cargo deny check
 
   hygiene:
-    name: unused deps and typos
+    name: 🧹 unused deps and typos
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -123,7 +123,7 @@ jobs:
       - run: typos
 
   distribution:
-    name: the install routes
+    name: 📦 the install routes
     runs-on: ubuntu-latest
     # The release workflow cannot be run on a pull request, but the pieces it
     # depends on can: the shim that decides which archive to download, and the
@@ -141,7 +141,7 @@ jobs:
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
   future-rust:
-    name: latest stable (advisory)
+    name: 🔮 latest stable (advisory)
     runs-on: ubuntu-latest
     # Early warning that a future rustc breaks us. Never blocks a merge: the
     # pinned toolchain is what we actually ship.

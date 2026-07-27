@@ -10,7 +10,7 @@ env:
 
 jobs:
   mutants:
-    name: mutation testing
+    name: 🧬 mutation testing
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -39,7 +39,7 @@ jobs:
           path: mutants.out/
 
   differential:
-    name: differential vs dependency-cruiser
+    name: 🔬 differential vs dependency-cruiser
     runs-on: ubuntu-latest
     # Tier 3 in docs/TESTING.md. The target repositories are private and are
     # configured through `ARCHWARDEN_DIFF_REPO` rather than checked in; without
