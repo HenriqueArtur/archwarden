@@ -54,15 +54,57 @@ struct GuideRule<'a> {
     requires: Vec<String>,
 }
 
+/// Every rule kind archwarden has, as written in a config and on the command
+/// line.
+///
+/// Listed here rather than derived, because `CompiledRuleKind::type_name` maps
+/// one way only. A test walks the enum through this list, so the two cannot
+/// drift.
+pub const KINDS: [&str; 5] = [
+    "structure",
+    "naming",
+    "spec-pair",
+    "import-boundary",
+    "call-obligation",
+];
+
+/// Checks the kinds a caller asked for.
+///
+/// # Errors
+/// A message naming the one archwarden does not have, and the ones it does.
+/// Refused rather than answered with an empty digest: an agent handed one
+/// would conclude the project has no rules of that kind, which is the wrong
+/// lesson to draw from a typo.
+pub fn guide_kinds(kinds: &[String]) -> Result<(), String> {
+    for kind in kinds {
+        if !KINDS.contains(&kind.as_str()) {
+            let known: Vec<String> = KINDS.iter().map(|kind| format!("`{kind}`")).collect();
+            return Err(format!(
+                "no rule kind is called `{kind}`; there is {}",
+                known.join(", ")
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Builds the guide, optionally restricted to rules that can fire under
-/// `scope`.
+/// `scope` and to the kinds named.
+///
+/// Both filters are AND, and an empty `kinds` means every kind: "the import
+/// boundaries that affect this directory" is one question, not two.
 #[must_use]
-pub fn guide<'a>(config: &'a CompiledConfig, scope: Option<&'a RepoRelPath>) -> Guide<'a> {
+pub fn guide<'a>(
+    config: &'a CompiledConfig,
+    scope: Option<&'a RepoRelPath>,
+    kinds: &[String],
+) -> Guide<'a> {
     Guide {
         version: GUIDE_VERSION,
         scope: scope.map(RepoRelPath::as_str),
         rules: config
             .rules()
+            .filter(|rule| kinds.is_empty() || kinds.iter().any(|k| k == rule.kind.type_name()))
             .filter(|rule| scope.is_none_or(|prefix| reaches(rule, prefix)))
             .map(|rule| GuideRule {
                 id: rule.id.as_str(),
@@ -352,9 +394,111 @@ mod tests {
         scope: Option<&RepoRelPath>,
         format: GuideFormat,
     ) -> String {
+        rendered_of(config, scope, &[], format)
+    }
+
+    fn rendered_of(
+        config: &CompiledConfig,
+        scope: Option<&RepoRelPath>,
+        kinds: &[&str],
+        format: GuideFormat,
+    ) -> String {
+        let owned: Vec<String> = kinds.iter().map(|k| (*k).to_owned()).collect();
         let mut out = Vec::new();
-        render(&guide(config, scope), format, &mut out);
+        render(&guide(config, scope, &owned), format, &mut out);
         String::from_utf8(out).expect("output is UTF-8")
+    }
+
+    fn boundary() -> CompiledRuleKind {
+        CompiledRuleKind::ImportBoundary {
+            forbid: set(&["src/infra/**"]),
+            require: PathSet::default(),
+            except: PathSet::default(),
+            include_type_only: true,
+        }
+    }
+
+    fn mixed() -> CompiledConfig {
+        config(vec![
+            rule("usecase-name", None, &["src/*"], naming()),
+            rule("no-infra", None, &["src/**"], boundary()),
+            rule("also-no-infra", None, &["packages/**"], boundary()),
+        ])
+    }
+
+    /// "Just the import boundaries that reach this directory" is a real
+    /// question, and answering it by hand means reading past everything else.
+    #[test]
+    fn a_kind_narrows_the_digest_to_that_kind() {
+        let markdown = rendered_of(&mixed(), None, &["import-boundary"], GuideFormat::Markdown);
+
+        assert!(markdown.contains("no-infra"), "{markdown}");
+        assert!(markdown.contains("also-no-infra"), "{markdown}");
+        assert!(!markdown.contains("usecase-name"), "{markdown}");
+    }
+
+    /// Several kinds are a set, however they were written on the command line.
+    #[test]
+    fn several_kinds_are_a_set() {
+        let markdown = rendered_of(
+            &mixed(),
+            None,
+            &["import-boundary", "naming"],
+            GuideFormat::Markdown,
+        );
+
+        assert!(markdown.contains("no-infra"), "{markdown}");
+        assert!(markdown.contains("usecase-name"), "{markdown}");
+    }
+
+    /// With `--scope`, because the question that prompted this was "the import
+    /// boundaries *that affect this directory*" -- one filter answers half of
+    /// it.
+    #[test]
+    fn a_kind_composes_with_a_scope() {
+        let markdown = rendered_of(
+            &mixed(),
+            Some(&path("src")),
+            &["import-boundary"],
+            GuideFormat::Markdown,
+        );
+
+        assert!(markdown.contains("no-infra"), "{markdown}");
+        assert!(
+            !markdown.contains("also-no-infra"),
+            "scoped to packages: {markdown}"
+        );
+        assert!(!markdown.contains("usecase-name"), "{markdown}");
+    }
+
+    /// A kind no rule has is refused, not answered with an empty digest. An
+    /// agent handed an empty guide would conclude the project has no rules of
+    /// that kind, which is the wrong lesson to draw from a typo.
+    ///
+    /// `boundary` rather than a misspelling, because the likely mistake is a
+    /// user writing the short name they say out loud.
+    #[test]
+    fn an_unknown_kind_is_refused_and_names_the_real_ones() {
+        let message = guide_kinds(&["boundary".to_owned()]).expect_err("no such kind");
+
+        assert!(message.contains("`boundary`"), "{message}");
+        assert!(message.contains("`import-boundary`"), "{message}");
+        assert!(message.contains("`spec-pair`"), "{message}");
+    }
+
+    /// Every kind archwarden has is accepted, so the list cannot drift from
+    /// the enum it describes.
+    #[test]
+    fn every_kind_the_tool_has_is_accepted() {
+        for kind in [
+            "structure",
+            "naming",
+            "spec-pair",
+            "import-boundary",
+            "call-obligation",
+        ] {
+            guide_kinds(&[kind.to_owned()]).unwrap_or_else(|_| panic!("{kind} is a kind"));
+        }
     }
 
     /// The guide describes a rule generically: the *template*, not a name
@@ -444,7 +588,7 @@ mod tests {
         let config = config(vec![rule("wide", None, &["packages/**"], naming())]);
         let scope = path("packages/domain");
 
-        assert_eq!(guide(&config, Some(&scope)).rules.len(), 1);
+        assert_eq!(guide(&config, Some(&scope), &[]).rules.len(), 1);
     }
 
     /// And one that lives *inside* it, which is the other direction a user
@@ -459,7 +603,7 @@ mod tests {
         )]);
         let scope = path("packages/domain");
 
-        assert_eq!(guide(&config, Some(&scope)).rules.len(), 1);
+        assert_eq!(guide(&config, Some(&scope), &[]).rules.len(), 1);
     }
 
     /// A rule that can never fire under the scope is left out -- that is the
@@ -472,7 +616,7 @@ mod tests {
         ]);
 
         let scope = path("packages/domain");
-        let built = guide(&config, Some(&scope));
+        let built = guide(&config, Some(&scope), &[]);
         let ids: Vec<_> = built.rules.iter().map(|r| r.id).collect();
         assert_eq!(ids, ["here"]);
     }
@@ -485,7 +629,7 @@ mod tests {
             rule("elsewhere", None, &["apps/web/**"], naming()),
         ]);
 
-        assert_eq!(guide(&config, None).rules.len(), 2);
+        assert_eq!(guide(&config, None, &[]).rules.len(), 2);
     }
 
     /// A scope of the repository root keeps everything, which is what
@@ -499,7 +643,7 @@ mod tests {
         let root = path(".");
 
         assert!(root.is_root());
-        assert_eq!(guide(&config, Some(&root)).rules.len(), 2);
+        assert_eq!(guide(&config, Some(&root), &[]).rules.len(), 2);
     }
 
     /// A structure rule may constrain only the warn list, or only filenames.
@@ -677,7 +821,7 @@ mod tests {
             ),
         ]);
 
-        let built = guide(&config, None);
+        let built = guide(&config, None, &[]);
         for entry in &built.rules {
             assert!(
                 !entry.requires.is_empty(),

@@ -180,6 +180,16 @@ pub enum Command {
         /// Restrict the digest to rules that can fire under this directory.
         #[arg(long, value_name = "PATH")]
         scope: Option<String>,
+
+        /// Restrict the digest to rules of these kinds.
+        ///
+        /// Repeatable and comma-separated. Composes with `--scope`, so
+        /// `--scope packages/domain --kind import-boundary` answers "the
+        /// import boundaries that affect this directory" in one question.
+        ///
+        /// A kind no rule type has is an error, not an empty digest.
+        #[arg(long, value_name = "KIND", value_delimiter = ',')]
+        kind: Vec<String>,
     },
 
     /// Answer a harness's pre-write question, reading the event from stdin.
@@ -315,11 +325,16 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             *format,
             output,
         ),
-        Command::AgentGuide { format, scope } => agent_guide(
+        Command::AgentGuide {
+            format,
+            scope,
+            kind,
+        } => agent_guide(
             cli.config.as_deref(),
             working_directory,
             *format,
             scope.as_deref(),
+            kind,
             output,
         ),
         Command::Init => init(working_directory, output),
@@ -691,8 +706,14 @@ fn agent_guide(
     working_directory: &Utf8Path,
     format: crate::guide::GuideFormat,
     scope: Option<&str>,
+    kinds: &[String],
     output: &mut Output<'_>,
 ) -> Exit {
+    if let Err(message) = crate::guide::guide_kinds(kinds) {
+        let _ = writeln!(output.err, "{message}");
+        return Exit::ConfigProblem;
+    }
+
     let (merged, compiled) = match prepare(explicit, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
@@ -709,7 +730,7 @@ fn agent_guide(
         }
     };
 
-    let guide = crate::guide::guide(&compiled, scope.as_ref());
+    let guide = crate::guide::guide(&compiled, scope.as_ref(), kinds);
     crate::guide::render(&guide, format, output.out);
     Exit::Clean
 }
@@ -828,10 +849,13 @@ fn check(
     };
 
     crate::report::render(
-        &outcome,
-        &view,
+        &crate::report::Rendered {
+            root: &merged.root,
+            report: &outcome,
+            view: &view,
+            elapsed: started.elapsed(),
+        },
         options.format,
-        started.elapsed(),
         output.out,
     );
 

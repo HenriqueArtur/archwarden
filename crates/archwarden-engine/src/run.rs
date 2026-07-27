@@ -40,6 +40,17 @@ pub struct Report {
     pub unreadable_files: Vec<(RepoRelPath, String)>,
     /// How many files were parsed from source.
     pub files_parsed: usize,
+    /// Checks that could not be made: one per rule that wanted a file whose
+    /// facts were unavailable.
+    ///
+    /// Counted in *checks* rather than files, because one unreadable file that
+    /// three rules wanted is three answers nobody got. `unreadable_files` names
+    /// the file; this says how much was not decided because of it. Without the
+    /// number, a report over a repository where nothing could be parsed reads
+    /// as a repository with nothing wrong — the failure mode `check --file`
+    /// already refuses through `skipped` (correction C6), and the full run
+    /// used to allow.
+    pub checks_skipped: usize,
     /// How many files had their facts reused from the cache.
     ///
     /// Reported so a user can see the cache working -- and notice when it is
@@ -134,6 +145,7 @@ pub fn check(run: Run<'_>) -> Report {
 
     let mut findings = Vec::new();
     let mut unreadable_files = Vec::new();
+    let mut checks_skipped = 0;
     let mut files_scanned = 0;
     let mut files_parsed = 0;
     let mut facts_reused = 0;
@@ -204,6 +216,13 @@ pub fn check(run: Run<'_>) -> Report {
             }
 
             for engine in wanted_by {
+                // A rule that reads inside a file, handed no facts, cannot
+                // decide anything -- it returns nothing, which is
+                // indistinguishable from deciding the file is fine. Counted so
+                // the report can say the difference out loud.
+                if engine.needs_facts() && facts.is_none() {
+                    checks_skipped += 1;
+                }
                 findings.extend(engine.check_file(FileContext {
                     path: &file.path,
                     facts: facts.as_ref(),
@@ -223,6 +242,7 @@ pub fn check(run: Run<'_>) -> Report {
         directories_scanned: tree.directory_count(),
         files_scanned,
         unreadable_files,
+        checks_skipped,
         files_parsed,
         facts_reused,
         imports,
@@ -932,6 +952,63 @@ mod tests {
             "the readable file was still checked"
         );
         assert!(report.findings.is_empty());
+
+        // And the check that did not happen is counted. Naming the file is not
+        // enough on its own: a reader has to work out which rules wanted it,
+        // and "no findings" over a file nothing could evaluate is a clean
+        // report that is not one.
+        assert_eq!(report.checks_skipped, 1);
+    }
+
+    /// The number is checks, not files. One unreadable file that three rules
+    /// wanted is three answers nobody got, and reporting `1` would understate
+    /// it by exactly the amount that matters.
+    #[test]
+    fn a_skip_is_counted_once_per_rule_that_wanted_the_file() {
+        let (guard, root) = tree_at(&[]);
+        std::fs::create_dir_all(root.join("src/user")).expect("create dirs");
+        std::fs::write(
+            root.join("src/user/broken.use-case.ts"),
+            [0x65, 0x78, 0x70, 0x6f, 0x72, 0x74, 0xff, 0xfe],
+        )
+        .expect("write file");
+
+        let config = config(vec![
+            rule("first", None, &["src/*"], naming()),
+            rule("second", None, &["src/*"], naming()),
+        ]);
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let report = check(Run {
+            root: &root,
+            config: &config,
+            tree: &tree,
+            cache: None,
+        });
+        drop(guard);
+
+        assert_eq!(report.unreadable_files.len(), 1, "one file");
+        assert_eq!(report.checks_skipped, 2, "two rules wanted it");
+    }
+
+    /// A run where everything could be read skips nothing, so the common
+    /// report says nothing about it.
+    #[test]
+    fn a_run_that_read_everything_skips_nothing() {
+        let (guard, root) = tree_at(&[(
+            "src/user/create-client.use-case.ts",
+            "export function CreateClient() {}",
+        )]);
+        let config = config(vec![rule("usecase-name", None, &["src/*"], naming())]);
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let report = check(Run {
+            root: &root,
+            config: &config,
+            tree: &tree,
+            cache: None,
+        });
+        drop(guard);
+
+        assert_eq!(report.checks_skipped, 0);
     }
 
     /// The caller can tell, before walking anything, whether a cache would

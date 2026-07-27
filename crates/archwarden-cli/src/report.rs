@@ -11,8 +11,10 @@
 use archwarden_core::{
     facts::ExportKind,
     finding::{Expectation, Finding, Observed},
+    path::RepoRelPath,
 };
 use archwarden_engine::run::Report;
+use camino::Utf8Path;
 use serde::Serialize;
 
 /// The version of the JSON report shape.
@@ -208,6 +210,12 @@ struct Summary {
     directories_scanned: usize,
     files_parsed: usize,
     facts_reused: usize,
+    /// Checks no rule could make, because the file's facts were unavailable.
+    ///
+    /// Always present, including as zero. A consumer branching on it needs the
+    /// field to exist; the text format leaves it out when it is zero, because
+    /// a human reading `0 skipped` on every run only wonders why it is there.
+    checks_skipped: usize,
     /// How long the whole run took, in milliseconds.
     ///
     /// The raw number rather than the prose the text format prints: a consumer
@@ -264,6 +272,7 @@ impl Summary {
             directories_scanned: report.directories_scanned,
             files_parsed: report.files_parsed,
             facts_reused: report.facts_reused,
+            checks_skipped: report.checks_skipped,
             duration_ms: elapsed.as_millis(),
             hidden: view.hidden,
             by_rule: view.breakdown.as_ref().map(Breakdown::as_map),
@@ -277,22 +286,81 @@ impl Summary {
     }
 }
 
-/// Writes a report in the requested format.
+/// Everything the renderer needs about one run.
 ///
-/// `elapsed` is how long the whole run took -- config load, walk, check and
-/// cache flush. Passed in rather than measured here because wall-clock belongs
-/// to the invocation, not to the rendering, and because a test that could not
-/// fix it could not assert on the format.
-pub fn render(
-    report: &Report,
-    view: &View<'_>,
-    format: Format,
-    elapsed: std::time::Duration,
-    out: &mut dyn std::io::Write,
-) {
+/// A struct because four of these arrived one at a time, and four positional
+/// references of similar type at a call site is where a transposition hides.
+pub struct Rendered<'a> {
+    /// The repository, for turning a finding's byte span into a position.
+    pub root: &'a Utf8Path,
+    /// What the run found.
+    pub report: &'a Report,
+    /// What of it to show.
+    pub view: &'a View<'a>,
+    /// How long the whole run took -- config load, walk, check and cache
+    /// flush. Passed in rather than measured here because wall-clock belongs
+    /// to the invocation, and a test that could not fix it could not assert on
+    /// the format.
+    pub elapsed: std::time::Duration,
+}
+
+/// Writes a report in the requested format.
+pub fn render(rendered: &Rendered<'_>, format: Format, out: &mut dyn std::io::Write) {
     match format {
-        Format::Text => render_text(report, view, elapsed, out),
-        Format::Json => render_json(report, view, elapsed, out),
+        Format::Text => render_text(rendered, out),
+        Format::Json => render_json(rendered, out),
+    }
+}
+
+/// Turns a finding's byte offset into `line:column`, reading each file once.
+///
+/// The memo is one entry deep on purpose: findings are sorted by path, so the
+/// repeats are consecutive, and holding every source file a report mentions
+/// would be a lot of memory for a lookup that never comes back.
+#[derive(Default)]
+struct Positions {
+    cached: Option<(RepoRelPath, Option<String>)>,
+}
+
+impl Positions {
+    /// The path as a reader should see it: `path:line:column` when there is a
+    /// position to give, and the bare path when there is not.
+    ///
+    /// A structure finding is about a directory and has no span; a span into a
+    /// file that changed under us, or is gone, gives nothing. A position that
+    /// is wrong is worse than none, because the reader follows it.
+    fn label(&mut self, root: &Utf8Path, finding: &Finding) -> String {
+        let Some(span) = finding.span else {
+            return finding.path.to_string();
+        };
+
+        if self
+            .cached
+            .as_ref()
+            .is_none_or(|(at, _)| *at != finding.path)
+        {
+            let text = std::fs::read_to_string(root.join(finding.path.as_path())).ok();
+            self.cached = Some((finding.path.clone(), text));
+        }
+        let Some((_, Some(text))) = &self.cached else {
+            return finding.path.to_string();
+        };
+
+        let Some(before) = text.get(..span.start as usize) else {
+            return finding.path.to_string();
+        };
+
+        let line = before.matches('\n').count() + 1;
+        // Characters, not bytes. An accent earlier on the line would otherwise
+        // send an editor to the wrong column.
+        let column = before
+            .rsplit_once('\n')
+            .map_or(before, |(_, last)| last)
+            .chars()
+            .count()
+            + 1;
+
+        format!("{}:{line}:{column}", finding.path)
     }
 }
 
@@ -320,12 +388,13 @@ fn human_duration(elapsed: std::time::Duration) -> String {
     format!("{}m {}s", whole / 60, whole % 60)
 }
 
-fn render_json(
-    report: &Report,
-    view: &View<'_>,
-    elapsed: std::time::Duration,
-    out: &mut dyn std::io::Write,
-) {
+fn render_json(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
+    let Rendered {
+        report,
+        view,
+        elapsed,
+        ..
+    } = *rendered;
     let envelope = JsonReport {
         version: REPORT_VERSION,
         summary: Summary::of(report, view, elapsed),
@@ -357,7 +426,7 @@ fn render_json(
 ///
 /// Shared by the full report and the single-file check, so a hook and a
 /// commit-time run word the same finding identically.
-fn render_finding(finding: &Finding, out: &mut dyn std::io::Write) {
+fn render_finding(finding: &Finding, at: &str, out: &mut dyn std::io::Write) {
     let module = finding
         .module_id
         .as_ref()
@@ -367,7 +436,7 @@ fn render_finding(finding: &Finding, out: &mut dyn std::io::Write) {
         out,
         "{:<7} {}\n        [{}] {} — {}",
         finding.level,
-        finding.path,
+        at,
         module,
         finding.rule_id,
         describe_observed(&finding.observed),
@@ -432,17 +501,21 @@ fn render_breakdown(breakdown: &Breakdown, out: &mut dyn std::io::Write) {
     let _ = writeln!(out);
 }
 
-fn render_text(
-    report: &Report,
-    view: &View<'_>,
-    elapsed: std::time::Duration,
-    out: &mut dyn std::io::Write,
-) {
+fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
+    let Rendered {
+        root,
+        report,
+        view,
+        elapsed,
+    } = *rendered;
+
     if let Some(breakdown) = &view.breakdown {
         render_breakdown(breakdown, out);
     } else {
+        let mut positions = Positions::default();
         for finding in &view.findings {
-            render_finding(finding, out);
+            let at = positions.label(root, finding);
+            render_finding(finding, &at, out);
         }
     }
 
@@ -483,11 +556,23 @@ fn render_text(
     let summary = Summary::of(report, view, elapsed);
     let _ = write!(
         out,
-        "{} {}, {} {} · {} {}, {} {}",
+        "{} {}, {} {}",
         summary.errors,
         plural(summary.errors, "error", "errors"),
         summary.warnings,
         plural(summary.warnings, "warning", "warnings"),
+    );
+
+    // Beside the counts rather than in a note below them, because it belongs to
+    // the same sentence: this many problems found, and this many questions not
+    // answered. Omitted when there is nothing to say, which is nearly always.
+    if summary.checks_skipped > 0 {
+        let _ = write!(out, ", {} skipped", summary.checks_skipped);
+    }
+
+    let _ = write!(
+        out,
+        " · {} {}, {} {}",
         summary.files_scanned,
         plural(summary.files_scanned, "file", "files"),
         summary.directories_scanned,
@@ -566,7 +651,7 @@ fn render_single_json(single: &archwarden_engine::single::Single, out: &mut dyn 
 
 fn render_single_text(single: &archwarden_engine::single::Single, out: &mut dyn std::io::Write) {
     for finding in &single.findings {
-        render_finding(finding, out);
+        render_finding(finding, finding.path.as_str(), out);
     }
 
     for skipped in &single.skipped {
@@ -711,6 +796,7 @@ mod tests {
         level::Level,
         path::RepoRelPath,
     };
+    use camino::Utf8PathBuf;
 
     fn path(p: &str) -> RepoRelPath {
         RepoRelPath::new(p).expect("valid path")
@@ -740,6 +826,7 @@ mod tests {
             files_scanned: 34,
             unreadable_files: Vec::new(),
             files_parsed: 0,
+            checks_skipped: 0,
             facts_reused: 0,
             imports: archwarden_engine::resolve::Outcomes::default(),
         }
@@ -766,6 +853,22 @@ mod tests {
         rendered_after(report, format, TOOK)
     }
 
+    /// Rendered against a real tree, for the cases that need one on disk.
+    fn rendered_at(root: &Utf8Path, report: &Report, format: Format) -> String {
+        let mut out = Vec::new();
+        render(
+            &Rendered {
+                root,
+                report,
+                view: &View::everything(report),
+                elapsed: TOOK,
+            },
+            format,
+            &mut out,
+        );
+        String::from_utf8(out).expect("output is UTF-8")
+    }
+
     fn rendered_after(report: &Report, format: Format, elapsed: std::time::Duration) -> String {
         rendered_view(report, &View::everything(report), format, elapsed)
     }
@@ -777,7 +880,18 @@ mod tests {
         elapsed: std::time::Duration,
     ) -> String {
         let mut out = Vec::new();
-        render(report, view, format, elapsed, &mut out);
+        render(
+            &Rendered {
+                // No tree on disk, so a span resolves to nothing and the bare
+                // path is used -- which is what these assertions are about.
+                root: Utf8Path::new("/nonexistent"),
+                report,
+                view,
+                elapsed,
+            },
+            format,
+            &mut out,
+        );
         String::from_utf8(out).expect("output is UTF-8")
     }
 
@@ -956,6 +1070,177 @@ mod tests {
             text.contains("note: 1 finding hidden by the filters given"),
             "{text}"
         );
+    }
+
+    // --- positions ---------------------------------------------------------
+
+    /// A finding with a position gets one, in the form an editor and a
+    /// terminal both linkify. Only `import-boundary` carries a span today, and
+    /// it is the finding most worth jumping to: the offending import is one
+    /// line in a file of many.
+    #[test]
+    fn a_finding_with_a_span_is_rendered_as_a_position() {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        std::fs::create_dir_all(root.join("src")).expect("create dirs");
+        std::fs::write(
+            root.join("src/a.ts"),
+            "import { a } from './a';\nimport { Repo } from '@org/domain';\n",
+        )
+        .expect("write");
+
+        // The second import starts at byte 25, which is line 2, column 1.
+        let finding = Finding {
+            path: path("src/a.ts"),
+            span: Some(archwarden_core::facts::Span::new(25, 32)),
+            ..finding(Level::Error, None)
+        };
+
+        let text = rendered_at(&root, &report(vec![finding]), Format::Text);
+
+        assert!(text.contains("src/a.ts:2:1"), "{text}");
+    }
+
+    /// The column is counted in characters, not bytes. A file with an accent
+    /// earlier on the line would otherwise send an editor to the wrong place
+    /// -- which is worse than no link, because the reader trusts it.
+    #[test]
+    fn the_column_counts_characters_not_bytes() {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        std::fs::create_dir_all(root.join("src")).expect("create dirs");
+        // `café` is five characters and six bytes.
+        std::fs::write(root.join("src/a.ts"), "const café = 1; // x\n").expect("write");
+
+        let finding = Finding {
+            path: path("src/a.ts"),
+            // The `x` is at byte 20, and 19 *characters* precede it, because
+            // `é` is two bytes. Column 20, not 21.
+            span: Some(archwarden_core::facts::Span::new(20, 21)),
+            ..finding(Level::Error, None)
+        };
+
+        let text = rendered_at(&root, &report(vec![finding]), Format::Text);
+
+        assert!(text.contains("src/a.ts:1:20"), "{text}");
+        assert!(
+            !text.contains("src/a.ts:1:21"),
+            "counted bytes, not characters: {text}"
+        );
+    }
+
+    /// A finding with no span keeps the bare path. A structure rule is about a
+    /// directory, and `packages/domain/src/order:1:1` would be a link to a
+    /// place that is not the problem.
+    #[test]
+    fn a_finding_without_a_span_keeps_its_bare_path() {
+        let text = rendered(&report(vec![finding(Level::Error, None)]), Format::Text);
+
+        assert!(
+            text.contains("error   packages/domain/src/user/wrong-folder\n"),
+            "{text}"
+        );
+        assert!(!text.contains(":1:1"), "{text}");
+    }
+
+    /// A span pointing past the end of a file that changed under us, or into a
+    /// file that is no longer there, gets the bare path rather than a made-up
+    /// position.
+    #[test]
+    fn an_unreadable_or_impossible_position_falls_back_to_the_path() {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        std::fs::create_dir_all(root.join("src")).expect("create dirs");
+        std::fs::write(root.join("src/short.ts"), "const a = 1;\n").expect("write");
+
+        for (file, start) in [("src/short.ts", 9_999), ("src/gone.ts", 0)] {
+            let finding = Finding {
+                path: path(file),
+                span: Some(archwarden_core::facts::Span::new(start, start + 1)),
+                ..finding(Level::Error, None)
+            };
+
+            let text = rendered_at(&root, &report(vec![finding]), Format::Text);
+            assert!(text.contains(file), "{text}");
+            assert!(!text.contains(&format!("{file}:")), "{text}");
+        }
+    }
+
+    /// The JSON is untouched. It carries the byte span, which is what a tool
+    /// wants; `line:col` is a rendering for a human and a terminal.
+    #[test]
+    fn the_json_still_carries_the_byte_span() {
+        let finding = Finding {
+            path: path("src/a.ts"),
+            span: Some(archwarden_core::facts::Span::new(25, 32)),
+            ..finding(Level::Error, None)
+        };
+        let parsed: serde_json::Value =
+            serde_json::from_str(&rendered(&report(vec![finding]), Format::Json))
+                .expect("valid JSON");
+
+        assert_eq!(parsed["findings"][0]["span"]["start"], 25);
+        assert_eq!(parsed["findings"][0]["path"], "src/a.ts");
+    }
+
+    /// A check nobody could make belongs on the line a reader checks first.
+    ///
+    /// `check --file` has refused to drop one silently since C6. The full run
+    /// named the unreadable file and stopped there, so a repository where
+    /// nothing parsed reported as a repository with nothing wrong.
+    #[test]
+    fn checks_that_could_not_be_made_are_counted_on_the_summary_line() {
+        let report = Report {
+            checks_skipped: 3,
+            ..report(Vec::new())
+        };
+
+        assert_eq!(
+            rendered(&report, Format::Text),
+            "0 errors, 0 warnings, 3 skipped · 34 files, 12 directories · 12ms\n"
+        );
+    }
+
+    /// One reads as one.
+    #[test]
+    fn a_single_skipped_check_is_singular() {
+        let report = Report {
+            checks_skipped: 1,
+            ..report(Vec::new())
+        };
+
+        assert!(
+            rendered(&report, Format::Text).starts_with("0 errors, 0 warnings, 1 skipped ·"),
+            "{}",
+            rendered(&report, Format::Text)
+        );
+    }
+
+    /// And a run that skipped nothing says nothing, because on almost every
+    /// run there is nothing to say and a `0 skipped` would only invite the
+    /// question of why it is there.
+    #[test]
+    fn a_run_that_skipped_nothing_does_not_mention_it() {
+        let text = rendered(&report(Vec::new()), Format::Text);
+
+        assert!(!text.contains("skipped"), "{text}");
+    }
+
+    /// The JSON carries it always, including as zero: a consumer branching on
+    /// it needs the field to exist, and unlike a human it is not distracted by
+    /// one.
+    #[test]
+    fn the_json_always_carries_the_skipped_count() {
+        for skipped in [0, 3] {
+            let report = Report {
+                checks_skipped: skipped,
+                ..report(Vec::new())
+            };
+            let parsed: serde_json::Value =
+                serde_json::from_str(&rendered(&report, Format::Json)).expect("valid JSON");
+
+            assert_eq!(parsed["summary"]["checks_skipped"], skipped);
+        }
     }
 
     /// A configuration with no rules has nothing to break down, and a stray

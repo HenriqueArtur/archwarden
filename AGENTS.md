@@ -198,6 +198,7 @@ The gate. Run it before saying you are done.
     "directories_scanned": 11,
     "files_parsed": 0,
     "facts_reused": 3,
+    "checks_skipped": 0,
     "duration_ms": 1
   },
   "findings": [ ... ]
@@ -209,6 +210,18 @@ The text format ends with the same numbers on one line, how long it took last:
 ```
 1 error, 0 warnings · 4 files, 11 directories · 0 parsed, 3 reused · 1ms
 ```
+
+**`checks_skipped` is the number to watch.** It counts checks nobody could
+make — one per rule that wanted a file whose facts were unavailable, usually
+because the file would not parse. It appears in the text line only when it is
+not zero:
+
+```
+1 error, 0 warnings, 2 skipped · 3 files, 3 directories · 1 parsed · 2ms
+```
+
+A run with skips is a run that decided less than it looks like. Do not report
+it as clean.
 
 `files_parsed` and `facts_reused` are the cache working. A warm run parses
 nothing and is not much faster in wall clock — it still reads and hashes every
@@ -280,7 +293,13 @@ repository.
 ```bash
 npx archwarden agent-guide                          # markdown
 npx archwarden agent-guide --scope packages/domain  # only what can fire there
+npx archwarden agent-guide --kind import-boundary   # only that kind
 ```
+
+`--kind` is repeatable and comma-separated, and composes with `--scope`:
+`--scope packages/domain --kind import-boundary` answers "the import boundaries
+that affect this directory" in one question. A kind no rule type has is exit 2,
+not an empty digest.
 
 Deterministic: same config, same bytes. Safe to commit or to regenerate.
 Reach for it when you need the whole rule set at once — for one path,
@@ -337,7 +356,9 @@ change.
 
 `span` is a byte range into the file when the rule found something at a
 position, and `null` when the finding is about the file's existence or
-location.
+location. In the text output a finding with a span is printed as
+`path:line:column`, which an editor and most terminals turn into a link. The
+JSON keeps the byte range, which is what a tool wants.
 
 `module_id` is `null` for a rule declared in the top-level `rules` array rather
 than inside a module — import boundaries usually are. In text output that rule
