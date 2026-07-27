@@ -2293,6 +2293,70 @@ Bateria: `fmt`, `clippy --all-features`, **732 testes Rust** (eram 705),
 
 Ver o adendo 3 do M10.
 
+### V2.5 — a segunda leva, do uso real na Flowmaatik `✅`
+
+**Registro** — 2026-07-27
+
+Oito pedidos, sete implementados e um decidido contra. O padrão da leva: **três
+dos oito eram diferentes do que o relato dizia**, e só rodar mostrou isso.
+
+**O `describe` já aceitava o path do dev; quebrava com o path do relatório.**
+O pedido dizia que `src/foo.ts` de dentro de `packages/domain` não casava.
+Casava. O que não casava era `packages/domain/src/foo.ts` — o path que **todo
+relatório do archwarden imprime**, e o que um agente tem na mão. Resolvia para
+`packages/domain/packages/domain/...` e respondia "No rule applies", que se lê
+como "nada restringe este arquivo". Agora as duas leituras são tentadas, com
+existência no disco como desempate e o formato do argumento como último
+recurso — que é o que mantém a resposta sobre arquivo que ainda não existe.
+
+**`--paths` sem glob casava nada.** Confirmado. Um path sem `*?[]{ }` agora
+vira dois padrões: ele mesmo e `<path>/**`. O "ele mesmo" importa porque finding
+de `structure` nomeia o **diretório**.
+
+**O `describe --scope` pedido já existia, invertido.** `config explain
+<rule-id>` responde "quais paths a regra marcou" com uma linha cada. O que
+faltava era a mesma pergunta pela ponta do path — `describe 'glob'`, sem flag
+nova, detectando glob pela mesma convenção do `--paths`.
+
+**`--changed` teve dois defeitos que só a execução mostrou**, ambos no mesmo
+teste manual:
+
+1. Escondeu a violação que eu **acabei de causar**. git nomeia *arquivos*;
+   finding de `structure` nomeia o *diretório*. Cada arquivo passou a carregar
+   seus ancestrais.
+2. Corrigido o primeiro, ficou largo demais e mostrou uma violação em pacote
+   que ninguém tocou: o ancestral `packages` ia pelo `expand()` e virava
+   `packages/**`. `--changed` casa **exato** — a lista já enumera cada
+   diretório, então alargar é errado por construção.
+
+É a segunda vez nesta sessão que uma correção introduziu o defeito oposto. Vale
+como regra: **depois de corrigir "estreito demais", medir se ficou largo
+demais**, na mesma execução.
+
+**O `--changed` é filtro, e a D12 continua inteira.** Confirmei com o Henrique
+antes de escrever: como filtro não viola nada; como redução de escopo violaria
+a D12 e a invariante "o exit code é idêntico com filtro e sem". O aviso da
+proposta — "um PR que só toca apps/web passaria com regressão em
+packages/domain" — só existe na segunda leitura.
+
+Mas isso inverte a conclusão dela: é **seguro para CI**, e **não** entrega o que
+quem pede `--changed` para CI quer, que é "falhe só no que é novo". Isso é
+*baseline*, não filtro de path.
+
+**O `--fix` foi decidido contra** — decisão 13. O resumo: `spec-pair` é a
+armadilha porque o conserto é fácil e errado. Com `require_non_empty_spec:
+false`, o stub vazio transforma warning real em pass sem mudar nada verdadeiro;
+com `true`, o stub nem ajuda. Ou mente, ou é inútil, dependendo de um ajuste que
+o usuário não sabia estar escolhendo. A dor real é dívida herdada, e a resposta
+honesta é a mesma baseline — o que fecha o círculo com o `--changed`.
+
+**Também nesta leva:** `checks_skipped` na linha de totais (a C6 aplicada ao run
+inteiro), `path:line:column` para findings com span, e `agent-guide --kind`.
+
+Bateria: `fmt`, `clippy --all-features` (zero avisos), **775 testes Rust**
+(eram 732), `machete`, `deny`, `typos`, **15 testes npm**, **6 testes** do
+`checksum.py`, `xtask check-schema`.
+
 ---
 
 ## Follow-ups pós-v0

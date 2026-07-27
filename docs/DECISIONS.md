@@ -17,6 +17,73 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 13 — `--fix` stays out, and `spec-pair` is why
+Status: accepted.
+Context: a real repository put 37 warnings of "action without a spec"
+on one screen, nearly all identical, and asked for a `--fix` that
+would write the missing `.spec.ts` files. Decision 2 already deferred
+`--fix` to a later version; this records why the most obviously
+fixable rule is the one that must never have it.
+Decision: no rule gets `--fix`. Not in v0, and `spec-pair` not ever
+in the form proposed.
+
+Rule by rule, the mechanical fix and what it costs:
+
+- `structure` — move the file. Breaks every import of it.
+- `naming` — rename the export, or the file. Either breaks callers.
+- `import-boundary` — no mechanical fix exists; the answer is a
+  design change.
+- `call-obligation` — insert a call. That is editing behaviour, and
+  a linter that writes statements into a function body has stopped
+  being a linter.
+- `spec-pair` — create an empty file. Mechanically trivial, and the
+  reason for this entry.
+
+`spec-pair` is the trap because the fix is easy and wrong. With
+`require_non_empty_spec: false`, writing an empty spec turns a real
+warning into a pass while changing nothing true about the repository:
+the tests that were missing are still missing, and the linter now says
+they are not. That is a tool manufacturing green. With
+`require_non_empty_spec: true` the stub does not even help — it still
+fails, so `--fix` would have done nothing but create files.
+
+So the flag either lies or is useless, depending on a setting the user
+did not think they were choosing between.
+Alternatives:
+- Emit a stub containing a failing test, so the suite goes red and the
+  author is forced to look. Rejected twice over: archwarden would be
+  writing test code in a framework's syntax it has no business
+  knowing, and a linter that deliberately breaks your test suite is a
+  linter people uninstall. It also inverts the contract — `check`
+  reports, and the build failing afterwards would come from a file
+  archwarden wrote.
+- `--fix` restricted to `spec-pair` rules without
+  `require_non_empty_spec`. Rejected: that is precisely the
+  configuration where the stub is a lie, so the restriction selects
+  for the dangerous case.
+- `scaffold --write`, creating the shape for one named path on
+  purpose. Not rejected, but not this: it is a create-time
+  affordance, framed as "write the file I am about to write" rather
+  than "fix the violation", and it earns its keep only if someone
+  asks for it on its own terms.
+Consequences: the pain that prompted the request is real and stays
+unaddressed by this entry. It is not a fix problem — it is a debt
+problem: a repository adopting archwarden inherits violations it has
+not decided to fix yet, and every run reports them again.
+
+The honest answer to that is a **baseline**: a committed record of
+accepted findings, against which `check` reports only what is new.
+It says out loud what a stub would have said silently, it is reviewable
+in a pull request, and it does not require archwarden to write a single
+byte of anyone's source. That is the feature to build when this pain
+comes back, and `--changed` deliberately did not become a disguised
+version of it.
+
+Until then: `--summary` collapses the wall to one line per rule,
+`--rules` isolates one, and `--changed` shows what a change touched.
+
+---
+
 ### 12 — Dependency licences are a separate list from fixture licences
 Status: accepted.
 Context: decision 11 fixed an allowlist of MIT, Apache-2.0, BSD-2, BSD-3 and
