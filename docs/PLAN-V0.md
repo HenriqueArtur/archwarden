@@ -2162,6 +2162,49 @@ projeto sem instala e sugere `archwarden …`.
 Bateria: `fmt`, `clippy`, **694 testes Rust** (eram 688), `machete`, `deny`,
 `typos`, **14 testes npm**, **6 testes** do `checksum.py`.
 
+**Adendo 3 — as actions saíram do Node 20** (2026-07-26)
+
+A v0.1.1 saiu com annotations de deprecação. Eu tinha adiado porque sem rede
+estaria chutando número de versão; com rede, fui ver de fato — e os saltos eram
+maiores do que "v4 → v5":
+
+| | de | para |
+|---|---|---|
+| `actions/checkout` | v4 | **v7** |
+| `actions/setup-node` | v4 | **v7** |
+| `actions/upload-artifact` | v4 | **v7** |
+| `actions/download-artifact` | v4 | **v8** |
+| `softprops/action-gh-release` | v2 | **v3** |
+
+`actions-rust-lang/setup-rust-toolchain@v1` e `taiki-e/install-action@v2`
+continuam nos majors correntes.
+
+**Não confiei na prosa das release notes.** Escrevi um script que lê os três
+workflows, baixa o `action.yml` de cada `uses:` **na ref nova** e confere que
+todo `with:` usado ainda é input declarado. Trinta e três passos, todos verdes.
+É a checagem que pega o que muda de verdade num major: input renomeado ou
+removido. Ler changelog acha o que o autor lembrou de escrever.
+
+O que os majors traziam, e por que nenhum morde aqui:
+
+- **`download-artifact` v5** quebrou o *path* de download **por ID**. Usamos
+  `path` + `merge-multiple`, nunca `artifact-ids`.
+- **`download-artifact` v8** passou a **falhar em hash mismatch** em vez de
+  avisar. É melhoria: esses bytes viram os binários de sete pacotes npm.
+- **`upload-artifact` v7** ganhou `archive: false` para upload direto. O
+  default segue `true`, e os nossos passos sobem múltiplos arquivos — que o
+  modo direto nem aceita.
+- **`setup-node` v7** parou de exportar um `NODE_AUTH_TOKEN` de mentira quando
+  não há token. Nós setamos o real no passo do publish.
+- **`checkout` v7** bloqueia checkout de PR de fork em `pull_request_target` e
+  `workflow_run`. Não usamos nenhum dos dois gatilhos.
+- **`gh-release` v3** é só a troca de runtime para Node 24.
+
+O que **todos** exigem: runtime Node 24, e com ele **Actions Runner v2.327.1+**.
+Runner hospedado pelo GitHub está atualizado; um self-hosted precisaria subir
+antes. Ficou como comentário no `release.yml`, porque é a única coisa aqui que
+falharia por ambiente e não por código.
+
 ---
 
 ## Follow-ups pós-v0
@@ -2171,5 +2214,5 @@ Bateria: `fmt`, `clippy`, **694 testes Rust** (eram 688), `machete`, `deny`,
 - `archwarden-lsp` (v1, `ROADMAP.md:68`).
 - **`npm deprecate @archwarden/cli`** — a 0.1.0 continua publicada sob o nome
   antigo, com o postinstall que o pnpm bloqueia (M10).
-- **Node 20 deprecado** em `actions/checkout@v4` e `actions/upload-artifact@v4`
-  (annotations do release da v0.1.0).
+- ~~**Node 20 deprecado** nas actions~~ — feito em 2026-07-26, ver o adendo 3
+  do M10.
