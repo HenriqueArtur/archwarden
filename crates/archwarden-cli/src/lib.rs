@@ -648,6 +648,11 @@ fn check(
     no_cache: bool,
     output: &mut Output<'_>,
 ) -> Exit {
+    // From here rather than from `main`: argument parsing is not the run, and
+    // a number that moved with clap's work would not be the one a user is
+    // comparing between two invocations.
+    let started = std::time::Instant::now();
+
     let (merged, compiled) = match prepare(explicit, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
@@ -685,7 +690,7 @@ fn check(
         let _ = writeln!(output.err, "note: the cache was not written — {error}");
     }
 
-    crate::report::render(&outcome, format, output.out);
+    crate::report::render(&outcome, format, started.elapsed(), output.out);
 
     if outcome.fails_build() {
         Exit::Errors
@@ -1959,7 +1964,10 @@ mod tests {
     /// run.
     #[test]
     fn init_points_at_the_installed_schema_when_there_is_one() {
-        let (guard, _) = run_in(&[("node_modules/archwarden/schema/v0.json", "{}")], &["init"]);
+        let (guard, _) = run_in(
+            &[("node_modules/archwarden/schema/v0.json", "{}")],
+            &["init"],
+        );
 
         let written = std::fs::read_to_string(guard.path().join("arch.config.json"))
             .expect("the file exists");

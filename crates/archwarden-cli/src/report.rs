@@ -25,6 +25,9 @@ use serde::Serialize;
 /// could only ever appear in a state no released build could reach, and
 /// archwarden has not been released. Version 0 is still the first shape any
 /// consumer will see. A field removal after release is a bump.
+///
+/// Not bumped for `summary.duration_ms` either: a consumer that ignores it
+/// reads the report exactly as before.
 pub const REPORT_VERSION: u32 = 0;
 
 /// How to render a report.
@@ -61,6 +64,11 @@ struct Summary {
     directories_scanned: usize,
     files_parsed: usize,
     facts_reused: usize,
+    /// How long the whole run took, in milliseconds.
+    ///
+    /// The raw number rather than the prose the text format prints: a consumer
+    /// comparing two runs needs to subtract them.
+    duration_ms: u128,
     /// Absent when no rule needed resolution, so a consumer can tell "no
     /// boundary rule ran" from "every import resolved".
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,7 +85,7 @@ struct Imports {
 }
 
 impl Summary {
-    fn of(report: &Report) -> Self {
+    fn of(report: &Report, elapsed: std::time::Duration) -> Self {
         Self {
             errors: report.error_count(),
             warnings: report.warning_count(),
@@ -85,6 +93,7 @@ impl Summary {
             directories_scanned: report.directories_scanned,
             files_parsed: report.files_parsed,
             facts_reused: report.facts_reused,
+            duration_ms: elapsed.as_millis(),
             imports: (report.imports.total() > 0).then_some(Imports {
                 in_repo: report.imports.in_repo,
                 external: report.imports.external,
@@ -96,17 +105,51 @@ impl Summary {
 }
 
 /// Writes a report in the requested format.
-pub fn render(report: &Report, format: Format, out: &mut dyn std::io::Write) {
+///
+/// `elapsed` is how long the whole run took -- config load, walk, check and
+/// cache flush. Passed in rather than measured here because wall-clock belongs
+/// to the invocation, not to the rendering, and because a test that could not
+/// fix it could not assert on the format.
+pub fn render(
+    report: &Report,
+    format: Format,
+    elapsed: std::time::Duration,
+    out: &mut dyn std::io::Write,
+) {
     match format {
-        Format::Text => render_text(report, out),
-        Format::Json => render_json(report, out),
+        Format::Text => render_text(report, elapsed, out),
+        Format::Json => render_json(report, elapsed, out),
     }
 }
 
-fn render_json(report: &Report, out: &mut dyn std::io::Write) {
+/// How long the run took, at a scale a reader can use.
+///
+/// Milliseconds below a second, one decimal of seconds below a minute, and
+/// minutes above. `0ms` is never printed: a run that happened took *some*
+/// time, and a reader seeing zero would reasonably conclude it did not.
+fn human_duration(elapsed: std::time::Duration) -> String {
+    let millis = elapsed.as_millis();
+
+    if millis == 0 {
+        return "<1ms".to_owned();
+    }
+    if millis < 1_000 {
+        return format!("{millis}ms");
+    }
+
+    let seconds = elapsed.as_secs_f64();
+    if seconds < 60.0 {
+        return format!("{seconds:.1}s");
+    }
+
+    let whole = elapsed.as_secs();
+    format!("{}m {}s", whole / 60, whole % 60)
+}
+
+fn render_json(report: &Report, elapsed: std::time::Duration, out: &mut dyn std::io::Write) {
     let envelope = JsonReport {
         version: REPORT_VERSION,
-        summary: Summary::of(report),
+        summary: Summary::of(report, elapsed),
         findings: &report.findings,
         unreadable_files: report
             .unreadable_files
@@ -158,7 +201,7 @@ fn render_finding(finding: &Finding, out: &mut dyn std::io::Write) {
     let _ = writeln!(out);
 }
 
-fn render_text(report: &Report, out: &mut dyn std::io::Write) {
+fn render_text(report: &Report, elapsed: std::time::Duration, out: &mut dyn std::io::Write) {
     for finding in &report.findings {
         render_finding(finding, out);
     }
@@ -185,7 +228,7 @@ fn render_text(report: &Report, out: &mut dyn std::io::Write) {
         );
     }
 
-    let summary = Summary::of(report);
+    let summary = Summary::of(report, elapsed);
     let _ = write!(
         out,
         "{} {}, {} {} · {} {}, {} {}",
@@ -209,7 +252,9 @@ fn render_text(report: &Report, out: &mut dyn std::io::Write) {
         );
     }
 
-    let _ = writeln!(out);
+    // Last, because it is the answer to a question asked after the others:
+    // this many findings over this many files, and it took this long.
+    let _ = writeln!(out, " · {}", human_duration(elapsed));
 }
 
 /// The JSON envelope for a single-file check.
@@ -460,10 +505,81 @@ mod tests {
         }
     }
 
+    /// A fixed duration, so every assertion about the format stays exact.
+    /// What the number is does not matter to any of them; that one is there
+    /// does.
+    const TOOK: std::time::Duration = std::time::Duration::from_millis(12);
+
     fn rendered(report: &Report, format: Format) -> String {
+        rendered_after(report, format, TOOK)
+    }
+
+    fn rendered_after(report: &Report, format: Format, elapsed: std::time::Duration) -> String {
         let mut out = Vec::new();
-        render(report, format, &mut out);
+        render(report, format, elapsed, &mut out);
         String::from_utf8(out).expect("output is UTF-8")
+    }
+
+    /// A run that says nothing about how long it took invites the question,
+    /// and a linter that claims to be fast should be the one answering it.
+    #[test]
+    fn the_summary_line_ends_with_how_long_it_took() {
+        let text = rendered(&report(Vec::new()), Format::Text);
+
+        assert_eq!(
+            text,
+            "0 errors, 0 warnings · 34 files, 12 directories · 12ms\n"
+        );
+    }
+
+    /// The unit follows the magnitude. A linter reporting `0.012s` reads as
+    /// slower than it is, and one reporting `312700ms` is unreadable.
+    #[test]
+    fn the_duration_is_written_at_a_scale_a_reader_can_use() {
+        use std::time::Duration;
+
+        for (elapsed, expected) in [
+            (Duration::from_micros(400), "<1ms"),
+            (Duration::from_millis(1), "1ms"),
+            (Duration::from_millis(999), "999ms"),
+            (Duration::from_secs(1), "1.0s"),
+            (Duration::from_millis(1450), "1.4s"),
+            (Duration::from_secs(59), "59.0s"),
+            (Duration::from_mins(1), "1m 0s"),
+            (Duration::from_secs(83), "1m 23s"),
+            (Duration::from_hours(1), "60m 0s"),
+        ] {
+            assert_eq!(human_duration(elapsed), expected, "{elapsed:?}");
+        }
+    }
+
+    /// Zero is not a plausible answer for a run that happened, so it is never
+    /// printed as one. A user seeing `0ms` would reasonably conclude the run
+    /// did not happen.
+    #[test]
+    fn a_run_too_fast_to_measure_still_says_something() {
+        let text = rendered_after(
+            &report(Vec::new()),
+            Format::Text,
+            std::time::Duration::from_nanos(1),
+        );
+
+        assert!(text.ends_with("· <1ms\n"), "{text}");
+        assert!(!text.contains("0ms"), "{text}");
+    }
+
+    /// The machine-readable half gets the raw number, not the prose. A
+    /// consumer comparing two runs needs to subtract them.
+    #[test]
+    fn the_json_carries_the_duration_as_a_number() {
+        let parsed: serde_json::Value = serde_json::from_str(&rendered_after(
+            &report(Vec::new()),
+            Format::Json,
+            std::time::Duration::from_millis(1450),
+        ))
+        .expect("valid JSON");
+
+        assert_eq!(parsed["summary"]["duration_ms"], 1450);
     }
 
     /// The text a user actually reads. Written out by hand rather than
@@ -482,7 +598,7 @@ mod tests {
              \x20       [domain] domain-entity-shape — folder `wrong-folder` is not allowed here\n\
              \x20       expected: one of `types` or `calcs`\n\
              \n\
-             1 error, 0 warnings · 34 files, 12 directories\n"
+             1 error, 0 warnings · 34 files, 12 directories · 12ms\n"
         );
     }
 
@@ -499,7 +615,10 @@ mod tests {
     #[test]
     fn the_summary_counts_and_pluralises() {
         let clean = rendered(&report(Vec::new()), Format::Text);
-        assert_eq!(clean, "0 errors, 0 warnings · 34 files, 12 directories\n");
+        assert_eq!(
+            clean,
+            "0 errors, 0 warnings · 34 files, 12 directories · 12ms\n"
+        );
 
         let mixed = rendered(
             &report(vec![
@@ -510,7 +629,7 @@ mod tests {
             Format::Text,
         );
         assert!(
-            mixed.ends_with("1 error, 2 warnings · 34 files, 12 directories\n"),
+            mixed.ends_with("1 error, 2 warnings · 34 files, 12 directories · 12ms\n"),
             "{mixed}"
         );
 
@@ -520,7 +639,7 @@ mod tests {
             ..report(Vec::new())
         };
         assert!(
-            rendered(&singular, Format::Text).ends_with("1 file, 1 directory\n"),
+            rendered(&singular, Format::Text).contains("1 file, 1 directory"),
             "{}",
             rendered(&singular, Format::Text)
         );
@@ -676,7 +795,10 @@ mod tests {
     #[test]
     fn a_run_that_read_nothing_says_nothing_about_the_cache() {
         let text = rendered(&report(Vec::new()), Format::Text);
-        assert_eq!(text, "0 errors, 0 warnings · 34 files, 12 directories\n");
+        assert_eq!(
+            text,
+            "0 errors, 0 warnings · 34 files, 12 directories · 12ms\n"
+        );
     }
 
     /// When files were read, the split between parsed and reused is shown.
@@ -691,7 +813,7 @@ mod tests {
             },
             Format::Text,
         );
-        assert!(cold.ends_with("· 34 parsed, 0 reused\n"), "{cold}");
+        assert!(cold.ends_with("· 34 parsed, 0 reused · 12ms\n"), "{cold}");
 
         let warm = rendered(
             &Report {
@@ -700,7 +822,7 @@ mod tests {
             },
             Format::Text,
         );
-        assert!(warm.ends_with("· 0 parsed, 34 reused\n"), "{warm}");
+        assert!(warm.ends_with("· 0 parsed, 34 reused · 12ms\n"), "{warm}");
     }
 
     /// The counts reach JSON too, where a tool can chart them.

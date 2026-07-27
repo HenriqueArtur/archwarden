@@ -190,11 +190,23 @@ The gate. Run it before saying you are done.
     "files_scanned": 4,
     "directories_scanned": 11,
     "files_parsed": 0,
-    "facts_reused": 3
+    "facts_reused": 3,
+    "duration_ms": 1
   },
   "findings": [ ... ]
 }
 ```
+
+The text format ends with the same numbers on one line, how long it took last:
+
+```
+1 error, 0 warnings · 4 files, 11 directories · 0 parsed, 3 reused · 1ms
+```
+
+`files_parsed` and `facts_reused` are the cache working. A warm run parses
+nothing and is not much faster in wall clock — it still reads and hashes every
+file, because that is the only honest way to know one did not change. The cache
+saves the parse, not the read.
 
 `--no-cache` re-parses everything. Use it only if you suspect a stale result;
 a run that disagrees with `--no-cache` is a bug worth reporting.
