@@ -471,11 +471,7 @@ mod tests {
         )
         .expect("compiles");
 
-        assert!(filters.keep(&finding(
-            "shape",
-            "packages/app/services",
-            Level::Error
-        )));
+        assert!(filters.keep(&finding("shape", "packages/app/services", Level::Error)));
         assert!(
             !filters.keep(&finding(
                 "shape",
