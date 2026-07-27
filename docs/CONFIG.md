@@ -359,8 +359,22 @@ archwarden check --level error                    # warnings are known debt
 
 `--rules` and `--paths` are repeatable and comma-separated; `--rules a,b` and
 `--rules a --rules b` are the same thing. All four compose with AND. `--paths`
-takes globs matched against the finding's path, through the same glob engine
-`ignore`, `roots` and `forbid_import_from` use — there is only one matcher.
+matches against the finding's path through the same glob engine `ignore`,
+`roots` and `forbid_import_from` use — there is only one matcher.
+
+**An entry with no glob character in it is a path, not a pattern**, and selects
+that path and everything under it. The path a reader has to hand is the one
+they just copied out of a finding, and having to remember `/**` would turn
+"look closer at this" into an empty report.
+
+```bash
+archwarden check --paths packages/domain/src/order     # that directory and below
+archwarden check --paths 'packages/domain/src/*'       # exactly one level
+```
+
+An entry that *does* contain a glob is used exactly as written. Someone who
+wrote `src/*` means one level, and widening it to `src/*/**` would be
+archwarden overruling them.
 
 `--summary` prints one row per rule, worst first: errors descending, then
 warnings, then by id.

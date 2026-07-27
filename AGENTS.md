@@ -100,6 +100,13 @@ npx archwarden describe packages/domain/src/order/calcs/discount.ts --format jso
 An empty `rules` array means nothing constrains that path. That is an answer,
 not a failure.
 
+**Paths are read either way.** From inside `packages/domain`, both
+`src/order/x.ts` and `packages/domain/src/order/x.ts` reach the same file — the
+first is what an editor or `git diff` hands you, the second is what every
+archwarden report prints. Absolute paths work too. When both readings name
+something real, the one relative to where you are standing wins. Check the
+`path` field in the reply: it is what was actually resolved.
+
 ### `scaffold <path>` — the shape it should have
 
 ```bash
@@ -221,11 +228,15 @@ and without — so a filter is safe to leave in a command that gates a build.
 |---|---|
 | `--summary` | per-rule counts instead of every finding |
 | `--rules <id>[,<id>]` | only these rules |
-| `--paths <glob>[,<glob>]` | only findings under these paths |
+| `--paths <path>[,<path>]` | only findings under these paths |
 | `--level error\|warning` | only this level |
 
 All four compose with AND, and both list flags are repeatable as well as
 comma-separated.
+
+`--paths` takes either. **A plain path selects that path and everything under
+it** — paste the one from a finding and it works. A pattern containing `*`,
+`?`, `[` or `{` is used exactly as written, so `'src/*'` stays one level.
 
 ```bash
 npx archwarden check --summary                       # what rule is dominating?

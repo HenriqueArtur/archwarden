@@ -54,9 +54,35 @@ pub fn describe<'a>(config: &'a CompiledConfig, path: &RepoRelPath) -> Vec<Appli
 
 /// Turns a path as typed on the command line into a repository-relative one.
 ///
-/// Never touches the filesystem: `describe` and `scaffold` are asked about
-/// files that do not exist yet, so `canonicalize` is not available and
-/// normalisation has to be lexical.
+/// # Two readings of one relative path
+///
+/// Standing in `packages/domain`, `src/order/x.ts` means the file under
+/// here — that is what `git diff` and an editor hand a developer. But every
+/// path archwarden *prints* is repository-relative, so the one an agent copies
+/// out of a report is `packages/domain/src/order/x.ts`, and reading that
+/// against the working directory gives `packages/domain/packages/domain/...`.
+///
+/// That did not fail. It resolved to a path no rule selects and answered "no
+/// rule applies", which reads exactly like "nothing constrains this file" —
+/// the wrong answer that looks like good news.
+///
+/// So both readings are tried, in this order:
+///
+/// 1. Against the working directory, when that names something on disk. It is
+///    the reading a developer means, and it wins whenever both are real.
+/// 2. Against the repository root, when *that* names something on disk.
+/// 3. Otherwise, whichever the argument's own shape indicates: a path already
+///    beginning with where the user is standing is repository-relative, since
+///    nobody nests `packages/domain` inside `packages/domain`.
+/// 4. Failing all of that, against the working directory, as before.
+///
+/// Steps 1 and 2 touch the filesystem, which this function used to avoid.
+/// Existence is the only evidence available about which reading was meant, and
+/// steps 3 and 4 are what keep `describe` and `scaffold` answering about files
+/// that do not exist yet — which is most of what they are for.
+///
+/// From the repository root both readings are the same question, so none of
+/// this costs the common case anything.
 ///
 /// # Errors
 /// A message naming the path, when it falls outside the repository.
@@ -72,16 +98,38 @@ pub fn repo_relative(
             .map_err(|_| format!("`{argument}` is outside the repository at `{root}`"))?
             .to_string()
     } else {
-        // A relative argument is relative to where the user is standing, and
-        // the user may be standing in a subdirectory.
         let inside = working_directory.strip_prefix(root).map_err(|_| {
             format!("the working directory `{working_directory}` is outside `{root}`")
         })?;
-        inside.join(raw).to_string()
+
+        let here = inside.join(raw).to_string();
+        if inside.as_str().is_empty() {
+            here
+        } else {
+            disambiguate(root, inside, raw, here)
+        }
     };
 
     RepoRelPath::new(&relative)
         .map_err(|error| format!("`{argument}` is not a path inside the repository: {error}"))
+}
+
+/// Picks between the two readings. See [`repo_relative`].
+fn disambiguate(root: &Utf8Path, inside: &Utf8Path, raw: &Utf8Path, here: String) -> String {
+    let there = raw.to_string();
+
+    if root.join(&here).exists() {
+        return here;
+    }
+    if root.join(&there).exists() {
+        return there;
+    }
+    // Nothing on disk to go by, which is the case `describe` exists for. A
+    // path that already carries the way here was written from the root.
+    if raw.starts_with(inside) {
+        return there;
+    }
+    here
 }
 
 /// The JSON envelope.
@@ -468,6 +516,126 @@ mod tests {
         assert_eq!(
             repo_relative(&root(), &root(), ".").expect("resolves"),
             path("")
+        );
+    }
+
+    // --- the two readings of one relative path ---------------------------
+
+    /// A tree on disk, because existence is what tells the two readings apart.
+    fn tree(entries: &[&str]) -> (tempfile::TempDir, Utf8PathBuf) {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root =
+            Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("temp path is UTF-8");
+        for entry in entries {
+            let file = root.join(entry);
+            std::fs::create_dir_all(file.parent().expect("a file has a parent"))
+                .expect("create dirs");
+            std::fs::write(&file, "export const a = 1;\n").expect("write");
+        }
+        (guard, root)
+    }
+
+    /// The defect this replaces. Every path archwarden prints is
+    /// repository-relative, so the one an agent copies out of a report is too
+    /// — and pasting it back while standing in a subdirectory used to resolve
+    /// to `packages/domain/packages/domain/...`, which does not exist.
+    ///
+    /// It did not fail. It answered "no rule applies", which reads exactly
+    /// like "nothing constrains this file".
+    #[test]
+    fn a_repository_relative_path_pasted_from_a_report_resolves() {
+        let (_guard, root) = tree(&["packages/domain/src/order/calcs/x.ts"]);
+        let inside = root.join("packages/domain");
+
+        assert_eq!(
+            repo_relative(&root, &inside, "packages/domain/src/order/calcs/x.ts")
+                .expect("resolves"),
+            path("packages/domain/src/order/calcs/x.ts")
+        );
+    }
+
+    /// And the reading that was always right stays right. This is the path a
+    /// developer has in hand from `git diff` or an editor, and it wins when
+    /// both readings name something real.
+    #[test]
+    fn a_path_relative_to_where_you_stand_still_wins() {
+        let (_guard, root) = tree(&[
+            "packages/domain/src/order/calcs/x.ts",
+            // The same relative path, real from the root as well. Whoever is
+            // standing in `packages/domain` means theirs.
+            "src/order/calcs/x.ts",
+        ]);
+        let inside = root.join("packages/domain");
+
+        assert_eq!(
+            repo_relative(&root, &inside, "src/order/calcs/x.ts").expect("resolves"),
+            path("packages/domain/src/order/calcs/x.ts")
+        );
+    }
+
+    /// A path only the root reading finds is the root reading's, even though
+    /// it does not begin with where the user is standing.
+    #[test]
+    fn a_path_only_the_repository_reading_finds_is_taken() {
+        let (_guard, root) = tree(&["src/shared/b.ts"]);
+        let inside = root.join("packages/domain");
+        std::fs::create_dir_all(&inside).expect("create dirs");
+
+        assert_eq!(
+            repo_relative(&root, &inside, "src/shared/b.ts").expect("resolves"),
+            path("src/shared/b.ts")
+        );
+    }
+
+    /// `describe` is asked about files that do not exist yet -- that is what
+    /// it is for. With nothing on disk to go by, a path that already starts
+    /// with where the user is standing is repository-relative: nobody nests
+    /// `packages/domain` inside `packages/domain`.
+    #[test]
+    fn a_file_that_does_not_exist_yet_is_read_by_its_prefix() {
+        let (_guard, root) = tree(&[]);
+        let inside = root.join("packages/domain");
+        std::fs::create_dir_all(&inside).expect("create dirs");
+
+        assert_eq!(
+            repo_relative(&root, &inside, "packages/domain/src/new/thing.ts").expect("resolves"),
+            path("packages/domain/src/new/thing.ts")
+        );
+        // And one that does not carry the prefix is where the user is standing,
+        // which is the older behaviour and the common case.
+        assert_eq!(
+            repo_relative(&root, &inside, "src/new/thing.ts").expect("resolves"),
+            path("packages/domain/src/new/thing.ts")
+        );
+    }
+
+    /// From the root the two readings are the same question, so nothing here
+    /// costs the common case anything.
+    #[test]
+    fn from_the_root_there_is_only_one_reading() {
+        let (_guard, root) = tree(&["src/user/a.ts"]);
+
+        assert_eq!(
+            repo_relative(&root, &root, "src/user/a.ts").expect("resolves"),
+            path("src/user/a.ts")
+        );
+        assert_eq!(
+            repo_relative(&root, &root, "src/nothing/here.ts").expect("resolves"),
+            path("src/nothing/here.ts")
+        );
+    }
+
+    /// A directory answers the same way a file does: `describe` and `scaffold`
+    /// both take one, and a structure rule has more to say about a directory
+    /// than about anything in it.
+    #[test]
+    fn a_directory_resolves_by_the_same_rules() {
+        let (_guard, root) = tree(&["packages/domain/src/order/calcs/x.ts"]);
+        let inside = root.join("packages/domain");
+
+        assert_eq!(
+            repo_relative(&root, &inside, "packages/domain/src/order").expect("resolves"),
+            path("packages/domain/src/order")
         );
     }
 }

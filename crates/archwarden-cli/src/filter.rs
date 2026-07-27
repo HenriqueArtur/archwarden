@@ -70,7 +70,8 @@ impl Filters {
         let compiled_paths = if paths.is_empty() {
             None
         } else {
-            Some(PathSet::compile(paths).map_err(|error| error.to_string())?)
+            let expanded: Vec<String> = paths.iter().flat_map(|path| expand(path)).collect();
+            Some(PathSet::compile(&expanded).map_err(|error| error.to_string())?)
         };
 
         Ok(Self {
@@ -115,6 +116,30 @@ impl Filters {
         }
         true
     }
+}
+
+/// What a `--paths` entry has to match.
+///
+/// A glob is left exactly as written: someone who wrote `src/*` means one
+/// level, and quietly widening it to `src/*/**` would be archwarden overruling
+/// them.
+///
+/// A plain path is not a glob and is not treated as one. It selects that path
+/// and everything under it, because the path a user has to hand is the one
+/// they copied out of a finding, and making them remember to append `/**`
+/// turns "look closer at this" into an empty report — which reads like the
+/// problem went away.
+fn expand(pattern: &str) -> Vec<String> {
+    const GLOB_CHARS: [char; 5] = ['*', '?', '[', ']', '{'];
+
+    if pattern.contains(GLOB_CHARS) {
+        return vec![pattern.to_owned()];
+    }
+
+    let trimmed = pattern.trim_end_matches('/');
+    // Both, so a structure finding -- which names the directory itself, not a
+    // file in it -- is kept alongside everything inside.
+    vec![trimmed.to_owned(), format!("{trimmed}/**")]
 }
 
 /// Turns the ids the user wrote into ids the config has, or says which one it
@@ -270,6 +295,62 @@ mod tests {
 
         assert!(filters.keep(&finding("shape", "packages/domain/src/a.ts", Level::Error)));
         assert!(!filters.keep(&finding("shape", "packages/app/src/a.ts", Level::Error)));
+    }
+
+    /// A path with no glob in it is a path, and it selects what is under it.
+    ///
+    /// The one a user has to hand is the one they just copied out of a
+    /// finding. Requiring them to remember `/**` turns "look closer at this"
+    /// into an empty report, which reads like the problem went away.
+    #[test]
+    fn a_plain_path_selects_what_is_under_it() {
+        let filters = compile(&[], &["packages/domain/src/order"], None);
+
+        assert!(filters.keep(&finding(
+            "shape",
+            "packages/domain/src/order/calcs/a.ts",
+            Level::Error
+        )));
+        // And the directory itself, which is what a structure finding names.
+        assert!(filters.keep(&finding("shape", "packages/domain/src/order", Level::Error)));
+
+        assert!(!filters.keep(&finding(
+            "shape",
+            "packages/domain/src/invoice/calcs/a.ts",
+            Level::Error
+        )));
+    }
+
+    /// A file path selects that file, and nothing that merely starts with its
+    /// name. `order.ts` must not drag in `order.spec.ts`.
+    #[test]
+    fn a_plain_file_path_is_not_a_prefix_of_its_neighbours() {
+        let filters = compile(&[], &["packages/domain/src/order.ts"], None);
+
+        assert!(filters.keep(&finding(
+            "shape",
+            "packages/domain/src/order.ts",
+            Level::Error
+        )));
+        assert!(!filters.keep(&finding(
+            "shape",
+            "packages/domain/src/order.spec.ts",
+            Level::Error
+        )));
+    }
+
+    /// A pattern with a glob character in it is left exactly as written. A
+    /// user who wrote `src/*` means one level, and quietly turning it into
+    /// `src/*/**` would be archwarden overruling them.
+    #[test]
+    fn a_pattern_with_a_glob_is_left_alone() {
+        let filters = compile(&[], &["packages/*"], None);
+
+        assert!(filters.keep(&finding("shape", "packages/domain", Level::Error)));
+        assert!(
+            !filters.keep(&finding("shape", "packages/domain/src/a.ts", Level::Error)),
+            "`packages/*` is one level, and stays one level"
+        );
     }
 
     /// Any of the globs, not all of them -- a path cannot be under two
