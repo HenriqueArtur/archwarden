@@ -91,11 +91,10 @@ impl ConfigDiagnostic {
                         .is_some()
                         .then(|| NamedSource::new(path.as_str(), source_text.clone())),
                     span,
-                    help: Some(
-                        "check the field against the schema at \
-                         https://archwarden.dev/schema/v0.json"
-                            .to_owned(),
-                    ),
+                    help: Some(format!(
+                        "check the field against the schema at {}",
+                        crate::schema::SCHEMA_URL
+                    )),
                 }
             }
 

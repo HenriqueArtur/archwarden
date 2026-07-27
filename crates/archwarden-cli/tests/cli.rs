@@ -479,19 +479,31 @@ fn the_json_report_has_the_documented_shape() {
 
 /// The same repository checked twice must produce byte-identical output, or
 /// snapshot tests and CI diffs become noise. This is design goal 3.
+///
+/// Everything but `duration_ms`, which is wall-clock and cannot be identical
+/// between two runs. It is blanked rather than the test being weakened,
+/// because "identical apart from one named field" is a much stronger claim
+/// than "the fields I remembered to compare are equal" -- a field added later
+/// and left non-deterministic would fail this, which is the point.
 #[test]
 fn two_runs_over_one_repository_agree_byte_for_byte() {
     let dir = repo_with_violations();
 
     let run = || {
-        archwarden()
+        let stdout = archwarden()
             .current_dir(dir.path())
             .args(["check", "--format", "json"])
             .assert()
             .code(1)
             .get_output()
             .stdout
-            .clone()
+            .clone();
+
+        let mut parsed: serde_json::Value =
+            serde_json::from_slice(&stdout).expect("the report is JSON");
+        let duration = parsed["summary"]["duration_ms"].take();
+        assert!(duration.is_number(), "the run reported how long it took");
+        parsed
     };
 
     assert_eq!(run(), run());

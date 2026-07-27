@@ -129,6 +129,17 @@ npx archwarden agent-guide > .archwarden/AGENT_RULES.md
 # install pre-write hooks for supported harnesses
 npx archwarden install-hooks --claude-code
 
+# ---- filtering a large report ----
+
+# what rule is dominating this output?
+npx archwarden check --summary
+
+# only the errors; the warnings are known debt
+npx archwarden check --level error
+
+# only the part of the repo I touched
+npx archwarden check --paths 'packages/domain/**'
+
 # ---- diagnostics ----
 
 # what does this rule reach, and what is it flagging?
@@ -157,6 +168,9 @@ See [`docs/CONFIG.md`](docs/CONFIG.md).
   writing it, avoiding the write–fail–retry loop.
 - **`check --file`** verifies one file without walking the repository, and
   reports the rules it could not evaluate rather than dropping them.
+- **`--summary` / `--rules` / `--paths` / `--level`** narrow what a report
+  prints without narrowing what it checks. The exit code is the same with them
+  and without, so a filter is safe in a command that gates a build.
 - **`agent-guide`** produces a markdown digest of every active rule, meant to
   be referenced from `CLAUDE.md` or `AGENTS.md`. Regenerated deterministically
   from the config.

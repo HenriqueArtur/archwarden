@@ -20,10 +20,10 @@ jobs:
   # second version in play.
 
   lint:
-    name: format, clippy, docs
+    name: 🎨 format, clippy, docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -37,10 +37,10 @@ jobs:
       - run: cargo xtask check-schema
 
   test:
-    name: tests
+    name: 🧪 tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: taiki-e/install-action@v2
         with:
@@ -54,10 +54,10 @@ jobs:
       - run: cargo test --workspace --doc
 
   coverage:
-    name: coverage
+    name: 📊 coverage
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           components: llvm-tools-preview
@@ -99,10 +99,10 @@ jobs:
           --fail-under-lines 95
 
   supply-chain:
-    name: licences and advisories
+    name: ⚖️ licences and advisories
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: taiki-e/install-action@v2
         with:
@@ -111,10 +111,10 @@ jobs:
       - run: cargo deny check
 
   hygiene:
-    name: unused deps and typos
+    name: 🧹 unused deps and typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: taiki-e/install-action@v2
         with:
@@ -123,15 +123,15 @@ jobs:
       - run: typos
 
   distribution:
-    name: the install routes
+    name: 📦 the install routes
     runs-on: ubuntu-latest
     # The release workflow cannot be run on a pull request, but the pieces it
     # depends on can: the shim that decides which archive to download, and the
     # script that writes checksums into the formula. Both fail on a stranger's
     # machine, days later, if they are wrong.
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       - name: the npm wrapper
@@ -141,13 +141,13 @@ jobs:
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
 
   future-rust:
-    name: latest stable (advisory)
+    name: 🔮 latest stable (advisory)
     runs-on: ubuntu-latest
     # Early warning that a future rustc breaks us. Never blocks a merge: the
     # pinned toolchain is what we actually ship.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable

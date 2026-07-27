@@ -9,7 +9,7 @@
   },
   "homepage": "https://github.com/HenriqueArtur/archwarden",
   "bin": { "archwarden": "bin/archwarden.mjs" },
-  "files": ["bin", "resolve.mjs", "README.md", "AGENTS.md"],
+  "files": ["bin", "resolve.mjs", "schema", "README.md", "AGENTS.md"],
   "engines": { "node": ">=18" },
   "optionalDependencies": {
     "@archwarden/cli-darwin-arm64": "0.1.1",

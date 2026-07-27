@@ -10,11 +10,11 @@ env:
 
 jobs:
   mutants:
-    name: mutation testing
+    name: 🧬 mutation testing
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
       - uses: taiki-e/install-action@v2
         with:
@@ -32,23 +32,23 @@ jobs:
           --package archwarden-core
           --package archwarden-config
           --package archwarden-rules
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: mutants-report
           path: mutants.out/
 
   differential:
-    name: differential vs dependency-cruiser
+    name: 🔬 differential vs dependency-cruiser
     runs-on: ubuntu-latest
     # Tier 3 in docs/TESTING.md. The target repositories are private and are
     # configured through `ARCHWARDEN_DIFF_REPO` rather than checked in; without
     # one the test says so and passes. The job runs anyway so the harness stays
     # compiled and the wiring stays honest -- a job that is `if: false` rots.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
       # dependency-cruiser resolves TypeScript through the *target* repo's own

@@ -84,13 +84,50 @@ test("the main package ships exactly what its manifest promises", async () => {
       await readFile(join(out, "archwarden", "package.json"), "utf8"),
     );
 
+    // Two entries are directories; the rest are files. Reading something
+    // inside either tells us it arrived, which is the whole question.
+    const INSIDE = { bin: "bin/archwarden.mjs", schema: "schema/v0.json" };
+
     for (const entry of manifest.files) {
-      // `bin` is a directory; the rest are files. Reading either tells us it
-      // arrived, which is the whole question.
-      const path = join(out, "archwarden", entry === "bin" ? "bin/archwarden.mjs" : entry);
+      const path = join(out, "archwarden", INSIDE[entry] ?? entry);
       const contents = await readFile(path, "utf8");
       assert.ok(contents.length > 0, `${entry} arrived and is not empty`);
     }
+  } finally {
+    await rm(dist, { recursive: true, force: true });
+    await rm(out, { recursive: true, force: true });
+  }
+});
+
+test("the schema travels with the package, where init expects it", async () => {
+  // `init` writes `./node_modules/archwarden/schema/v0.json` into the config
+  // it generates when archwarden is installed. That path is this package's
+  // name plus this layout — three facts in two languages, and a config
+  // pointing at a file that is not there gives an editor nothing and says
+  // nothing about why.
+  const manifest = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  assert.equal(manifest.name, "archwarden");
+  assert.ok(manifest.files.includes("schema"), "the schema is published");
+
+  const dist = await fakeRelease("1.2.3");
+  const out = await mkdtemp(join(tmpdir(), "archwarden-out-"));
+  try {
+    await build(dist, out, "1.2.3");
+
+    const shipped = await readFile(
+      join(out, "archwarden", "schema", "v0.json"),
+      "utf8",
+    );
+    const source = await readFile(
+      new URL("../../../schema/v0.json", import.meta.url),
+      "utf8",
+    );
+
+    assert.equal(shipped, source, "shipped verbatim, not regenerated");
+    // It has to be a schema, not just a file that arrived.
+    assert.equal(JSON.parse(shipped).title, "Config");
   } finally {
     await rm(dist, { recursive: true, force: true });
     await rm(out, { recursive: true, force: true });
