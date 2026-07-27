@@ -176,7 +176,7 @@ mod tests {
     fn a_well_spelled_config_still_parses() {
         let config: Config = serde_json::from_str(
             r#"{
-                "$schema": "https://archwarden.dev/schema/v0.json",
+                "$schema": "https://raw.githubusercontent.com/HenriqueArtur/archwarden/main/schema/v0.json",
                 "version": 0,
                 "extends": ["@org/preset"],
                 "ignore": ["dist/**"],
@@ -201,7 +201,7 @@ mod tests {
     fn the_documented_minimal_config_parses() {
         let config = parse(
             r#"{
-              "$schema": "https://archwarden.dev/schema/v0.json",
+              "$schema": "https://raw.githubusercontent.com/HenriqueArtur/archwarden/main/schema/v0.json",
               "version": 0,
               "modules": [
                 {
@@ -223,7 +223,7 @@ mod tests {
         assert!(config.version_is_supported());
         assert_eq!(
             config.schema.as_deref(),
-            Some("https://archwarden.dev/schema/v0.json")
+            Some("https://raw.githubusercontent.com/HenriqueArtur/archwarden/main/schema/v0.json")
         );
 
         let rules: Vec<_> = config.rules().collect();

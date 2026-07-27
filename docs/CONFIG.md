@@ -23,17 +23,35 @@ and inline validation without a plugin:
 
 ```json
 {
-  "$schema": "https://archwarden.dev/schema/v0.json",
+  "$schema": "https://raw.githubusercontent.com/HenriqueArtur/archwarden/main/schema/v0.json",
   "version": 0,
   "modules": [ ... ]
 }
 ```
 
+**Where archwarden is installed from npm, point at the copy on disk instead:**
+
+```json
+{
+  "$schema": "./node_modules/archwarden/schema/v0.json"
+}
+```
+
+`archwarden init` writes this form automatically when it finds an install. It
+is the schema for the version in your lockfile, it works offline, and it cannot
+describe a different build than the one you are running — a URL can only ever
+serve one version, and it will not always be yours.
+
+The schema itself is generated from the Rust types that parse the config, and
+CI fails if the committed copy drifts from them (`cargo xtask check-schema`).
+A field that exists in the parser but not in the schema is a field your editor
+would refuse to complete.
+
 ## Top-level shape
 
 ```json
 {
-  "$schema": "https://archwarden.dev/schema/v0.json",
+  "$schema": "https://raw.githubusercontent.com/HenriqueArtur/archwarden/main/schema/v0.json",
   "version": 0,
 
   "root": ".",
@@ -285,7 +303,7 @@ Presets let you share rule sets between projects.
 
 ```json
 {
-  "$schema": "https://archwarden.dev/schema/v0.json",
+  "$schema": "https://raw.githubusercontent.com/HenriqueArtur/archwarden/main/schema/v0.json",
   "version": 0,
   "extends": ["@myorg/arch-preset-clean-arch"],
   "modules": [
@@ -364,7 +382,7 @@ The smallest useful config:
 
 ```json
 {
-  "$schema": "https://archwarden.dev/schema/v0.json",
+  "$schema": "https://raw.githubusercontent.com/HenriqueArtur/archwarden/main/schema/v0.json",
   "version": 0,
   "modules": [
     {

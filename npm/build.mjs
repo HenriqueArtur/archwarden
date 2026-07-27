@@ -11,7 +11,7 @@
 // `dist` holds the release artifacts, each `archwarden-<version>-<target>` a
 // directory extracted from its archive.
 import { mkdir, readFile, writeFile, copyFile, chmod, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
@@ -55,11 +55,14 @@ export function manifestFor(platform, version) {
 /**
  * Files copied from the repository root into the main package.
  *
- * Both are read by someone who never sees this repository: the README is the
- * package's page on npm, and `AGENTS.md` is what an agent is pointed at from
- * inside `node_modules`. They travel with the version that produced them.
+ * All three are read by someone who never sees this repository: the README is
+ * the package's page on npm, `AGENTS.md` is what an agent is pointed at from
+ * inside `node_modules`, and `schema/v0.json` is what `arch.config.json`'s
+ * `$schema` points at once archwarden is installed. They travel with the
+ * version that produced them, which for the schema is the whole point — a URL
+ * can only ever serve one version, and it will not be yours.
  */
-const FROM_ROOT = ["README.md", "AGENTS.md"];
+const FROM_ROOT = ["README.md", "AGENTS.md", "schema/v0.json"];
 
 /** Builds all eight packages. Exported so a test can run it. */
 export async function build(dist, out, version) {
@@ -84,7 +87,9 @@ export async function build(dist, out, version) {
     await copyFile(join(here, "archwarden", file), join(mainOut, file));
   }
   for (const file of FROM_ROOT) {
-    await copyFile(join(here, "..", file), join(mainOut, file));
+    const destination = join(mainOut, file);
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(join(here, "..", file), destination);
   }
   await chmod(join(mainOut, "bin", "archwarden.mjs"), 0o755);
 

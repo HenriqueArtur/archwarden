@@ -14,6 +14,7 @@ pub mod hooks;
 pub mod locate;
 pub mod report;
 pub mod scaffold;
+pub mod schema;
 
 use archwarden_cache::store::Cache;
 use archwarden_config::{
@@ -345,13 +346,19 @@ fn describe(
 /// No rules. A generated rule is a rule nobody chose, and a linter that starts
 /// by reporting things the user never asked for is a linter they turn off. The
 /// `$schema` line is the part that earns its place: an editor picks it up and
-/// gives completion and, since M7d.1, an error on a misspelled key.
-const STARTER: &str = r#"{
-  "$schema": "https://archwarden.dev/schema/v0.json",
+/// gives completion and, since M7d.1, an error on a misspelled key -- which is
+/// why what it points at is decided by [`crate::schema::reference`] rather
+/// than being a constant, and why it must be a reference that answers.
+fn starter(reference: &str) -> String {
+    format!(
+        r#"{{
+  "$schema": "{reference}",
   "version": 0,
   "rules": []
+}}
+"#
+    )
 }
-"#;
 
 /// Writes a starter configuration, if there is not one already.
 fn init(working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
@@ -364,7 +371,8 @@ fn init(working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
         return Exit::ConfigProblem;
     }
 
-    if let Err(error) = std::fs::write(&path, STARTER) {
+    if let Err(error) = std::fs::write(&path, starter(&crate::schema::reference(working_directory)))
+    {
         let _ = writeln!(output.err, "cannot write `{path}`: {error}");
         return Exit::ConfigProblem;
     }
@@ -1943,6 +1951,37 @@ mod tests {
         let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
         let validated = run_at(&root, &["config", "validate"]);
         assert_eq!(validated.exit, Exit::Clean, "{}", validated.err);
+    }
+
+    /// Where archwarden is installed, the config points at the schema on
+    /// disk. It is the schema for the version that is installed, it works with
+    /// no network, and it cannot describe a different build than the one being
+    /// run.
+    #[test]
+    fn init_points_at_the_installed_schema_when_there_is_one() {
+        let (guard, _) = run_in(&[("node_modules/archwarden/schema/v0.json", "{}")], &["init"]);
+
+        let written = std::fs::read_to_string(guard.path().join("arch.config.json"))
+            .expect("the file exists");
+
+        assert!(
+            written.contains(r#""$schema": "./node_modules/archwarden/schema/v0.json""#),
+            "{written}"
+        );
+    }
+
+    /// And falls back to the published URL, which has to be one that answers:
+    /// `archwarden.dev` never resolved, so every config written before this
+    /// pointed at nothing.
+    #[test]
+    fn init_falls_back_to_the_published_url() {
+        let (guard, _) = run_in(&[], &["init"]);
+
+        let written = std::fs::read_to_string(guard.path().join("arch.config.json"))
+            .expect("the file exists");
+
+        assert!(written.contains(crate::schema::SCHEMA_URL), "{written}");
+        assert!(!written.contains("archwarden.dev"), "{written}");
     }
 
     /// It never overwrites. A config is hand-written and often long, and a
