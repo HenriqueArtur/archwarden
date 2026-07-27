@@ -85,34 +85,48 @@ jobs:
         run: |
           echo "CC_${{ matrix.target }}=${{ matrix.cc }}" >> "$GITHUB_ENV"
 
-      # `--locked` on purpose: a release must be built from the dependency
-      # versions the tests ran against, not from whatever resolved today.
-      - run: cargo build --release --locked --target ${{ matrix.target }} -p archwarden-cli
-
-      # A binary that will not print its own version is not one to publish.
-      # Skipped where the build was a cross-compile and cannot run here.
-      - name: check the binary runs
-        if: matrix.target != 'x86_64-apple-darwin'
+      # Derived once, for every step below. A dispatch names its own tag; a tag
+      # push is named by the ref. Written as an `if` rather than
+      # `[ -n ... ] && VERSION=...` because that form's exit status is the
+      # step's, the day someone moves it to the last line.
+      - name: name the version
         shell: bash
         run: |
-          BIN="target/${{ matrix.target }}/release/archwarden"
-          [ "${{ matrix.archive }}" = "zip" ] && BIN="$BIN.exe"
-          "$BIN" --version
-
-      - name: package
-        shell: bash
-        run: |
-          # A dispatch names its own tag; a tag push is named by the ref.
-          # Written as an `if` rather than `[ -n ... ] && VERSION=...` because
-          # that form's exit status is the step's, the day someone moves it to
-          # the last line.
           if [ -n "${{ inputs.tag }}" ]; then
             VERSION="${{ inputs.tag }}"
           else
             VERSION="$GITHUB_REF_NAME"
           fi
-          VERSION="${VERSION#v}"
+          echo "VERSION=${VERSION#v}" >> "$GITHUB_ENV"
 
+      # `--locked` on purpose: a release must be built from the dependency
+      # versions the tests ran against, not from whatever resolved today.
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p archwarden-cli
+
+      # A binary that will not print its own version is not one to publish, and
+      # one that prints the *wrong* version is worse: nothing downstream would
+      # notice. The archive is named from the tag and `build.mjs` finds it by
+      # that name, so a workspace nobody bumped ships as the new version with
+      # the old binary inside, silently. Caught here, once per target.
+      #
+      # Skipped where the build was a cross-compile and cannot run here.
+      - name: check the binary runs, and is the version being released
+        if: matrix.target != 'x86_64-apple-darwin'
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/archwarden"
+          if [ "${{ matrix.archive }}" = "zip" ]; then BIN="$BIN.exe"; fi
+
+          REPORTED="$("$BIN" --version)"
+          echo "$REPORTED"
+          if [ "$REPORTED" != "archwarden $VERSION" ]; then
+            echo "::error::the tag says $VERSION and the binary says '$REPORTED'; bump the version in Cargo.toml"
+            exit 1
+          fi
+
+      - name: package
+        shell: bash
+        run: |
           NAME="archwarden-${VERSION}-${{ matrix.target }}"
           mkdir -p "dist/$NAME"
           cp README.md LICENSE-MIT LICENSE-APACHE "dist/$NAME/"
