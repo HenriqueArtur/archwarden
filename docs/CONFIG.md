@@ -459,6 +459,27 @@ calcs-need-spec      3 warnings
 7 errors, 3 warnings · 8 files, 20 directories · 1ms
 ```
 
+`--by path` counts the same findings by area of the repository instead, and
+implies `--summary`:
+
+```
+packages/domain/src/invoice  2 errors, 1 warning
+packages/domain/src/order    2 errors, 1 warning
+packages/domain/src/client   1 error, 1 warning
+```
+
+The areas are the directories the rules' own scopes already select — a config
+saying `roots: packages/domain/src/*` has declared that
+`packages/domain/src/order` is a unit, so nothing here has to choose a depth. A
+finding no scope reaches keeps its own path rather than being dropped or filed
+under a heading that means nothing.
+
+The two answer different questions. `--summary` says which rule is dominating
+the output; `--by path` says which part of the repository is furthest from the
+rules, which is the one that says where to start. Unlike the rule breakdown,
+only areas with findings get a row: printing every clean directory in a
+monorepo would bury the ones that are not.
+
 A rule that found nothing keeps its row with a `0`. That it was evaluated is
 an answer; a missing row would read as a rule someone disabled. `--rules`
 narrows the rows — it is the one filter that names rules — while `--paths` and

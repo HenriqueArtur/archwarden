@@ -267,6 +267,7 @@ and without — so a filter is safe to leave in a command that gates a build.
 | `--paths <path>[,<path>]` | only findings under these paths |
 | `--level error\|warning` | only this level |
 | `--changed [<ref>]` | only files that differ from `<ref>` (default `HEAD`) |
+| `--by rule\|path` | what `--summary` counts by; implies `--summary` |
 
 All four compose with AND, and both list flags are repeatable as well as
 comma-separated.
@@ -306,7 +307,21 @@ calcs-need-spec      3 warnings
 7 errors, 3 warnings · 8 files, 20 directories · 1ms
 ```
 
-Worst first: errors descending, then warnings, then by rule id. **A rule with
+`--by path` counts the same findings by area instead:
+
+```
+packages/domain/src/invoice  2 errors, 1 warning
+packages/domain/src/order    2 errors, 1 warning
+packages/domain/src/client   1 error, 1 warning
+```
+
+The areas are the directories the rules' own scopes select, so a config with
+`roots: packages/domain/src/*` gets one row per module. `--summary` says what
+is dominating the output; `--by path` says which part of the repository is
+furthest from the rules, which is the one that tells you where to start. Only
+areas with findings get a row.
+
+Worst first in both: errors descending, then warnings, then by name. **A rule with
 no findings keeps its row** — that it was evaluated is an answer, and a missing
 row would read as a rule someone disabled. `--rules` narrows the rows, because
 it is the one filter that names rules; `--paths` and `--level` leave every row

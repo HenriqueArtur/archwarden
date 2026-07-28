@@ -151,6 +151,19 @@ pub enum Command {
               default_missing_value = crate::changed::DEFAULT_REF)]
         changed: Option<String>,
 
+        /// What `--summary` counts by.
+        ///
+        /// `rule` answers "what is dominating this output". `path` answers
+        /// "which part of the repository is furthest from the rules", which is
+        /// the one that says where to start. Passing it implies `--summary`,
+        /// since counting by area only makes sense as counts.
+        ///
+        /// The areas are the directories the rules' own scopes select, so a
+        /// config saying `roots: packages/domain/src/*` gets one row per
+        /// module without anyone choosing a depth.
+        #[arg(long, value_enum, value_name = "AXIS")]
+        by: Option<crate::report::Axis>,
+
         /// Report every finding, including the ones the baseline accepts.
         ///
         /// "How bad is it really" is a fair question, and answering it should
@@ -333,6 +346,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             level,
             changed,
             no_baseline,
+            by,
             ..
         } => check(
             cli.config.as_deref(),
@@ -346,6 +360,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
                 changed: changed.as_deref(),
                 level: *level,
                 no_baseline: *no_baseline,
+                by: *by,
             },
             output,
         ),
@@ -951,6 +966,7 @@ struct CheckOptions<'a> {
     changed: Option<&'a str>,
     level: Option<crate::filter::LevelFilter>,
     no_baseline: bool,
+    by: Option<crate::report::Axis>,
 }
 
 fn check(
@@ -1062,7 +1078,7 @@ fn check(
         .collect();
     let hidden = unaccepted.len() - shown.len();
 
-    let view = view_of(&shown, hidden, options.summary, &filters, &compiled);
+    let view = view_of(&shown, hidden, options, &filters, &compiled);
 
     crate::report::render(
         &crate::report::Rendered {
@@ -1126,12 +1142,28 @@ fn report_standing(
 fn view_of<'a>(
     shown: &[&'a archwarden_core::finding::Finding],
     hidden: usize,
-    summary: bool,
+    options: &CheckOptions<'_>,
     filters: &crate::filter::Filters,
     compiled: &archwarden_core::compiled::CompiledConfig,
 ) -> crate::report::View<'a> {
-    if !summary {
+    // `--by` implies `--summary`: counting by area only means anything as
+    // counts, and making someone pass both to say one thing is friction with
+    // no reading behind it.
+    let axis = options
+        .by
+        .or(options.summary.then_some(crate::report::Axis::Rule));
+    let Some(axis) = axis else {
         return crate::report::View::filtered(shown, hidden);
+    };
+
+    if axis == crate::report::Axis::Path {
+        let scopes: Vec<archwarden_core::scope::Scope> =
+            compiled.rules().map(|rule| rule.scope.clone()).collect();
+        return crate::report::View::summarised(
+            shown,
+            crate::report::Breakdown::by_path(&scopes, shown),
+            hidden,
+        );
     }
 
     // Rows come from the config, not from what fired. `--rules` is the one
