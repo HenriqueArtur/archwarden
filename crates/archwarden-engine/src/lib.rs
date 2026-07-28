@@ -11,6 +11,7 @@
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
 pub mod epoch;
+pub mod importers;
 pub mod resolve;
 pub mod run;
 pub mod single;

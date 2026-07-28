@@ -135,6 +135,11 @@ npx archwarden agent-guide > .archwarden/AGENT_RULES.md
 # install pre-write hooks for supported harnesses
 npx archwarden install-hooks --claude-code
 
+# ---- adopting it in an existing repo ----
+
+# accept today's findings, so the build gates on new ones
+npx archwarden baseline
+
 # ---- filtering a large report ----
 
 # what rule is dominating this output?
@@ -145,6 +150,11 @@ npx archwarden check --level error
 
 # only the part of the repo I touched
 npx archwarden check --paths 'packages/domain/**'
+
+# ---- refactoring ----
+
+# what would moving this file change?
+npx archwarden impact packages/domain/src/order/x.ts --to packages/app/src/order/x.ts
 
 # ---- diagnostics ----
 
@@ -174,9 +184,17 @@ See [`docs/CONFIG.md`](docs/CONFIG.md).
   writing it, avoiding the write–fail–retry loop.
 - **`check --file`** verifies one file without walking the repository, and
   reports the rules it could not evaluate rather than dropping them.
-- **`--summary` / `--rules` / `--paths` / `--level`** narrow what a report
-  prints without narrowing what it checks. The exit code is the same with them
-  and without, so a filter is safe in a command that gates a build.
+- **`--summary` / `--rules` / `--paths` / `--level` / `--changed`** narrow what a
+  report prints without narrowing what it checks. The exit code is the same with
+  them and without, so a filter is safe in a command that gates a build.
+- **`impact <path> --to <path>`** says what a move would change before you make
+  it: which rules start and stop applying, which files import it, and which of
+  those imports would newly cross a boundary. An editor rewrites the specifiers
+  and says nothing about the architecture; this is the other half.
+- **`baseline`** is the opposite and says so: a committed record of findings the
+  project has decided to accept, so a repository adopting archwarden gates on
+  new violations from day one instead of on debt nobody has decided about. It
+  changes the exit code, which is why it is a reviewed file and not a flag.
 - **`agent-guide`** produces a markdown digest of every active rule, meant to
   be referenced from `CLAUDE.md` or `AGENTS.md`. Regenerated deterministically
   from the config.

@@ -42,6 +42,16 @@ pub enum Format {
     Json,
 }
 
+/// What `--summary` counts by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum Axis {
+    /// One row per rule: what is dominating this output.
+    #[default]
+    Rule,
+    /// One row per area of the repository: where to start.
+    Path,
+}
+
 /// What of a report to show.
 ///
 /// A run always evaluates every rule and computes every finding. This is the
@@ -108,6 +118,8 @@ pub struct Breakdown {
 
 #[derive(Debug, Serialize)]
 struct Row {
+    /// A rule id, or a directory -- whichever axis the reader asked for. The
+    /// table is the same either way; only what the first column names changes.
     #[serde(skip)]
     rule_id: String,
     errors: usize,
@@ -154,6 +166,55 @@ impl Breakdown {
         Self { rows }
     }
 
+    /// Counts `findings` by the area of the repository they are in.
+    ///
+    /// "Which rule dominates this output" and "which part of the repository is
+    /// furthest from the rules" are different questions, and only the second
+    /// says where to start a refactor.
+    ///
+    /// The areas are the directories the rules' own scopes select. Nothing
+    /// here invents a depth: a config saying `roots: packages/domain/src/*`
+    /// has already declared that `packages/domain/src/order` is a unit, and
+    /// rolling a finding up to the nearest ancestor a scope matches is reading
+    /// that back rather than guessing.
+    ///
+    /// Unlike the rule breakdown, only areas with findings get a row. That a
+    /// rule was evaluated is an answer worth a zero; there is no comparable
+    /// list of directories, and printing every clean one in a monorepo would
+    /// bury the ones that are not.
+    #[must_use]
+    pub fn by_path(scopes: &[archwarden_core::scope::Scope], findings: &[&Finding]) -> Self {
+        let mut counts: std::collections::BTreeMap<String, (usize, usize)> =
+            std::collections::BTreeMap::new();
+
+        for finding in findings {
+            let area = area_of(scopes, &finding.path);
+            let entry = counts.entry(area).or_default();
+            match finding.level {
+                archwarden_core::level::Level::Error => entry.0 += 1,
+                archwarden_core::level::Level::Warning => entry.1 += 1,
+            }
+        }
+
+        let mut rows: Vec<Row> = counts
+            .into_iter()
+            .map(|(rule_id, (errors, warnings))| Row {
+                rule_id,
+                errors,
+                warnings,
+            })
+            .collect();
+
+        rows.sort_by(|a, b| {
+            b.errors
+                .cmp(&a.errors)
+                .then_with(|| b.warnings.cmp(&a.warnings))
+                .then_with(|| a.rule_id.cmp(&b.rule_id))
+        });
+
+        Self { rows }
+    }
+
     /// The map the JSON carries, in the order the text uses.
     fn as_map(&self) -> serde_json::Map<String, serde_json::Value> {
         self.rows
@@ -179,6 +240,26 @@ impl Breakdown {
             .map(|row| (row.rule_id.as_str(), row.errors, row.warnings))
             .collect()
     }
+}
+
+/// The nearest ancestor of `path` that some rule's scope selects.
+///
+/// The path itself when a scope selects it, and the path itself again when
+/// none does -- a finding outside every scope keeps its own name rather than
+/// being dropped from a summary that claims to count everything, or filed
+/// under a heading that means nothing.
+fn area_of(scopes: &[archwarden_core::scope::Scope], path: &RepoRelPath) -> String {
+    let mut candidate = Some(path.as_path());
+
+    while let Some(directory) = candidate {
+        if !directory.as_str().is_empty() && scopes.iter().any(|scope| scope.matches_dir(directory))
+        {
+            return directory.to_string();
+        }
+        candidate = directory.parent();
+    }
+
+    path.as_str().to_owned()
 }
 
 /// The JSON envelope.
@@ -941,6 +1022,113 @@ mod tests {
                 "calcs-need-spec",     // nothing, and then by id
                 "variants-need-spec",
             ]
+        );
+    }
+
+    // --- the other axis --------------------------------------------------
+
+    /// A scope selecting each module directory, as a real config does.
+    fn module_scope() -> archwarden_core::scope::Scope {
+        archwarden_core::scope::Scope::compile(["packages/domain/src/*"]).expect("valid scope")
+    }
+
+    /// "Which rule dominates" and "which part of the repository is furthest"
+    /// are different questions. The second is the one that says where to start
+    /// a refactor, and rolling up to the directories the *rules* select is what
+    /// makes the rows mean something: the config already says what the units
+    /// are, so nothing here has to invent a depth.
+    #[test]
+    fn findings_roll_up_to_the_directory_a_rule_scope_selects() {
+        let findings = [
+            from("shape", Level::Error, "packages/domain/src/order/handlers"),
+            from("shape", Level::Error, "packages/domain/src/order/services"),
+            from(
+                "spec",
+                Level::Warning,
+                "packages/domain/src/invoice/calcs/a.ts",
+            ),
+        ];
+        let shown: Vec<&Finding> = findings.iter().collect();
+
+        let breakdown = Breakdown::by_path(&[module_scope()], &shown);
+
+        assert_eq!(
+            breakdown.rows_for_test(),
+            [
+                ("packages/domain/src/order", 2, 0),
+                ("packages/domain/src/invoice", 0, 1),
+            ]
+        );
+    }
+
+    /// Worst first, then by path -- the same order the rule breakdown uses,
+    /// because two orderings in one report is something someone eventually
+    /// reports as a bug.
+    #[test]
+    fn the_path_breakdown_puts_the_worst_area_first() {
+        let findings = [
+            from("spec", Level::Warning, "packages/domain/src/aaa/x.ts"),
+            from("shape", Level::Error, "packages/domain/src/zzz/handlers"),
+        ];
+        let shown: Vec<&Finding> = findings.iter().collect();
+
+        assert_eq!(
+            Breakdown::by_path(&[module_scope()], &shown).ids(),
+            ["packages/domain/src/zzz", "packages/domain/src/aaa"]
+        );
+    }
+
+    /// A finding no scope reaches keeps its own path. Dropping it would lose a
+    /// finding from a summary that claims to count everything, and inventing a
+    /// parent for it would put it under a heading that means nothing.
+    #[test]
+    fn a_finding_outside_every_scope_stands_alone() {
+        let findings = [from("shape", Level::Error, "scripts/build.ts")];
+        let shown: Vec<&Finding> = findings.iter().collect();
+
+        assert_eq!(
+            Breakdown::by_path(&[module_scope()], &shown).rows_for_test(),
+            [("scripts/build.ts", 1, 0)]
+        );
+    }
+
+    /// Only areas that have something to say. A rule breakdown lists every
+    /// rule including the quiet ones -- that a rule was evaluated is an
+    /// answer. There is no equivalent list of directories, and printing every
+    /// clean directory in a monorepo would bury the ones that are not.
+    #[test]
+    fn the_path_breakdown_lists_only_what_fired() {
+        assert!(Breakdown::by_path(&[module_scope()], &[]).ids().is_empty());
+    }
+
+    /// It renders like the rule breakdown, because it is the same table with a
+    /// different first column.
+    #[test]
+    fn the_path_breakdown_renders_as_a_table() {
+        let findings = vec![
+            from("shape", Level::Error, "packages/domain/src/order/handlers"),
+            from(
+                "spec",
+                Level::Warning,
+                "packages/domain/src/invoice/calcs/a.ts",
+            ),
+        ];
+        let shown: Vec<&Finding> = findings.iter().collect();
+        let report = report(findings.clone());
+
+        let text = rendered_view(
+            &report,
+            &View::summarised(&shown, Breakdown::by_path(&[module_scope()], &shown), 0),
+            Format::Text,
+            TOOK,
+        );
+
+        assert_eq!(
+            text,
+            "packages/domain/src/order    1 error\n\
+             packages/domain/src/invoice  1 warning\n\
+             \n\
+             1 error, 1 warning · 34 files, 12 directories · 12ms\n"
         );
     }
 

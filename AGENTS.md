@@ -231,6 +231,29 @@ saves the parse, not the read.
 `--no-cache` re-parses everything. Use it only if you suspect a stale result;
 a run that disagrees with `--no-cache` is a bug worth reporting.
 
+#### The baseline
+
+A repository may carry `.archwarden/baseline.json` — a committed record of
+findings the project has decided to accept, usually written when archwarden was
+first adopted. `check` reports only what is *not* in it, and the summary says
+how many are accepted:
+
+```
+0 errors, 0 warnings · 3778 files, 1034 directories · 593ms
+78 accepted, 12 no longer occur — run `archwarden baseline` to update
+```
+
+**Do not add to it.** Writing `archwarden baseline` accepts every finding in the
+repository, which silently forgives whatever you just broke. It is a decision
+for a human, made once, reviewed in a pull request. If your change fails
+`check`, fix the change.
+
+`12 no longer occur` means someone fixed accepted debt — the entries are
+removable, and regenerating is the only time that command is right to run.
+
+`--no-baseline` shows everything, including accepted findings. Use it to answer
+"how much debt is there", never to decide whether your change is clean.
+
 #### Filtering what the report shows
 
 Five flags narrow the output. **None of them narrows what is checked.** Every
@@ -244,6 +267,7 @@ and without — so a filter is safe to leave in a command that gates a build.
 | `--paths <path>[,<path>]` | only findings under these paths |
 | `--level error\|warning` | only this level |
 | `--changed [<ref>]` | only files that differ from `<ref>` (default `HEAD`) |
+| `--by rule\|path` | what `--summary` counts by; implies `--summary` |
 
 All four compose with AND, and both list flags are repeatable as well as
 comma-separated.
@@ -283,7 +307,21 @@ calcs-need-spec      3 warnings
 7 errors, 3 warnings · 8 files, 20 directories · 1ms
 ```
 
-Worst first: errors descending, then warnings, then by rule id. **A rule with
+`--by path` counts the same findings by area instead:
+
+```
+packages/domain/src/invoice  2 errors, 1 warning
+packages/domain/src/order    2 errors, 1 warning
+packages/domain/src/client   1 error, 1 warning
+```
+
+The areas are the directories the rules' own scopes select, so a config with
+`roots: packages/domain/src/*` gets one row per module. `--summary` says what
+is dominating the output; `--by path` says which part of the repository is
+furthest from the rules, which is the one that tells you where to start. Only
+areas with findings get a row.
+
+Worst first in both: errors descending, then warnings, then by name. **A rule with
 no findings keeps its row** — that it was evaluated is an answer, and a missing
 row would read as a rule someone disabled. `--rules` narrows the rows, because
 it is the one filter that names rules; `--paths` and `--level` leave every row
@@ -318,6 +356,46 @@ not an empty digest.
 Deterministic: same config, same bytes. Safe to commit or to regenerate.
 Reach for it when you need the whole rule set at once — for one path,
 `describe` is cheaper and more precise.
+
+### `impact <path> --to <path>` — what a move would change
+
+Before moving a file, ask what it costs. Your editor rewrites the import
+specifiers; this says whether the destination is somewhere the architecture
+allows the file to be, and whether the move puts somebody else's import across
+a boundary.
+
+```bash
+npx archwarden impact packages/domain/src/order/calcs/total.ts \
+                --to  packages/app/src/billing/total.ts
+```
+
+```
+Moving `packages/domain/src/order/calcs/total.ts` to `packages/app/src/billing/total.ts`:
+
+  Rules that would stop applying:
+    domain-forbids-app
+
+  1 file imports it, 1 of which would newly cross a boundary:
+    packages/domain/src/invoice/calcs/sum.ts — domain-forbids-app
+
+  1 relative import in the file itself would need rewriting.
+
+  1 file has a dynamic import this cannot read. Check it by hand:
+    packages/app/src/loader.ts
+```
+
+**Read the last section every time.** `import(name)` names no module, so a file
+containing one may or may not import the target and archwarden cannot tell. The
+rest of the report is complete except for those files.
+
+`newly_forbidden_by` means the boundary is crossed *because of this move* — a
+boundary already being crossed is existing debt `check` reports today, not a
+consequence of what you are about to do.
+
+Relative imports are counted, not checked. Whether they still resolve after the
+move is `tsc`'s question, and it answers it better.
+
+It resolves the whole repository, so it costs about what `check` costs.
 
 ### `config explain <rule-id>` — what a rule reaches
 

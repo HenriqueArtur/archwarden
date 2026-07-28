@@ -278,6 +278,15 @@ pub struct FileFacts {
     pub exports: Vec<ExportFact>,
     /// Call expressions, in source order.
     pub calls: Vec<CallFact>,
+    /// Whether the file has a dynamic import naming no single module.
+    ///
+    /// `import(name)` and ``import(`./locales/${name}`)`` are recorded nowhere
+    /// in `imports`, because inventing a path for them would have a boundary
+    /// rule report one nobody wrote. That silence is right for a rule and
+    /// wrong for anything asking "who imports this file" — the honest answer
+    /// there is "these ones, and I cannot see inside that one".
+    #[serde(default)]
+    pub has_opaque_import: bool,
 }
 
 impl FileFacts {
@@ -292,6 +301,7 @@ impl FileFacts {
             imports: Vec::new(),
             exports: Vec::new(),
             calls: Vec::new(),
+            has_opaque_import: false,
         }
     }
 
