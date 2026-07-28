@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Builds the npm packages from the release archives.
 //
-// Eight packages: the one people install, and seven that carry a binary each.
+// Six packages: the one people install, and five that carry a binary each.
 // The seven are generated rather than kept in the tree, because their only
 // contents are a manifest and a file the release already produced, and a
 // checked-in copy is a copy that goes stale.
@@ -20,10 +20,10 @@ const here = fileURLToPath(new URL(".", import.meta.url));
 export const PLATFORMS = [
   { pkg: "cli-darwin-arm64", target: "aarch64-apple-darwin", os: "darwin", cpu: "arm64" },
   { pkg: "cli-darwin-x64", target: "x86_64-apple-darwin", os: "darwin", cpu: "x64" },
-  { pkg: "cli-linux-arm64", target: "aarch64-unknown-linux-gnu", os: "linux", cpu: "arm64", libc: "glibc" },
-  { pkg: "cli-linux-arm64-musl", target: "aarch64-unknown-linux-musl", os: "linux", cpu: "arm64", libc: "musl" },
-  { pkg: "cli-linux-x64", target: "x86_64-unknown-linux-gnu", os: "linux", cpu: "x64", libc: "glibc" },
-  { pkg: "cli-linux-x64-musl", target: "x86_64-unknown-linux-musl", os: "linux", cpu: "x64", libc: "musl" },
+  // Statically linked against musl, so they run on any Linux and declare no
+  // `libc`. See decision 14.
+  { pkg: "cli-linux-arm64", target: "aarch64-unknown-linux-musl", os: "linux", cpu: "arm64" },
+  { pkg: "cli-linux-x64", target: "x86_64-unknown-linux-musl", os: "linux", cpu: "x64" },
   { pkg: "cli-win32-x64", target: "x86_64-pc-windows-msvc", os: "win32", cpu: "x64" },
 ];
 
@@ -33,20 +33,17 @@ export function manifestFor(platform, version) {
   return {
     name: `@archwarden/${platform.pkg}`,
     version,
-    description: `The archwarden binary for ${platform.os}-${platform.cpu}${
-      platform.libc === "musl" ? " (musl)" : ""
-    }.`,
+    description: `The archwarden binary for ${platform.os}-${platform.cpu}.`,
     license: "MIT OR Apache-2.0",
     repository: {
       type: "git",
       url: "git+https://github.com/HenriqueArtur/archwarden.git",
     },
     homepage: "https://github.com/HenriqueArtur/archwarden",
-    // `os`, `cpu` and `libc` are how the package manager knows to skip this
-    // one. Without them every machine downloads all seven.
+    // `os` and `cpu` are how the package manager knows to skip this one.
+    // Without them every machine downloads all five.
     os: [platform.os],
     cpu: [platform.cpu],
-    ...(platform.libc ? { libc: [platform.libc] } : {}),
     files: [binary],
     engines: { node: ">=18" },
   };

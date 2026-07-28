@@ -17,6 +17,67 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 14 — Linux binaries are static musl, and the floor is a decision
+Status: accepted.
+Context: archwarden 0.3.0 would not start on Debian 12, Ubuntu 22.04,
+or any `node:` image. The binary required `GLIBC_2.39`, which only
+Ubuntu 24.04 and newer have.
+
+The cause was a feature: `--changed` was the first thing to put
+`std::process::Command` into the shipped binary, and Rust's standard
+library links its pidfd path along with it — `pidfd_spawnp` and
+`pidfd_getpid`, both glibc 2.39. Nothing about the toolchain or the
+runner changed; the code reached a corner of std that had a newer
+floor.
+
+Measuring the published binaries showed the deeper problem. 0.1.1 and
+0.2.0 required 2.34, and 0.3.0 required 2.39 — nobody had ever chosen
+either. The floor was whatever the build runner happened to have, and
+it moved when a feature touched a new symbol. Running the published
+0.2.0 in `debian:11` fails too, so "restore the old floor" was never
+a fix, only a smaller version of the same bug.
+Decision: the Linux packages carry **statically linked musl**
+binaries, under the plain `linux-x64` and `linux-arm64` names, with no
+`libc` field and no separate `-musl` packages. A static binary has no
+floor to move.
+
+The cost was measured rather than estimated, running the published
+glibc and musl 0.3.0 binaries on the same machine over 8000 files that
+are parsed and resolved: 55ms against 60ms cold, 51ms against 59ms
+warm, and the musl binary is slightly *smaller*. About 10%, or 8ms —
+against a failure mode that removes the tool from every common Linux
+container.
+Alternatives:
+- Build on an old base image, or with `cargo-zigbuild` targeting a
+  named glibc. Both work and both keep the performance. Rejected
+  because they replace one floor with another: the next time std
+  reaches a newer symbol the problem returns, and CI will not notice,
+  because CI runs on the new runner. It is the same trap, deferred.
+- Keep both, glibc as default and musl as fallback. Rejected: that is
+  what 0.3.0 shipped, and the glibc package is the one every
+  glibc-based machine installs — so the failure would remain the
+  default experience.
+- Avoid `std::process::Command`. Not viable: reading git's index by
+  hand to answer `--changed` is not a trade anyone should make.
+Consequences: Alpine and Debian 11 now run the same binary as Ubuntu
+24.04, and there is no libc detection left in the wrapper. The release
+archives for Linux are named `...-unknown-linux-musl`, which is what
+someone downloading directly will see.
+
+The floor being a decision is enforced, not documented: the release
+workflow runs each Linux binary inside `debian:11` (glibc 2.31, older
+than every current distribution) and `alpine` (no glibc at all) before
+anything is published. Those are the two ways a Linux binary fails to
+start.
+
+That check is the real lesson. Every check archwarden had ran on a
+machine shaped like the runner, so a binary that only worked on the
+runner passed all of them — including a full local battery, on a
+machine that happened to be Ubuntu 24.04 on aarch64. A test that
+cannot fail on the developer's machine has to run somewhere that can.
+
+---
+
 ### 13 — `--fix` stays out, and `spec-pair` is why
 Status: accepted.
 Context: a real repository put 37 warnings of "action without a spec"

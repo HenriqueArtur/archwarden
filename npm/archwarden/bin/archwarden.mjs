@@ -8,7 +8,6 @@
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import {
-  detectLibc,
   missingPackageMessage,
   packageFor,
   specifierFor,
@@ -16,9 +15,8 @@ import {
 } from "../resolve.mjs";
 
 const { platform, arch } = process;
-const libc = platform === "linux" ? detectLibc(process.report?.getReport?.()) : null;
 
-const specifier = specifierFor(platform, arch, libc);
+const specifier = specifierFor(platform, arch);
 if (!specifier) {
   console.error(unsupportedMessage(platform, arch));
   process.exit(2);
@@ -28,7 +26,7 @@ let binary;
 try {
   binary = createRequire(import.meta.url).resolve(specifier);
 } catch {
-  console.error(missingPackageMessage(packageFor(platform, arch, libc)));
+  console.error(missingPackageMessage(packageFor(platform, arch)));
   process.exit(2);
 }
 

@@ -31,9 +31,8 @@ test("every platform the wrapper looks for is one this builds", async () => {
   assert.deepEqual(built, Object.keys(manifest.optionalDependencies).sort());
 
   for (const platform of PLATFORMS) {
-    const libc = platform.libc ?? null;
     assert.equal(
-      packageFor(platform.os, platform.cpu, libc),
+      packageFor(platform.os, platform.cpu),
       `@archwarden/${platform.pkg}`,
       `the resolver finds ${platform.pkg}`,
     );
@@ -41,19 +40,19 @@ test("every platform the wrapper looks for is one this builds", async () => {
 });
 
 test("each package declares what it is for", () => {
-  // Without `os`/`cpu`/`libc` a package manager installs all seven on every
-  // machine: 30 MB to use 4.
+  // Without `os` and `cpu` a package manager installs all five on every
+  // machine: 20 MB to use 4.
   for (const platform of PLATFORMS) {
     const manifest = manifestFor(platform, "1.2.3");
 
     assert.deepEqual(manifest.os, [platform.os], platform.pkg);
     assert.deepEqual(manifest.cpu, [platform.cpu], platform.pkg);
     assert.equal(manifest.version, "1.2.3");
-    if (platform.os === "linux") {
-      assert.deepEqual(manifest.libc, [platform.libc], `${platform.pkg} names its libc`);
-    } else {
-      assert.equal(manifest.libc, undefined, `${platform.pkg} has no libc to name`);
-    }
+    assert.equal(
+      manifest.libc,
+      undefined,
+      `${platform.pkg} declares no libc: the Linux binaries are static`,
+    );
   }
 });
 
@@ -152,11 +151,21 @@ test("the agent instructions travel with the package", async () => {
   }
 });
 
-test("both linux libcs are covered, for both architectures", () => {
-  // The gap that would be easiest to leave: an Alpine CI image on arm64.
+test("every linux binary is statically linked against musl", () => {
+  // The defect this replaces: 0.3.0's glibc build required 2.39 and would not
+  // start on Debian 12, Ubuntu 22.04, or any node: image. The floor was never
+  // chosen — it was whatever the build runner had that month, and it moved
+  // when a feature first pulled `std::process::Command` into the binary.
+  //
+  // A static binary has no floor to move. The cost, measured rather than
+  // guessed: about 8ms on a run of 8000 parsed files.
   const linux = PLATFORMS.filter((p) => p.os === "linux");
-  assert.deepEqual(
-    linux.map((p) => `${p.cpu}-${p.libc}`).sort(),
-    ["arm64-glibc", "arm64-musl", "x64-glibc", "x64-musl"],
-  );
+
+  assert.deepEqual(linux.map((p) => p.cpu).sort(), ["arm64", "x64"]);
+  for (const platform of linux) {
+    assert.ok(
+      platform.target.endsWith("-unknown-linux-musl"),
+      `${platform.pkg} builds ${platform.target}`,
+    );
+  }
 });

@@ -34,9 +34,15 @@ needs. There is no postinstall script and nothing to compile.
 Then `pnpm check:arch`. Outside a script, use `pnpm exec archwarden` /
 `npx archwarden`.
 
-Prebuilt binaries for macOS, Linux (glibc and musl) and Windows are also
-attached to every [release](https://github.com/HenriqueArtur/archwarden/releases),
-with `.sha256` files beside them.
+Prebuilt binaries for macOS, Linux and Windows are attached to every
+[release](https://github.com/HenriqueArtur/archwarden/releases), with `.sha256`
+files beside them.
+
+The Linux binaries are statically linked against musl, so they run on any
+distribution — Alpine, Debian 11, an Ubuntu 24.04 runner — with no glibc
+version to match. That is [decision 14](docs/DECISIONS.md), and the release
+workflow proves it by running each one inside `debian:11` and `alpine` before
+publishing.
 
 ## Status
 
