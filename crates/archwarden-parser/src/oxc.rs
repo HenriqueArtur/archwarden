@@ -82,12 +82,15 @@ impl ParserTrait for OxcParser {
 
         let declaration_tags = declaration_tags(&parsed.program);
 
+        let (imports, has_opaque_import) = imports(&parsed.module_record, &parsed.program);
+
         Ok(FileFacts {
             path: path.clone(),
             content_hash,
-            imports: imports(&parsed.module_record, &parsed.program),
+            imports,
             exports: exports(&parsed.module_record, &declaration_tags),
             calls: calls(&parsed.program),
+            has_opaque_import,
         })
     }
 }
@@ -300,7 +303,7 @@ fn local_name(name: &oxc_syntax::module_record::ExportLocalName<'_>) -> Option<S
 fn imports(
     record: &oxc_syntax::module_record::ModuleRecord<'_>,
     program: &Program<'_>,
-) -> Vec<ImportFact> {
+) -> (Vec<ImportFact>, bool) {
     // Grouped by statement, so one `import { A, B } from './x'` is one fact
     // with two names rather than two facts naming the same module.
     let mut by_statement: Vec<ImportFact> = Vec::new();
@@ -354,22 +357,26 @@ fn imports(
     // off the AST -- which is how a boundary rule was bypassable by writing
     // `await import('@/domain/user')`. Found by the differential harness
     // against a real monorepo; see M5e in `docs/PLAN-V0.md`.
-    by_statement.extend(dynamic_imports(program));
+    let (dynamic, has_opaque_import) = dynamic_imports(program);
+    by_statement.extend(dynamic);
 
     by_statement.sort_by_key(|fact| (fact.span.start, fact.span.end));
-    by_statement
+    (by_statement, has_opaque_import)
 }
 
-/// Every `import()` in the file whose specifier is written out.
-fn dynamic_imports(program: &Program<'_>) -> Vec<ImportFact> {
+/// Every `import()` in the file whose specifier is written out, and whether
+/// any was not.
+fn dynamic_imports(program: &Program<'_>) -> (Vec<ImportFact>, bool) {
     let mut collector = DynamicImportCollector::default();
     collector.visit_program(program);
-    collector.imports
+    (collector.imports, collector.opaque)
 }
 
 #[derive(Default)]
 struct DynamicImportCollector {
     imports: Vec<ImportFact>,
+    /// Whether an `import()` named something this cannot read.
+    opaque: bool,
 }
 
 impl DynamicImportCollector {
@@ -397,6 +404,12 @@ impl<'a> Visit<'a> for DynamicImportCollector {
         // everything.
         if let Expression::StringLiteral(literal) = &expression.source {
             self.record(literal.value.as_str(), false, expression.span);
+        } else {
+            // Recorded as a fact about the file rather than as an import,
+            // because it is not one: it is the absence of one this cannot see.
+            // A rule must not act on it; a caller asking who imports a file
+            // must be told it exists.
+            self.opaque = true;
         }
         oxc_ast_visit::walk::walk_import_expression(self, expression);
     }
