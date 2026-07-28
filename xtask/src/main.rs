@@ -10,20 +10,29 @@ use std::{path::PathBuf, process::ExitCode};
 /// Where the published schema lives, relative to the repository root.
 const SCHEMA_PATH: &str = "schema/v0.json";
 
+/// Where the git hooks live, relative to the repository root.
+///
+/// Committed rather than written into `.git/hooks`, so they are reviewed like
+/// any other file and arrive with a clone. `core.hooksPath` is the one thing
+/// git cannot take from the repository itself, which is why this task exists.
+const HOOKS_PATH: &str = ".githooks";
+
 fn main() -> ExitCode {
     let task = std::env::args().nth(1);
 
     match task.as_deref() {
         Some("gen-schema") => run(gen_schema(Mode::Write)),
         Some("check-schema") => run(gen_schema(Mode::Check)),
+        Some("hooks") => run(install_hooks()),
         other => {
             if let Some(unknown) = other {
                 eprintln!("unknown task `{unknown}`");
             }
-            eprintln!("usage: cargo xtask <gen-schema|check-schema>");
+            eprintln!("usage: cargo xtask <gen-schema|check-schema|hooks>");
             eprintln!();
             eprintln!("  gen-schema    write {SCHEMA_PATH} from the config types");
             eprintln!("  check-schema  fail if {SCHEMA_PATH} is out of date");
+            eprintln!("  hooks         point git at {HOOKS_PATH}");
             ExitCode::FAILURE
         }
     }
@@ -43,6 +52,40 @@ fn run(result: Result<(), String>) -> ExitCode {
 enum Mode {
     Write,
     Check,
+}
+
+/// Points git at the committed hooks.
+///
+/// A one-line `git config`, wrapped so nobody has to remember the line. Chosen
+/// over `cargo-husky` and friends deliberately: a dependency whose job is to
+/// write into `.git` during a build is a dependency `cargo deny` exists to ask
+/// questions about, and `cargo-husky` installs on `cargo test` — the command
+/// someone runs when they are already in a hurry. An explicit setup step is
+/// slower to adopt and easier to trust.
+fn install_hooks() -> Result<(), String> {
+    let root = repository_root();
+    let hooks = root.join(HOOKS_PATH);
+    if !hooks.is_dir() {
+        return Err(format!("`{}` is not there", hooks.display()));
+    }
+
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&root)
+        .args(["config", "core.hooksPath", HOOKS_PATH])
+        .status()
+        .map_err(|error| format!("cannot run git: {error}"))?;
+
+    if !status.success() {
+        return Err("git refused to set `core.hooksPath`".to_owned());
+    }
+
+    println!("git will now run the hooks in {HOOKS_PATH}/");
+    println!();
+    println!("  pre-commit  rustfmt, and typos when it is installed");
+    println!();
+    println!("`git commit --no-verify` skips them.");
+    Ok(())
 }
 
 /// Generates the JSON Schema editors pick up through `$schema`.
