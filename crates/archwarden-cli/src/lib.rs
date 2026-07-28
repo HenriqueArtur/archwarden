@@ -3,6 +3,7 @@
 //! The binary is a four-line shim over [`run`]. Everything that decides
 //! anything lives here so it can be tested without spawning a process.
 
+pub mod baseline;
 pub mod changed;
 pub mod describe;
 pub mod diagnostic;
@@ -149,6 +150,13 @@ pub enum Command {
         #[arg(long, value_name = "REF", num_args = 0..=1,
               default_missing_value = crate::changed::DEFAULT_REF)]
         changed: Option<String>,
+
+        /// Report every finding, including the ones the baseline accepts.
+        ///
+        /// "How bad is it really" is a fair question, and answering it should
+        /// not mean deleting a committed file.
+        #[arg(long)]
+        no_baseline: bool,
     },
 
     /// Say what the rules require of a path, which need not exist yet.
@@ -228,6 +236,18 @@ pub enum Command {
 
     /// Write a starter configuration.
     Init,
+
+    /// Accept every finding this repository has right now.
+    ///
+    /// Writes `.archwarden/baseline.json`, which is meant to be committed.
+    /// `check` then reports only findings that are not in it, so a repository
+    /// adopting archwarden can gate on new violations from day one instead of
+    /// on debt nobody has decided about yet.
+    ///
+    /// Unlike the filters on `check`, this changes the exit code. That is what
+    /// it is for, and why it is a file in the repository rather than a flag: a
+    /// line added to it is a decision, visible in a pull request.
+    Baseline,
 
     /// Inspect the configuration itself.
     Config {
@@ -312,6 +332,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             paths,
             level,
             changed,
+            no_baseline,
             ..
         } => check(
             cli.config.as_deref(),
@@ -324,6 +345,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
                 paths,
                 changed: changed.as_deref(),
                 level: *level,
+                no_baseline: *no_baseline,
             },
             output,
         ),
@@ -354,6 +376,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             output,
         ),
         Command::Init => init(working_directory, output),
+        Command::Baseline => write_baseline(cli.config.as_deref(), working_directory, output),
         Command::Hook { harness } => {
             hook(*harness, cli.config.as_deref(), working_directory, output)
         }
@@ -481,6 +504,79 @@ fn starter(reference: &str) -> String {
     )
 }
 
+/// Accepts every finding this repository has right now.
+///
+/// Runs a full check and writes what it found. Deliberately not incremental:
+/// a baseline that accepted only part of a run would be a promise the file
+/// does not keep.
+fn write_baseline(
+    explicit: Option<&Utf8Path>,
+    working_directory: &Utf8Path,
+    output: &mut Output<'_>,
+) -> Exit {
+    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+        Ok(prepared) => prepared,
+        Err(exit) => return exit,
+    };
+
+    let tree = match archwarden_engine::walk::walk(&merged.root, &compiled) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = writeln!(output.err, "{error}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    let mut cache = if archwarden_engine::run::reads_files(&compiled) {
+        open_cache(&merged.root, output)
+    } else {
+        None
+    };
+    let outcome = archwarden_engine::run::check(archwarden_engine::run::Run {
+        root: &merged.root,
+        config: &compiled,
+        tree: &tree,
+        cache: cache.as_mut(),
+    });
+    if let Some(cache) = cache.as_mut() {
+        let _ = cache.flush();
+    }
+
+    let baseline = crate::baseline::Baseline::of(&outcome.findings);
+    if let Err(message) = baseline.write(&merged.root) {
+        let _ = writeln!(output.err, "{message}");
+        return Exit::ConfigProblem;
+    }
+
+    let path = merged.root.join(crate::baseline::BASELINE_PATH);
+    if baseline.is_empty() {
+        // Still written, so `check` has something to read and the next person
+        // does not wonder whether the command ran.
+        let _ = writeln!(
+            output.out,
+            "wrote {path}, accepting nothing: this repository has no findings"
+        );
+    } else {
+        let _ = writeln!(
+            output.out,
+            "wrote {path}, accepting {} {}",
+            baseline.len(),
+            if baseline.len() == 1 {
+                "finding"
+            } else {
+                "findings"
+            }
+        );
+        let _ = writeln!(
+            output.out,
+            "\nCommit it. Each line is debt this project has decided to carry,\n\
+             and `check` will now fail only on findings that are not in it."
+        );
+    }
+
+    Exit::Clean
+}
+
 /// Writes a starter configuration, if there is not one already.
 fn init(working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
     let path = working_directory.join(discovery::CONFIG_FILE_NAME);
@@ -547,7 +643,18 @@ fn hook(
         return allow(output);
     };
 
-    let single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
+    let mut single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
+    // Debt the project already accepted must not block a write. An agent asked
+    // to edit a legacy file would otherwise be refused for something that is
+    // not its doing, and the hook would be uninstalled by lunchtime.
+    //
+    // A broken baseline allows the write rather than refusing it, like every
+    // other failure on this path: a configuration problem is the user's to fix
+    // at their own pace, not a reason to stop them typing.
+    if let Ok(Some(baseline)) = crate::baseline::Baseline::load(&merged.root) {
+        single.findings.retain(|finding| !baseline.accepts(finding));
+    }
+
     // Probed at the config root rather than the working directory: that is
     // where `node_modules` sits in a monorepo, and where the harness will be
     // when it runs what this message suggests.
@@ -679,7 +786,17 @@ fn check_one(
         }
     };
 
-    let single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
+    let mut single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
+    // A pre-write hook that blocked an agent on debt the project already
+    // accepted would be uninstalled by lunchtime.
+    match crate::baseline::Baseline::load(&merged.root) {
+        Ok(Some(baseline)) => single.findings.retain(|finding| !baseline.accepts(finding)),
+        Ok(None) => {}
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
+    }
     crate::report::render_single(&single, format, output.out);
 
     if single.fails_build() {
@@ -833,6 +950,7 @@ struct CheckOptions<'a> {
     paths: &'a [String],
     changed: Option<&'a str>,
     level: Option<crate::filter::LevelFilter>,
+    no_baseline: bool,
 }
 
 fn check(
@@ -849,6 +967,20 @@ fn check(
     let (merged, compiled) = match prepare(explicit, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
+    };
+
+    // Read before the walk, so a broken baseline costs a message rather than a
+    // full run the user then has to repeat.
+    let baseline = if options.no_baseline {
+        None
+    } else {
+        match crate::baseline::Baseline::load(&merged.root) {
+            Ok(baseline) => baseline,
+            Err(message) => {
+                let _ = writeln!(output.err, "{message}");
+                return Exit::ConfigProblem;
+            }
+        }
     };
 
     // Asked of git before the walk, so a bad ref costs a message rather than a
@@ -913,31 +1045,24 @@ fn check(
         let _ = writeln!(output.err, "note: the cache was not written — {error}");
     }
 
-    let shown: Vec<&archwarden_core::finding::Finding> = outcome
+    // The baseline first, and not as a filter: what it accepts is gone from
+    // this run entirely, including from the exit code. That is the one thing
+    // a filter may never do, and the reason this is a committed file rather
+    // than a flag -- see `crate::baseline`.
+    let unaccepted: Vec<&archwarden_core::finding::Finding> = outcome
         .findings
         .iter()
+        .filter(|finding| baseline.as_ref().is_none_or(|b| !b.accepts(finding)))
+        .collect();
+
+    let shown: Vec<&archwarden_core::finding::Finding> = unaccepted
+        .iter()
+        .copied()
         .filter(|finding| filters.keep(finding))
         .collect();
-    let hidden = outcome.findings.len() - shown.len();
+    let hidden = unaccepted.len() - shown.len();
 
-    let view = if options.summary {
-        // Rows come from the config, not from what fired. `--rules` is the one
-        // filter that names *rules*, so it is the one that narrows the rows;
-        // `--paths` and `--level` leave every row in place, because "this rule
-        // found nothing here" is the answer the reader wanted.
-        let ids: Vec<String> = filters.named_rules().map_or_else(
-            || {
-                compiled
-                    .rules()
-                    .map(|rule| rule.id.as_str().to_owned())
-                    .collect()
-            },
-            |named| named.iter().map(|id| id.as_str().to_owned()).collect(),
-        );
-        crate::report::View::summarised(&shown, crate::report::Breakdown::over(ids, &shown), hidden)
-    } else {
-        crate::report::View::filtered(&shown, hidden)
-    };
+    let view = view_of(&shown, hidden, options.summary, &filters, &compiled);
 
     crate::report::render(
         &crate::report::Rendered {
@@ -950,14 +1075,80 @@ fn check(
         output.out,
     );
 
-    // From the whole report, never from the view. A filter narrows what is
-    // printed and nothing else -- otherwise `--rules` in a CI command would
-    // quietly turn a failing build green.
-    if outcome.fails_build() {
+    if let Some(baseline) = &baseline {
+        report_standing(baseline, &outcome.findings, output);
+    }
+
+    // From what the baseline did not accept, never from the view. A filter
+    // narrows what is printed and nothing else -- otherwise `--rules` in a CI
+    // command would quietly turn a failing build green.
+    if unaccepted.iter().any(|finding| finding.level.fails_build()) {
         Exit::Errors
     } else {
         Exit::Clean
     }
+}
+
+/// How this run stands against the baseline.
+///
+/// Printed on every run that has one, deliberately. A baseline nobody is
+/// reminded of is a suppression file, and the entries that no longer occur are
+/// the only cheerful number archwarden has -- as well as the thing that stops
+/// a stale entry hiding a violation that came back.
+fn report_standing(
+    baseline: &crate::baseline::Baseline,
+    findings: &[archwarden_core::finding::Finding],
+    output: &mut Output<'_>,
+) {
+    let standing = baseline.standing(findings);
+    let _ = write!(output.out, "{} accepted", standing.accepted);
+
+    if standing.gone > 0 {
+        let _ = write!(
+            output.out,
+            ", {} no longer {} — run `archwarden baseline` to update",
+            standing.gone,
+            if standing.gone == 1 {
+                "occurs"
+            } else {
+                "occur"
+            }
+        );
+    }
+
+    let _ = writeln!(output.out);
+}
+
+/// What to show, once the baseline and the filters have had their say.
+///
+/// Extracted from `check` because it is a decision of its own: whether the
+/// reader asked for a listing or for counts, and which rules keep a row.
+fn view_of<'a>(
+    shown: &[&'a archwarden_core::finding::Finding],
+    hidden: usize,
+    summary: bool,
+    filters: &crate::filter::Filters,
+    compiled: &archwarden_core::compiled::CompiledConfig,
+) -> crate::report::View<'a> {
+    if !summary {
+        return crate::report::View::filtered(shown, hidden);
+    }
+
+    // Rows come from the config, not from what fired. `--rules` is the one
+    // filter that names *rules*, so it is the one that narrows the rows;
+    // `--paths` and `--level` leave every row in place, because "this rule
+    // found nothing here" is the answer the reader wanted.
+    let ids: Vec<String> = filters.named_rules().map_or_else(
+        || {
+            compiled
+                .rules()
+                .map(|rule| rule.id.as_str().to_owned())
+                .collect()
+        },
+        |named| named.iter().map(|id| id.as_str().to_owned()).collect(),
+    );
+
+    crate::report::View::summarised(shown, crate::report::Breakdown::over(ids, shown), hidden)
 }
 
 /// Opens the repository's cache, or explains why it is running without one.
@@ -1212,6 +1403,137 @@ mod tests {
                 "export const b=1;",
             ),
         ]
+    }
+
+    // --- baseline ---------------------------------------------------------
+
+    /// The day-one problem: a repository adopting archwarden inherits
+    /// violations nobody has decided about, so the build is red before anyone
+    /// has done anything wrong.
+    #[test]
+    fn a_baseline_makes_inherited_debt_stop_failing_the_build() {
+        let (guard, before) = run_in(&filterable(), &["check"]);
+        assert_eq!(before.exit, Exit::Errors);
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+
+        let written = run_at(&root, &["baseline"]);
+        assert_eq!(written.exit, Exit::Clean);
+        assert!(written.out.contains("2 findings"), "{}", written.out);
+
+        let after = run_at(&root, &["check"]);
+        assert_eq!(after.exit, Exit::Clean, "{}", after.out);
+        assert!(after.out.contains("2 accepted"), "{}", after.out);
+    }
+
+    /// And a new violation still fails, which is the whole reason the previous
+    /// test is not just `--level error` with extra steps.
+    #[test]
+    fn a_new_violation_fails_through_a_baseline() {
+        let (guard, _) = run_in(&filterable(), &["check"]);
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        run_at(&root, &["baseline"]);
+
+        std::fs::create_dir_all(guard.path().join("packages/domain/src/order/repositories"))
+            .expect("create dirs");
+        std::fs::write(
+            guard
+                .path()
+                .join("packages/domain/src/order/repositories/a.ts"),
+            "export const a = 1;",
+        )
+        .expect("write");
+
+        let after = run_at(&root, &["check"]);
+
+        assert_eq!(after.exit, Exit::Errors, "{}", after.out);
+        assert!(after.out.contains("repositories"), "{}", after.out);
+        assert!(
+            !after.out.contains("handlers"),
+            "the accepted one stays quiet: {}",
+            after.out
+        );
+    }
+
+    /// The ratchet. Fixing accepted debt is reported, and the entry named as
+    /// removable -- without which reintroducing it later would be hidden by
+    /// the stale entry.
+    #[test]
+    fn fixing_accepted_debt_is_reported() {
+        let (guard, _) = run_in(&filterable(), &["check"]);
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        run_at(&root, &["baseline"]);
+
+        std::fs::remove_dir_all(guard.path().join("packages/app/src/billing/controllers"))
+            .expect("remove");
+
+        let after = run_at(&root, &["check"]);
+
+        assert_eq!(after.exit, Exit::Clean);
+        assert!(after.out.contains("1 accepted"), "{}", after.out);
+        assert!(after.out.contains("1 no longer occurs"), "{}", after.out);
+        assert!(after.out.contains("archwarden baseline"), "{}", after.out);
+    }
+
+    /// The escape hatch. "How bad is it really" is a fair question and the
+    /// answer must not require deleting a committed file.
+    #[test]
+    fn no_baseline_shows_everything_again() {
+        let (guard, _) = run_in(&filterable(), &["check"]);
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        run_at(&root, &["baseline"]);
+
+        let full = run_at(&root, &["check", "--no-baseline"]);
+
+        assert_eq!(full.exit, Exit::Errors);
+        assert!(full.out.contains("handlers"), "{}", full.out);
+        assert!(!full.out.contains("accepted"), "{}", full.out);
+    }
+
+    /// The pre-write hook has to respect it too. An agent editing a legacy
+    /// file would otherwise be blocked by debt that is not its own, and would
+    /// have the hook uninstalled by lunchtime.
+    ///
+    /// Through `hook claude-code`, not through `check --file`. The first
+    /// version of this test used the latter, passed, and the hook went on
+    /// denying writes -- they are separate code paths, and testing the
+    /// neighbour of the thing is not testing the thing.
+    #[test]
+    fn the_hook_respects_the_baseline() {
+        let (guard, _) = run_in(&filterable(), &["check"]);
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
+        run_at(&root, &["baseline"]);
+
+        // `check --file` too, since both answer the same question.
+        let checked = run_at(
+            &root,
+            &["check", "--file", "packages/domain/src/order/handlers/a.ts"],
+        );
+        assert_eq!(checked.exit, Exit::Clean, "{}", checked.out);
+
+        let event = format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{root}/packages/domain/src/order/handlers/a.ts","content":"x"}}}}"#
+        );
+        let hooked = run_with(&root, &["hook", "claude-code"], &event);
+
+        assert_eq!(
+            hooked.out.trim(),
+            "{}",
+            "accepted debt does not block a write: {}",
+            hooked.out
+        );
+    }
+
+    /// A baseline on a clean repository is an empty one, not an error.
+    #[test]
+    fn a_clean_repository_writes_an_empty_baseline() {
+        let (guard, result) = run_in(&[("arch.config.json", MINIMAL)], &["baseline"]);
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(result.out.contains("nothing"), "{}", result.out);
+        assert!(
+            guard.path().join(".archwarden/baseline.json").exists(),
+            "the file is still written, so `check` has something to read"
+        );
     }
 
     /// The invariant the whole feature rests on. A filter narrows what is

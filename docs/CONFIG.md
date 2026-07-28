@@ -343,6 +343,61 @@ Without this, one unwanted rule makes a whole preset unusable. Disabling an
 id that does not exist is a doctor error, so a typo fails loudly instead of
 silently disabling nothing.
 
+## Adopting archwarden in an existing repository
+
+The first run on a repository that did not grow up with these rules reports
+everything at once — on one real project, 32 errors and 46 warnings. That
+leaves two bad choices: keep archwarden out of CI, where the rules rot, or put
+it in and teach everyone to ignore red.
+
+```bash
+archwarden baseline     # writes .archwarden/baseline.json
+git add .archwarden/baseline.json
+```
+
+`check` now reports only findings that are not in it. The build is green today
+and fails at the next *new* violation.
+
+**Commit the file.** Each line is debt the project has decided to carry, and a
+line added in a pull request is a visible decision — reviewed like any other.
+That is the whole difference between a baseline and a suppression file.
+
+Every run says where it stands:
+
+```
+0 errors, 0 warnings · 3778 files, 1034 directories · 593ms
+78 accepted, 12 no longer occur — run `archwarden baseline` to update
+```
+
+The second number is the ratchet. Fixing accepted debt is reported, and the
+entries become removable — without which, fixing a violation and reintroducing
+it later would be hidden by the stale entry.
+
+`archwarden check --no-baseline` reports everything again, for when the
+question is "how bad is it really".
+
+**Unlike the filters below, a baseline changes the exit code.** That is what it
+is for, and why it is a committed file rather than a flag.
+
+### What counts as the same accepted finding
+
+The rule and the path, and nothing else.
+
+Not the level: promoting a rule from `warning` to `error` is the project
+raising its own bar on debt it already acknowledged.
+
+Not the detail: renaming a disallowed folder from `handlers` to `controllers`
+is not a new violation, and treating it as one would make the file churn on
+every rename. The cost is a case this deliberately does not catch — fixing a
+violation and breaking differently *at the same path under the same rule* stays
+accepted.
+
+And no timestamp, so regenerating an unchanged repository produces no diff.
+`git blame` on the file already says when each line arrived and who wrote it.
+
+The pre-write hook respects the baseline too: an agent editing a legacy file is
+not blocked by debt that is not its own.
+
 ## Filtering the report
 
 Four flags on `check` decide what is **printed**. None of them decides what is

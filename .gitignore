@@ -6,8 +6,9 @@
 # builds and supply-chain auditing depend on it. Do not add it here.
 
 # archwarden's own cache directory (when dogfooding).
-# Only the cache — .archwarden/ also holds generated artefacts such as
-# AGENT_RULES.md, which users may legitimately want to commit.
+# Only the cache — .archwarden/ also holds artefacts users are meant to commit:
+# AGENT_RULES.md, and baseline.json, which is a record of accepted debt and is
+# worthless if it does not travel with the repository.
 .archwarden/cache/
 
 # Personal tooling, not required to work on this project

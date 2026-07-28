@@ -231,6 +231,29 @@ saves the parse, not the read.
 `--no-cache` re-parses everything. Use it only if you suspect a stale result;
 a run that disagrees with `--no-cache` is a bug worth reporting.
 
+#### The baseline
+
+A repository may carry `.archwarden/baseline.json` — a committed record of
+findings the project has decided to accept, usually written when archwarden was
+first adopted. `check` reports only what is *not* in it, and the summary says
+how many are accepted:
+
+```
+0 errors, 0 warnings · 3778 files, 1034 directories · 593ms
+78 accepted, 12 no longer occur — run `archwarden baseline` to update
+```
+
+**Do not add to it.** Writing `archwarden baseline` accepts every finding in the
+repository, which silently forgives whatever you just broke. It is a decision
+for a human, made once, reviewed in a pull request. If your change fails
+`check`, fix the change.
+
+`12 no longer occur` means someone fixed accepted debt — the entries are
+removable, and regenerating is the only time that command is right to run.
+
+`--no-baseline` shows everything, including accepted findings. Use it to answer
+"how much debt is there", never to decide whether your change is clean.
+
 #### Filtering what the report shows
 
 Five flags narrow the output. **None of them narrows what is checked.** Every
