@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
   binaryName,
-  detectLibc,
   missingPackageMessage,
   packageFor,
   specifierFor,
@@ -13,13 +12,29 @@ import {
 } from "../resolve.mjs";
 
 test("every published platform maps to its package", () => {
-  assert.equal(packageFor("darwin", "arm64", null), "@archwarden/cli-darwin-arm64");
-  assert.equal(packageFor("darwin", "x64", null), "@archwarden/cli-darwin-x64");
-  assert.equal(packageFor("win32", "x64", null), "@archwarden/cli-win32-x64");
-  assert.equal(packageFor("linux", "x64", "glibc"), "@archwarden/cli-linux-x64");
-  assert.equal(packageFor("linux", "arm64", "glibc"), "@archwarden/cli-linux-arm64");
-  assert.equal(packageFor("linux", "x64", "musl"), "@archwarden/cli-linux-x64-musl");
-  assert.equal(packageFor("linux", "arm64", "musl"), "@archwarden/cli-linux-arm64-musl");
+  assert.equal(packageFor("darwin", "arm64"), "@archwarden/cli-darwin-arm64");
+  assert.equal(packageFor("darwin", "x64"), "@archwarden/cli-darwin-x64");
+  assert.equal(packageFor("win32", "x64"), "@archwarden/cli-win32-x64");
+  assert.equal(packageFor("linux", "x64"), "@archwarden/cli-linux-x64");
+  assert.equal(packageFor("linux", "arm64"), "@archwarden/cli-linux-arm64");
+});
+
+test("one linux package per architecture, whatever C library is installed", () => {
+  // The Linux binaries are statically linked against musl, so there is nothing
+  // to detect and nothing to choose. 0.3.0 shipped a glibc build that required
+  // 2.39 and would not start on Debian 12 — a floor nobody had chosen, moving
+  // with whatever the runner had that month. A static binary has no floor.
+  assert.equal(packageFor("linux", "arm64"), "@archwarden/cli-linux-arm64");
+  assert.equal(packageFor("linux", "x64"), "@archwarden/cli-linux-x64");
+
+  // And no `-musl` package is reachable, because there is no longer one to
+  // reach: a name that resolved to nothing would fail at first run.
+  for (const platform of ["darwin", "linux", "win32"]) {
+    for (const arch of ["arm64", "x64"]) {
+      const pkg = packageFor(platform, arch);
+      assert.ok(!pkg?.endsWith("-musl"), `${platform}-${arch} -> ${pkg}`);
+    }
+  }
 });
 
 test("the map covers exactly what package.json declares", async () => {
@@ -34,21 +49,12 @@ test("the map covers exactly what package.json declares", async () => {
   const reachable = new Set();
   for (const platform of ["darwin", "linux", "win32"]) {
     for (const arch of ["arm64", "x64"]) {
-      for (const libc of ["glibc", "musl"]) {
-        const pkg = packageFor(platform, arch, libc);
-        if (pkg) reachable.add(pkg);
-      }
+      const pkg = packageFor(platform, arch);
+      if (pkg) reachable.add(pkg);
     }
   }
 
   assert.deepEqual([...reachable].sort(), declared);
-});
-
-test("musl only applies to linux", () => {
-  // A `libc` of "musl" on macOS is a bug in the caller, not a platform. It
-  // must not select a package that does not exist.
-  assert.equal(packageFor("darwin", "arm64", "musl"), "@archwarden/cli-darwin-arm64");
-  assert.equal(packageFor("win32", "x64", "musl"), "@archwarden/cli-win32-x64");
 });
 
 test("a platform we do not publish for gets null, not a guess", () => {
@@ -58,18 +64,9 @@ test("a platform we do not publish for gets null, not a guess", () => {
     ["win32", "arm64"],
     ["darwin", "ppc64"],
   ]) {
-    assert.equal(packageFor(platform, arch, "glibc"), null, `${platform}-${arch}`);
-    assert.equal(specifierFor(platform, arch, "glibc"), null);
+    assert.equal(packageFor(platform, arch), null, `${platform}-${arch}`);
+    assert.equal(specifierFor(platform, arch), null);
   }
-});
-
-test("musl is detected by the absence of a glibc version", () => {
-  assert.equal(detectLibc({ header: { glibcVersionRuntime: "2.39" } }), "glibc");
-  assert.equal(detectLibc({ header: {} }), "musl");
-  // No report at all: assume glibc, which nearly every Linux is. A wrong
-  // guess fails loudly when the package is missing, not silently.
-  assert.equal(detectLibc(undefined), "glibc");
-  assert.equal(detectLibc(null), "glibc");
 });
 
 test("the binary carries the extension its platform needs", () => {
@@ -80,11 +77,11 @@ test("the binary carries the extension its platform needs", () => {
 
 test("the specifier is the package plus the binary", () => {
   assert.equal(
-    specifierFor("linux", "x64", "musl"),
-    "@archwarden/cli-linux-x64-musl/archwarden",
+    specifierFor("linux", "x64"),
+    "@archwarden/cli-linux-x64/archwarden",
   );
   assert.equal(
-    specifierFor("win32", "x64", null),
+    specifierFor("win32", "x64"),
     "@archwarden/cli-win32-x64/archwarden.exe",
   );
 });

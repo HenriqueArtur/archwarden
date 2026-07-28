@@ -41,18 +41,19 @@ jobs:
             runner: macos-latest
           - target: x86_64-apple-darwin
             runner: macos-latest
-          - target: x86_64-unknown-linux-gnu
-            runner: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            runner: ubuntu-24.04-arm
+          # Linux is musl only. A glibc build links against whatever the
+          # runner has, which made 0.3.0 require 2.39 and refuse to start on
+          # Debian 12 -- a floor nobody chose. See decision 14.
           - target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
             packages: musl-tools
             cc: musl-gcc
+            containers: "debian:11 alpine:3.19"
           - target: aarch64-unknown-linux-musl
             runner: ubuntu-24.04-arm
             packages: musl-tools
             cc: musl-gcc
+            containers: "debian:11 alpine:3.19"
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             archive: zip
@@ -123,6 +124,30 @@ jobs:
             echo "::error::the tag says $VERSION and the binary says '$REPORTED'; bump the version in Cargo.toml"
             exit 1
           fi
+
+      # The check that would have caught 0.3.0, and the reason it did not
+      # exist: every check archwarden had ran on a machine shaped like the
+      # runner, so a binary that only worked on the runner passed all of them.
+      #
+      # `debian:11` is glibc 2.31 -- older than Debian 12, Ubuntu 22.04 and
+      # every `node:` image, so passing there covers all of them. `alpine` has
+      # no glibc at all. Between them they are the two ways a Linux binary
+      # fails to start, and both are checked before anything is published.
+      - name: run the binary on an old glibc and on musl
+        if: matrix.containers
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/archwarden"
+          for image in ${{ matrix.containers }}; do
+            echo "--- $image"
+            # Piped in rather than bind-mounted: a mount depends on the daemon
+            # seeing the same filesystem, which is one more thing that can be
+            # true on one machine and not another. This form was the one
+            # verified locally against the published 0.2.0, 0.3.0 and musl
+            # binaries, and it reproduced the failure and the fix exactly.
+            cat "$BIN" | docker run -i --rm "$image" \
+              sh -c 'cat > /archwarden && chmod +x /archwarden && /archwarden --version'
+          done
 
       - name: package
         shell: bash

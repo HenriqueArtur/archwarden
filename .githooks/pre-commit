@@ -1,0 +1,59 @@
+#!/bin/sh
+# The checks worth a second, before a commit exists.
+#
+# Deliberately only two. `cargo fmt --all --check` takes about a second here
+# and `typos` about half of one; `cargo clippy` takes seven incrementally and
+# minutes from cold, and the test suite longer still. A hook that costs more
+# than a couple of seconds is one people start passing `--no-verify` to out of
+# reflex, and a hook nobody runs protects nothing. Everything slower lives in
+# CI, where waiting is what the machine is for.
+#
+# This exists because a release branch reached CI with unformatted code: the
+# battery run before committing had clippy, the tests, typos and the npm suite
+# in it, and not `fmt`. A person forgetting one item of a checklist is not a
+# thing to fix with a better checklist.
+#
+# Installed by `cargo xtask hooks`, which sets `core.hooksPath` to this
+# directory. `git commit --no-verify` skips it, as it should: the hook is here
+# to catch mistakes, not to take the decision away from whoever is committing.
+
+set -eu
+
+# Run from the repository root whichever directory the commit was made from.
+cd "$(git rev-parse --show-toplevel)"
+
+failed=0
+
+printf 'pre-commit: rustfmt... '
+if cargo fmt --all --check >/dev/null 2>&1; then
+    printf 'ok\n'
+else
+    printf 'FAILED\n\n'
+    # Shown rather than summarised: the diff is the fix, and `cargo fmt --all`
+    # applies it.
+    cargo fmt --all --check 2>&1 | head -40
+    printf '\n  run `cargo fmt --all`\n\n'
+    failed=1
+fi
+
+# Not installed by default, and a hook that blocks a commit because an optional
+# tool is missing is a hook that gets uninstalled. Says so and carries on; CI
+# runs it either way.
+printf 'pre-commit: typos... '
+if ! command -v typos >/dev/null 2>&1; then
+    printf 'skipped (cargo install typos-cli)\n'
+elif typos >/dev/null 2>&1; then
+    printf 'ok\n'
+else
+    printf 'FAILED\n\n'
+    typos 2>&1 | head -30
+    printf '\n'
+    failed=1
+fi
+
+if [ "$failed" -ne 0 ]; then
+    printf 'pre-commit: nothing was committed. `git commit --no-verify` to override.\n'
+    exit 1
+fi
+
+exit 0
