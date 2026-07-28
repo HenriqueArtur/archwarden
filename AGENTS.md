@@ -357,6 +357,46 @@ Deterministic: same config, same bytes. Safe to commit or to regenerate.
 Reach for it when you need the whole rule set at once — for one path,
 `describe` is cheaper and more precise.
 
+### `impact <path> --to <path>` — what a move would change
+
+Before moving a file, ask what it costs. Your editor rewrites the import
+specifiers; this says whether the destination is somewhere the architecture
+allows the file to be, and whether the move puts somebody else's import across
+a boundary.
+
+```bash
+npx archwarden impact packages/domain/src/order/calcs/total.ts \
+                --to  packages/app/src/billing/total.ts
+```
+
+```
+Moving `packages/domain/src/order/calcs/total.ts` to `packages/app/src/billing/total.ts`:
+
+  Rules that would stop applying:
+    domain-forbids-app
+
+  1 file imports it, 1 of which would newly cross a boundary:
+    packages/domain/src/invoice/calcs/sum.ts — domain-forbids-app
+
+  1 relative import in the file itself would need rewriting.
+
+  1 file has a dynamic import this cannot read. Check it by hand:
+    packages/app/src/loader.ts
+```
+
+**Read the last section every time.** `import(name)` names no module, so a file
+containing one may or may not import the target and archwarden cannot tell. The
+rest of the report is complete except for those files.
+
+`newly_forbidden_by` means the boundary is crossed *because of this move* — a
+boundary already being crossed is existing debt `check` reports today, not a
+consequence of what you are about to do.
+
+Relative imports are counted, not checked. Whether they still resolve after the
+move is `tsc`'s question, and it answers it better.
+
+It resolves the whole repository, so it costs about what `check` costs.
+
 ### `config explain <rule-id>` — what a rule reaches
 
 ```

@@ -14,6 +14,7 @@ pub mod filter;
 pub mod guide;
 pub mod hook;
 pub mod hooks;
+pub mod impact;
 pub mod locate;
 pub mod report;
 pub mod scaffold;
@@ -250,6 +251,28 @@ pub enum Command {
     /// Write a starter configuration.
     Init,
 
+    /// Say what moving a file would change, without moving it.
+    ///
+    /// An editor moves a file and rewrites its imports, and says nothing about
+    /// whether the destination is somewhere the architecture allows the file
+    /// to be, or whether the move puts an existing import across a boundary.
+    /// That half is this.
+    ///
+    /// Resolves the whole repository, which costs about what a `check` costs.
+    Impact {
+        /// The file to move.
+        #[arg(value_name = "PATH")]
+        path: String,
+
+        /// Where it would go.
+        #[arg(long, value_name = "PATH")]
+        to: String,
+
+        /// How to render the answer.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+
     /// Accept every finding this repository has right now.
     ///
     /// Writes `.archwarden/baseline.json`, which is meant to be committed.
@@ -392,6 +415,14 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
         ),
         Command::Init => init(working_directory, output),
         Command::Baseline => write_baseline(cli.config.as_deref(), working_directory, output),
+        Command::Impact { path, to, format } => impact(
+            cli.config.as_deref(),
+            working_directory,
+            path,
+            to,
+            *format,
+            output,
+        ),
         Command::Hook { harness } => {
             hook(*harness, cli.config.as_deref(), working_directory, output)
         }
@@ -517,6 +548,46 @@ fn starter(reference: &str) -> String {
 }}
 "#
     )
+}
+
+/// Says what moving a file would change.
+fn impact(
+    explicit: Option<&Utf8Path>,
+    working_directory: &Utf8Path,
+    argument: &str,
+    destination: &str,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+        Ok(prepared) => prepared,
+        Err(exit) => return exit,
+    };
+
+    let resolve = |raw: &str| crate::describe::repo_relative(&merged.root, working_directory, raw);
+    let (from, to) = match (resolve(argument), resolve(destination)) {
+        (Ok(from), Ok(to)) => (from, to),
+        (Err(message), _) | (_, Err(message)) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    let tree = match archwarden_engine::walk::walk(&merged.root, &compiled) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = writeln!(output.err, "{error}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    let importers =
+        archwarden_engine::importers::importers_of(&merged.root, &compiled, &tree, &from);
+    let relative = archwarden_engine::importers::relative_imports(&merged.root, &from);
+    let answer = crate::impact::impact(&compiled, &from, &to, &importers, relative);
+
+    crate::impact::render(&answer, format, output.out);
+    Exit::Clean
 }
 
 /// Accepts every finding this repository has right now.

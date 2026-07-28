@@ -151,6 +151,11 @@ npx archwarden check --level error
 # only the part of the repo I touched
 npx archwarden check --paths 'packages/domain/**'
 
+# ---- refactoring ----
+
+# what would moving this file change?
+npx archwarden impact packages/domain/src/order/x.ts --to packages/app/src/order/x.ts
+
 # ---- diagnostics ----
 
 # what does this rule reach, and what is it flagging?
@@ -182,6 +187,10 @@ See [`docs/CONFIG.md`](docs/CONFIG.md).
 - **`--summary` / `--rules` / `--paths` / `--level` / `--changed`** narrow what a
   report prints without narrowing what it checks. The exit code is the same with
   them and without, so a filter is safe in a command that gates a build.
+- **`impact <path> --to <path>`** says what a move would change before you make
+  it: which rules start and stop applying, which files import it, and which of
+  those imports would newly cross a boundary. An editor rewrites the specifiers
+  and says nothing about the architecture; this is the other half.
 - **`baseline`** is the opposite and says so: a committed record of findings the
   project has decided to accept, so a repository adopting archwarden gates on
   new violations from day one instead of on debt nobody has decided about. It

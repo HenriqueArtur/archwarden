@@ -91,6 +91,29 @@ pub fn importers_of(
     found
 }
 
+/// How many of a file's own imports are written relative to it.
+///
+/// Counted rather than resolved after a hypothetical move, because whether
+/// they still point somewhere is a question `tsc` answers better than
+/// archwarden ever will. The number is here so a reader knows the size of the
+/// mechanical half of a move.
+#[must_use]
+pub fn relative_imports(root: &Utf8Path, path: &RepoRelPath) -> usize {
+    let Ok(source) = std::fs::read_to_string(root.join(path.as_path())) else {
+        return 0;
+    };
+    let hash = archwarden_core::hash::ContentHash::of(source.as_bytes());
+    let Ok(facts) = archwarden_parser::oxc::OxcParser.parse(path, &source, hash) else {
+        return 0;
+    };
+
+    facts
+        .imports
+        .iter()
+        .filter(|import| import.specifier.starts_with('.'))
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,6 +293,38 @@ mod tests {
         drop(guard);
 
         assert!(found.direct.is_empty(), "{:?}", found.direct);
+    }
+
+    /// Only the relative ones: a package specifier means the same thing from
+    /// anywhere in the repository, and a move does not touch it.
+    #[test]
+    fn only_relative_imports_are_counted() {
+        let (guard, root) = tree_at(&[
+            ("src/target.ts", "export const value = 1;\n"),
+            (
+                "src/a.ts",
+                "import { a } from './target';\n\
+                 import { b } from '../src/target';\n\
+                 import { c } from '@org/domain';\n\
+                 import { d } from 'react';\n",
+            ),
+        ]);
+        let count = relative_imports(&root, &RepoRelPath::new("src/a.ts").expect("valid"));
+        drop(guard);
+
+        assert_eq!(count, 2);
+    }
+
+    /// A file that is not there has no imports to rewrite, and asking about
+    /// one is not an error -- `impact` answers about a path that may not exist
+    /// yet, like `describe` does.
+    #[test]
+    fn a_file_that_is_not_there_counts_nothing() {
+        let (guard, root) = tree_at(&[("src/a.ts", "export const a = 1;\n")]);
+        let count = relative_imports(&root, &RepoRelPath::new("src/gone.ts").expect("valid"));
+        drop(guard);
+
+        assert_eq!(count, 0);
     }
 
     /// A file that will not parse is passed over rather than stopping the

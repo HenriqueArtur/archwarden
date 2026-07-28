@@ -501,6 +501,39 @@ Two behaviours worth knowing:
   nothing would look exactly like a clean repository, which is the one wrong
   answer a user reads as good news.
 
+## Before you move a file
+
+```bash
+archwarden impact packages/domain/src/order/calcs/total.ts \
+           --to  packages/app/src/billing/total.ts
+```
+
+An editor moves a file and rewrites its imports. It says nothing about whether
+the destination is somewhere the architecture allows the file to be, or whether
+the move puts an existing import across a boundary. That half is this one, and
+it is the half nothing else answers.
+
+It reports which rules would start and stop applying, which files import the
+target and which of those imports would *newly* be forbidden, how many of the
+file's own relative imports would need rewriting — and which files contain a
+dynamic import it cannot read.
+
+That last one matters. `import(name)` names no single module, so archwarden
+records nothing for it: right for a rule, which must not report a path nobody
+wrote, and wrong for a question about who imports a file. Those files are
+listed separately, because a confident answer with a hole in it is worse than
+an incomplete one that says so.
+
+"Newly" is doing work too. A boundary already being crossed is debt `check`
+reports today, not a consequence of the move, and listing it here would blame
+the move for something it did not do.
+
+Relative imports are counted, not re-resolved: whether they still point
+somewhere afterwards is a question `tsc` answers better.
+
+Reading the import graph backwards means resolving the whole repository, so
+this costs about what a `check` costs.
+
 ## Config validation commands
 
 Three commands cover the config itself:
