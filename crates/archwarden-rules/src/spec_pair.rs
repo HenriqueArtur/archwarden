@@ -1055,7 +1055,7 @@ mod tests {
     }
 
     /// Facts absent means the file would not parse. Exempting it would let an
-    /// unparseable file slip the rule; the run counts it as a skipped check
+    /// unparsable file slip the rule; the run counts it as a skipped check
     /// instead, which is what `checks_skipped` is for.
     #[test]
     fn a_file_that_could_not_be_parsed_is_not_exempted() {
