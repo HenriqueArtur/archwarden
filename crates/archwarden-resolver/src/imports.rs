@@ -87,10 +87,11 @@ impl ImportResolver {
     /// after normal resolution fails, so an installed package always wins over
     /// the reconstruction of it. See [`crate::workspace`].
     ///
-    /// The other half of that bargain is [`Self::back_to_source`]: when normal
-    /// resolution succeeds and lands on a *copy* of one of those packages, the
-    /// answer is mapped back to the source. Winning is right for a dependency
-    /// and wrong for an artefact made from a file in the repository.
+    /// The other half of that bargain is in `classify`: when normal resolution
+    /// succeeds and lands on a *copy* of one of those packages under
+    /// `node_modules`, the answer is mapped back to the source. Winning is
+    /// right for a dependency and wrong for an artefact made from a file in
+    /// the repository.
     #[must_use]
     pub fn new(root: &Utf8Path) -> Self {
         let workspace = crate::workspace::Workspace::discover(root);
