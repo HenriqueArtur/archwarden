@@ -397,6 +397,43 @@ move is `tsc`'s question, and it answers it better.
 
 It resolves the whole repository, so it costs about what `check` costs.
 
+#### `--apply` — carry the move out
+
+Dry run is the default. `--apply` is the second, explicit word:
+
+```bash
+npx archwarden impact packages/domain/src/id/shared/is-id-invalid-shared.ts \
+               --to  packages/domain/src/id/calcs/is-id-invalid.ts --apply
+```
+
+`git mv`, then every import specifier that named the file — the ones written by
+package name included, which is the half your editor cannot do. The spec
+sibling comes along and follows a rename. A source directory left empty is
+removed.
+
+A directory or glob as the source makes `--to` relative to each match:
+
+```bash
+npx archwarden impact 'packages/domain/src/*/shared' --to '../calcs' --apply
+```
+
+**Three things to hold on to.**
+
+**A refusal means nothing happened.** Everything is validated before a byte is
+written, so there is no half-done state to clean up. Exit 2 with a reason: a
+dirty working tree, a specifier archwarden cannot recompute, a destination that
+exists. Fix the reason and run again; do not work around it.
+
+**`--force` covers exactly one refusal** — a dynamic import naming no module,
+where whether that file imports the target is unknowable. The report names the
+file. Look at it. Do not reach for `--force` on anything else; it does not
+apply to anything else.
+
+**The exported symbol is not renamed.** A file renamed mid-move keeps its
+export, and the output says so. Run `check` afterwards: a `naming` rule will
+tell you whether the project wants them to match, and renaming an export is a
+change to every caller — your decision, not the tool's.
+
 ### `config explain <rule-id>` — what a rule reaches
 
 ```

@@ -508,3 +508,184 @@ fn two_runs_over_one_repository_agree_byte_for_byte() {
 
     assert_eq!(run(), run());
 }
+
+/// A repository with a real git history, since `--apply` refuses without one.
+fn git_repo(entries: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = repo(entries);
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir.path())
+            .args(args)
+            .output()
+            .expect("git runs");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.invalid"]);
+    git(&["config", "user.name", "test"]);
+    git(&["add", "-A"]);
+    git(&["commit", "-qm", "initial"]);
+    dir
+}
+
+/// The workspace layout `--apply` has to get right: an importer that names the
+/// moved file by package, not relatively. An editor rewrites the relative half
+/// of a monorepo and leaves this one pointing at nothing.
+fn workspace() -> [(&'static str, &'static str); 5] {
+    [
+        ("arch.config.json", MINIMAL),
+        (
+            "packages/domain/package.json",
+            r#"{"name":"@org/domain","exports":{"./id/*":"./src/id/*.ts"}}"#,
+        ),
+        (
+            "packages/domain/src/id/shared/is-id-invalid-shared.ts",
+            "export function isIdInvalidShared(id: string) {\n  return id === '';\n}\n",
+        ),
+        (
+            "packages/domain/src/id/shared/is-id-invalid-shared.spec.ts",
+            "import { isIdInvalidShared } from './is-id-invalid-shared';\nit('works', () => {});\n",
+        ),
+        (
+            "apps/web/package.json",
+            r#"{"name":"@org/web","dependencies":{"@org/domain":"workspace:*"}}"#,
+        ),
+    ]
+}
+
+#[test]
+fn apply_moves_the_file_and_rewrites_a_package_specifier() {
+    let dir = git_repo(&workspace());
+    std::fs::write(
+        dir.path().join("apps/web/use-it.ts"),
+        "import { isIdInvalidShared } from \"@org/domain/id/shared/is-id-invalid-shared\";\n\
+         export const check = isIdInvalidShared;\n",
+    )
+    .expect("write");
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["add", "-A"])
+        .output()
+        .expect("git runs");
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir.path())
+        .args(["commit", "-qm", "importer"])
+        .output()
+        .expect("git runs");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "impact",
+            "packages/domain/src/id/shared/is-id-invalid-shared.ts",
+            "--to",
+            "packages/domain/src/id/calcs/is-id-invalid.ts",
+            "--apply",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Moved 1 file, and 1 spec sibling with it"))
+        // Case 5: the filename changed and the symbol did not, said out loud
+        // rather than left for the reader to discover.
+        .stdout(contains(
+            "The filename changed and the exported symbol did not",
+        ));
+
+    let importer = std::fs::read_to_string(dir.path().join("apps/web/use-it.ts")).expect("read");
+    assert!(
+        importer.contains("\"@org/domain/id/calcs/is-id-invalid\""),
+        "the package specifier followed the file: {importer}"
+    );
+
+    assert!(
+        dir.path()
+            .join("packages/domain/src/id/calcs/is-id-invalid.spec.ts")
+            .is_file(),
+        "the spec travelled and followed the rename"
+    );
+    assert!(
+        !dir.path().join("packages/domain/src/id/shared").exists(),
+        "the emptied source directory is gone, or a structure rule keeps reporting it"
+    );
+}
+
+/// `git` is the undo, so an undo that would take uncommitted work with it is
+/// refused. Nothing is written, which is why the refusal can be total.
+#[test]
+fn apply_refuses_a_dirty_working_tree_and_changes_nothing() {
+    let dir = git_repo(&workspace());
+    std::fs::write(
+        dir.path()
+            .join("packages/domain/src/id/shared/is-id-invalid-shared.ts"),
+        "export function isIdInvalidShared() { return true; }\n",
+    )
+    .expect("dirty it");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "impact",
+            "packages/domain/src/id/shared/is-id-invalid-shared.ts",
+            "--to",
+            "packages/domain/src/id/calcs/is-id-invalid.ts",
+            "--apply",
+        ])
+        .assert()
+        .code(2)
+        .stderr(contains("nothing was moved"))
+        .stderr(contains("uncommitted changes"));
+
+    assert!(
+        dir.path()
+            .join("packages/domain/src/id/shared/is-id-invalid-shared.ts")
+            .is_file(),
+        "the refusal is total"
+    );
+}
+
+/// Dry run is the default. Asking must never write.
+#[test]
+fn impact_without_apply_writes_nothing() {
+    let dir = git_repo(&workspace());
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "impact",
+            "packages/domain/src/id/shared/is-id-invalid-shared.ts",
+            "--to",
+            "packages/domain/src/id/calcs/is-id-invalid.ts",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Moving"));
+
+    assert!(
+        dir.path()
+            .join("packages/domain/src/id/shared/is-id-invalid-shared.ts")
+            .is_file(),
+        "the default said what it would do and did nothing"
+    );
+}
+
+/// A source matching nothing is exit 2, never an empty report -- the same
+/// judgement `--rules` makes about an unknown id, and for the same reason: a
+/// move with no consequences and a glob that hit nothing must not print alike.
+#[test]
+fn a_source_matching_nothing_is_refused() {
+    let dir = git_repo(&workspace());
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "impact",
+            "packages/domain/src/*/nowhere",
+            "--to",
+            "../calcs",
+        ])
+        .assert()
+        .code(2)
+        .stderr(contains("matches no file"));
+}

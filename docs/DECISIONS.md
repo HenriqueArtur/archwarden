@@ -17,6 +17,122 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 16 — `impact --apply` moves what you named; it never picks what to move
+Status: accepted.
+Context: decision 2 puts archwarden in the report-only space and decision
+13 explains why the most obviously fixable rule must never have a fix.
+`impact --apply` writes to the user's source tree, so it has to be
+squared with both or it is those decisions being quietly reversed.
+
+The pressure that produced it is real. Eliminating a `shared/` folder
+across seven entities in one repository is 15 files, 29 import
+specifiers, and 24 files edited. archwarden already knew every one of
+those — it resolves the graph to answer `impact` — and reported them
+correctly while helping with none of it. An editor does the relative
+half of the rewrite and leaves the package-name half, which in that
+repository is the majority.
+Decision: `--apply` ships, under one rule: **archwarden carries out the
+move the caller described, and never decides what to move.**
+
+Concretely, and each of these is load-bearing:
+
+- No finding suggests it. `check` never mentions it, and there is no
+  `--fix`, no "apply all", no mode that moves more than the argument
+  named.
+- Dry run stays the default. `--apply` is a second, explicit word.
+- The exported symbol is not renamed, even when the filename changes.
+  Renaming an export breaks callers in a way this cannot see — decision
+  13's argument about `naming` — so the output says the symbol was left
+  alone and `check` reports the mismatch afterwards, which is where a
+  `naming` rule belongs.
+
+That is the same seam decision 13 left open for `scaffold --write`:
+"write the file I am about to write" rather than "fix the violation".
+The distinction is not the blast radius, it is who chose.
+Alternatives:
+- Leave it out and let editors do it. Rejected on measurement: an editor
+  cannot rewrite `@org/domain/email/x`, because to it that is a package
+  name like `react`. In the repository this was built against, 5481
+  imports are written that way against 5690 relative ones, so "the
+  editor handles it" is half a refactor.
+- `--fix` on `structure` findings, moving a file into an allowed
+  subfolder. Rejected, and this is the line: the rule knows the folder
+  is wrong and not which of eight allowed folders is right. Picking one
+  is a design decision, and a linter that makes it is guessing with
+  write access.
+- Warn on a dirty working tree instead of refusing. Rejected: `git` is
+  the entire undo story here, and an undo that would take the user's
+  uncommitted work with it is not one.
+Consequences: everything is computed and validated before a byte is
+written, so every refusal is total — there is no state where half the
+imports are rewritten. A dynamic import naming no module blocks the
+apply, because whether such a file imports the target is unknowable;
+`--force` is the only refusal a flag may override, and the report prints
+the file to look at first. Everything else — a specifier resolving
+through a `tsconfig` alias this does not read, a destination already
+occupied, two files landing on one path — refuses outright, because
+forcing past one produces a repository that does not build.
+
+The emptied source directory is removed. Not cosmetic: `structure` rules
+are about directories, so an emptied `shared/` keeps reporting the exact
+finding the refactor was run to remove. Measured before the fix: nine
+warnings, unchanged, after every file in them had moved.
+
+---
+
+### 15 — Workspace packages resolve from their manifests, not from `node_modules`
+Status: accepted.
+Context: a monorepo imports itself by package name —
+`@flowmaatik/domain/email/x`, not `../../domain/src/email/x`. Node answers
+that specifier by looking in `node_modules`, where the package manager has
+left a symlink. `oxc_resolver` does the same, correctly, and decision 7 says
+not to hand-roll a second worse copy of Node resolution.
+
+On a checkout that has not run an install, that whole half of the graph
+resolves to nothing. Measured on a real pnpm monorepo with no
+`node_modules`: **5481 imports by package name against 5690 relative ones**.
+`impact` on one file found 2 importers where the true answer was 3; the
+missing one was in another package and imported by alias.
+
+What makes it a bug rather than a limitation is that nothing said so.
+Import-boundary rules over those edges report nothing, which reads exactly
+like a boundary that is satisfied. The tool was answering about the
+relative half of a repository and presenting it as the whole.
+Decision: build the alias map from what the repository itself declares —
+every `package.json` with a `name`, and the `exports` field that says which
+subpaths it offers and where they land. Feed it to `oxc_resolver` as
+**`fallback`**, not `alias`.
+
+`fallback` is consulted only after normal resolution has failed. A
+repository that *has* installed its dependencies resolves exactly as it did
+before, and an installed package always wins over our reconstruction of it.
+The map fills a hole; it never overrules anything.
+Alternatives:
+- Read `pnpm-workspace.yaml` (and `workspaces`, and bun's equivalent) to
+  learn which directories are members. Rejected: it puts a YAML parser in a
+  binary that has no other use for one, and the answer is the same in every
+  layout anyone writes. Taking every `package.json` in the walk at its word
+  costs a package that exists on disk but is excluded from the workspace —
+  and that one is only reachable by a specifier no file can be importing,
+  since under Node it does not resolve and the repository would not build.
+- Reimplement the `exports` subpath algorithm and resolve to a path
+  directly. Rejected: that is decision 7 again. The `exports` patterns map
+  onto `oxc_resolver`'s own wildcard alias form (`@org/domain/email/*` →
+  `<dir>/src/email/*.ts`), so the matching stays in the resolver.
+- Require an install. Rejected: it makes archwarden useless in the case it
+  is most useful — CI that lints before it builds, and any checkout where
+  the lockfile is the only thing that changed.
+Consequences: resolution now depends on every local `package.json`, which
+the `resolution_epoch` already hashes (decision 3's cache design listed
+`package.json` for `exports` and workspaces), so no cache change was needed.
+
+A repository that adds an `import-boundary` rule over an aliased edge will
+now see findings it did not see before. That is the bug being fixed, not a
+regression — but it is a behaviour change, and a project upgrading into it
+should expect its first run to report more than the last one did.
+
+---
+
 ### 14 — Linux binaries are static musl, and the floor is a decision
 Status: accepted.
 Context: archwarden 0.3.0 would not start on Debian 12, Ubuntu 22.04,

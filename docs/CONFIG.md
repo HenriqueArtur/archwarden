@@ -14,6 +14,32 @@ of truth.
 
 If you must override discovery, pass `--config path/to/config.json`.
 
+### `--config` and `--root` are two questions
+
+`--config` answers *where the rules are*. It also answers *what they are about*,
+because globs resolve from the config file's own directory — which is right for
+the config a repository carries, and wrong for one kept anywhere else.
+
+`--root` separates them:
+
+```bash
+archwarden check --config ../experiments/stricter.json --root .
+```
+
+Without it, a config outside the repository would take its own directory to be
+the repository, walk it, find no TypeScript and report a clean run — exit 0, no
+findings, and the question answered with the one wrong answer a reader takes as
+good news. So that case is **exit 2** with a message naming this flag.
+
+The refusal is narrow: an empty root you are *standing in* is checked normally,
+because a repository that has just run `archwarden init` is empty and the very
+next `check` must not claim the setup is broken. What is never legitimate is an
+empty root reached only through a config file's location.
+
+This is what makes "how many findings would this stricter rule produce?"
+answerable without editing the file the project committed — see
+[Measuring a rule change](#measuring-a-rule-change) below.
+
 ## Format
 
 JSON. Not YAML, not TOML, not JS. Reasoning is in [`DECISIONS.md`](DECISIONS.md).
@@ -533,6 +559,97 @@ somewhere afterwards is a question `tsc` answers better.
 
 Reading the import graph backwards means resolving the whole repository, so
 this costs about what a `check` costs.
+
+### Carrying it out
+
+`--apply` does the move. Dry run stays the default, and this is a second,
+explicit word.
+
+```bash
+archwarden impact packages/domain/src/id/shared/is-id-invalid-shared.ts \
+           --to  packages/domain/src/id/calcs/is-id-invalid.ts --apply
+```
+
+Files move with `git mv`, so history follows them. Every import specifier that
+named the file is rewritten — **including the ones written by package name**,
+which is the half an editor cannot do: to an editor, `@org/domain/email/x` is a
+package like `react`. In the repository this was built against, that is the
+majority of imports.
+
+The spec sibling travels with its unit file, and follows a rename:
+`is-id-invalid-shared.spec.ts` becomes `is-id-invalid.spec.ts`. Leaving it
+behind would break archwarden's own `spec-pair` rule.
+
+A source directory the move empties is removed, because `structure` rules are
+about directories and an emptied `shared/` would keep reporting the finding the
+refactor was run to remove.
+
+**The exported symbol is not renamed.** A file renamed mid-move keeps
+`isIdInvalidShared`, and the output says so. Renaming an export breaks every
+caller in a way this cannot see; `check` reports the mismatch afterwards, which
+is where a `naming` rule belongs.
+
+### A whole layer at once
+
+A directory or a glob as the source makes `--to` relative to **each matched
+directory**:
+
+```bash
+archwarden impact 'packages/domain/src/*/shared' --to '../calcs' --apply
+```
+
+Every `shared` becomes the `calcs` beside it. Files nested inside a match land
+in the destination directly — `feature/shared/consts/list-shared.ts` goes to
+`feature/calcs/`, not to `feature/shared/calcs/`. Two files landing on one path
+is refused before anything is written.
+
+One file keeps the other reading: `--to` is the whole destination path, which
+is what makes renaming during a move expressible at all.
+
+### What it refuses, and why a refusal is safe
+
+Everything is computed and validated before a byte is written, so **a refusal
+means nothing happened** — there is no state where half the imports are
+rewritten.
+
+| refusal | why |
+|---|---|
+| the working tree is dirty | `git` is the undo, and one that takes your own work with it is not one |
+| not a git repository | same reason: no undo |
+| a specifier this cannot recompute | a `tsconfig` path alias resolves through a map archwarden does not read; rewriting the rest would leave that one pointing at nothing |
+| the destination exists, or two files land on one path | carrying it out would delete something |
+| a dynamic import naming no module | whether that file imports the target is unknowable |
+
+Only the last is overridable. `--force` is a human saying they looked, and the
+report prints the file and the line to look at. The others produce a repository
+that does not build, which is not a judgement a flag should be able to make.
+
+## Measuring a rule change
+
+Rule 2 of [`AGENTS.md`](AGENT-INTEGRATION.md) says not to edit `arch.config.json`
+to make a check pass. Planning to *tighten* a rule needs the opposite of that
+and looks identical from outside: you have to change the file to find out what
+changes. A config kept somewhere else answers without persisting anything.
+
+```bash
+cp arch.config.json /tmp/stricter.json
+# edit /tmp/stricter.json — drop `shared` from warn_subfolders
+archwarden check --config /tmp/stricter.json --root . --summary
+```
+
+```
+domain-entity-shape                        7 errors, 2 warnings
+domain-actions-should-have-spec           37 warnings
+domain-calcs-services-adapters-need-spec   0
+domain-variants-calcs-services-need-spec   0
+```
+
+Seven errors, and `config explain` on the id says which paths. Nothing was
+written, so there is no config change to remember to revert — which is the
+difference between measuring a decision and making one.
+
+`--root .` is not optional here; without it the run refuses. See
+[`--config` and `--root` are two questions](#--config-and---root-are-two-questions).
 
 ## Config validation commands
 

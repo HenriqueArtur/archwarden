@@ -98,9 +98,9 @@ pub fn impact(
     let listed: Vec<Importer> = importers
         .direct
         .iter()
-        .map(|path| Importer {
-            path: path.as_str().to_owned(),
-            newly_forbidden_by: newly_forbidden(config, path, from, to),
+        .map(|importer| Importer {
+            path: importer.path.as_str().to_owned(),
+            newly_forbidden_by: newly_forbidden(config, &importer.path, from, to),
         })
         .collect();
 
@@ -177,6 +177,35 @@ pub fn render(impact: &Impact, format: crate::report::Format, out: &mut dyn std:
             }
         },
         crate::report::Format::Text => render_text(impact, out),
+    }
+}
+
+/// Writes a batch of impacts, which for one file is the single report.
+///
+/// A batch is not a different shape, only more of the same one: a reader
+/// planning nine moves wants each of them, and a summary that collapsed them
+/// would hide the one that breaks something.
+pub fn render_all(impacts: &[Impact], format: crate::report::Format, out: &mut dyn std::io::Write) {
+    match (format, impacts) {
+        (_, [one]) => render(one, format, out),
+        (crate::report::Format::Json, many) => match serde_json::to_string_pretty(many) {
+            Ok(json) => {
+                let _ = writeln!(out, "{json}");
+            }
+            Err(error) => {
+                let _ = writeln!(out, r#"{{"error":"cannot serialise: {error}"}}"#);
+            }
+        },
+        (crate::report::Format::Text, many) => {
+            let _ = writeln!(
+                out,
+                "{} files would move.\n",
+                if many.is_empty() { 0 } else { many.len() }
+            );
+            for impact in many {
+                render_text(impact, out);
+            }
+        }
     }
 }
 
@@ -335,7 +364,13 @@ mod tests {
 
     fn found(direct: &[&str], opaque: &[&str]) -> Importers {
         Importers {
-            direct: direct.iter().map(|p| path(p)).collect(),
+            direct: direct
+                .iter()
+                .map(|p| archwarden_engine::importers::Importer {
+                    path: path(p),
+                    imports: Vec::new(),
+                })
+                .collect(),
             opaque: opaque.iter().map(|p| path(p)).collect(),
         }
     }
