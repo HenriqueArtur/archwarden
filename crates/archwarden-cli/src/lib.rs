@@ -18,6 +18,7 @@ pub mod hook;
 pub mod hooks;
 pub mod impact;
 pub mod locate;
+pub mod orphans;
 pub mod report;
 pub mod respecify;
 pub mod scaffold;
@@ -360,6 +361,33 @@ pub enum Command {
         format: Format,
     },
 
+    /// Say where each folder's importers come from.
+    ///
+    /// For every file: who imports it, and whether from inside the module it
+    /// lives in, from outside it, or nobody. Aggregated by folder.
+    ///
+    /// The question it answers is whether a folder has a reason to exist. A
+    /// folder used only from outside its module is a boundary drawn in the
+    /// wrong place; one used only from inside should be private.
+    ///
+    /// Not unused-export detection — that is Knip's. The interest here is
+    /// where the importers come from for the exports that *are* used.
+    ///
+    /// Resolves the whole repository, which costs about what a `check` costs.
+    Orphans {
+        /// Only folders under this path or glob.
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+
+        /// List every file as well as the folder totals.
+        #[arg(long)]
+        by_file: bool,
+
+        /// How to render the answer.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+
     /// Accept every finding this repository has right now.
     ///
     /// Writes `.archwarden/baseline.json`, which is meant to be committed.
@@ -515,6 +543,18 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
                 apply: *apply,
                 force: *force,
             },
+            *format,
+            output,
+        ),
+        Command::Orphans {
+            path,
+            by_file,
+            format,
+        } => orphans(
+            cli.location(),
+            working_directory,
+            path.as_deref(),
+            *by_file,
             *format,
             output,
         ),
@@ -742,6 +782,53 @@ fn carry_out_moves(
     }
 
     crate::apply::render_done(&plan, output.out);
+    Exit::Clean
+}
+
+/// Says where each folder's importers come from.
+fn orphans(
+    location: Location<'_>,
+    working_directory: &Utf8Path,
+    scope: Option<&str>,
+    by_file: bool,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let (merged, compiled) = match prepare(location, working_directory, output) {
+        Ok(prepared) => prepared,
+        Err(exit) => return exit,
+    };
+
+    let tree = match walked(&merged.root, working_directory, &compiled, output) {
+        Ok(tree) => tree,
+        Err(exit) => return exit,
+    };
+
+    let index = archwarden_engine::importers::reverse_index(&merged.root, &compiled, &tree);
+    let mut answer = crate::orphans::orphans(&compiled, &index, by_file);
+
+    if let Some(scope) = scope {
+        // The same matcher `--paths` uses, so a plain path selects it and
+        // everything under it and a glob is used exactly as written. One
+        // convention for narrowing, across every command that narrows.
+        let set = match crate::filter::path_set(std::slice::from_ref(&scope.to_owned())) {
+            Ok(set) => set,
+            Err(message) => {
+                let _ = writeln!(output.err, "{message}");
+                return Exit::ConfigProblem;
+            }
+        };
+        answer.retain(&set);
+
+        if answer.folders.is_empty() {
+            // Never an empty report for a scope that matched nothing: it would
+            // read as a repository with no folders worth looking at.
+            let _ = writeln!(output.err, "× `{scope}` matches no source file.");
+            return Exit::ConfigProblem;
+        }
+    }
+
+    crate::orphans::render(&answer, by_file, format, output.out);
     Exit::Clean
 }
 

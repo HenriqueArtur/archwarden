@@ -651,6 +651,55 @@ difference between measuring a decision and making one.
 `--root .` is not optional here; without it the run refuses. See
 [`--config` and `--root` are two questions](#--config-and---root-are-two-questions).
 
+## Does this folder have a reason to exist?
+
+```bash
+archwarden orphans                                  # every folder
+archwarden orphans 'packages/domain/src/**/shared/**'
+archwarden orphans packages/domain/src/order --by-file
+```
+
+For every file: who imports it, and whether from inside the module it lives in,
+from outside it, or nobody. Aggregated by folder.
+
+```
+packages/domain/src/flow-node/shared/calcs     2 files   inside-only 0   outside-only 2   both 0   nobody 0
+                                               → only used from outside its module — the boundary is drawn elsewhere
+packages/domain/src/feature/shared/consts      1 file    inside-only 0   outside-only 0   both 1   nobody 0
+```
+
+Three shapes, three meanings:
+
+- **Only from outside** — nothing in the module it sits in needs it. It belongs
+  to its callers, not to its parent, and the boundary is drawn in the wrong
+  place.
+- **Only from inside** — part of how the module works rather than of what it
+  offers. It should be private.
+- **Nobody** — dead, or reached only through a dynamic import. Those files are
+  listed at the end, because a folder above may be reached from one without
+  showing it.
+
+A folder that is a mix gets no verdict. That is a folder nobody has decided
+about, and a sentence claiming otherwise would be the tool guessing.
+
+**"Module" is the area the config already declares** — the same directories
+`check --by path` counts by. A config with `roots: packages/domain/src/*` gets
+one module per entity, so a `shared/` and a `calcs/` under the same entity are
+*inside* each other. Nothing here picks a depth the config did not.
+
+**Specs are left out of the graph, both ways.** A spec is an entry point for a
+test runner, so counting it as an importee puts a phantom dead file in every
+folder. Counting it as an *importer* is worse: a file's own spec sits in the
+same module, so every file with a spec reads as used from inside and outside at
+once. On one real repository that turned six `shared/` folders — every one of
+them used only from other modules — into six folders marked "both".
+
+**This is not Knip.** Knip finds exports nobody uses. The question here is where
+the importers come from for the exports that *are* used. The "nobody" column
+does overlap; the other two are what this exists for.
+
+It resolves the whole repository, so it costs about what a `check` costs.
+
 ## Config validation commands
 
 Three commands cover the config itself:

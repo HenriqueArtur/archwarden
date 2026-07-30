@@ -149,6 +149,103 @@ pub fn importers_of_each(
     found
 }
 
+/// Every in-repository import edge, read backwards.
+///
+/// [`importers_of_each`] answers about a known list of targets.
+/// This answers about all of them at once, which is what a question about
+/// *every* folder needs — and it is the same single traversal, so asking about
+/// the whole repository costs what asking about one file costs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReverseIndex {
+    entries: std::collections::BTreeMap<RepoRelPath, Vec<RepoRelPath>>,
+    opaque: Vec<RepoRelPath>,
+}
+
+impl ReverseIndex {
+    /// Builds one directly, for tests.
+    #[must_use]
+    pub fn from_pairs(
+        entries: std::collections::BTreeMap<RepoRelPath, Vec<RepoRelPath>>,
+        opaque: Vec<RepoRelPath>,
+    ) -> Self {
+        Self { entries, opaque }
+    }
+
+    /// Every file, with the files that import it.
+    ///
+    /// Every source file in the walk has an entry, including one nothing
+    /// imports: an empty list is the answer the question is largely about, and
+    /// a missing key would be indistinguishable from a file nobody looked at.
+    pub fn entries(&self) -> impl Iterator<Item = (&RepoRelPath, &[RepoRelPath])> {
+        self.entries
+            .iter()
+            .map(|(path, importers)| (path, importers.as_slice()))
+    }
+
+    /// Files containing a dynamic import naming no module.
+    #[must_use]
+    pub fn opaque(&self) -> &[RepoRelPath] {
+        &self.opaque
+    }
+}
+
+/// Reads every import in the repository backwards, in one pass.
+#[must_use]
+pub fn reverse_index(root: &Utf8Path, config: &CompiledConfig, tree: &RepoTree) -> ReverseIndex {
+    let resolver = archwarden_resolver::imports::ImportResolver::new(root);
+    let parser = archwarden_parser::oxc::OxcParser;
+
+    let mut index = ReverseIndex::default();
+
+    // Seeded with every source file, so a file nothing imports is present with
+    // an empty list rather than absent. That row is most of the point.
+    for file in tree.files() {
+        if file.class == FileClass::Source && !config.is_ignored(&file.path) {
+            index.entries.entry(file.path.clone()).or_default();
+        }
+    }
+
+    for file in tree.files() {
+        if file.class != FileClass::Source || config.is_ignored(&file.path) {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(root.join(file.path.as_path())) else {
+            continue;
+        };
+        let hash = archwarden_core::hash::ContentHash::of(source.as_bytes());
+        let Ok(mut facts) = parser.parse(&file.path, &source, hash) else {
+            continue;
+        };
+
+        if facts.has_opaque_import {
+            index.opaque.push(file.path.clone());
+        }
+
+        crate::resolve::resolve_imports(&resolver, &mut facts);
+        for import in &facts.imports {
+            let Some(landed) = import.resolved.as_ref() else {
+                continue;
+            };
+            // A file importing itself is not an importer of it. It happens
+            // through an index re-export, and counting it would make a folder
+            // look used by its own module when nothing outside it is.
+            if landed == &file.path {
+                continue;
+            }
+            if let Some(importers) = index.entries.get_mut(landed) {
+                importers.push(file.path.clone());
+            }
+        }
+    }
+
+    index.opaque.sort();
+    for importers in index.entries.values_mut() {
+        importers.sort();
+        importers.dedup();
+    }
+    index
+}
+
 /// One file's text and its imports, resolved.
 ///
 /// The pipeline reads, parses and resolves in three places already; this is

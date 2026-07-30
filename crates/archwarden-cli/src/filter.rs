@@ -162,6 +162,18 @@ impl Filters {
 }
 
 /// Compiles a list of `--paths`-style entries into one set.
+///
+/// Public because `orphans` narrows the same way `check --paths` does, and one
+/// convention for narrowing is worth more than a second matcher that almost
+/// agrees with the first.
+///
+/// # Errors
+/// A message when a pattern will not compile.
+pub fn path_set(paths: &[String]) -> Result<PathSet, String> {
+    compile_paths(paths)
+}
+
+/// Compiles a list of `--paths`-style entries into one set.
 fn compile_paths(paths: &[String]) -> Result<PathSet, String> {
     let expanded: Vec<String> = paths.iter().flat_map(|path| expand(path)).collect();
     PathSet::compile(&expanded).map_err(|error| error.to_string())
