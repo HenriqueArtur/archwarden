@@ -86,6 +86,11 @@ impl ImportResolver {
     /// not run an install. `fallback` and not `alias`: it is consulted only
     /// after normal resolution fails, so an installed package always wins over
     /// the reconstruction of it. See [`crate::workspace`].
+    ///
+    /// The other half of that bargain is [`Self::back_to_source`]: when normal
+    /// resolution succeeds and lands on a *copy* of one of those packages, the
+    /// answer is mapped back to the source. Winning is right for a dependency
+    /// and wrong for an artefact made from a file in the repository.
     #[must_use]
     pub fn new(root: &Utf8Path) -> Self {
         let workspace = crate::workspace::Workspace::discover(root);
@@ -136,6 +141,58 @@ impl ImportResolver {
         &self.workspace
     }
 
+    /// The repository file a copied workspace package under `node_modules`
+    /// was made from.
+    ///
+    /// `node_modules/@org/domain/src/email/x.ts` is `packages/domain/src/email/x.ts`
+    /// when `@org/domain` is a package this repository declares: a copy mirrors
+    /// the directory it was copied from, so the tail after the package name
+    /// maps across unchanged.
+    ///
+    /// Why it matters, measured: with the copy classified as external, the file
+    /// importing it disappears from the graph. `impact` then reports two
+    /// importers where there are three, and `--apply` rewrites two of them and
+    /// leaves the third pointing at a file that has moved. Same repository,
+    /// same commit, same binary -- 29 specifiers rewritten with a symlink, 26
+    /// and three broken imports with a copy.
+    ///
+    /// Only when the source is actually there. A dependency that merely shares
+    /// a name with a local package is still a dependency, and inventing a path
+    /// for it would be worse than calling it external.
+    fn back_to_source(&self, relative: &Utf8Path) -> Option<RepoRelPath> {
+        let parts: Vec<&str> = relative.as_str().split('/').collect();
+        let start = parts
+            .iter()
+            .rposition(|part| *part == DEPENDENCY_DIRECTORY)?
+            + 1;
+        let inside = parts.get(start..)?;
+
+        // `@scope/name` is two segments, a bare name is one. Longest first, so
+        // a scoped package is not mistaken for an unscoped one.
+        for width in [2, 1] {
+            let Some(name) = inside.get(..width).map(|segments| segments.join("/")) else {
+                continue;
+            };
+            let Some(package) = self
+                .workspace
+                .packages()
+                .iter()
+                .find(|package| package.name == name)
+            else {
+                continue;
+            };
+
+            let tail = inside.get(width..)?.join("/");
+            let source = package.directory.join(&tail);
+            if !self.root.join(&source).is_file() {
+                return None;
+            }
+            return RepoRelPath::new(source.as_str()).ok();
+        }
+
+        None
+    }
+
     /// Decides what a resolved absolute path is, from archwarden's point of
     /// view.
     ///
@@ -144,6 +201,13 @@ impl ImportResolver {
     /// and a dependency starts. Symlinks are followed first, so a workspace
     /// package linked into `node_modules` classifies by where it really lives
     /// -- which is the whole point in a monorepo.
+    ///
+    /// A *copy* is the case that rule gets wrong, and it is not exotic: pnpm
+    /// with `node-linker=hoisted`, npm on a filesystem without symlinks, a
+    /// container volume, a partial install. The copy is an artefact of the
+    /// installer and the file it was made from is right there in the
+    /// repository -- so it is mapped back rather than written off as somebody
+    /// else's code. See [`Self::back_to_source`].
     fn classify(&self, path: Utf8PathBuf) -> Resolved {
         let Ok(relative) = path.strip_prefix(&self.root) else {
             return Resolved::External(path);
@@ -153,7 +217,9 @@ impl ImportResolver {
             .components()
             .any(|component| component.as_str() == DEPENDENCY_DIRECTORY)
         {
-            return Resolved::External(path);
+            return self
+                .back_to_source(relative)
+                .map_or(Resolved::External(path), Resolved::InRepo);
         }
 
         RepoRelPath::new(relative.as_str()).map_or(Resolved::External(path), Resolved::InRepo)
@@ -500,6 +566,77 @@ mod tests {
         drop(guard);
 
         assert_eq!(resolved, "in-repo packages/domain/src/from-link.ts");
+    }
+
+    /// A workspace package *copied* into `node_modules` is still the
+    /// repository's own file.
+    ///
+    /// This is the bug that shipped in 0.5.0. pnpm with
+    /// `node-linker=hoisted`, npm on a filesystem without symlinks, a
+    /// container volume, a partial install — all leave a copy rather than a
+    /// link, and a copy has `node_modules` in its path. Classified as a
+    /// dependency, the file importing it vanishes from the graph: `impact`
+    /// reported two importers where there were three, and `--apply` rewrote
+    /// two and left the third pointing at a file that had moved. Exit 0.
+    ///
+    /// Measured on a real monorepo, same commit and same binary: 29 specifiers
+    /// rewritten with a symlink, 26 and three broken imports with a copy.
+    #[test]
+    fn a_workspace_package_copied_into_node_modules_is_still_ours() {
+        let (guard, root) = repo(&[
+            ("apps/web/src/main.ts", ""),
+            (
+                "packages/domain/package.json",
+                r#"{"name":"@org/domain","exports":{"./email/*":"./src/email/*.ts"}}"#,
+            ),
+            ("packages/domain/src/email/is-invalid.ts", TS),
+            // The copy, byte for byte what an installer leaves behind.
+            (
+                "node_modules/@org/domain/package.json",
+                r#"{"name":"@org/domain","exports":{"./email/*":"./src/email/*.ts"}}"#,
+            ),
+            ("node_modules/@org/domain/src/email/is-invalid.ts", TS),
+        ]);
+
+        let resolved = describe(
+            &root,
+            ImportResolver::new(&root).resolve(
+                &path("apps/web/src/main.ts"),
+                "@org/domain/email/is-invalid",
+            ),
+        );
+        drop(guard);
+
+        assert_eq!(
+            resolved, "in-repo packages/domain/src/email/is-invalid.ts",
+            "a copy of our own package is our own file, not somebody else's code"
+        );
+    }
+
+    /// And a dependency that merely shares a name with nothing local stays a
+    /// dependency. The mapping only fires for a package this repository
+    /// declares, and only when the source is really there.
+    #[test]
+    fn a_dependency_is_not_mapped_into_the_repository() {
+        let (guard, root) = repo(&[
+            ("apps/web/src/main.ts", ""),
+            (
+                "node_modules/@org/domain/package.json",
+                r#"{"name":"@org/domain","types":"src/index.d.ts"}"#,
+            ),
+            (
+                "node_modules/@org/domain/src/index.d.ts",
+                "export const x: number;",
+            ),
+        ]);
+
+        let resolved = describe(
+            &root,
+            ImportResolver::new(&root).resolve(&path("apps/web/src/main.ts"), "@org/domain"),
+        );
+        drop(guard);
+
+        assert_eq!(resolved, "external node_modules/@org/domain/src/index.d.ts");
     }
 
     /// A real dependency is not part of the repository, so no boundary glob
