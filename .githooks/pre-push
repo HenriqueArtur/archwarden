@@ -14,18 +14,24 @@
 #
 # # Why pre-push and not pre-commit
 #
-# It costs minutes, and the pre-commit hook beside this one argues — correctly —
-# that a hook costing more than a couple of seconds is one people bypass out of
-# reflex. Push is the boundary where waiting is affordable: it happens once per
-# branch rather than once per thought, and it is the last point before other
-# people see the work.
+# Measured on one commit of 120 changed lines: 3 mutants, 13 seconds. Roughly
+# ten of those are the unmutated build, paid once, and about a second is each
+# mutant. So the floor is ten seconds however small the change — which is well
+# past what the pre-commit hook beside this one will tolerate, and it argues
+# correctly that a hook costing more than a couple of seconds is one people
+# bypass out of reflex.
+#
+# The shape of the cost is the real argument. Ten seconds of fixed overhead per
+# run means fifteen commits cost fifteen builds; one push costs one. Push is
+# where the same work is cheapest, and it is the last point before other people
+# see it.
 #
 # # Why only the diff
 #
-# `cargo mutants --workspace` takes up to ninety minutes on this repository,
-# which is a hook nobody would keep. `--in-diff` mutates only lines this push
-# adds or changes, so the cost is proportional to the change rather than to the
-# project. New code is where untested code comes from.
+# `cargo mutants --workspace` mutates the whole project — thousands of mutants
+# at about a second each, which is a hook nobody would keep. `--in-diff`
+# mutates only lines this push adds or changes, so the cost tracks the change
+# rather than the project. New code is where untested code comes from.
 #
 # `git push --no-verify` skips it. That is deliberate: the hook is here to
 # catch mistakes, not to take the decision away from whoever is pushing.

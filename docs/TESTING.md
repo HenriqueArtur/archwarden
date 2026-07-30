@@ -77,14 +77,19 @@ list nobody reads.
 
 Two choices in that line, both deliberate:
 
-- **Push, not commit.** It costs minutes, and the `pre-commit` hook beside it
-  argues — correctly — that a hook costing more than a couple of seconds is one
-  people bypass out of reflex. Push happens once per branch rather than once
-  per thought, and it is the last point before other people see the work.
-- **The diff, not the workspace.** `cargo mutants --workspace` takes up to
-  ninety minutes here, which is a hook nobody keeps. `--in-diff` mutates only
-  the lines being pushed, so the cost scales with the change. New code is where
-  untested code comes from.
+- **Push, not commit.** Measured on one commit of 120 changed lines: **3
+  mutants, 13 seconds** — about ten of those the unmutated build, paid once,
+  and about a second each mutant. The floor is ten seconds however small the
+  change, which is well past what the `pre-commit` hook beside it tolerates,
+  and it argues correctly that a hook costing more than a couple of seconds is
+  one people bypass out of reflex.
+
+  The shape of the cost is the argument, not the size of it. Fixed overhead per
+  run means fifteen commits cost fifteen builds and one push costs one.
+- **The diff, not the workspace.** `--workspace` mutates the whole project —
+  thousands of mutants at about a second each. `--in-diff` mutates only the
+  lines being pushed, so the cost tracks the change. New code is where untested
+  code comes from.
 
 The scope widened in the move: the nightly job mutated `archwarden-core`,
 `archwarden-config` and `archwarden-rules`, and left `archwarden-cli` alone —
@@ -106,6 +111,13 @@ Not installed is not a failure either: the hook says so and carries on, the
 same policy `pre-commit` applies to `typos`. `git push --no-verify` skips it,
 which is the point — a hook catches mistakes, it does not take the decision
 away from whoever is pushing.
+
+**What it has not been measured at.** A whole branch's accumulated diff — 76
+mutants over 1537 lines — has not been run to completion here: this machine has
+3 GB of RAM and the linker is killed during the unmutated build, which is the
+case the warn-and-continue branch above exists for. At the measured second per
+mutant that would be a minute and a half, but that is arithmetic rather than a
+measurement, and the only numbers stated as fact above are the ones observed.
 
 **Reading a survivor.** Each line is an edit to your code that no test
 objected to. Either write the test, or decide the mutant is harmless and say
