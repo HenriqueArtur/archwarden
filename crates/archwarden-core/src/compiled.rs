@@ -112,6 +112,23 @@ pub enum CompiledRuleKind {
         ignore_files: PathSet,
         /// Whether the spec must contain at least one `it` or `test` call.
         require_non_empty_spec: bool,
+        /// Whether a file whose exports are all `type` or `interface` is
+        /// exempt. A file with no runtime export has nothing to test, and the
+        /// spec written to satisfy the rule tests a mock rather than the
+        /// contract. See `docs/RULES.md`.
+        skip_type_only: bool,
+    },
+    /// A file whose whole content is forwarding another module.
+    NoPassthrough {
+        /// Which shapes of forwarding count.
+        forms: PassthroughForms,
+        /// Files exempted, as globs.
+        except: PathSet,
+        /// Whether a file a `package.json` `exports` entry points at is exempt.
+        allow_package_entrypoints: bool,
+        /// Whether a file that forwards some exports and declares others is
+        /// allowed.
+        allow_partial: bool,
     },
     /// Layer A may not import from layer B, or must import from layer C.
     ImportBoundary {
@@ -143,6 +160,7 @@ impl CompiledRuleKind {
             Self::Structure { .. } => "structure",
             Self::Naming { .. } => "naming",
             Self::SpecPair { .. } => "spec-pair",
+            Self::NoPassthrough { .. } => "no-passthrough",
             Self::ImportBoundary { .. } => "import-boundary",
             Self::CallObligation { .. } => "call-obligation",
         }
@@ -158,11 +176,26 @@ impl CompiledRuleKind {
             Self::Structure { .. } => false,
             Self::SpecPair {
                 require_non_empty_spec,
+                skip_type_only,
                 ..
-            } => *require_non_empty_spec,
-            Self::Naming { .. } | Self::ImportBoundary { .. } | Self::CallObligation { .. } => true,
+            } => *require_non_empty_spec || *skip_type_only,
+            Self::Naming { .. }
+            | Self::ImportBoundary { .. }
+            | Self::CallObligation { .. }
+            | Self::NoPassthrough { .. } => true,
         }
     }
+}
+
+/// Which shapes of pure forwarding a `no-passthrough` rule refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PassthroughForms {
+    /// `export { A } from './x'`, or an import followed by an export of it.
+    pub reexport: bool,
+    /// `export const A = B`, `export type A = B`.
+    pub alias: bool,
+    /// A function whose whole body is `return g(<its own parameters>)`.
+    pub wrapper: bool,
 }
 
 /// One rule, ready to evaluate.
@@ -416,12 +449,14 @@ mod tests {
             spec_markers: vec!["spec".to_owned()],
             ignore_files: PathSet::default(),
             require_non_empty_spec: false,
+            skip_type_only: false,
         };
         let thorough = CompiledRuleKind::SpecPair {
             subfolders: vec![".".to_owned()],
             spec_markers: vec!["spec".to_owned()],
             ignore_files: PathSet::default(),
             require_non_empty_spec: true,
+            skip_type_only: false,
         };
 
         assert!(!cheap.needs_parse());
@@ -438,6 +473,7 @@ mod tests {
                 spec_markers: vec!["spec".to_owned()],
                 ignore_files: PathSet::default(),
                 require_non_empty_spec: false,
+                skip_type_only: false,
             },
             CompiledRuleKind::ImportBoundary {
                 forbid: PathSet::default(),

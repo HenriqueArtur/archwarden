@@ -290,6 +290,11 @@
               "type": "boolean",
               "default": false
             },
+            "skip_type_only": {
+              "description": "Whether a file whose exports are all `type` or `interface` is exempt.\n\nA file with no runtime export has nothing a test could call. Demanding\na spec for one produces work that reduces no risk — and the spec that\ngets written to satisfy the rule tests a mock of the contract rather\nthan the contract, because there is nothing else to test. `tsc` is the\ntool that checks an interface, and it checks it on every build.\n\n`enum` is a runtime export and does not count as type-only. A file with\nno exports at all does not either: that is a file with no callers, not\na contract, and the rule has something to say about it.\n\nCosts a parse. `spec-pair` otherwise reads no file, so a rule that sets\nthis reads every file in its scope — the same trade\n`require_non_empty_spec` makes.",
+              "type": "boolean",
+              "default": false
+            },
             "type": {
               "type": "string",
               "const": "spec-pair"
@@ -388,6 +393,61 @@
             "file_pattern",
             "must_call"
           ]
+        },
+        {
+          "description": "A file whose whole content is forwarding another module.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "forms": {
+              "description": "Which shapes count. Defaults to all three.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/PassthroughForm"
+              },
+              "default": [
+                "reexport",
+                "alias",
+                "wrapper"
+              ]
+            },
+            "except": {
+              "description": "Files exempted, as globs.\n\nA legitimate re-export exists — a package's public API — and a rule\nwithout a way to say so is noise in the first repository that enables\nit. `allow_package_entrypoints` covers the common case without anyone\nwriting a glob.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "allow_package_entrypoints": {
+              "description": "Whether a file reachable through a `package.json` `exports` entry is\nexempt. Default `true`.\n\nThat file *is* the package's public API, and forwarding is what a\npublic API is for. Without this the rule reports a package's entire\nsurface the moment it is switched on.",
+              "type": "boolean",
+              "default": true
+            },
+            "allow_partial": {
+              "description": "Whether a file that forwards *some* of its exports and declares others\nis allowed. Default `true`.\n\nSet to `false` to hear about the shape that hides best: a file\nre-exporting six names from another module while declaring two of its\nown reads as a real module, and six of its eight exports are still an\nindirection its importers could skip.",
+              "type": "boolean",
+              "default": true
+            },
+            "type": {
+              "type": "string",
+              "const": "no-passthrough"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots"
+          ]
         }
       ]
     },
@@ -453,6 +513,26 @@
       "required": [
         "symbol",
         "imported_from"
+      ]
+    },
+    "PassthroughForm": {
+      "description": "One shape of pure forwarding.",
+      "oneOf": [
+        {
+          "description": "`export { A } from './x'`, or an import followed by an export of the\nsame name. A barrel file is this and nothing else.",
+          "type": "string",
+          "const": "reexport"
+        },
+        {
+          "description": "`export const A = B` or `export type A = B`, where `B` was imported.",
+          "type": "string",
+          "const": "alias"
+        },
+        {
+          "description": "A function whose whole body is `return g(<its own parameters>)`.",
+          "type": "string",
+          "const": "wrapper"
+        }
       ]
     }
   }

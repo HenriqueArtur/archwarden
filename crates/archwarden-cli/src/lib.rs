@@ -3,7 +3,9 @@
 //! The binary is a four-line shim over [`run`]. Everything that decides
 //! anything lives here so it can be tested without spawning a process.
 
+pub mod apply;
 pub mod baseline;
+pub mod batch;
 pub mod changed;
 pub mod describe;
 pub mod diagnostic;
@@ -16,7 +18,9 @@ pub mod hook;
 pub mod hooks;
 pub mod impact;
 pub mod locate;
+pub mod orphans;
 pub mod report;
+pub mod respecify;
 pub mod scaffold;
 pub mod schema;
 
@@ -37,12 +41,49 @@ use crate::{diagnostic::ConfigDiagnostic, exit::Exit, report::Format};
 #[command(name = "archwarden", version, about, long_about = None)]
 pub struct Cli {
     /// Path to `arch.config.json`. Overrides the upward search.
+    ///
+    /// A config outside the repository needs `--root` beside it, because a
+    /// config file's own directory is otherwise taken to be the repository.
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<Utf8PathBuf>,
+
+    /// The repository to analyse. Overrides where the config says to look.
+    ///
+    /// `--config` normally answers this too: globs resolve from the config
+    /// file's directory. That is right for the config a repository carries and
+    /// wrong for one kept anywhere else — which is the shape of the question
+    /// "how many findings would this stricter rule produce?", asked without
+    /// editing the file the project committed.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub root: Option<Utf8PathBuf>,
 
     /// The command to run.
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// Where a command reads its rules from, and what it reads them against.
+///
+/// Two questions `--config` used to answer at once. Separating them is what
+/// lets a configuration live outside the repository it describes.
+#[derive(Debug, Clone, Copy)]
+pub struct Location<'a> {
+    /// An explicit config path, or `None` to search upwards from the working
+    /// directory.
+    pub config: Option<&'a Utf8Path>,
+    /// An explicit repository root, or `None` to take the config's answer.
+    pub root: Option<&'a Utf8Path>,
+}
+
+impl Cli {
+    /// Where this invocation says to look.
+    #[must_use]
+    pub fn location(&self) -> Location<'_> {
+        Location {
+            config: self.config.as_deref(),
+            root: self.root.as_deref(),
+        }
+    }
 }
 
 /// What the filters look like together.
@@ -68,6 +109,24 @@ Examples:
 
 Filters change what is shown, never what is checked. The exit code is 0 when
 nothing failed, 1 when a rule did, and 2 when archwarden could not run.";
+
+/// What a move looks like, from asking to doing.
+const IMPACT_EXAMPLES: &str = "\
+Examples:
+  # what would this cost? (the default -- nothing is written)
+  archwarden impact packages/domain/src/id/shared/is-id-invalid-shared.ts \\
+             --to  packages/domain/src/id/calcs/is-id-invalid.ts
+
+  # do it: git mv, and every import specifier rewritten
+  archwarden impact packages/domain/src/id/shared/is-id-invalid-shared.ts \\
+             --to  packages/domain/src/id/calcs/is-id-invalid.ts --apply
+
+  # a whole layer at once, with the destination relative to each match
+  archwarden impact 'packages/domain/src/*/shared' --to '../calcs' --apply
+
+The spec sibling travels with its unit file. The exported symbol does not get
+renamed -- that would break callers this cannot see, and `check` reports the
+mismatch afterwards, which is where it belongs.";
 
 /// The top-level commands.
 #[derive(Debug, Subcommand)]
@@ -259,14 +318,70 @@ pub enum Command {
     /// That half is this.
     ///
     /// Resolves the whole repository, which costs about what a `check` costs.
+    #[command(after_long_help = IMPACT_EXAMPLES)]
     Impact {
-        /// The file to move.
+        /// The file to move, or a directory or glob of files.
+        ///
+        /// A glob makes `--to` relative to each match, because a refactor of
+        /// an architecture is never one file.
         #[arg(value_name = "PATH")]
         path: String,
 
         /// Where it would go.
+        ///
+        /// A full path when the source is one file. A relative one when the
+        /// source is a directory or a glob, applied to each match:
+        /// `--to ../calcs` moves every file up one and into `calcs`.
         #[arg(long, value_name = "PATH")]
         to: String,
+
+        /// Carry the move out, instead of saying what it would cost.
+        ///
+        /// Moves the files with `git mv` so history follows them, and rewrites
+        /// every import specifier that named them — including the ones written
+        /// by package name, which an editor leaves alone.
+        ///
+        /// Refuses on a dirty working tree, because `git` is the undo. Refuses
+        /// on a specifier it cannot recompute, because half a refactor is
+        /// worse than none. Everything is worked out before a byte is written,
+        /// so a refusal means nothing has happened.
+        #[arg(long)]
+        apply: bool,
+
+        /// Proceed despite a dynamic import nothing can read.
+        ///
+        /// The only refusal a flag may override: whether such a file imports
+        /// the target is unknowable, so this is a human saying they looked.
+        /// The report prints the line to look at.
+        #[arg(long, requires = "apply")]
+        force: bool,
+
+        /// How to render the answer.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+
+    /// Say where each folder's importers come from.
+    ///
+    /// For every file: who imports it, and whether from inside the module it
+    /// lives in, from outside it, or nobody. Aggregated by folder.
+    ///
+    /// The question it answers is whether a folder has a reason to exist. A
+    /// folder used only from outside its module is a boundary drawn in the
+    /// wrong place; one used only from inside should be private.
+    ///
+    /// Not unused-export detection — that is Knip's. The interest here is
+    /// where the importers come from for the exports that *are* used.
+    ///
+    /// Resolves the whole repository, which costs about what a `check` costs.
+    Orphans {
+        /// Only folders under this path or glob.
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
+
+        /// List every file as well as the folder totals.
+        #[arg(long)]
+        by_file: bool,
 
         /// How to render the answer.
         #[arg(long, value_enum, default_value_t = Format::Text)]
@@ -329,6 +444,18 @@ pub enum Harness {
     ClaudeCode,
 }
 
+/// Whether `impact` is asking or doing.
+///
+/// One value rather than two booleans in a row, which is the shape that lets a
+/// call site pass them the wrong way round.
+#[derive(Debug, Clone, Copy)]
+pub struct Mode {
+    /// Carry the move out rather than describe it.
+    pub apply: bool,
+    /// Proceed despite a dynamic import nothing can read.
+    pub force: bool,
+}
+
 /// Where a command writes its output.
 ///
 /// Passing these in rather than printing directly is what lets a test assert
@@ -353,13 +480,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             file: Some(file),
             format,
             ..
-        } => check_one(
-            cli.config.as_deref(),
-            working_directory,
-            file,
-            *format,
-            output,
-        ),
+        } => check_one(cli.location(), working_directory, file, *format, output),
         Command::Check {
             format,
             no_cache,
@@ -372,7 +493,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             by,
             ..
         } => check(
-            cli.config.as_deref(),
+            cli.location(),
             working_directory,
             &CheckOptions {
                 format: *format,
@@ -387,26 +508,18 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             },
             output,
         ),
-        Command::Describe { path, format } => describe(
-            cli.config.as_deref(),
-            working_directory,
-            path,
-            *format,
-            output,
-        ),
-        Command::Scaffold { path, format } => scaffold(
-            cli.config.as_deref(),
-            working_directory,
-            path,
-            *format,
-            output,
-        ),
+        Command::Describe { path, format } => {
+            describe(cli.location(), working_directory, path, *format, output)
+        }
+        Command::Scaffold { path, format } => {
+            scaffold(cli.location(), working_directory, path, *format, output)
+        }
         Command::AgentGuide {
             format,
             scope,
             kind,
         } => agent_guide(
-            cli.config.as_deref(),
+            cli.location(),
             working_directory,
             *format,
             scope.as_deref(),
@@ -414,34 +527,50 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             output,
         ),
         Command::Init => init(working_directory, output),
-        Command::Baseline => write_baseline(cli.config.as_deref(), working_directory, output),
-        Command::Impact { path, to, format } => impact(
-            cli.config.as_deref(),
+        Command::Baseline => write_baseline(cli.location(), working_directory, output),
+        Command::Impact {
+            path,
+            to,
+            apply,
+            force,
+            format,
+        } => impact(
+            cli.location(),
             working_directory,
             path,
             to,
+            Mode {
+                apply: *apply,
+                force: *force,
+            },
             *format,
             output,
         ),
-        Command::Hook { harness } => {
-            hook(*harness, cli.config.as_deref(), working_directory, output)
-        }
+        Command::Orphans {
+            path,
+            by_file,
+            format,
+        } => orphans(
+            cli.location(),
+            working_directory,
+            path.as_deref(),
+            *by_file,
+            *format,
+            output,
+        ),
+        Command::Hook { harness } => hook(*harness, cli.location(), working_directory, output),
         Command::InstallHooks {
             claude_code,
             remove,
         } => install_hooks(*claude_code, *remove, working_directory, output),
         Command::Config { command } => match command {
-            ConfigCommand::Validate => validate(cli.config.as_deref(), working_directory, output),
+            ConfigCommand::Validate => validate(cli.location(), working_directory, output),
             ConfigCommand::Doctor { format } => {
-                doctor(cli.config.as_deref(), working_directory, *format, output)
+                doctor(cli.location(), working_directory, *format, output)
             }
-            ConfigCommand::Explain { rule_id, format } => explain(
-                cli.config.as_deref(),
-                working_directory,
-                rule_id,
-                *format,
-                output,
-            ),
+            ConfigCommand::Explain { rule_id, format } => {
+                explain(cli.location(), working_directory, rule_id, *format, output)
+            }
         },
     }
 }
@@ -451,11 +580,11 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
 /// Shared by `check` and `config validate` so the two can never disagree about
 /// whether a configuration is usable.
 fn prepare(
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
     output: &mut Output<'_>,
 ) -> Result<(MergedConfig, archwarden_core::compiled::CompiledConfig), Exit> {
-    let loaded = load(explicit, working_directory).map_err(|error| {
+    let loaded = load(location, working_directory).map_err(|error| {
         let report = miette::Report::new(ConfigDiagnostic::from_load_error(&error));
         let _ = writeln!(output.err, "{report:?}");
         Exit::ConfigProblem
@@ -500,13 +629,13 @@ fn prepare(
 /// rules is not a failure, and an agent branching on the exit code should see
 /// "your setup is wrong" only when it is.
 fn describe(
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
     argument: &str,
     format: Format,
     output: &mut Output<'_>,
 ) -> Exit {
-    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+    let (merged, compiled) = match prepare(location, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
     };
@@ -515,7 +644,14 @@ fn describe(
     // question with a different answer shape. Detected the same way `--paths`
     // does it, so one convention covers both.
     if crate::filter::looks_like_a_glob(argument) {
-        return describe_many(&merged.root, &compiled, argument, format, output);
+        return describe_many(
+            &merged.root,
+            working_directory,
+            &compiled,
+            argument,
+            format,
+            output,
+        );
     }
 
     let path = match crate::describe::repo_relative(&merged.root, working_directory, argument) {
@@ -552,41 +688,147 @@ fn starter(reference: &str) -> String {
 
 /// Says what moving a file would change.
 fn impact(
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
     argument: &str,
     destination: &str,
+    mode: Mode,
     format: Format,
     output: &mut Output<'_>,
 ) -> Exit {
-    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+    let Mode { apply, force } = mode;
+    let (merged, compiled) = match prepare(location, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
     };
 
-    let resolve = |raw: &str| crate::describe::repo_relative(&merged.root, working_directory, raw);
-    let (from, to) = match (resolve(argument), resolve(destination)) {
-        (Ok(from), Ok(to)) => (from, to),
-        (Err(message), _) | (_, Err(message)) => {
+    let tree = match walked(&merged.root, working_directory, &compiled, output) {
+        Ok(tree) => tree,
+        Err(exit) => return exit,
+    };
+
+    // A glob or a directory is a batch, and `--to` is then relative to each
+    // match. One file keeps the original meaning: `--to` is where it goes.
+    let requests = match crate::batch::expand(
+        &merged.root,
+        working_directory,
+        &tree,
+        argument,
+        destination,
+    ) {
+        Ok(requests) => requests,
+        Err(message) => {
             let _ = writeln!(output.err, "{message}");
             return Exit::ConfigProblem;
         }
     };
 
-    let tree = match archwarden_engine::walk::walk(&merged.root, &compiled) {
-        Ok(tree) => tree,
-        Err(error) => {
-            let _ = writeln!(output.err, "{error}");
-            return Exit::ConfigProblem;
-        }
+    if requests.is_empty() {
+        // Never an empty report: a source matching nothing looks exactly like
+        // a move with no consequences, which is the one wrong answer a reader
+        // takes as good news. The same judgement `--rules` makes about an
+        // unknown id.
+        let _ = writeln!(output.err, "× `{argument}` matches no file.");
+        return Exit::ConfigProblem;
+    }
+
+    if apply {
+        return carry_out_moves(&merged.root, &compiled, &tree, &requests, force, output);
+    }
+
+    let sources: Vec<_> = requests.iter().map(|(from, _)| from.clone()).collect();
+    let found =
+        archwarden_engine::importers::importers_of_each(&merged.root, &compiled, &tree, &sources);
+
+    let answers: Vec<crate::impact::Impact> = requests
+        .iter()
+        .map(|(from, to)| {
+            let importers = found.get(from).cloned().unwrap_or_default();
+            let relative = archwarden_engine::importers::relative_imports(&merged.root, from);
+            crate::impact::impact(&compiled, from, to, &importers, relative)
+        })
+        .collect();
+
+    crate::impact::render_all(&answers, format, output.out);
+    Exit::Clean
+}
+
+/// Carries out a move, having said what it would do.
+///
+/// The plan is computed and validated in full before anything is written, so
+/// every refusal below happens with the repository untouched.
+fn carry_out_moves(
+    root: &Utf8Path,
+    compiled: &archwarden_core::compiled::CompiledConfig,
+    tree: &archwarden_engine::walk::RepoTree,
+    requests: &[(
+        archwarden_core::path::RepoRelPath,
+        archwarden_core::path::RepoRelPath,
+    )],
+    force: bool,
+    output: &mut Output<'_>,
+) -> Exit {
+    let markers = crate::batch::spec_markers(compiled);
+    let plan = crate::apply::plan(root, compiled, tree, requests, &markers);
+
+    if !plan.is_actionable(force) {
+        crate::apply::render_refusals(&plan, force, output.err);
+        return Exit::ConfigProblem;
+    }
+
+    if let Err(message) = crate::apply::carry_out(root, &plan) {
+        let _ = writeln!(output.err, "× {message}");
+        return Exit::ConfigProblem;
+    }
+
+    crate::apply::render_done(&plan, output.out);
+    Exit::Clean
+}
+
+/// Says where each folder's importers come from.
+fn orphans(
+    location: Location<'_>,
+    working_directory: &Utf8Path,
+    scope: Option<&str>,
+    by_file: bool,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let (merged, compiled) = match prepare(location, working_directory, output) {
+        Ok(prepared) => prepared,
+        Err(exit) => return exit,
     };
 
-    let importers =
-        archwarden_engine::importers::importers_of(&merged.root, &compiled, &tree, &from);
-    let relative = archwarden_engine::importers::relative_imports(&merged.root, &from);
-    let answer = crate::impact::impact(&compiled, &from, &to, &importers, relative);
+    let tree = match walked(&merged.root, working_directory, &compiled, output) {
+        Ok(tree) => tree,
+        Err(exit) => return exit,
+    };
 
-    crate::impact::render(&answer, format, output.out);
+    let index = archwarden_engine::importers::reverse_index(&merged.root, &compiled, &tree);
+    let mut answer = crate::orphans::orphans(&compiled, &index, by_file);
+
+    if let Some(scope) = scope {
+        // The same matcher `--paths` uses, so a plain path selects it and
+        // everything under it and a glob is used exactly as written. One
+        // convention for narrowing, across every command that narrows.
+        let set = match crate::filter::path_set(std::slice::from_ref(&scope.to_owned())) {
+            Ok(set) => set,
+            Err(message) => {
+                let _ = writeln!(output.err, "{message}");
+                return Exit::ConfigProblem;
+            }
+        };
+        answer.retain(&set);
+
+        if answer.folders.is_empty() {
+            // Never an empty report for a scope that matched nothing: it would
+            // read as a repository with no folders worth looking at.
+            let _ = writeln!(output.err, "× `{scope}` matches no source file.");
+            return Exit::ConfigProblem;
+        }
+    }
+
+    crate::orphans::render(&answer, by_file, format, output.out);
     Exit::Clean
 }
 
@@ -596,21 +838,18 @@ fn impact(
 /// a baseline that accepted only part of a run would be a promise the file
 /// does not keep.
 fn write_baseline(
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
     output: &mut Output<'_>,
 ) -> Exit {
-    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+    let (merged, compiled) = match prepare(location, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
     };
 
-    let tree = match archwarden_engine::walk::walk(&merged.root, &compiled) {
+    let tree = match walked(&merged.root, working_directory, &compiled, output) {
         Ok(tree) => tree,
-        Err(error) => {
-            let _ = writeln!(output.err, "{error}");
-            return Exit::ConfigProblem;
-        }
+        Err(exit) => return exit,
     };
 
     let mut cache = if archwarden_engine::run::reads_files(&compiled) {
@@ -699,7 +938,7 @@ fn init(working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
 /// something going wrong.
 fn hook(
     harness: Harness,
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
     output: &mut Output<'_>,
 ) -> Exit {
@@ -715,7 +954,7 @@ fn hook(
 
     // A broken or absent configuration is the user's problem to fix at their
     // own pace, not a reason to stop them writing a file.
-    let Ok(loaded) = load(explicit, working_directory) else {
+    let Ok(loaded) = load(location, working_directory) else {
         return allow(output);
     };
     let Ok(merged) = extends::merge(loaded, &PresetResolver::new()) else {
@@ -853,13 +1092,13 @@ fn describe_outcome(outcome: crate::hooks::Outcome, settings: &Utf8Path) -> Stri
 /// Exits with findings the same way a full run does, so a harness can block on
 /// the exit code without parsing anything.
 fn check_one(
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
     argument: &str,
     format: Format,
     output: &mut Output<'_>,
 ) -> Exit {
-    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+    let (merged, compiled) = match prepare(location, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
     };
@@ -900,6 +1139,7 @@ fn check_one(
 /// what `describe` is for.
 fn describe_many(
     root: &Utf8Path,
+    working_directory: &Utf8Path,
     compiled: &archwarden_core::compiled::CompiledConfig,
     glob: &str,
     format: Format,
@@ -913,12 +1153,9 @@ fn describe_many(
         }
     };
 
-    let tree = match archwarden_engine::walk::walk(root, compiled) {
+    let tree = match walked(root, working_directory, compiled, output) {
         Ok(tree) => tree,
-        Err(error) => {
-            let _ = writeln!(output.err, "{error}");
-            return Exit::ConfigProblem;
-        }
+        Err(exit) => return exit,
     };
 
     // Directories and files both, because a rule can be about either and the
@@ -949,13 +1186,13 @@ fn describe_many(
 /// Shares `describe`'s path resolution and config loading, and is built on its
 /// answer, so the two commands cannot disagree about what applies.
 fn scaffold(
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
     argument: &str,
     format: Format,
     output: &mut Output<'_>,
 ) -> Exit {
-    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+    let (merged, compiled) = match prepare(location, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
     };
@@ -980,7 +1217,7 @@ fn scaffold(
 /// destination itself would be a command that writes where the user did not
 /// ask.
 fn agent_guide(
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
     format: crate::guide::GuideFormat,
     scope: Option<&str>,
@@ -992,7 +1229,7 @@ fn agent_guide(
         return Exit::ConfigProblem;
     }
 
-    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+    let (merged, compiled) = match prepare(location, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
     };
@@ -1041,7 +1278,7 @@ struct CheckOptions<'a> {
 }
 
 fn check(
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
     options: &CheckOptions<'_>,
     output: &mut Output<'_>,
@@ -1051,7 +1288,7 @@ fn check(
     // comparing between two invocations.
     let started = std::time::Instant::now();
 
-    let (merged, compiled) = match prepare(explicit, working_directory, output) {
+    let (merged, compiled) = match prepare(location, working_directory, output) {
         Ok(prepared) => prepared,
         Err(exit) => return exit,
     };
@@ -1100,12 +1337,9 @@ fn check(
         }
     };
 
-    let tree = match archwarden_engine::walk::walk(&merged.root, &compiled) {
+    let tree = match walked(&merged.root, working_directory, &compiled, output) {
         Ok(tree) => tree,
-        Err(error) => {
-            let _ = writeln!(output.err, "{error}");
-            return Exit::ConfigProblem;
-        }
+        Err(exit) => return exit,
     };
 
     // Opened only when a rule will actually look inside a file. A purely
@@ -1269,20 +1503,78 @@ fn open_cache(root: &Utf8Path, output: &mut Output<'_>) -> Option<Cache> {
     }
 }
 
+/// Walks the repository, refusing a root nobody chose.
+///
+/// The walk itself rarely fails. What this exists for is the case that
+/// succeeds and means nothing: `--config /tmp/stricter.json` takes `/tmp` to be
+/// the repository, because a config file's directory is where globs resolve
+/// from. It walks `/tmp`, finds no TypeScript, and reports a clean run. Exit 0,
+/// no findings — and the question that was asked, "how many findings would this
+/// stricter rule produce?", answered with the one wrong answer a reader takes
+/// as good news.
+///
+/// The refusal is narrow on purpose, because "no source files" on its own is a
+/// legitimate state: a repository that has just run `archwarden init` and has
+/// not been written yet is empty, and exiting 2 on it would make the tool look
+/// broken on its first run. What is never legitimate is an empty root that the
+/// caller is not standing in. Standing somewhere is choosing it; a root reached
+/// only through a config file's own location was chosen by nobody.
+fn walked(
+    root: &Utf8Path,
+    working_directory: &Utf8Path,
+    compiled: &archwarden_core::compiled::CompiledConfig,
+    output: &mut Output<'_>,
+) -> Result<archwarden_engine::walk::RepoTree, Exit> {
+    let tree = archwarden_engine::walk::walk(root, compiled).map_err(|error| {
+        let _ = writeln!(output.err, "{error}");
+        Exit::ConfigProblem
+    })?;
+
+    let stood_in = working_directory.starts_with(root);
+    let has_source = tree
+        .files()
+        .any(|file| file.class == archwarden_core::path::FileClass::Source);
+
+    if !stood_in && !has_source {
+        let _ = writeln!(
+            output.err,
+            "× `{root}` holds no JavaScript or TypeScript, and is not where you are standing.\n\
+             \x20 archwarden took it to be the repository because that is where the config file \
+             is.\n\
+             \x20 If the config describes a repository somewhere else, say which: `--root <PATH>`.",
+        );
+        return Err(Exit::ConfigProblem);
+    }
+
+    Ok(tree)
+}
+
 /// Loads the config, either from an explicit path or by searching upwards.
 ///
 /// A relative `--config` resolves against the working directory rather than
 /// against the process's own, so nothing here depends on ambient state and
 /// `run` behaves identically in a test and in a shell.
 fn load(
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
 ) -> Result<LoadedConfig, discovery::LoadError> {
-    match explicit {
+    let mut loaded = match location.config {
         Some(path) if path.is_absolute() => discovery::load_file(path),
         Some(path) => discovery::load_file(&working_directory.join(path)),
         None => discovery::load_from(working_directory),
+    }?;
+
+    // Last, so it beats both the config's own `root` and the default. Someone
+    // who passed `--root` is answering the question those two guess at.
+    if let Some(root) = location.root {
+        loaded.root = if root.is_absolute() {
+            root.to_owned()
+        } else {
+            working_directory.join(root)
+        };
     }
+
+    Ok(loaded)
 }
 
 /// Looks for a configuration that parses and is still wrong.
@@ -1291,12 +1583,12 @@ fn load(
 /// findings about code, and a non-zero exit would put them in a CI gate where
 /// a deliberate choice would start failing builds.
 fn doctor(
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
     format: Format,
     output: &mut Output<'_>,
 ) -> Exit {
-    let Ok((merged, compiled)) = prepare(explicit, working_directory, output) else {
+    let Ok((merged, compiled)) = prepare(location, working_directory, output) else {
         return Exit::ConfigProblem;
     };
 
@@ -1328,13 +1620,13 @@ fn doctor(
 
 /// Shows what one rule reaches, and what it is reporting.
 fn explain(
-    explicit: Option<&Utf8Path>,
+    location: Location<'_>,
     working_directory: &Utf8Path,
     rule_id: &str,
     format: Format,
     output: &mut Output<'_>,
 ) -> Exit {
-    let Ok((merged, compiled)) = prepare(explicit, working_directory, output) else {
+    let Ok((merged, compiled)) = prepare(location, working_directory, output) else {
         return Exit::ConfigProblem;
     };
 
@@ -1346,12 +1638,9 @@ fn explain(
         }
     };
 
-    let tree = match archwarden_engine::walk::walk(&merged.root, &compiled) {
+    let tree = match walked(&merged.root, working_directory, &compiled, output) {
         Ok(tree) => tree,
-        Err(error) => {
-            let _ = writeln!(output.err, "{error}");
-            return Exit::ConfigProblem;
-        }
+        Err(exit) => return exit,
     };
 
     match crate::explain::explain(&merged.root, &compiled, &tree, &id) {
@@ -1366,12 +1655,8 @@ fn explain(
     }
 }
 
-fn validate(
-    explicit: Option<&Utf8Path>,
-    working_directory: &Utf8Path,
-    output: &mut Output<'_>,
-) -> Exit {
-    match prepare(explicit, working_directory, output) {
+fn validate(location: Location<'_>, working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
+    match prepare(location, working_directory, output) {
         Ok((merged, compiled)) => {
             report_valid(&merged, compiled.rule_count(), output);
             Exit::Clean
@@ -1868,6 +2153,80 @@ mod tests {
 
         assert_eq!(result.exit, Exit::Clean);
         assert!(result.out.contains("other.json"), "{}", result.out);
+    }
+
+    /// The question `--root` exists for: how many findings would a stricter
+    /// rule produce, asked without editing the file the project committed.
+    ///
+    /// Rule 2 of `AGENTS.md` forbids editing `arch.config.json` to make a
+    /// check pass, and planning to *tighten* a rule needs exactly that edit to
+    /// measure it. A config kept somewhere else answers without persisting
+    /// anything — but only if archwarden can be told the repository is not
+    /// where that config sits.
+    #[test]
+    fn a_config_outside_the_repository_analyses_it_when_root_says_where_it_is() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::create_dir_all(root.join("repo/src/wrong")).expect("create dirs");
+        std::fs::create_dir_all(root.join("elsewhere")).expect("create dirs");
+        std::fs::write(root.join("repo/src/wrong/x.ts"), "export const x = 1;\n").expect("write");
+        std::fs::write(
+            root.join("elsewhere/stricter.json"),
+            r#"{"version":0,"rules":[{"type":"structure","id":"shape","level":"error",
+                "roots":"src","allowed_subfolders":["right"]}]}"#,
+        )
+        .expect("write");
+
+        let result = run_at(
+            &root.join("repo"),
+            &[
+                "check",
+                "--config",
+                "../elsewhere/stricter.json",
+                "--root",
+                ".",
+                "--summary",
+            ],
+        );
+
+        assert_eq!(result.exit, Exit::Errors, "{}{}", result.out, result.err);
+        assert!(result.out.contains("shape"), "{}", result.out);
+    }
+
+    /// The same config without `--root`, which is the shape of the bug.
+    ///
+    /// The root falls back to the config file's own directory, which holds no
+    /// source at all. Reporting that as a clean repository would answer "how
+    /// many findings?" with zero — the one wrong answer a reader takes as good
+    /// news. Exit 2, and the message names the flag that fixes it.
+    #[test]
+    fn a_config_outside_the_repository_refuses_rather_than_reporting_a_clean_run() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::create_dir_all(root.join("repo/src")).expect("create dirs");
+        std::fs::create_dir_all(root.join("elsewhere")).expect("create dirs");
+        std::fs::write(root.join("repo/src/x.ts"), "export const x = 1;\n").expect("write");
+        std::fs::write(root.join("elsewhere/stricter.json"), MINIMAL).expect("write");
+
+        let result = run_at(
+            &root.join("repo"),
+            &["check", "--config", "../elsewhere/stricter.json"],
+        );
+
+        assert_eq!(result.exit, Exit::ConfigProblem, "{}", result.out);
+        assert!(result.err.contains("--root"), "{}", result.err);
+    }
+
+    /// A repository with no source yet is not the same mistake. `init` writes
+    /// a config into an empty directory, and the very next `check` must not
+    /// tell the user their setup is broken.
+    #[test]
+    fn an_empty_repository_you_are_standing_in_is_still_checked() {
+        let (_guard, result) = run_in(&[("arch.config.json", MINIMAL)], &["check"]);
+
+        assert_eq!(result.exit, Exit::Clean, "{}", result.err);
     }
 
     /// Running from a subdirectory finds the repository's config, which is the

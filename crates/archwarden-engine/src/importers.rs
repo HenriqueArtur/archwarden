@@ -28,11 +28,24 @@ use camino::Utf8Path;
 
 use crate::walk::RepoTree;
 
+/// One importing file, and the imports in it that reach the target.
+///
+/// The specifiers are what a rewrite edits, and there can be more than one in
+/// a file: `import type { A }` and `import { b }` from the same module are two
+/// statements, and a move has to touch both.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Importer {
+    /// The importing file.
+    pub path: RepoRelPath,
+    /// The imports in it that resolve to the target, in source order.
+    pub imports: Vec<archwarden_core::facts::ImportFact>,
+}
+
 /// Which files import a target, and which files nobody can be sure about.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Importers {
     /// Files with an import that resolves to the target, in path order.
-    pub direct: Vec<RepoRelPath>,
+    pub direct: Vec<Importer>,
     /// Files containing a dynamic import archwarden cannot read.
     ///
     /// Not an error and not a finding: a statement that the answer above is
@@ -53,10 +66,37 @@ pub fn importers_of(
     tree: &RepoTree,
     target: &RepoRelPath,
 ) -> Importers {
+    importers_of_each(root, config, tree, std::slice::from_ref(target))
+        .remove(target)
+        .unwrap_or_default()
+}
+
+/// The same question asked about several targets at once.
+///
+/// One pass, not one per target. A batch move of nine files would otherwise
+/// resolve the repository nine times — about seven seconds on a repository
+/// where a `check` takes two hundred milliseconds — for an answer that comes
+/// out of the same single traversal.
+///
+/// Every target gets an entry, including one nothing imports: an empty list is
+/// the answer that makes a move safe, and a missing key would be
+/// indistinguishable from a target nobody asked about.
+#[must_use]
+pub fn importers_of_each(
+    root: &Utf8Path,
+    config: &CompiledConfig,
+    tree: &RepoTree,
+    targets: &[RepoRelPath],
+) -> std::collections::BTreeMap<RepoRelPath, Importers> {
     let resolver = archwarden_resolver::imports::ImportResolver::new(root);
     let parser = archwarden_parser::oxc::OxcParser;
 
-    let mut found = Importers::default();
+    let wanted: std::collections::BTreeSet<&RepoRelPath> = targets.iter().collect();
+    let mut found: std::collections::BTreeMap<RepoRelPath, Importers> = targets
+        .iter()
+        .map(|target| (target.clone(), Importers::default()))
+        .collect();
+    let mut opaque = Vec::new();
 
     for file in tree.files() {
         if file.class != FileClass::Source || config.is_ignored(&file.path) {
@@ -71,24 +111,171 @@ pub fn importers_of(
         };
 
         if facts.has_opaque_import {
-            found.opaque.push(file.path.clone());
+            opaque.push(file.path.clone());
         }
 
         crate::resolve::resolve_imports(&resolver, &mut facts);
-        if facts
-            .imports
-            .iter()
-            .any(|import| import.resolved.as_ref() == Some(target))
-        {
-            found.direct.push(file.path.clone());
+
+        // Grouped by which target each import reaches, so one traversal
+        // answers for every target at once.
+        let mut by_target: std::collections::BTreeMap<&RepoRelPath, Vec<_>> =
+            std::collections::BTreeMap::new();
+        for import in &facts.imports {
+            let Some(landed) = import.resolved.as_ref() else {
+                continue;
+            };
+            if let Some(target) = wanted.get(landed) {
+                by_target.entry(target).or_default().push(import.clone());
+            }
+        }
+
+        for (target, imports) in by_target {
+            if let Some(entry) = found.get_mut(target) {
+                entry.direct.push(Importer {
+                    path: file.path.clone(),
+                    imports,
+                });
+            }
         }
     }
 
     // Determinism is a design goal, and the walk's order is not one a reader
     // can predict.
-    found.direct.sort();
-    found.opaque.sort();
+    opaque.sort();
+    for entry in found.values_mut() {
+        entry.direct.sort_by(|a, b| a.path.cmp(&b.path));
+        entry.opaque.clone_from(&opaque);
+    }
     found
+}
+
+/// Every in-repository import edge, read backwards.
+///
+/// [`importers_of_each`] answers about a known list of targets.
+/// This answers about all of them at once, which is what a question about
+/// *every* folder needs — and it is the same single traversal, so asking about
+/// the whole repository costs what asking about one file costs.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReverseIndex {
+    entries: std::collections::BTreeMap<RepoRelPath, Vec<RepoRelPath>>,
+    opaque: Vec<RepoRelPath>,
+}
+
+impl ReverseIndex {
+    /// Builds one directly, for tests.
+    #[must_use]
+    pub fn from_pairs(
+        entries: std::collections::BTreeMap<RepoRelPath, Vec<RepoRelPath>>,
+        opaque: Vec<RepoRelPath>,
+    ) -> Self {
+        Self { entries, opaque }
+    }
+
+    /// Every file, with the files that import it.
+    ///
+    /// Every source file in the walk has an entry, including one nothing
+    /// imports: an empty list is the answer the question is largely about, and
+    /// a missing key would be indistinguishable from a file nobody looked at.
+    pub fn entries(&self) -> impl Iterator<Item = (&RepoRelPath, &[RepoRelPath])> {
+        self.entries
+            .iter()
+            .map(|(path, importers)| (path, importers.as_slice()))
+    }
+
+    /// Files containing a dynamic import naming no module.
+    #[must_use]
+    pub fn opaque(&self) -> &[RepoRelPath] {
+        &self.opaque
+    }
+}
+
+/// Reads every import in the repository backwards, in one pass.
+#[must_use]
+pub fn reverse_index(root: &Utf8Path, config: &CompiledConfig, tree: &RepoTree) -> ReverseIndex {
+    let resolver = archwarden_resolver::imports::ImportResolver::new(root);
+    let parser = archwarden_parser::oxc::OxcParser;
+
+    let mut index = ReverseIndex::default();
+
+    // Seeded with every source file, so a file nothing imports is present with
+    // an empty list rather than absent. That row is most of the point.
+    for file in tree.files() {
+        if file.class == FileClass::Source && !config.is_ignored(&file.path) {
+            index.entries.entry(file.path.clone()).or_default();
+        }
+    }
+
+    for file in tree.files() {
+        if file.class != FileClass::Source || config.is_ignored(&file.path) {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(root.join(file.path.as_path())) else {
+            continue;
+        };
+        let hash = archwarden_core::hash::ContentHash::of(source.as_bytes());
+        let Ok(mut facts) = parser.parse(&file.path, &source, hash) else {
+            continue;
+        };
+
+        if facts.has_opaque_import {
+            index.opaque.push(file.path.clone());
+        }
+
+        crate::resolve::resolve_imports(&resolver, &mut facts);
+        for import in &facts.imports {
+            let Some(landed) = import.resolved.as_ref() else {
+                continue;
+            };
+            // A file importing itself is not an importer of it. It happens
+            // through an index re-export, and counting it would make a folder
+            // look used by its own module when nothing outside it is.
+            if landed == &file.path {
+                continue;
+            }
+            if let Some(importers) = index.entries.get_mut(landed) {
+                importers.push(file.path.clone());
+            }
+        }
+    }
+
+    index.opaque.sort();
+    for importers in index.entries.values_mut() {
+        importers.sort();
+        importers.dedup();
+    }
+    index
+}
+
+/// One file's text and its imports, resolved.
+///
+/// The pipeline reads, parses and resolves in three places already; this is
+/// the fourth caller's version of it, kept here because `archwarden-cli` has
+/// no business depending on the parser directly — the crate graph in
+/// `docs/ARCHITECTURE.md` puts the front-end behind the engine.
+///
+/// The text comes back with the facts because a caller rewriting a specifier
+/// needs the exact bytes the spans were measured against, and re-reading could
+/// get a different file.
+///
+/// # Errors
+/// A message naming what went wrong, for a caller that must refuse rather than
+/// carry on with a file it could not read.
+pub fn resolved_facts(
+    root: &Utf8Path,
+    path: &RepoRelPath,
+    resolver: &archwarden_resolver::imports::ImportResolver,
+) -> Result<(String, archwarden_core::facts::FileFacts), String> {
+    use archwarden_core::traits::Parser as _;
+
+    let source =
+        std::fs::read_to_string(root.join(path.as_path())).map_err(|error| error.to_string())?;
+    let hash = archwarden_core::hash::ContentHash::of(source.as_bytes());
+    let mut facts = archwarden_parser::oxc::OxcParser
+        .parse(path, &source, hash)
+        .map_err(|_| "will not parse".to_owned())?;
+
+    crate::resolve::resolve_imports(resolver, &mut facts);
+    Ok((source, facts))
 }
 
 /// How many of a file's own imports are written relative to it.
@@ -144,6 +331,11 @@ mod tests {
         )
     }
 
+    /// Just the importing paths, for assertions that are not about specifiers.
+    fn paths(found: &Importers) -> Vec<RepoRelPath> {
+        found.direct.iter().map(|i| i.path.clone()).collect()
+    }
+
     fn importers(entries: &[(&str, &str)], target: &str) -> Importers {
         let (guard, root) = tree_at(entries);
         let config = config();
@@ -172,7 +364,7 @@ mod tests {
         );
 
         assert_eq!(
-            found.direct,
+            paths(&found),
             [
                 RepoRelPath::new("src/a.ts").expect("valid"),
                 RepoRelPath::new("src/b.ts").expect("valid"),

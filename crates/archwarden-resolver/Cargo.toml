@@ -13,6 +13,7 @@ authors.workspace = true
 archwarden-core = { workspace = true }
 camino = { workspace = true }
 oxc_resolver = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

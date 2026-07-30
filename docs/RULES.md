@@ -1,6 +1,6 @@
 # Rule categories
 
-archwarden ships five rule categories in v0. Each has narrow, well-defined
+archwarden ships six rule categories in v0. Each has narrow, well-defined
 semantics. This document is the reference for what each rule can and cannot
 express. Config syntax lives in [`CONFIG.md`](CONFIG.md).
 
@@ -23,6 +23,7 @@ directory:
 | `spec-pair` | `subfolders` | the listed subdirectories (`"."` = the directory itself), then files in them |
 | `call-obligation` | `file_pattern` | the direct child files, by basename |
 | `import-boundary` | *(scope only)* | every file in the directory is a candidate importer |
+| `no-passthrough` | *(scope only)* | every direct child file's exports |
 
 Recursion lives entirely in the glob. `apps/api/*` selects only the direct
 child directories of `apps/api`; `apps/api/**` selects every directory under
@@ -207,6 +208,37 @@ is set.
   "TDD gate" flag: it prevents empty stubs from satisfying the rule.
   **`describe(...)` does not count** — an empty `describe` block satisfies the
   letter of the rule while defeating its entire purpose.
+- `skip_type_only` (bool, default `false`) — if true, a file whose exports are
+  all `type` or `interface` needs no spec. See below.
+
+### `skip_type_only`: files with nothing to test
+
+A file with no runtime export has nothing a test can call. The rule still
+demands a spec for one, and the spec that gets written to satisfy it tests a
+mock of the contract rather than the contract — because there is nothing else
+to test. That is work which reduces no risk, and `tsc` already checks an
+interface on every build.
+
+Three boundaries, each drawn where it is for a reason:
+
+- **`enum` is a runtime export.** It has values a test can assert on, so a file
+  exporting one is not a contract in the sense this exemption means.
+- **A file with no exports at all is not type-only.** That is a file nobody
+  imports, not a contract — and exempting it would make deleting the `export`
+  keyword a way out of the rule.
+- **A re-export is not type-only either.** Its real kind needs the file on the
+  other side, which section 2 keeps this rule away from; guessing would exempt
+  files on a coin flip.
+
+**It costs a parse.** `spec-pair` otherwise reads no file at all, so a rule that
+sets this reads every file in its scope — the same trade `require_non_empty_spec`
+makes. On a repository of 3778 files with the flag on one rule, that is 137
+files parsed that were not before.
+
+What it replaces is a hand-maintained `ignore_files` list. On one real
+repository the five entries in it were all interface-only service and adapter
+files, and the flag removes all five while reporting exactly what the list
+reported.
 
 ### How a spec is named
 
@@ -344,12 +376,73 @@ into program analysis territory and are out of scope.
 
 ---
 
+## 6. No passthrough
+
+**What it enforces**: a file must add something of its own. A file whose whole
+content is forwarding another module is an indirection wearing the name of a
+layer.
+
+**Scope**: file-local. Needs parse (to inspect exports and their initialisers),
+not resolve.
+
+**Three shapes**, configured with `forms` (default: all three):
+
+| form | looks like |
+|---|---|
+| `reexport` | `export { A } from './x'`, or `import { A }` followed by `export { A }` |
+| `alias` | `export const planToJson = planToJsonShared`, `export type PlanJson = PlanJsonShared` |
+| `wrapper` | `export function f(a, b) { return g(a, b); }` |
+
+**Why it earns a rule.** These three are how a folder survives years looking
+like it has a purpose. An importer reaching a `shared/` module through a
+`calcs/` file that only forwards it cannot tell the layer between them is
+empty, and neither can a reader.
+
+**A barrel file is case 1**, so `"no barrel files"` — a line many projects
+carry in a `CLAUDE.md` with no enforcement at all — is
+`forms: ["reexport"]` with `allow_package_entrypoints: false`. It is a
+sub-case, not a kind of its own: two implementations of the same predicate can
+disagree, and decision 9 exists to stop that.
+
+**The wrapper test is syntactic.** "Same signature" in the type sense needs the
+file on the other side and its types, which section 2 keeps file-local rules
+away from. A wrapper that reorders arguments, drops one, or supplies a default
+is doing something, and none of those match.
+
+### The exceptions are not optional
+
+Legitimate forwarding exists. The file a package's `exports` points at *is* a
+public API, and forwarding is what a public API is for.
+`allow_package_entrypoints` (default `true`) exempts it without anyone writing
+a glob, and `except` takes globs for the rest. A rule that reported a package's
+entire surface the day it was switched on is a rule nobody leaves on.
+
+### `allow_partial`
+
+Default `true`: only a file where **every** export is a forward is reported.
+
+Set it to `false` to hear about the shape that hides best — a file
+re-exporting six names from another module while declaring two of its own. That
+file is not one that adds nothing, and saying so would be false; but six of its
+eight exports are still an indirection its importers could skip. The finding
+names exactly those six.
+
+Measured on one real repository: **4 findings** with the default, **26** with
+`allow_partial: false`. Both numbers are true and they answer different
+questions, which is why it is a flag and not a default.
+
+**Cannot express**: whether the forwarded module is the right one to import
+instead. That is what `impact` is for.
+
+---
+
 ## Rule interaction and evaluation order
 
 Rules run in this order for cache friendliness:
 
 1. Structure (walk only, no parse)
 2. Naming coupling (parse required for exports)
+2b. No passthrough (parse required for exports and their initialisers)
 3. Spec pairing (walk only, unless `require_non_empty_spec` — then parse)
 4. Import boundaries (parse + resolve; needs full graph)
 5. Call obligations (parse; needs resolved imports to match `imported_from`)

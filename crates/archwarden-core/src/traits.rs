@@ -314,6 +314,7 @@ mod tests {
             tags: ExportTags::only(ExportKind::Function),
             is_default: false,
             reexport_from: None,
+            forwards: None,
             span: crate::facts::Span::new(0, 10),
         });
 

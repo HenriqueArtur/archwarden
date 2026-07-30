@@ -413,6 +413,7 @@ mod tests {
             spec_markers: vec!["spec".to_owned(), "test".to_owned()],
             ignore_files: PathSet::default(),
             require_non_empty_spec: false,
+            skip_type_only: false,
         }
     }
 
@@ -900,6 +901,7 @@ mod tests {
                     spec_markers: vec!["spec".to_owned(), "test".to_owned()],
                     ignore_files: PathSet::default(),
                     require_non_empty_spec: true,
+                    skip_type_only: false,
                 },
             )]),
         );

@@ -206,6 +206,18 @@ fn compile_rule(
             spec_markers: spec_markers(&id, r)?,
             ignore_files: globs(&id, "ignore_files", &r.ignore_files)?,
             require_non_empty_spec: r.require_non_empty_spec,
+            skip_type_only: r.skip_type_only,
+        },
+
+        Rule::NoPassthrough(r) => CompiledRuleKind::NoPassthrough {
+            forms: archwarden_core::compiled::PassthroughForms {
+                reexport: r.forms.contains(&crate::rule::PassthroughForm::Reexport),
+                alias: r.forms.contains(&crate::rule::PassthroughForm::Alias),
+                wrapper: r.forms.contains(&crate::rule::PassthroughForm::Wrapper),
+            },
+            except: globs(&id, "except", &r.except)?,
+            allow_package_entrypoints: r.allow_package_entrypoints,
+            allow_partial: r.allow_partial,
         },
 
         Rule::ImportBoundary(r) => CompiledRuleKind::ImportBoundary {

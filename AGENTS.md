@@ -397,6 +397,51 @@ move is `tsc`'s question, and it answers it better.
 
 It resolves the whole repository, so it costs about what `check` costs.
 
+#### `--apply` — carry the move out
+
+Dry run is the default. `--apply` is the second, explicit word:
+
+```bash
+npx archwarden impact packages/domain/src/id/shared/is-id-invalid-shared.ts \
+               --to  packages/domain/src/id/calcs/is-id-invalid.ts --apply
+```
+
+`git mv`, then every import specifier that named the file — the ones written by
+package name included, which is the half your editor cannot do. The spec
+sibling comes along and follows a rename. A source directory left empty is
+removed.
+
+A directory or glob as the source makes `--to` relative to each match:
+
+```bash
+npx archwarden impact 'packages/domain/src/*/shared' --to '../calcs' --apply
+```
+
+**Three things to hold on to.**
+
+**A refusal means nothing happened.** Everything is validated before a byte is
+written, so there is no half-done state to clean up. Exit 2 with a reason: a
+dirty working tree, a specifier archwarden cannot recompute, a destination that
+exists. Fix the reason and run again; do not work around it.
+
+**`--force` covers exactly one refusal** — a dynamic import naming no module,
+where whether that file imports the target is unknowable. The report names the
+file. Look at it. Do not reach for `--force` on anything else; it does not
+apply to anything else.
+
+**The exported symbol is not renamed.** A file renamed mid-move keeps its
+export, and the output says so. Run `check` afterwards: a `naming` rule will
+tell you whether the project wants them to match, and renaming an export is a
+change to every caller — your decision, not the tool's.
+
+**If the repository has a `no-passthrough` rule, run `check` for it before you
+move anything.** `--apply` moves files; it does not delete indirection. A file
+that only forwards another module survives the move and forwards the new
+location instead. Deleting those first means fewer importers for `--apply` to
+rewrite; doing it after means rewriting the same lines twice. Deleting one is
+an edit to its importers, so it is a change to propose, not one to make on your
+own initiative.
+
 ### `config explain <rule-id>` — what a rule reaches
 
 ```
@@ -421,7 +466,7 @@ regexes matching nothing, scopes pointing at paths that do not exist.
 `doctor` exits **0 even with findings** — they are advice about a
 configuration, not findings about code.
 
-## The five rule kinds
+## The six rule kinds
 
 | kind | asks | you satisfy it by |
 |---|---|---|
@@ -430,6 +475,7 @@ configuration, not findings about code.
 | `spec-pair` | is there a test beside it? | creating the sibling `.spec.ts` — **write it, do not leave it empty** if `non_empty_spec` is true |
 | `import-boundary` | may this layer import that one? | importing through whatever `except` allows, or not at all |
 | `call-obligation` | does this file call the required symbol? | calling it **anywhere in the file**, including from a local helper |
+| `no-passthrough` | does this file add anything of its own? | writing something here, or deleting the file and importing what it forwards |
 
 Two details that decide most cases:
 

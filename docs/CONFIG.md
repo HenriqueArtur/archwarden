@@ -14,6 +14,32 @@ of truth.
 
 If you must override discovery, pass `--config path/to/config.json`.
 
+### `--config` and `--root` are two questions
+
+`--config` answers *where the rules are*. It also answers *what they are about*,
+because globs resolve from the config file's own directory — which is right for
+the config a repository carries, and wrong for one kept anywhere else.
+
+`--root` separates them:
+
+```bash
+archwarden check --config ../experiments/stricter.json --root .
+```
+
+Without it, a config outside the repository would take its own directory to be
+the repository, walk it, find no TypeScript and report a clean run — exit 0, no
+findings, and the question answered with the one wrong answer a reader takes as
+good news. So that case is **exit 2** with a message naming this flag.
+
+The refusal is narrow: an empty root you are *standing in* is checked normally,
+because a repository that has just run `archwarden init` is empty and the very
+next `check` must not claim the setup is broken. What is never legitimate is an
+empty root reached only through a config file's location.
+
+This is what makes "how many findings would this stricter rule produce?"
+answerable without editing the file the project committed — see
+[Measuring a rule change](#measuring-a-rule-change) below.
+
 ## Format
 
 JSON. Not YAML, not TOML, not JS. Reasoning is in [`DECISIONS.md`](DECISIONS.md).
@@ -93,7 +119,7 @@ would refuse to complete.
 
 Every rule has:
 
-- `type` — discriminator (`structure`, `naming`, `spec-pair`, `import-boundary`, `call-obligation`).
+- `type` — discriminator (`structure`, `naming`, `spec-pair`, `import-boundary`, `call-obligation`, `no-passthrough`).
 - `id` — stable identifier used in output and in `explain`. Required, unique per config.
 - `level` — `error` or `warning`.
 - a **scope**: `roots` on every rule, except `import-boundary` where it is
@@ -138,7 +164,7 @@ older one rather than degrading. That is the intended trade: a config file is
 small, versioned by its `version` field, and a wrong guess about what a key
 means is worse than an error.
 
-The five rule types are specified in [`RULES.md`](RULES.md). This section
+The six rule types are specified in [`RULES.md`](RULES.md). This section
 shows realistic examples for each.
 
 ### Structure rule
@@ -296,6 +322,43 @@ would be harder to trust than one that is never asked.
 
 Cross-file analysis is out of scope for v0 — the obligation must be satisfied
 within the file itself.
+
+### No passthrough
+
+```json
+{
+  "type": "no-passthrough",
+  "id": "domain-no-indirection",
+  "level": "warning",
+  "roots": ["packages/domain/src/**"],
+  "forms": ["reexport", "alias", "wrapper"],
+  "except": [],
+  "allow_package_entrypoints": true,
+  "allow_partial": true
+}
+```
+
+A file whose whole content is forwarding another module. Run against a real
+repository, that config found four:
+
+```
+warning packages/domain/src/plan/calcs/to-json.ts
+        [domain] domain-no-indirection — adds nothing of its own: `PlanJson`, `planToJson` only forward another module
+```
+
+`forms` defaults to all three and narrows to one question at a time. **"No
+barrel files"** is this rule with `forms: ["reexport"]` and
+`allow_package_entrypoints: false` — a barrel is a re-export and nothing else.
+
+`allow_package_entrypoints` defaults to `true` because a package's public API
+is a file whose job is forwarding. Leave it on unless you are hunting barrels.
+
+`allow_partial` defaults to `true`, so only a file where *every* export is a
+forward is reported. Setting it to `false` also reports a file that forwards
+some and declares others, naming which — on the same repository, 4 findings
+became 26. Both are true; they answer different questions.
+
+Every rule type is specified in [`RULES.md`](RULES.md).
 
 ## Presets
 
@@ -533,6 +596,174 @@ somewhere afterwards is a question `tsc` answers better.
 
 Reading the import graph backwards means resolving the whole repository, so
 this costs about what a `check` costs.
+
+### Carrying it out
+
+`--apply` does the move. Dry run stays the default, and this is a second,
+explicit word.
+
+```bash
+archwarden impact packages/domain/src/id/shared/is-id-invalid-shared.ts \
+           --to  packages/domain/src/id/calcs/is-id-invalid.ts --apply
+```
+
+Files move with `git mv`, so history follows them. Every import specifier that
+named the file is rewritten — **including the ones written by package name**,
+which is the half an editor cannot do: to an editor, `@org/domain/email/x` is a
+package like `react`. In the repository this was built against, that is the
+majority of imports.
+
+The spec sibling travels with its unit file, and follows a rename:
+`is-id-invalid-shared.spec.ts` becomes `is-id-invalid.spec.ts`. Leaving it
+behind would break archwarden's own `spec-pair` rule.
+
+A source directory the move empties is removed, because `structure` rules are
+about directories and an emptied `shared/` would keep reporting the finding the
+refactor was run to remove.
+
+**The exported symbol is not renamed.** A file renamed mid-move keeps
+`isIdInvalidShared`, and the output says so. Renaming an export breaks every
+caller in a way this cannot see; `check` reports the mismatch afterwards, which
+is where a `naming` rule belongs.
+
+### A whole layer at once
+
+A directory or a glob as the source makes `--to` relative to **each matched
+directory**:
+
+```bash
+archwarden impact 'packages/domain/src/*/shared' --to '../calcs' --apply
+```
+
+Every `shared` becomes the `calcs` beside it. Files nested inside a match land
+in the destination directly — `feature/shared/consts/list-shared.ts` goes to
+`feature/calcs/`, not to `feature/shared/calcs/`. Two files landing on one path
+is refused before anything is written.
+
+One file keeps the other reading: `--to` is the whole destination path, which
+is what makes renaming during a move expressible at all.
+
+### Sequencing a layer refactor: passthrough first, then the move
+
+`impact --apply` moves files. It does not delete indirection — a file whose
+whole content forwards another module is still there afterwards, forwarding the
+new location. So when a refactor is both ("collapse this folder away" *and*
+"the files in it are reached through wrappers"), the order changes the size of
+the diff and it is not obvious which way.
+
+**Run `no-passthrough` first.** Every passthrough file you delete is a file
+`--apply` no longer has to rewrite importers for — because its importers now
+name the real module directly.
+
+Taking it the other way round works and costs more: the move rewrites every
+specifier that goes *through* the wrapper, and then deleting the wrapper
+rewrites them again. Two commits touching the same lines, and the first one's
+diff is noise.
+
+Neither order is wrong, and neither is automatic: deleting a passthrough file
+means editing its importers to name what it forwarded, which is a change to
+call sites and archwarden does not make it. `no-passthrough` reports; you
+decide; then `--apply` moves what is left.
+
+One thing the report will not tell you: a passthrough can cross a module
+boundary. On the repository this was built against, an entity's `calcs/` file
+wrapped *another entity's* `shared/` module — so collapsing `shared/` inside
+each entity did not remove that indirection, it only moved its target. Read the
+`no-passthrough` findings before deciding what the move is meant to achieve.
+
+### What it refuses, and why a refusal is safe
+
+Everything is computed and validated before a byte is written, so **a refusal
+means nothing happened** — there is no state where half the imports are
+rewritten.
+
+| refusal | why |
+|---|---|
+| the working tree is dirty | `git` is the undo, and one that takes your own work with it is not one |
+| not a git repository | same reason: no undo |
+| a specifier this cannot recompute | a `tsconfig` path alias resolves through a map archwarden does not read; rewriting the rest would leave that one pointing at nothing |
+| the destination exists, or two files land on one path | carrying it out would delete something |
+| a dynamic import naming no module | whether that file imports the target is unknowable |
+
+Only the last is overridable. `--force` is a human saying they looked, and the
+report prints the file and the line to look at. The others produce a repository
+that does not build, which is not a judgement a flag should be able to make.
+
+## Measuring a rule change
+
+Rule 2 of [`AGENTS.md`](AGENT-INTEGRATION.md) says not to edit `arch.config.json`
+to make a check pass. Planning to *tighten* a rule needs the opposite of that
+and looks identical from outside: you have to change the file to find out what
+changes. A config kept somewhere else answers without persisting anything.
+
+```bash
+cp arch.config.json /tmp/stricter.json
+# edit /tmp/stricter.json — drop `shared` from warn_subfolders
+archwarden check --config /tmp/stricter.json --root . --summary
+```
+
+```
+domain-entity-shape                        7 errors, 2 warnings
+domain-actions-should-have-spec           37 warnings
+domain-calcs-services-adapters-need-spec   0
+domain-variants-calcs-services-need-spec   0
+```
+
+Seven errors, and `config explain` on the id says which paths. Nothing was
+written, so there is no config change to remember to revert — which is the
+difference between measuring a decision and making one.
+
+`--root .` is not optional here; without it the run refuses. See
+[`--config` and `--root` are two questions](#--config-and---root-are-two-questions).
+
+## Does this folder have a reason to exist?
+
+```bash
+archwarden orphans                                  # every folder
+archwarden orphans 'packages/domain/src/**/shared/**'
+archwarden orphans packages/domain/src/order --by-file
+```
+
+For every file: who imports it, and whether from inside the module it lives in,
+from outside it, or nobody. Aggregated by folder.
+
+```
+packages/domain/src/flow-node/shared/calcs     2 files   inside-only 0   outside-only 2   both 0   nobody 0
+                                               → only used from outside its module — the boundary is drawn elsewhere
+packages/domain/src/feature/shared/consts      1 file    inside-only 0   outside-only 0   both 1   nobody 0
+```
+
+Three shapes, three meanings:
+
+- **Only from outside** — nothing in the module it sits in needs it. It belongs
+  to its callers, not to its parent, and the boundary is drawn in the wrong
+  place.
+- **Only from inside** — part of how the module works rather than of what it
+  offers. It should be private.
+- **Nobody** — dead, or reached only through a dynamic import. Those files are
+  listed at the end, because a folder above may be reached from one without
+  showing it.
+
+A folder that is a mix gets no verdict. That is a folder nobody has decided
+about, and a sentence claiming otherwise would be the tool guessing.
+
+**"Module" is the area the config already declares** — the same directories
+`check --by path` counts by. A config with `roots: packages/domain/src/*` gets
+one module per entity, so a `shared/` and a `calcs/` under the same entity are
+*inside* each other. Nothing here picks a depth the config did not.
+
+**Specs are left out of the graph, both ways.** A spec is an entry point for a
+test runner, so counting it as an importee puts a phantom dead file in every
+folder. Counting it as an *importer* is worse: a file's own spec sits in the
+same module, so every file with a spec reads as used from inside and outside at
+once. On one real repository that turned six `shared/` folders — every one of
+them used only from other modules — into six folders marked "both".
+
+**This is not Knip.** Knip finds exports nobody uses. The question here is where
+the importers come from for the exports that *are* used. The "nobody" column
+does overlap; the other two are what this exists for.
+
+It resolves the whole repository, so it costs about what a `check` costs.
 
 ## Config validation commands
 

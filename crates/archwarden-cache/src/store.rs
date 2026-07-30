@@ -24,7 +24,7 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 /// A mismatch wipes the cache rather than trying to read the old shape. A
 /// cache is a rebuildable artefact, and migration code for one is a liability
 /// nobody is paid back for. See decision 3.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
 
 const META: TableDefinition<'_, &str, u32> = TableDefinition::new("meta");
 const FACTS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("facts");
@@ -255,6 +255,7 @@ mod tests {
             tags: ExportTags::only(ExportKind::Class),
             is_default: false,
             reexport_from: None,
+            forwards: None,
             span: Span::new(0, 20),
         });
         facts.calls.push(CallFact {
