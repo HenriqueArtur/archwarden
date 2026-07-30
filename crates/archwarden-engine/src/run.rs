@@ -1002,6 +1002,40 @@ mod tests {
 
         assert_eq!(report.unreadable_files.len(), 1, "one file");
         assert_eq!(report.checks_skipped, 2, "two rules wanted it");
+
+        // The count on its own tells a reader the run decided less than it
+        // looks like and gives them nowhere to look. `AGENTS.md` calls this
+        // "the number to watch", which is only true if it can be acted on.
+        assert_eq!(
+            report
+                .skipped_checks
+                .iter()
+                .map(|(rule, path)| format!("{rule} {path}"))
+                .collect::<Vec<_>>(),
+            [
+                "first src/user/broken.use-case.ts",
+                "second src/user/broken.use-case.ts",
+            ],
+            "each skip names the rule that wanted the file, and the file"
+        );
+    }
+
+    /// And a clean run carries an empty list, not a missing one: a consumer
+    /// branching on it needs the field to be there.
+    #[test]
+    fn a_clean_run_names_no_skipped_checks() {
+        let (guard, root) = tree_at(&[("src/user/thing.ts", "export const thing = 1;\n")]);
+        let config = config(vec![rule("shape", None, &["src/*"], structure(&["calcs"]))]);
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let report = check(Run {
+            root: &root,
+            config: &config,
+            tree: &tree,
+            cache: None,
+        });
+        drop(guard);
+
+        assert!(report.skipped_checks.is_empty());
     }
 
     /// A run where everything could be read skips nothing, so the common

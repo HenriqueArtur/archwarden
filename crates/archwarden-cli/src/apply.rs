@@ -942,6 +942,59 @@ mod tests {
         );
     }
 
+    /// The guard must never become forceable, and this test exists to make
+    /// adding it to `is_forceable` a failing change rather than a quiet one.
+    ///
+    /// It fires when a file the dry run named as an importer came out of the
+    /// plan with no edit — a state nothing is supposed to reach. A `--force`
+    /// that got past it would carry out exactly the move it exists to stop:
+    /// most imports rewritten, one left pointing at a file that moved, exit 0.
+    /// That shipped once, in 0.5.0, for a different reason.
+    #[test]
+    fn the_importer_guard_can_never_be_forced() {
+        let refusal = Refusal::ImporterNotRewritten {
+            importer: path("apps/web/src/main.ts"),
+            target: path("packages/domain/src/email/x.ts"),
+        };
+        assert!(!refusal.is_forceable());
+
+        let plan = Plan {
+            refusals: vec![refusal],
+            ..Plan::default()
+        };
+        assert!(!plan.is_actionable(false));
+        assert!(
+            !plan.is_actionable(true),
+            "no flag may carry out a move that would leave an import broken"
+        );
+    }
+
+    /// And it says which file and which target, because the pair is the whole
+    /// diagnosis — the bug report that produced this guard cost two rounds of
+    /// investigation for want of exactly those two paths.
+    #[test]
+    fn the_importer_guard_names_the_file_and_the_target() {
+        let plan = Plan {
+            refusals: vec![Refusal::ImporterNotRewritten {
+                importer: path("apps/web/src/main.ts"),
+                target: path("packages/domain/src/email/x.ts"),
+            }],
+            ..Plan::default()
+        };
+
+        let mut out = Vec::new();
+        render_refusals(&plan, true, &mut out);
+        let text = String::from_utf8(out).expect("UTF-8");
+
+        assert!(text.contains("nothing was moved"), "{text}");
+        assert!(text.contains("apps/web/src/main.ts"), "{text}");
+        assert!(text.contains("packages/domain/src/email/x.ts"), "{text}");
+        assert!(
+            text.contains("bug in archwarden"),
+            "a state that cannot happen should say so rather than read as user error: {text}"
+        );
+    }
+
     /// A plan with an overridable refusal is actionable only with the flag,
     /// and one with any other refusal is not actionable at all.
     #[test]
@@ -958,6 +1011,287 @@ mod tests {
             ..Plan::default()
         };
         assert!(!dirty.is_actionable(true), "a dirty tree is never forced");
+    }
+
+    /// A workspace with one package, for the specifier tests below.
+    fn workspace_at(root: &camino::Utf8Path) -> archwarden_resolver::workspace::Workspace {
+        std::fs::create_dir_all(root.join("packages/domain")).expect("dirs");
+        std::fs::write(
+            root.join("packages/domain/package.json"),
+            r#"{"name":"@org/domain","exports":{"./email/*":"./src/email/*.ts"}}"#,
+        )
+        .expect("write");
+        archwarden_resolver::workspace::Workspace::discover(root)
+    }
+
+    fn facts_with(path_str: &str, imports: &[(&str, &str)]) -> archwarden_core::facts::FileFacts {
+        use archwarden_core::facts::{ImportFact, Span};
+
+        let mut offset = 0u32;
+        archwarden_core::facts::FileFacts {
+            path: path(path_str),
+            content_hash: archwarden_core::hash::ContentHash::of(b""),
+            imports: imports
+                .iter()
+                .map(|(specifier, resolved)| {
+                    let line = format!("import {{ a }} from '{specifier}';\n");
+                    let width = u32::try_from(line.len()).expect("a line fits in u32");
+                    let span = Span::new(offset, offset + width);
+                    offset += width;
+                    ImportFact {
+                        specifier: (*specifier).to_owned(),
+                        resolved: Some(path(resolved)),
+                        type_only: false,
+                        names: vec!["a".to_owned()],
+                        span,
+                    }
+                })
+                .collect(),
+            exports: Vec::new(),
+            calls: Vec::new(),
+            has_opaque_import: false,
+        }
+    }
+
+    fn source_for(imports: &[(&str, &str)]) -> String {
+        use std::fmt::Write as _;
+
+        imports
+            .iter()
+            .fold(String::new(), |mut text, (specifier, _)| {
+                let _ = writeln!(text, "import {{ a }} from '{specifier}';");
+                text
+            })
+    }
+
+    /// The case a batch move exists to get right, and the reason the rewriter
+    /// asks one question instead of two: a file that moves *and* imports
+    /// another file that moves. Both ends changed, and the answer depends on
+    /// both.
+    #[test]
+    fn a_moved_file_importing_another_moved_file_is_measured_from_both_new_homes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                .expect("UTF-8");
+        let workspace = workspace_at(&root);
+
+        // `a.ts` sits in `shared/` and imports `b.ts` two levels up. Both move
+        // into `calcs/`, where they become siblings.
+        let imports = [("../../calcs/b", "packages/domain/src/order/calcs/b.ts")];
+        let facts = facts_with("packages/domain/src/order/shared/calcs/a.ts", &imports);
+        let source = source_for(&imports);
+
+        let moves: Moves = [
+            (
+                path("packages/domain/src/order/shared/calcs/a.ts"),
+                path("packages/domain/src/order/calcs/a.ts"),
+            ),
+            (
+                path("packages/domain/src/order/calcs/b.ts"),
+                path("packages/domain/src/order/calcs/b.ts"),
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let mut refusals = Vec::new();
+        let replacements = replacements_for(
+            &source,
+            &path("packages/domain/src/order/shared/calcs/a.ts"),
+            &facts,
+            &moves,
+            &workspace,
+            &mut refusals,
+        );
+        drop(dir);
+
+        assert!(refusals.is_empty(), "{refusals:?}");
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(replacements[0].now, "./b", "siblings after the move");
+    }
+
+    /// An import neither end of which moved is left alone, which is most
+    /// imports in most files and the reason a batch does not rewrite the world.
+    #[test]
+    fn an_import_untouched_by_the_move_produces_no_replacement() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                .expect("UTF-8");
+        let workspace = workspace_at(&root);
+
+        let imports = [("../types/thing", "packages/domain/src/order/types/thing.ts")];
+        let facts = facts_with("packages/domain/src/order/calcs/x.ts", &imports);
+        let source = source_for(&imports);
+
+        let mut refusals = Vec::new();
+        let replacements = replacements_for(
+            &source,
+            &path("packages/domain/src/order/calcs/x.ts"),
+            &facts,
+            &Moves::new(),
+            &workspace,
+            &mut refusals,
+        );
+        drop(dir);
+
+        assert!(replacements.is_empty());
+        assert!(refusals.is_empty());
+    }
+
+    /// A specifier that resolves into the repository through a map this does
+    /// not read refuses, rather than being skipped. Skipping it is what leaves
+    /// an import pointing at a file that moved.
+    #[test]
+    fn a_specifier_that_cannot_be_recomputed_refuses() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                .expect("UTF-8");
+        let workspace = workspace_at(&root);
+
+        // A `tsconfig` path alias: it resolved to the moving file, and nothing
+        // here can work out what it should say instead.
+        let imports = [("@Components/email", "packages/domain/src/email/x.ts")];
+        let facts = facts_with("apps/web/src/main.ts", &imports);
+        let source = source_for(&imports);
+
+        let moves: Moves = [(
+            path("packages/domain/src/email/x.ts"),
+            path("packages/domain/src/email/calcs/x.ts"),
+        )]
+        .into_iter()
+        .collect();
+
+        let mut refusals = Vec::new();
+        let replacements = replacements_for(
+            &source,
+            &path("apps/web/src/main.ts"),
+            &facts,
+            &moves,
+            &workspace,
+            &mut refusals,
+        );
+        drop(dir);
+
+        assert!(replacements.is_empty());
+        assert_eq!(
+            refusals,
+            [Refusal::UnreadableSpecifier {
+                importer: path("apps/web/src/main.ts"),
+                specifier: "@Components/email".to_owned(),
+            }]
+        );
+    }
+
+    /// The file on disk is not the file that was parsed. Editing by offset
+    /// would corrupt it, so it refuses.
+    #[test]
+    fn a_specifier_missing_from_the_bytes_refuses() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                .expect("UTF-8");
+        let workspace = workspace_at(&root);
+
+        let imports = [("../old/x", "packages/domain/src/order/old/x.ts")];
+        let facts = facts_with("packages/domain/src/order/calcs/y.ts", &imports);
+
+        let moves: Moves = [(
+            path("packages/domain/src/order/old/x.ts"),
+            path("packages/domain/src/order/calcs/x.ts"),
+        )]
+        .into_iter()
+        .collect();
+
+        let mut refusals = Vec::new();
+        let replacements = replacements_for(
+            // Someone edited the file between the parse and this call.
+            "import { a } from './something-else';\n",
+            &path("packages/domain/src/order/calcs/y.ts"),
+            &facts,
+            &moves,
+            &workspace,
+            &mut refusals,
+        );
+        drop(dir);
+
+        assert!(replacements.is_empty());
+        assert!(
+            matches!(refusals.as_slice(), [Refusal::SpecifierNotFound { .. }]),
+            "{refusals:?}"
+        );
+    }
+
+    /// Two files landing on one path. Caught before anything is written,
+    /// because carrying it out would silently delete one of them -- which a
+    /// batch move with a flattening destination can produce from a glob that
+    /// looks perfectly reasonable.
+    #[test]
+    fn two_files_landing_on_one_path_are_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                .expect("UTF-8");
+        std::fs::create_dir_all(root.join("src/a")).expect("dirs");
+        std::fs::create_dir_all(root.join("src/b")).expect("dirs");
+        std::fs::write(root.join("src/a/thing.ts"), "").expect("write");
+        std::fs::write(root.join("src/b/thing.ts"), "").expect("write");
+
+        let moves = vec![
+            Move {
+                from: path("src/a/thing.ts"),
+                to: path("src/thing.ts"),
+                is_spec_sibling: false,
+            },
+            Move {
+                from: path("src/b/thing.ts"),
+                to: path("src/thing.ts"),
+                is_spec_sibling: false,
+            },
+        ];
+        let mut refusals = Vec::new();
+        validate(&root, &moves, &mut refusals);
+        drop(dir);
+
+        assert_eq!(
+            refusals,
+            [Refusal::Collision {
+                destination: path("src/thing.ts"),
+                sources: vec![path("src/a/thing.ts"), path("src/b/thing.ts")],
+            }]
+        );
+    }
+
+    /// A destination that already exists, and a source that is not there.
+    /// Both would destroy something if carried out.
+    #[test]
+    fn an_occupied_destination_and_a_missing_source_are_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                .expect("UTF-8");
+        std::fs::create_dir_all(root.join("src")).expect("dirs");
+        std::fs::write(root.join("src/here.ts"), "").expect("write");
+
+        let moves = vec![Move {
+            from: path("src/gone.ts"),
+            to: path("src/here.ts"),
+            is_spec_sibling: false,
+        }];
+        let mut refusals = Vec::new();
+        validate(&root, &moves, &mut refusals);
+        drop(dir);
+
+        assert!(
+            refusals.contains(&Refusal::SourceMissing(path("src/gone.ts"))),
+            "{refusals:?}"
+        );
+        assert!(
+            refusals.contains(&Refusal::DestinationOccupied(path("src/here.ts"))),
+            "{refusals:?}"
+        );
     }
 
     /// Case 4: the spec travels with its unit file, or the move breaks

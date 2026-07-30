@@ -787,3 +787,156 @@ fn doctor_is_quiet_when_the_rule_reaches_files() {
         .success()
         .stdout(contains("No concerns"));
 }
+
+/// The batch form, end to end: a glob as the source, `--to` measured from each
+/// matched directory, and every specifier that named any of the moved files
+/// rewritten in one go.
+///
+/// The single-file tests above cannot catch what this does: `--to` resolved
+/// from the wrong directory, a spec swept in twice by the glob and colliding
+/// with itself, or a moved file whose own imports point at another moved file.
+#[test]
+fn a_batch_move_relocates_every_match_and_rewrites_across_packages() {
+    let dir = git_repo(&[
+        ("arch.config.json", MINIMAL),
+        (
+            "packages/domain/package.json",
+            r#"{"name":"@org/domain","exports":{"./order/*":"./src/order/*.ts","./user/*":"./src/user/*.ts"}}"#,
+        ),
+        // Two entities, each with a `shared/` to collapse. `order`'s lives one
+        // level deeper, which is where a destination measured from the file
+        // rather than the match goes wrong.
+        (
+            "packages/domain/src/order/shared/calcs/total.ts",
+            "export const total = 1;\n",
+        ),
+        (
+            "packages/domain/src/order/shared/calcs/total.spec.ts",
+            "import { total } from './total';\nit('works', () => {});\n",
+        ),
+        (
+            "packages/domain/src/user/shared/name.ts",
+            "export const name = 'x';\n",
+        ),
+        // An importer in another package, by package name — the half an editor
+        // cannot do.
+        (
+            "apps/web/package.json",
+            r#"{"name":"@org/web","dependencies":{"@org/domain":"workspace:*"}}"#,
+        ),
+        (
+            "apps/web/src/main.ts",
+            "import { total } from \"@org/domain/order/shared/calcs/total\";\n             import { name } from \"@org/domain/user/shared/name\";\n             export const both = [total, name];\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "impact",
+            "packages/domain/src/*/shared",
+            "--to",
+            "../calcs",
+            "--apply",
+        ])
+        .assert()
+        .success()
+        .stdout(contains("Moved"));
+
+    // Measured from the matched directory, so `order/shared/calcs/total.ts`
+    // lands in `order/calcs/` — not in `order/shared/calcs/`, inside the very
+    // folder being emptied.
+    for landed in [
+        "packages/domain/src/order/calcs/total.ts",
+        "packages/domain/src/order/calcs/total.spec.ts",
+        "packages/domain/src/user/calcs/name.ts",
+    ] {
+        assert!(dir.path().join(landed).is_file(), "{landed} did not land");
+    }
+
+    // `structure` rules are about directories, so an emptied `shared/` would
+    // keep reporting the finding the move was run to remove.
+    assert!(
+        !dir.path().join("packages/domain/src/order/shared").exists(),
+        "the emptied source directory is gone"
+    );
+    assert!(!dir.path().join("packages/domain/src/user/shared").exists());
+
+    let importer = std::fs::read_to_string(dir.path().join("apps/web/src/main.ts")).expect("read");
+    assert!(
+        importer.contains("\"@org/domain/order/calcs/total\""),
+        "{importer}"
+    );
+    assert!(
+        importer.contains("\"@org/domain/user/calcs/name\""),
+        "{importer}"
+    );
+
+    // The spec matched the glob on its own *and* travels with its unit file.
+    // Named twice, it must be moved once rather than colliding with itself.
+    let spec = std::fs::read_to_string(
+        dir.path()
+            .join("packages/domain/src/order/calcs/total.spec.ts"),
+    )
+    .expect("read");
+    assert!(
+        spec.contains("'./total'"),
+        "the spec still finds it: {spec}"
+    );
+}
+
+/// `--force` is the one refusal a flag may override, and it has to actually
+/// carry the move out — a flag that refuses anyway is a flag nobody trusts.
+#[test]
+fn force_carries_the_move_past_a_dynamic_import_nothing_can_read() {
+    let dir = git_repo(&[
+        ("arch.config.json", MINIMAL),
+        (
+            "packages/domain/package.json",
+            r#"{"name":"@org/domain","exports":{"./id/*":"./src/id/*.ts"}}"#,
+        ),
+        (
+            "packages/domain/src/id/shared/is-invalid.ts",
+            "export const a = 1;\n",
+        ),
+        // Names no module, so whether it imports the target is unknowable.
+        (
+            "scripts/load.ts",
+            "export async function load(name: string) { return import(name); }\n",
+        ),
+    ]);
+
+    let move_it = |force: bool| {
+        let mut args = vec![
+            "impact",
+            "packages/domain/src/id/shared/is-invalid.ts",
+            "--to",
+            "packages/domain/src/id/calcs/is-invalid.ts",
+            "--apply",
+        ];
+        if force {
+            args.push("--force");
+        }
+        archwarden().current_dir(dir.path()).args(args).assert()
+    };
+
+    move_it(false)
+        .code(2)
+        .stderr(contains("nothing was moved"))
+        .stderr(contains("scripts/load.ts"))
+        .stderr(contains("--force"));
+    assert!(
+        dir.path()
+            .join("packages/domain/src/id/shared/is-invalid.ts")
+            .is_file(),
+        "the refusal is total"
+    );
+
+    move_it(true).success();
+    assert!(
+        dir.path()
+            .join("packages/domain/src/id/calcs/is-invalid.ts")
+            .is_file(),
+        "and the flag actually carries it out"
+    );
+}
