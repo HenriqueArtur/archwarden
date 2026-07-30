@@ -51,6 +51,12 @@ pub struct Report {
     /// already refuses through `skipped` (correction C6), and the full run
     /// used to allow.
     pub checks_skipped: usize,
+    /// Which rule wanted which file, for every skipped check.
+    ///
+    /// `checks_skipped` is the number `AGENTS.md` calls "the number to watch",
+    /// and a number nobody can act on is not one. Sorted, so the report stays
+    /// byte-identical between runs.
+    pub skipped_checks: Vec<(String, RepoRelPath)>,
     /// How many files had their facts reused from the cache.
     ///
     /// Reported so a user can see the cache working -- and notice when it is
@@ -146,6 +152,7 @@ pub fn check(run: Run<'_>) -> Report {
     let mut findings = Vec::new();
     let mut unreadable_files = Vec::new();
     let mut checks_skipped = 0;
+    let mut skipped_checks: Vec<(String, RepoRelPath)> = Vec::new();
     let mut files_scanned = 0;
     let mut files_parsed = 0;
     let mut facts_reused = 0;
@@ -222,6 +229,7 @@ pub fn check(run: Run<'_>) -> Report {
                 // the report can say the difference out loud.
                 if engine.needs_facts() && facts.is_none() {
                     checks_skipped += 1;
+                    skipped_checks.push((engine.id().to_string(), file.path.clone()));
                 }
                 findings.extend(engine.check_file(FileContext {
                     path: &file.path,
@@ -243,6 +251,10 @@ pub fn check(run: Run<'_>) -> Report {
         files_scanned,
         unreadable_files,
         checks_skipped,
+        skipped_checks: {
+            skipped_checks.sort();
+            skipped_checks
+        },
         files_parsed,
         facts_reused,
         imports,

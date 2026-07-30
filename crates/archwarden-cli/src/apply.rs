@@ -108,6 +108,20 @@ pub enum Refusal {
     },
     /// The source is not there.
     SourceMissing(RepoRelPath),
+    /// A file the dry run named as an importer got no edit.
+    ///
+    /// Nothing is supposed to reach this: a specifier that cannot be
+    /// recomputed refuses on its own. It exists because the failure it guards
+    /// is the worst one this module has — a repository that compiles nowhere,
+    /// reported as success, found by whoever runs `tsc` next. A guard for a
+    /// state that "cannot happen" is exactly the guard worth having when the
+    /// cost of being wrong is silent.
+    ImporterNotRewritten {
+        /// The file that imports the target and was not rewritten.
+        importer: RepoRelPath,
+        /// What it imports.
+        target: RepoRelPath,
+    },
     /// A file could not be read.
     Unreadable(RepoRelPath, String),
 }
@@ -491,6 +505,38 @@ pub fn plan(
     }
 
     plan.edits.sort_by(|a, b| a.path.cmp(&b.path));
+
+    // The invariant, checked rather than trusted: every file the dry run named
+    // as an importer must have come out of the loop above with an edit.
+    //
+    // Nothing above is supposed to be able to break it — a specifier that
+    // cannot be recomputed already pushes a refusal. But "supposed to" is what
+    // this module cannot afford: the failure it would hide is a repository
+    // that compiles nowhere, reported as success with exit 0, and found by
+    // whoever runs `tsc` next. The check costs one set difference against a
+    // list that is already in hand.
+    let edited: std::collections::BTreeSet<&RepoRelPath> =
+        plan.edits.iter().map(|edit| &edit.path).collect();
+    let moving: std::collections::BTreeSet<&RepoRelPath> =
+        plan.moves.iter().map(|entry| &entry.from).collect();
+
+    for (target, importers) in &found {
+        for importer in &importers.direct {
+            // A moving file needs no edit of its own unless it has relative
+            // imports, and an importer that is itself the target's spec moves
+            // with it. Both are already handled; what must never happen is a
+            // file that stays put, imports something that moved, and was not
+            // rewritten.
+            if edited.contains(&importer.path) || moving.contains(&importer.path) {
+                continue;
+            }
+            plan.refusals.push(Refusal::ImporterNotRewritten {
+                importer: importer.path.clone(),
+                target: target.clone(),
+            });
+        }
+    }
+
     plan
 }
 
@@ -618,6 +664,11 @@ fn prune_emptied(root: &Utf8Path, moves: &[Move]) {
 
 /// Says why nothing happened, and what would let it.
 ///
+/// One arm per refusal, each a sentence. Splitting it would put the arms
+/// somewhere the exhaustive `match` no longer names them, which is what makes
+/// a refusal added without a sentence fail to compile.
+#[allow(clippy::too_many_lines, reason = "one arm per refusal; see above")]
+///
 /// Every line here is about a repository that is exactly as it was: the plan
 /// is validated in full before a byte is written, so there is nothing to
 /// undo and nothing to warn about having half-done.
@@ -710,6 +761,15 @@ pub fn render_refusals(plan: &Plan, force: bool, out: &mut dyn std::io::Write) {
             }
             Refusal::SourceMissing(path) => {
                 let _ = writeln!(out, "  `{path}` is not there.");
+            }
+            Refusal::ImporterNotRewritten { importer, target } => {
+                let _ = writeln!(
+                    out,
+                    "  `{importer}` imports `{target}`, which is moving, and no rewrite was\n  \
+                     worked out for it. Applying the rest would leave that import pointing at\n  \
+                     nothing. This is a bug in archwarden — please report it with the command\n  \
+                     you ran."
+                );
             }
             Refusal::Unreadable(path, message) => {
                 let _ = writeln!(out, "  `{path}` cannot be read: {message}");

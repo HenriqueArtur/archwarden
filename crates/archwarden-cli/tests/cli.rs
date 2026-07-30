@@ -689,3 +689,101 @@ fn a_source_matching_nothing_is_refused() {
         .code(2)
         .stderr(contains("matches no file"));
 }
+
+/// `check` writes a multi-megabyte binary database inside the repository, so
+/// `init` says so in `.gitignore` rather than leaving it for the user to find
+/// in `git status`.
+#[test]
+fn init_ignores_the_cache_but_not_the_baseline() {
+    let dir = repo(&[]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["init"])
+        .assert()
+        .success();
+
+    let ignored = std::fs::read_to_string(dir.path().join(".gitignore")).expect("written");
+    assert!(ignored.contains(".archwarden/cache/"), "{ignored}");
+    assert!(
+        !ignored.lines().any(|line| line.trim() == ".archwarden/"),
+        "the baseline beside the cache is meant to be committed: {ignored}"
+    );
+}
+
+/// An existing `.gitignore` is appended to, not replaced, and a repository
+/// that already covers the cache is left alone.
+#[test]
+fn init_does_not_duplicate_an_ignore_that_is_already_there() {
+    let dir = repo(&[(".gitignore", "node_modules/\n.archwarden/cache/\n")]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["init"])
+        .assert()
+        .success();
+
+    let ignored = std::fs::read_to_string(dir.path().join(".gitignore")).expect("read");
+    assert_eq!(
+        ignored.matches(".archwarden/cache/").count(),
+        1,
+        "{ignored}"
+    );
+    assert!(
+        ignored.contains("node_modules/"),
+        "the file was appended to"
+    );
+}
+
+/// A rule whose scope matches directories and reaches no file inside them.
+///
+/// `roots: "packages/domain/src/*"` selects the entity directories exactly as
+/// documented; if every entity keeps its code one level further down, a rule
+/// about files evaluates none of them and reports silence — indistinguishable
+/// from a clean repository. `doctor` exists to answer "does this config mean
+/// what you think?", so this is precisely its question.
+#[test]
+fn doctor_reports_a_rule_that_reaches_no_file() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{"type":"no-passthrough","id":"np","level":"warning",
+                "roots":["packages/domain/src/*"]}]}"#,
+        ),
+        (
+            "packages/domain/src/order/calcs/total.ts",
+            "export const a = 1;\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "doctor"])
+        .assert()
+        .success()
+        .stdout(contains("rule-evaluates-nothing"))
+        .stdout(contains("no file inside them is subject to this rule"));
+}
+
+/// And the same config with a scope that does reach the files says nothing.
+#[test]
+fn doctor_is_quiet_when_the_rule_reaches_files() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{"type":"no-passthrough","id":"np","level":"warning",
+                "roots":["packages/domain/**"]}]}"#,
+        ),
+        (
+            "packages/domain/src/order/calcs/total.ts",
+            "export const a = 1;\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "doctor"])
+        .assert()
+        .success()
+        .stdout(contains("No concerns"));
+}

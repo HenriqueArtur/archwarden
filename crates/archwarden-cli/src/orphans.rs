@@ -31,21 +31,30 @@
 //! report. The other two are the ones this exists for, and they are the ones
 //! that say whether a folder is a boundary, a private detail, or a mistake.
 //!
-//! # Specs are left out of the graph, both ways
+//! # Specs get a column of their own
 //!
-//! A spec is an entry point for a test runner: nothing imports it, by design.
-//! Counting it as an importee puts a phantom dead file in every folder in the
-//! repository.
+//! A spec is not a row. Nothing imports one, by design, so a row for it is a
+//! phantom dead file in every folder in the repository.
 //!
-//! Counting it as an *importer* is worse, and it is the one that had to be
-//! measured to be believed. A file's own spec sits in the same module as the
-//! file, so it lands in the "inside" column — and every file with a spec then
-//! reads as used from inside *and* outside, which is the answer that says
-//! nothing. On a real repository that turned six `shared/` folders, all of
-//! them used only by other modules, into six folders marked "both".
+//! As an *importer* it is neither counted with the rest nor dropped, and both
+//! halves of that were learned the hard way.
 //!
-//! So a spec is neither. It is not architecture; it is how the architecture is
-//! tested.
+//! Counting a spec as an ordinary importer destroys the signal: a file's own
+//! spec sits in the same module as the file, so every file with a spec reads
+//! as used from inside *and* outside at once. On a real repository that turned
+//! six `shared/` folders, every one of them used only by other modules, into
+//! six folders marked "both".
+//!
+//! Dropping it is worse, and only a repository with a mocks convention shows
+//! why. A mock is imported by specs and by nothing else — so 43 of 44 `mocks/`
+//! folders reported **"nothing imports any of it"**, which is the opposite of
+//! the truth with a verdict attached. Worse than a wrong count: in one folder
+//! it changed the *classification*, printing "the boundary is drawn elsewhere"
+//! about a file whose other importer was a spec inside its own module.
+//!
+//! So specs are counted apart, in a column of their own, and a folder nothing
+//! but tests uses says exactly that. "Only its tests use this" and "this is
+//! dead" are different answers and must never print the same sentence.
 
 use archwarden_core::{compiled::CompiledConfig, path::RepoRelPath, scope::Scope};
 use serde::Serialize;
@@ -60,13 +69,35 @@ pub struct Direction {
     pub inside: usize,
     /// Importers outside it.
     pub outside: usize,
+    /// Spec importers inside the same module.
+    ///
+    /// Kept apart from `inside` because a file's own spec would otherwise put
+    /// every tested file in both columns at once. Kept at all because it is
+    /// what makes "nothing in this module needs it" a claim this can check
+    /// rather than assume.
+    pub specs_inside: usize,
+    /// Spec importers outside it.
+    pub specs_outside: usize,
+    /// The file's own spec, if it imports it.
+    ///
+    /// Counted and then ignored by every verdict. A file's own test is not a
+    /// consumer: it exists because the file does, it always sits in the same
+    /// module, and letting it count would mean no tested file could ever be
+    /// reported as used only from outside.
+    pub own_spec: usize,
 }
 
 impl Direction {
-    /// Whether nobody imports the file at all.
+    /// Whether nobody imports the file at all, tests included.
     #[must_use]
     pub fn is_unimported(self) -> bool {
-        self.inside == 0 && self.outside == 0
+        self.inside == 0 && self.outside == 0 && self.specs() == 0
+    }
+
+    /// Spec importers, wherever they sit.
+    #[must_use]
+    pub fn specs(self) -> usize {
+        self.specs_inside + self.specs_outside + self.own_spec
     }
 }
 
@@ -97,6 +128,20 @@ pub struct FolderRow {
     pub both: usize,
     /// Files nobody imports.
     pub unimported: usize,
+    /// Files only specs import.
+    ///
+    /// A separate column because it is a separate answer. A mock imported by
+    /// four specs and nothing else is doing its job; calling it dead is the
+    /// tool being wrong out loud.
+    pub specs_only: usize,
+    /// Files a spec *in their own module* imports.
+    ///
+    /// Not a column anyone reads — it exists to stop a verdict. "Only used
+    /// from outside its module" claims nothing in the module needs the file,
+    /// and a spec beside it is something in the module reaching it. The claim
+    /// is withheld rather than made on incomplete data.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub tested_from_inside: usize,
     /// What the shape of the folder says about it, or `None` when it says
     /// nothing worth a sentence.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,6 +197,8 @@ pub fn orphans(
 
     let mut files: Vec<FileRow> = Vec::new();
     for (path, importers) in index.entries() {
+        // A spec is still not a *row*: nothing imports one by design, so a
+        // row for it is a phantom dead file in every folder in the repository.
         if is_spec(path, &markers) {
             continue;
         }
@@ -159,9 +206,24 @@ pub fn orphans(
         let mut direction = Direction::default();
         for importer in importers {
             if is_spec(importer, &markers) {
-                continue;
-            }
-            if module_of(&scopes, importer) == module {
+                // A file's own spec is not a consumer of anything. It exists
+                // because the file does, it always sits in the same module,
+                // and counting it would mean no tested file could ever be
+                // reported as used only from outside — which is most of what
+                // this command is for.
+                //
+                // Another file's spec is a different matter: a mock reached
+                // from `plan/calcs/to-json.spec.ts` is genuinely used by the
+                // module it sits in, and a verdict saying otherwise would be
+                // wrong.
+                if is_own_spec(importer, path, &markers) {
+                    direction.own_spec += 1;
+                } else if module_of(&scopes, importer) == module {
+                    direction.specs_inside += 1;
+                } else {
+                    direction.specs_outside += 1;
+                }
+            } else if module_of(&scopes, importer) == module {
                 direction.inside += 1;
             } else {
                 direction.outside += 1;
@@ -185,6 +247,29 @@ pub fn orphans(
             .map(|p| p.as_str().to_owned())
             .collect(),
     }
+}
+
+/// Whether `importer` is `file`'s own spec: beside it, and named after it.
+///
+/// The same stem-and-marker rule `spec-pair` uses to decide what a file's
+/// sibling spec is called, so the two cannot disagree about which file a spec
+/// belongs to.
+fn is_own_spec(importer: &RepoRelPath, file: &RepoRelPath, markers: &[String]) -> bool {
+    if importer.parent() != file.parent() {
+        return false;
+    }
+    let (Some(spec_name), Some(name)) = (importer.file_name(), file.file_name()) else {
+        return false;
+    };
+    let (Some((spec_stem, _)), Some((stem, _))) =
+        (spec_name.rsplit_once('.'), name.rsplit_once('.'))
+    else {
+        return false;
+    };
+
+    markers
+        .iter()
+        .any(|marker| spec_stem == format!("{stem}.{marker}"))
 }
 
 /// Whether a path is a spec, by the markers the configuration uses.
@@ -249,11 +334,18 @@ fn fold(files: &[FileRow]) -> Vec<FolderRow> {
             outside_only: 0,
             both: 0,
             unimported: 0,
+            specs_only: 0,
+            tested_from_inside: 0,
             verdict: None,
         });
 
         row.files += 1;
+        row.tested_from_inside += usize::from(file.direction.specs_inside > 0);
         match (file.direction.inside, file.direction.outside) {
+            // Only specs, or nobody at all. The two are different answers and
+            // must not print the same sentence: "a mock nothing but its tests
+            // use" is working as intended, and "dead" is not.
+            (0, 0) if file.direction.specs() > 0 => row.specs_only += 1,
             (0, 0) => row.unimported += 1,
             (0, _) => row.outside_only += 1,
             (_, 0) => row.inside_only += 1,
@@ -273,9 +365,16 @@ fn fold(files: &[FileRow]) -> Vec<FolderRow> {
         b.unimported
             .cmp(&a.unimported)
             .then_with(|| b.outside_only.cmp(&a.outside_only))
+            .then_with(|| b.specs_only.cmp(&a.specs_only))
             .then_with(|| a.path.cmp(&b.path))
     });
     folders
+}
+
+/// Whether a count is zero, for skipping a JSON field nobody needs to read.
+#[expect(clippy::trivially_copy_pass_by_ref, reason = "serde takes a reference")]
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 /// What a folder's shape says about it.
@@ -290,8 +389,19 @@ fn verdict(folder: &FolderRow) -> Option<&'static str> {
     if folder.unimported == folder.files {
         return Some("nothing imports any of it");
     }
+    if folder.specs_only == folder.files {
+        return Some("only specs import it — test scaffolding, not architecture");
+    }
+    if folder.unimported + folder.specs_only == folder.files {
+        return Some("nothing but specs imports any of it");
+    }
     if folder.outside_only == folder.files {
-        return Some("only used from outside its module — the boundary is drawn elsewhere");
+        // Withheld when a spec inside the module reaches it: the claim is that
+        // nothing in the module needs this, and a test beside it is something
+        // in the module reaching it. Reporting the counts without the sentence
+        // is the honest half.
+        return (folder.tested_from_inside == 0)
+            .then_some("only used from outside its module — the boundary is drawn elsewhere");
     }
     if folder.inside_only == folder.files {
         return Some("only used from inside its module — this could be private");
@@ -331,8 +441,11 @@ fn render_text(orphans: &Orphans, by_file: bool, out: &mut dyn std::io::Write) {
             for file in files {
                 let _ = writeln!(
                     out,
-                    "{:width$}  inside {}  outside {}",
-                    file.path, file.direction.inside, file.direction.outside
+                    "{:width$}  inside {}  outside {}  specs {}",
+                    file.path,
+                    file.direction.inside,
+                    file.direction.outside,
+                    file.direction.specs()
                 );
             }
             let _ = writeln!(out);
@@ -348,13 +461,14 @@ fn render_text(orphans: &Orphans, by_file: bool, out: &mut dyn std::io::Write) {
     for folder in &orphans.folders {
         let _ = writeln!(
             out,
-            "{:width$}  {} {}   inside-only {}   outside-only {}   both {}   nobody {}",
+            "{:width$}  {} {}   inside-only {}   outside-only {}   both {}   specs-only {}   nobody {}",
             folder.path,
             folder.files,
             if folder.files == 1 { "file " } else { "files" },
             folder.inside_only,
             folder.outside_only,
             folder.both,
+            folder.specs_only,
             folder.unimported,
         );
         if let Some(verdict) = folder.verdict {
@@ -607,6 +721,96 @@ mod tests {
             found.files.expect("by file").len(),
             1,
             "a spec is an entry point for a runner, not a file nobody imports"
+        );
+    }
+
+    /// The report that made specs a column instead of a deletion.
+    ///
+    /// A mock is imported by specs and by nothing else. Dropping spec
+    /// importers made 43 of 44 `mocks/` folders in a real repository read
+    /// "nothing imports any of it" — the opposite of the truth, with a verdict
+    /// attached.
+    #[test]
+    fn a_file_only_specs_import_is_not_reported_as_dead() {
+        let found = orphans(
+            &config(),
+            &index(
+                &[(
+                    "packages/domain/src/cep/services/mocks/cep.mock.ts",
+                    &[
+                        "apps/worker/src/tools/lookup-cep.tool.spec.ts",
+                        "packages/domain/src/cep/services/cep-lookup-service.spec.ts",
+                    ],
+                )],
+                &[],
+            ),
+            false,
+        );
+
+        assert_eq!(found.folders[0].unimported, 0, "{:?}", found.folders[0]);
+        assert_eq!(found.folders[0].specs_only, 1);
+        assert_eq!(
+            found.folders[0].verdict,
+            Some("only specs import it — test scaffolding, not architecture")
+        );
+    }
+
+    /// A file's own spec is not a consumer of it.
+    ///
+    /// It exists because the file does and always sits in the same module, so
+    /// letting it count would mean no tested file could ever be reported as
+    /// used only from outside — which is most of what this command is for.
+    #[test]
+    fn a_files_own_spec_does_not_withhold_the_boundary_verdict() {
+        let found = orphans(
+            &config(),
+            &index(
+                &[(
+                    "packages/domain/src/email/shared/is-email-invalid.ts",
+                    &[
+                        "packages/domain/src/email/shared/is-email-invalid.spec.ts",
+                        "packages/domain/src/user/calcs/x.ts",
+                    ],
+                )],
+                &[],
+            ),
+            false,
+        );
+
+        assert_eq!(
+            found.folders[0].verdict,
+            Some("only used from outside its module — the boundary is drawn elsewhere")
+        );
+    }
+
+    /// Another file's spec *is* one, and it withholds the verdict.
+    ///
+    /// `plan/mocks/plan.mock.ts` is imported by `plan/calcs/to-json.spec.ts` —
+    /// a test of a different file, inside the same module. Claiming "nothing
+    /// in this module needs it" would be an architectural conclusion drawn
+    /// from data that contradicts it, so the counts print and the sentence
+    /// does not.
+    #[test]
+    fn another_files_spec_inside_the_module_withholds_the_verdict() {
+        let found = orphans(
+            &config(),
+            &index(
+                &[(
+                    "packages/domain/src/plan/mocks/plan.mock.ts",
+                    &[
+                        "packages/domain/src/organization/mocks/organization.mock.ts",
+                        "packages/domain/src/plan/calcs/to-json.spec.ts",
+                    ],
+                )],
+                &[],
+            ),
+            false,
+        );
+
+        assert_eq!(found.folders[0].outside_only, 1);
+        assert_eq!(
+            found.folders[0].verdict, None,
+            "a test inside the module is something inside the module reaching it"
         );
     }
 
