@@ -223,6 +223,15 @@ not zero:
 A run with skips is a run that decided less than it looks like. Do not report
 it as clean.
 
+`summary.skipped_checks` names them, so the number is one you can act on:
+
+```json
+"skipped_checks": [{ "rule_id": "calcs-need-spec", "path": "src/user/broken.ts" }]
+```
+
+Usually one file that will not parse, wanted by every rule that reads inside a
+file. Fix the file, or find out why it does not parse.
+
 `files_parsed` and `facts_reused` are the cache working. A warm run parses
 nothing and is not much faster in wall clock — it still reads and hashes every
 file, because that is the only honest way to know one did not change. The cache
@@ -441,6 +450,38 @@ location instead. Deleting those first means fewer importers for `--apply` to
 rewrite; doing it after means rewriting the same lines twice. Deleting one is
 an edit to its importers, so it is a change to propose, not one to make on your
 own initiative.
+
+### `orphans` — does this folder have a reason to exist?
+
+```bash
+npx archwarden orphans                                   # every folder
+npx archwarden orphans 'packages/domain/src/**/shared/**'
+npx archwarden orphans packages/domain/src/order --by-file
+```
+
+Per folder, where its files' importers sit: inside the module the file lives
+in, outside it, only specs, or nobody.
+
+```
+packages/domain/src/flow-node/shared/calcs  2 files  inside-only 0  outside-only 2  both 0  specs-only 0  nobody 0
+                                            → only used from outside its module — the boundary is drawn elsewhere
+```
+
+- **only from outside** — nothing in its own module needs it; the boundary is
+  drawn in the wrong place.
+- **only from inside** — a private detail wearing a public name.
+- **only specs** — test scaffolding. A mock is this, and it is working.
+- **nobody** — dead, or reached through a dynamic import. Those files are
+  listed at the end.
+
+A folder that is a mix gets no verdict, and so does one whose claim the data
+contradicts: "used only from outside" is withheld when a spec *inside* the
+module imports it. A file's own spec never counts either way — it exists
+because the file does.
+
+**"Module" is the area the config already declares**, the same one
+`check --by path` counts by. Not unused-export detection: Knip answers that,
+and only the "nobody" column overlaps.
 
 ### `config explain <rule-id>` — what a rule reaches
 

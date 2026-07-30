@@ -1,0 +1,137 @@
+#!/bin/sh
+# Mutation testing on what you are about to push.
+#
+# `cargo-mutants` injects bugs and checks whether the suite catches them. It is
+# the only thing here that answers "is this code *tested*", as opposed to
+# "does this code run" — line coverage says a guard executed, and says nothing
+# about whether deleting it would fail anything.
+#
+# It earned this slot. A refusal that stops `--apply` from carrying out a move
+# that would break a repository had no test at all, and neither did four of the
+# others; the suite was green, coverage was green, and flipping one boolean
+# would have silently removed the protection. A survivor list would have named
+# every one of them.
+#
+# # Why pre-push and not pre-commit
+#
+# Measured on one commit of 120 changed lines: 3 mutants, 13 seconds. Roughly
+# ten of those are the unmutated build, paid once, and about a second is each
+# mutant. So the floor is ten seconds however small the change — which is well
+# past what the pre-commit hook beside this one will tolerate, and it argues
+# correctly that a hook costing more than a couple of seconds is one people
+# bypass out of reflex.
+#
+# The shape of the cost is the real argument. Ten seconds of fixed overhead per
+# run means fifteen commits cost fifteen builds; one push costs one. Push is
+# where the same work is cheapest, and it is the last point before other people
+# see it.
+#
+# # Why only the diff
+#
+# `cargo mutants --workspace` mutates the whole project — thousands of mutants
+# at about a second each, which is a hook nobody would keep. `--in-diff`
+# mutates only lines this push adds or changes, so the cost tracks the change
+# rather than the project. New code is where untested code comes from.
+#
+# `git push --no-verify` skips it. That is deliberate: the hook is here to
+# catch mistakes, not to take the decision away from whoever is pushing.
+
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Not installed by default, and a hook that blocks a push because an optional
+# tool is missing is a hook that gets uninstalled.
+if ! command -v cargo-mutants >/dev/null 2>&1; then
+    printf 'pre-push: mutants... skipped (cargo install cargo-mutants)\n'
+    exit 0
+fi
+
+# git feeds pre-push one line per ref being pushed:
+#   <local ref> <local sha> <remote ref> <remote sha>
+# A remote sha of all zeros means the branch is new over there, so there is no
+# "since" to diff against and the merge base with the default branch is the
+# honest answer.
+zero=$(git hash-object --stdin </dev/null | tr '[:xdigit:]' '0')
+base=""
+head=""
+
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    # A deletion has an all-zero local sha and nothing to test.
+    [ "$local_sha" = "$zero" ] && continue
+
+    head="$local_sha"
+    if [ "$remote_sha" = "$zero" ]; then
+        base=$(git merge-base "$local_sha" refs/heads/main 2>/dev/null || echo "")
+    else
+        base="$remote_sha"
+    fi
+done
+
+# Nothing on stdin happens when the hook is run by hand. Fall back to the same
+# question the branch would ask.
+if [ -z "$head" ]; then
+    head=$(git rev-parse HEAD)
+    base=$(git merge-base HEAD refs/heads/main 2>/dev/null || echo "")
+fi
+
+if [ -z "$base" ]; then
+    printf 'pre-push: mutants... skipped (no base to diff against)\n'
+    exit 0
+fi
+
+diff=$(mktemp)
+trap 'rm -f "$diff" "$diff.log"' EXIT
+git diff "$base" "$head" -- '*.rs' >"$diff"
+
+if [ ! -s "$diff" ]; then
+    printf 'pre-push: mutants... skipped (no Rust changed)\n'
+    exit 0
+fi
+
+printf 'pre-push: mutants on the diff... '
+
+# `--in-diff` scopes the mutants to the changed lines; the whole workspace is
+# in scope otherwise, deliberately. The nightly job this replaced tested three
+# crates and left `archwarden-cli` unmutated, which is where `--apply` lives.
+# `|| status=$?` rather than a bare call: `set -e` at the top would otherwise
+# abort the script on the failing command itself, taking its exit code with it
+# — which silently turned "the tool could not run" into a blocked push, the
+# opposite of what the branch below is for.
+status=0
+cargo mutants --in-diff "$diff" >"$diff.log" 2>&1 || status=$?
+
+# Exit codes, and the distinction that decides whether this blocks:
+#
+#   0  every mutant was caught
+#   2  mutants survived  -- your code, untested. Block.
+#   *  cargo-mutants could not run -- a build failure, a timeout, the linker
+#      being killed on a small machine. Not a statement about the tests.
+#
+# Blocking on the second kind is how a hook gets uninstalled: someone whose
+# laptop ran out of memory cannot push, learns `--no-verify`, and never runs it
+# again. It warns and lets the push through instead. That makes the check
+# advisory exactly when it could not form an opinion, which is the honest
+# reading of "the tool did not finish".
+case "$status" in
+    0)
+        printf 'ok\n'
+        exit 0
+        ;;
+    2)
+        printf 'FAILED\n\n'
+        printf '  These edits to your code broke nothing that any test noticed:\n\n'
+        sed 's/^/    /' mutants.out/missed.txt 2>/dev/null | head -30
+        printf '\n  Each one is a behaviour with no test. Write the test, or say why the\n'
+        printf '  mutant is harmless.\n'
+        printf '\npre-push: nothing was pushed. `git push --no-verify` to override.\n'
+        exit 1
+        ;;
+    *)
+        printf 'could not run (exit %s)\n' "$status"
+        printf '  The push is going ahead: this says nothing about your tests.\n'
+        tail -5 "$diff.log" | sed 's/^/    /'
+        printf '  On a small machine, `cargo mutants --in-diff <diff> -j 1` uses less memory.\n'
+        exit 0
+        ;;
+esac

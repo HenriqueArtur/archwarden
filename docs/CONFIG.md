@@ -689,6 +689,14 @@ Only the last is overridable. `--force` is a human saying they looked, and the
 report prints the file and the line to look at. The others produce a repository
 that does not build, which is not a judgement a flag should be able to make.
 
+There is one more, and it should never fire. After the plan is built, every
+file the dry run named as an importer must have come out of it with an edit.
+Nothing above is supposed to be able to break that — a specifier that cannot be
+recomputed refuses on its own — but the failure it would hide is the worst one
+here: a repository that compiles nowhere, reported as success with exit 0, and
+found by whoever runs `tsc` next. If you ever see it, it is a bug worth
+reporting with the command you ran.
+
 ## Measuring a rule change
 
 Rule 2 of [`AGENTS.md`](AGENT-INTEGRATION.md) says not to edit `arch.config.json`
@@ -752,12 +760,30 @@ about, and a sentence claiming otherwise would be the tool guessing.
 one module per entity, so a `shared/` and a `calcs/` under the same entity are
 *inside* each other. Nothing here picks a depth the config did not.
 
-**Specs are left out of the graph, both ways.** A spec is an entry point for a
-test runner, so counting it as an importee puts a phantom dead file in every
-folder. Counting it as an *importer* is worse: a file's own spec sits in the
-same module, so every file with a spec reads as used from inside and outside at
-once. On one real repository that turned six `shared/` folders — every one of
-them used only from other modules — into six folders marked "both".
+**Specs get a column of their own.** A spec is never a row: nothing imports one
+by design, so a row for it is a phantom dead file in every folder.
+
+As an *importer* it is neither counted with the rest nor dropped, and both
+halves were learned from being wrong.
+
+Counting a spec as an ordinary importer destroys the signal — a file's own spec
+sits in the same module, so every tested file reads as used from inside *and*
+outside at once. On one repository that turned six `shared/` folders, all used
+only from other modules, into six marked "both".
+
+Dropping it is worse, and only a mocks convention shows why: a mock is imported
+by specs and nothing else, so 43 of 44 `mocks/` folders reported **"nothing
+imports any of it"** — the opposite of the truth, with a verdict attached.
+
+So specs are counted apart, and two rules follow from it:
+
+- **A file's own spec never counts.** It exists because the file does and
+  always sits in the same module; letting it count would mean no tested file
+  could ever be reported as used only from outside.
+- **Another file's spec does.** A mock reached from `plan/calcs/to-json.spec.ts`
+  is genuinely used by the module it sits in, so the "boundary is drawn
+  elsewhere" verdict is **withheld** — the counts still print, the conclusion
+  does not.
 
 **This is not Knip.** Knip finds exports nobody uses. The question here is where
 the importers come from for the exports that *are* used. The "nobody" column

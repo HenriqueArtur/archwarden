@@ -122,6 +122,27 @@ Alternatives:
 - Require an install. Rejected: it makes archwarden useless in the case it
   is most useful — CI that lints before it builds, and any checkout where
   the lockfile is the only thing that changed.
+**Amendment, 0.5.1.** `fallback` is right and incomplete. It covers the
+case where normal resolution *fails*; it says nothing about the case
+where it succeeds and lands on a **copy** of a workspace package under
+`node_modules`. pnpm with `node-linker=hoisted`, npm on a filesystem
+without symlinks, a container volume, a partial install — all leave a
+copy rather than a link, and a copy has `node_modules` in its path, so
+`classify` called it somebody else's code and the file importing it
+vanished from the graph.
+
+The consequence was not a missing warning. `impact` reported two
+importers where there were three, and `--apply` rewrote two, left the
+third pointing at a file that had moved, and exited 0. Measured on the
+same repository at the same commit with the same published binary: 29
+specifiers rewritten with a symlink, 26 and three broken imports with a
+copy.
+
+So a resolved path under `node_modules` whose package name is one the
+repository declares is mapped back to the source it was copied from —
+when that source exists, and never otherwise. A dependency that merely
+shares a name is still a dependency.
+
 Consequences: resolution now depends on every local `package.json`, which
 the `resolution_epoch` already hashes (decision 3's cache design listed
 `package.json` for `exports` and workspaces), so no cache change was needed.

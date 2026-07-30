@@ -919,15 +919,66 @@ fn init(working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
         return Exit::ConfigProblem;
     }
 
+    let ignored = ignore_the_cache(working_directory);
+
     let _ = writeln!(
         output.out,
-        "wrote {path}\n\n\
+        "wrote {path}{}\n\n\
          Next: add a rule, then\n\
          \x20 archwarden config validate      check it parses\n\
          \x20 archwarden describe <path>      see what applies to a file\n\
-         \x20 archwarden install-hooks --claude-code   block invalid writes"
+         \x20 archwarden install-hooks --claude-code   block invalid writes",
+        if ignored {
+            "\nadded `.archwarden/cache/` to .gitignore"
+        } else {
+            ""
+        }
     );
     Exit::Clean
+}
+
+/// Adds `.archwarden/cache/` to `.gitignore`, if it is not covered already.
+///
+/// `check` writes a multi-megabyte binary database inside the repository, and
+/// a tool that leaves its own build artefact for the user to discover in
+/// `git status` is a tool being rude with their diff.
+///
+/// **`.archwarden/cache/`, never `.archwarden/`.** The baseline lives beside
+/// the cache and is meant to be committed — it is a record of accepted debt,
+/// reviewed in a pull request, and ignoring it would quietly undo the one
+/// feature whose whole point is being visible in version control.
+///
+/// Returns whether a line was added. Never fails the command: an unwritable
+/// `.gitignore` is the user's business, and `init` succeeding is about the
+/// config.
+fn ignore_the_cache(working_directory: &Utf8Path) -> bool {
+    const ENTRY: &str = ".archwarden/cache/";
+
+    let path = working_directory.join(".gitignore");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+
+    if existing
+        .lines()
+        .any(|line| matches!(line.trim(), ENTRY | ".archwarden/cache" | ".archwarden/"))
+    {
+        return false;
+    }
+
+    let separator = if existing.is_empty() || existing.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let addition = format!(
+        "{separator}\n# archwarden's parse cache. The baseline beside it is meant to be committed.\n{ENTRY}\n"
+    );
+
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path.as_std_path())
+        .and_then(|mut file| std::io::Write::write_all(&mut file, addition.as_bytes()))
+        .is_ok()
 }
 
 /// Answers a harness's pre-write question.

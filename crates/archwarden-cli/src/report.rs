@@ -277,6 +277,13 @@ struct JsonReport<'a> {
     unreadable_files: Vec<UnreadableFile<'a>>,
 }
 
+/// One check nobody could make.
+#[derive(Debug, Serialize)]
+struct SkippedCheck {
+    rule_id: String,
+    path: String,
+}
+
 #[derive(Debug, Serialize)]
 struct UnreadableFile<'a> {
     path: &'a archwarden_core::path::RepoRelPath,
@@ -297,6 +304,13 @@ struct Summary {
     /// field to exist; the text format leaves it out when it is zero, because
     /// a human reading `0 skipped` on every run only wonders why it is there.
     checks_skipped: usize,
+    /// Which rule wanted which file, for every skipped check.
+    ///
+    /// The count on its own says a run decided less than it looks like and
+    /// gives nobody a place to look. Absent when nothing was skipped, which is
+    /// nearly always.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    skipped_checks: Vec<SkippedCheck>,
     /// How long the whole run took, in milliseconds.
     ///
     /// The raw number rather than the prose the text format prints: a consumer
@@ -354,6 +368,14 @@ impl Summary {
             files_parsed: report.files_parsed,
             facts_reused: report.facts_reused,
             checks_skipped: report.checks_skipped,
+            skipped_checks: report
+                .skipped_checks
+                .iter()
+                .map(|(rule_id, path)| SkippedCheck {
+                    rule_id: rule_id.clone(),
+                    path: path.as_str().to_owned(),
+                })
+                .collect(),
             duration_ms: elapsed.as_millis(),
             hidden: view.hidden,
             by_rule: view.breakdown.as_ref().map(Breakdown::as_map),
@@ -945,6 +967,7 @@ mod tests {
             unreadable_files: Vec::new(),
             files_parsed: 0,
             checks_skipped: 0,
+            skipped_checks: Vec::new(),
             facts_reused: 0,
             imports: archwarden_engine::resolve::Outcomes::default(),
         }

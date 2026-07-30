@@ -297,9 +297,78 @@ pub fn examine_repository(
         pattern_matches_nothing(config, rule, tree, &mut concerns);
         symbol_never_imported(root, config, rule, engine.as_ref(), tree, &mut concerns);
         only_a_default_export(root, config, rule, engine.as_ref(), tree, &mut concerns);
+        // Last, and it defers to everything above: reaching no file is what a
+        // rule with a pattern matching nothing *does*, and saying it twice
+        // makes one mistake look like two.
+        rule_evaluates_nothing(rule, engine.as_ref(), tree, &mut concerns);
     }
 
     concerns
+}
+
+/// A rule whose scope matches directories and whose engine sees no file in any
+/// of them.
+///
+/// The gap `scope_matches_nothing` leaves, and the one that costs most,
+/// because the config looks right. `roots: "packages/domain/src/*"` selects
+/// the 49 entity directories exactly as documented — and if every entity keeps
+/// its code in `calcs/`, `types/`, `actions/` with nothing loose at the top,
+/// a rule about files evaluates none of them and reports silence.
+///
+/// Silence is indistinguishable from a clean repository, which is the failure
+/// `CONFIG.md` calls the worst a linter has. `doctor` promises to answer "does
+/// this config mean what you think?", and a rule reaching zero files is
+/// exactly a rule that does not.
+///
+/// `structure` is exempt: its findings are about directories, so having no
+/// files to inspect is its ordinary state rather than a symptom. So is any
+/// rule another concern has already explained — a `file_pattern` matching
+/// nothing reaches no file *because* of that, and reporting both would make
+/// one mistake look like two.
+fn rule_evaluates_nothing(
+    rule: &CompiledRule,
+    engine: &dyn archwarden_core::traits::RuleEngine,
+    tree: &RepoTree,
+    concerns: &mut Vec<Concern>,
+) {
+    if matches!(rule.kind, CompiledRuleKind::Structure { .. }) {
+        return;
+    }
+    // Only when the scope did match something: a scope matching no directory
+    // at all is already reported, and two concerns about one typo is noise.
+    if !tree
+        .directories()
+        .any(|(path, _)| rule.scope.matches_dir(path.as_path()))
+    {
+        return;
+    }
+    if tree.files().any(|file| engine.applies_to(&file.path)) {
+        return;
+    }
+    // A more specific concern about this rule has already said why. This one
+    // is the catch-all for a silence nothing else explained.
+    if concerns
+        .iter()
+        .any(|concern| concern.rule_id.as_ref() == Some(&rule.id))
+    {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "rule-evaluates-nothing",
+        rule_id: Some(rule.id.clone()),
+        path: None,
+        message: format!(
+            "{} matches directories, but no file inside them is subject to this rule",
+            list(rule.scope.patterns())
+        ),
+        fix: concat!(
+            "a scope selects directories and the rule then inspects the files directly ",
+            "inside them -- `src/*` reaches files one level down, not two. If the files ",
+            "live in subfolders, the scope wants `src/**`"
+        )
+        .to_owned(),
+    });
 }
 
 /// A scope naming a directory that is not there. Usually a typo, occasionally

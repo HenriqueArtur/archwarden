@@ -1,0 +1,16 @@
+# What mutation testing is not asked to have an opinion about.
+#
+# One entry, and it took an argument to earn. `.githooks/pre-push` offers two
+# answers to a survivor — write the test, or say why the mutant is harmless —
+# and this file is where the second answer is written down, so that it is a
+# reviewed decision rather than a `--no-verify` nobody sees.
+
+# `install_hooks` is what is left of the task after its logic moved into
+# `point_git_at_hooks`, which is tested against a throwaway repository. What
+# remains is: call that, then print four lines. Replacing it with `Ok(())`
+# survives, and always will — the only test that could kill it would set
+# `core.hooksPath` on the working copy running the suite, which is a test that
+# reaches out of its own process to change the machine.
+#
+# The behaviour that matters is covered. This is the announcement around it.
+exclude_re = ["replace install_hooks"]
