@@ -36,6 +36,8 @@ pub enum Rule {
     ImportBoundary(ImportBoundaryRule),
     /// Files matching a pattern must call a given symbol.
     CallObligation(CallObligationRule),
+    /// A file whose whole content is forwarding another module.
+    NoPassthrough(NoPassthroughRule),
 }
 
 impl Rule {
@@ -48,6 +50,7 @@ impl Rule {
             Self::SpecPair(r) => &r.id,
             Self::ImportBoundary(r) => &r.id,
             Self::CallObligation(r) => &r.id,
+            Self::NoPassthrough(r) => &r.id,
         }
     }
 
@@ -60,6 +63,7 @@ impl Rule {
             Self::SpecPair(r) => r.level,
             Self::ImportBoundary(r) => r.level,
             Self::CallObligation(r) => r.level,
+            Self::NoPassthrough(r) => r.level,
         }
     }
 
@@ -76,6 +80,7 @@ impl Rule {
             Self::SpecPair(r) => &r.roots,
             Self::ImportBoundary(r) => &r.from,
             Self::CallObligation(r) => &r.roots,
+            Self::NoPassthrough(r) => &r.roots,
         }
     }
 
@@ -88,6 +93,7 @@ impl Rule {
             Self::SpecPair(_) => "spec-pair",
             Self::ImportBoundary(_) => "import-boundary",
             Self::CallObligation(_) => "call-obligation",
+            Self::NoPassthrough(_) => "no-passthrough",
         }
     }
 }
@@ -636,4 +642,69 @@ mod tests {
         );
         assert!(json.contains(r#""type":"import-boundary""#), "{json}");
     }
+}
+
+/// Which shapes of pure forwarding are refused, and where.
+///
+/// A file that only forwards another module is an indirection wearing the
+/// name of a layer. The three shapes are all a way of holding a name and
+/// adding nothing to it; see `docs/RULES.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NoPassthroughRule {
+    /// Stable identifier.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Directory globs this rule applies to.
+    pub roots: Patterns,
+    /// Which shapes count. Defaults to all three.
+    #[serde(default = "default_forms")]
+    pub forms: Vec<PassthroughForm>,
+    /// Files exempted, as globs.
+    ///
+    /// A legitimate re-export exists — a package's public API — and a rule
+    /// without a way to say so is noise in the first repository that enables
+    /// it. `allow_package_entrypoints` covers the common case without anyone
+    /// writing a glob.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub except: Patterns,
+    /// Whether a file reachable through a `package.json` `exports` entry is
+    /// exempt. Default `true`.
+    ///
+    /// That file *is* the package's public API, and forwarding is what a
+    /// public API is for. Without this the rule reports a package's entire
+    /// surface the moment it is switched on.
+    #[serde(default = "default_true")]
+    pub allow_package_entrypoints: bool,
+    /// Whether a file that forwards *some* of its exports and declares others
+    /// is allowed. Default `true`.
+    ///
+    /// Set to `false` to hear about the shape that hides best: a file
+    /// re-exporting six names from another module while declaring two of its
+    /// own reads as a real module, and six of its eight exports are still an
+    /// indirection its importers could skip.
+    #[serde(default = "default_true")]
+    pub allow_partial: bool,
+}
+
+/// One shape of pure forwarding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum PassthroughForm {
+    /// `export { A } from './x'`, or an import followed by an export of the
+    /// same name. A barrel file is this and nothing else.
+    Reexport,
+    /// `export const A = B` or `export type A = B`, where `B` was imported.
+    Alias,
+    /// A function whose whole body is `return g(<its own parameters>)`.
+    Wrapper,
+}
+
+fn default_forms() -> Vec<PassthroughForm> {
+    vec![
+        PassthroughForm::Reexport,
+        PassthroughForm::Alias,
+        PassthroughForm::Wrapper,
+    ]
 }

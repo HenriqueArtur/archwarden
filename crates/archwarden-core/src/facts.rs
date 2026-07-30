@@ -234,6 +234,18 @@ pub struct ExportFact {
     pub is_default: bool,
     /// For `export { Foo } from './x'`, the specifier it came from.
     pub reexport_from: Option<String>,
+    /// The local binding this export is nothing but a forward of.
+    ///
+    /// Set when the file adds no behaviour between an import and this export:
+    /// `export { X }` naming an imported `X`, `export const A = B`, or a
+    /// one-line function whose whole body is `return g(...)` with its own
+    /// parameters in order. `None` for anything that computes something.
+    ///
+    /// Whether the name is *imported* is not decided here — that needs the
+    /// file's imports, which the `no-passthrough` rule has and a single
+    /// export fact does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwards: Option<String>,
     /// Where it appears in the source.
     pub span: Span,
 }
@@ -328,6 +340,7 @@ mod tests {
             tags,
             is_default: false,
             reexport_from: None,
+            forwards: None,
             span: Span::new(0, 1),
         }
     }

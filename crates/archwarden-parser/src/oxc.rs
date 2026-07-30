@@ -81,6 +81,7 @@ impl ParserTrait for OxcParser {
         }
 
         let declaration_tags = declaration_tags(&parsed.program);
+        let forwarded = forwarded_bindings(&parsed.program);
 
         let (imports, has_opaque_import) = imports(&parsed.module_record, &parsed.program);
 
@@ -88,11 +89,122 @@ impl ParserTrait for OxcParser {
             path: path.clone(),
             content_hash,
             imports,
-            exports: exports(&parsed.module_record, &declaration_tags),
+            exports: exports(&parsed.module_record, &declaration_tags, &forwarded),
             calls: calls(&parsed.program),
             has_opaque_import,
         })
     }
+}
+
+/// Maps every top-level binding that is nothing but a forward of another one.
+///
+/// Three shapes, which are the three ways a file can hold a name and add
+/// nothing to it:
+///
+/// - `const A = B` and `type A = B` — an alias. The name changed and nothing
+///   else did.
+/// - `function f(a, b) { return g(a, b); }` — a wrapper whose whole body is
+///   one call, taking its own parameters in order.
+///
+/// Deliberately *syntactic*. "Same signature" in the type sense would need the
+/// file on the other side and its types, which is cross-file analysis
+/// `docs/RULES.md` keeps the file-local rules away from. A wrapper that
+/// reorders arguments, drops one, or supplies a default is doing something,
+/// and none of those match here.
+fn forwarded_bindings(program: &Program<'_>) -> HashMap<String, String> {
+    let mut forwards = HashMap::new();
+
+    for statement in &program.body {
+        let declaration = match statement {
+            Statement::ExportNamedDeclaration(export) => export.declaration.as_ref(),
+            other => other.as_declaration(),
+        };
+        let Some(declaration) = declaration else {
+            continue;
+        };
+        record_forward(declaration, &mut forwards);
+    }
+
+    forwards
+}
+
+/// Records one declaration if it forwards another binding.
+fn record_forward(declaration: &Declaration<'_>, forwards: &mut HashMap<String, String>) {
+    match declaration {
+        // `export const planToJson = planToJsonShared`
+        Declaration::VariableDeclaration(variable) => {
+            for declarator in &variable.declarations {
+                let (Some(identifier), Some(Expression::Identifier(source))) =
+                    (declarator.id.get_binding_identifier(), &declarator.init)
+                else {
+                    continue;
+                };
+                forwards.insert(identifier.name.to_string(), source.name.to_string());
+            }
+        }
+
+        // `export type PlanJson = PlanJsonShared`, and only that: a type with
+        // arguments (`Partial<X>`) or a union is a type being built, not a
+        // name being changed.
+        Declaration::TSTypeAliasDeclaration(alias) => {
+            if let oxc_ast::ast::TSType::TSTypeReference(reference) = &alias.type_annotation
+                && reference.type_arguments.is_none()
+                && let oxc_ast::ast::TSTypeName::IdentifierReference(source) = &reference.type_name
+            {
+                forwards.insert(alias.id.name.to_string(), source.name.to_string());
+            }
+        }
+
+        // `export function isFlowGraphInvalid(nodes, edges) {
+        //    return isFlowGraphInvalidShared(nodes, edges);
+        //  }`
+        Declaration::FunctionDeclaration(function) => {
+            let (Some(identifier), Some(body)) = (&function.id, &function.body) else {
+                return;
+            };
+            if let Some(callee) = single_forwarding_return(body, &function.params) {
+                forwards.insert(identifier.name.to_string(), callee);
+            }
+        }
+
+        _ => {}
+    }
+}
+
+/// The callee of a body that is exactly `return f(<own parameters, in order>)`.
+fn single_forwarding_return(
+    body: &oxc_ast::ast::FunctionBody<'_>,
+    params: &oxc_ast::ast::FormalParameters<'_>,
+) -> Option<String> {
+    let [Statement::ReturnStatement(returned)] = body.statements.as_slice() else {
+        return None;
+    };
+    let Some(Expression::CallExpression(call)) = &returned.argument else {
+        return None;
+    };
+    let Expression::Identifier(callee) = &call.callee else {
+        return None;
+    };
+    if call.arguments.len() != params.items.len() {
+        return None;
+    }
+
+    // Its own parameters, in order. Anything else — a reordering, a literal, a
+    // default supplied — is the file doing something, which is exactly what
+    // this must not flag.
+    for (argument, parameter) in call.arguments.iter().zip(&params.items) {
+        let (Some(Expression::Identifier(passed)), Some(declared)) = (
+            argument.as_expression(),
+            parameter.pattern.get_binding_identifier(),
+        ) else {
+            return None;
+        };
+        if passed.name != declared.name {
+            return None;
+        }
+    }
+
+    Some(callee.name.to_string())
 }
 
 /// Maps every top-level binding to how it was declared.
@@ -237,6 +349,7 @@ fn record_default(
 fn exports(
     record: &oxc_syntax::module_record::ModuleRecord<'_>,
     declaration_tags: &HashMap<String, ExportTags>,
+    forwarded: &HashMap<String, String>,
 ) -> Vec<ExportFact> {
     let mut facts = Vec::new();
 
@@ -250,6 +363,16 @@ fn exports(
                 .and_then(|name| declaration_tags.get(name).copied())
                 .unwrap_or_else(ExportTags::none),
             is_default: entry.export_name.is_default(),
+            // Either the binding is an alias or a wrapper this file declared,
+            // or `export { X }` names something the file never declared — in
+            // which case `X` came in through an import and the file is holding
+            // the name and nothing else.
+            forwards: local.as_ref().and_then(|name| {
+                forwarded
+                    .get(name)
+                    .cloned()
+                    .or_else(|| (!declaration_tags.contains_key(name)).then(|| name.clone()))
+            }),
             name: exported,
             reexport_from: None,
             span: span_of(entry.span),
@@ -269,6 +392,9 @@ fn exports(
                 .module_request
                 .as_ref()
                 .map(|request| request.name.to_string()),
+            // Forwards by construction: the file holds the name and nothing
+            // else about it.
+            forwards: export_name(&entry.export_name),
             span: span_of(entry.span),
         });
     }

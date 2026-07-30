@@ -779,6 +779,28 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
         Observed::ReexportOfUnknownKind { name, from } => {
             format!("`{name}` is re-exported from `{from}`, so its kind is not determinable here")
         }
+        Observed::Passthrough {
+            exports,
+            whole_file,
+        } => {
+            let names = exports
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let forwards = if exports.len() == 1 {
+                "only forwards"
+            } else {
+                "only forward"
+            };
+            if *whole_file {
+                format!("adds nothing of its own: {names} {forwards} another module")
+            } else {
+                // A different sentence, because it is a different decision:
+                // the file is real and part of it is an indirection.
+                format!("{names} {forwards} another module; the rest of the file is its own")
+            }
+        }
         Observed::SiblingMissing { path } => format!("`{path}` does not exist"),
         Observed::SpecIsEmpty { path } => format!("`{path}` contains no test cases"),
         Observed::ForbiddenImport {
@@ -823,6 +845,21 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
             || format!("an export named `{name}`"),
             |hint| format!("an export named `{name}`, shaped like `{hint}`"),
         ),
+        Expectation::NoPassthrough { forms } => {
+            format!(
+                "a file must add something of its own, not only {}",
+                forms
+                    .iter()
+                    .map(|form| match form.as_str() {
+                        "reexport" => "re-export another module",
+                        "alias" => "rename an import",
+                        "wrapper" => "wrap a call in a one-line function",
+                        other => other,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
         Expectation::RequiredSibling {
             path,
             non_empty_spec,

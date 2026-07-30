@@ -16,6 +16,7 @@
 pub mod call_obligation;
 pub mod import_boundary;
 pub mod naming;
+pub mod no_passthrough;
 pub mod spec_pair;
 pub mod structure;
 
@@ -52,6 +53,18 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     recurse_into,
                     filename_patterns,
                     config.skip_dirs().clone(),
+                )),
+                CompiledRuleKind::NoPassthrough {
+                    forms,
+                    except,
+                    allow_package_entrypoints,
+                    allow_partial,
+                } => Box::new(no_passthrough::NoPassthroughEngine::build(
+                    rule,
+                    *forms,
+                    except,
+                    *allow_package_entrypoints,
+                    *allow_partial,
                 )),
                 CompiledRuleKind::SpecPair {
                     subfolders,

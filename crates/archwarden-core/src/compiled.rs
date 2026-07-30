@@ -118,6 +118,18 @@ pub enum CompiledRuleKind {
         /// contract. See `docs/RULES.md`.
         skip_type_only: bool,
     },
+    /// A file whose whole content is forwarding another module.
+    NoPassthrough {
+        /// Which shapes of forwarding count.
+        forms: PassthroughForms,
+        /// Files exempted, as globs.
+        except: PathSet,
+        /// Whether a file a `package.json` `exports` entry points at is exempt.
+        allow_package_entrypoints: bool,
+        /// Whether a file that forwards some exports and declares others is
+        /// allowed.
+        allow_partial: bool,
+    },
     /// Layer A may not import from layer B, or must import from layer C.
     ImportBoundary {
         /// Resolved import paths that are illegal.
@@ -148,6 +160,7 @@ impl CompiledRuleKind {
             Self::Structure { .. } => "structure",
             Self::Naming { .. } => "naming",
             Self::SpecPair { .. } => "spec-pair",
+            Self::NoPassthrough { .. } => "no-passthrough",
             Self::ImportBoundary { .. } => "import-boundary",
             Self::CallObligation { .. } => "call-obligation",
         }
@@ -166,9 +179,23 @@ impl CompiledRuleKind {
                 skip_type_only,
                 ..
             } => *require_non_empty_spec || *skip_type_only,
-            Self::Naming { .. } | Self::ImportBoundary { .. } | Self::CallObligation { .. } => true,
+            Self::Naming { .. }
+            | Self::ImportBoundary { .. }
+            | Self::CallObligation { .. }
+            | Self::NoPassthrough { .. } => true,
         }
     }
+}
+
+/// Which shapes of pure forwarding a `no-passthrough` rule refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PassthroughForms {
+    /// `export { A } from './x'`, or an import followed by an export of it.
+    pub reexport: bool,
+    /// `export const A = B`, `export type A = B`.
+    pub alias: bool,
+    /// A function whose whole body is `return g(<its own parameters>)`.
+    pub wrapper: bool,
 }
 
 /// One rule, ready to evaluate.

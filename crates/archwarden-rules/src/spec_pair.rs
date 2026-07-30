@@ -472,6 +472,7 @@ mod tests {
                     tags: ExportTags::only(*kind),
                     is_default: false,
                     reexport_from: None,
+                    forwards: None,
                     span: Span::new(0, 0),
                 })
                 .collect(),

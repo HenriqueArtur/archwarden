@@ -30,6 +30,12 @@ use crate::{
 #[serde(tag = "type", rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum Expectation {
+    /// Exports that are nothing but a forward of another module.
+    NoPassthrough {
+        /// The shapes the rule refuses.
+        forms: Vec<String>,
+    },
+
     /// Only these subdirectories may exist here.
     AllowedSubfolders {
         /// Names that are permitted.
@@ -86,6 +92,18 @@ pub enum Expectation {
 #[serde(tag = "type", rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum Observed {
+    /// The file forwards other modules and adds nothing of its own.
+    Passthrough {
+        /// The exports that are forwards, in source order.
+        exports: Vec<String>,
+        /// Whether every export in the file is one.
+        ///
+        /// The difference between "this file adds nothing" and "part of this
+        /// file adds nothing", which are different sentences and different
+        /// decisions.
+        whole_file: bool,
+    },
+
     /// A subdirectory that is on neither list.
     UnexpectedSubfolder {
         /// The directory's name.

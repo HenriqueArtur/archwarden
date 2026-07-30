@@ -458,7 +458,7 @@ regexes matching nothing, scopes pointing at paths that do not exist.
 `doctor` exits **0 even with findings** — they are advice about a
 configuration, not findings about code.
 
-## The five rule kinds
+## The six rule kinds
 
 | kind | asks | you satisfy it by |
 |---|---|---|
@@ -467,6 +467,7 @@ configuration, not findings about code.
 | `spec-pair` | is there a test beside it? | creating the sibling `.spec.ts` — **write it, do not leave it empty** if `non_empty_spec` is true |
 | `import-boundary` | may this layer import that one? | importing through whatever `except` allows, or not at all |
 | `call-obligation` | does this file call the required symbol? | calling it **anywhere in the file**, including from a local helper |
+| `no-passthrough` | does this file add anything of its own? | writing something here, or deleting the file and importing what it forwards |
 
 Two details that decide most cases:
 

@@ -284,6 +284,7 @@ mod tests {
             tags,
             is_default: false,
             reexport_from: None,
+            forwards: None,
             span: Span::new(0, 1),
         }
     }
@@ -423,6 +424,7 @@ mod tests {
             USE_CASE,
             vec![ExportFact {
                 reexport_from: Some("./internal".to_owned()),
+                forwards: None,
                 ..export("CreateClient", ExportTags::only(ExportKind::Reexport))
             }],
         );

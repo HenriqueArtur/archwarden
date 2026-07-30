@@ -138,6 +138,11 @@ fn reaches(rule: &CompiledRule, prefix: &RepoRelPath) -> bool {
 }
 
 /// One sentence per thing the rule requires.
+///
+/// One arm per rule kind, each a handful of lines. Splitting it would put the
+/// arms somewhere the exhaustive `match` no longer names them, which is the
+/// property that makes a kind added without a sentence fail to compile.
+#[allow(clippy::too_many_lines, reason = "one arm per rule kind; see above")]
 fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
     match kind {
         CompiledRuleKind::Structure {
@@ -164,6 +169,37 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
                             .collect::<Vec<_>>()
                     )
                 ));
+            }
+            lines
+        }
+        CompiledRuleKind::NoPassthrough {
+            forms,
+            allow_package_entrypoints,
+            allow_partial,
+            ..
+        } => {
+            let mut shapes = Vec::new();
+            if forms.reexport {
+                shapes.push("re-exporting it");
+            }
+            if forms.alias {
+                shapes.push("aliasing it");
+            }
+            if forms.wrapper {
+                shapes.push("wrapping it in a one-line function");
+            }
+            let mut lines = vec![format!(
+                "a file must add something of its own: not only {}",
+                join(&shapes.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>()),
+            )];
+            if *allow_package_entrypoints {
+                lines.push(
+                    "a package entry point is exempt: forwarding is what a public API is for"
+                        .to_owned(),
+                );
+            }
+            if !*allow_partial {
+                lines.push("forwarding some exports while declaring others counts too".to_owned());
             }
             lines
         }

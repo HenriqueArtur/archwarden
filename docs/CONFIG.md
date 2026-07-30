@@ -119,7 +119,7 @@ would refuse to complete.
 
 Every rule has:
 
-- `type` — discriminator (`structure`, `naming`, `spec-pair`, `import-boundary`, `call-obligation`).
+- `type` — discriminator (`structure`, `naming`, `spec-pair`, `import-boundary`, `call-obligation`, `no-passthrough`).
 - `id` — stable identifier used in output and in `explain`. Required, unique per config.
 - `level` — `error` or `warning`.
 - a **scope**: `roots` on every rule, except `import-boundary` where it is
@@ -164,7 +164,7 @@ older one rather than degrading. That is the intended trade: a config file is
 small, versioned by its `version` field, and a wrong guess about what a key
 means is worse than an error.
 
-The five rule types are specified in [`RULES.md`](RULES.md). This section
+The six rule types are specified in [`RULES.md`](RULES.md). This section
 shows realistic examples for each.
 
 ### Structure rule
@@ -322,6 +322,43 @@ would be harder to trust than one that is never asked.
 
 Cross-file analysis is out of scope for v0 — the obligation must be satisfied
 within the file itself.
+
+### No passthrough
+
+```json
+{
+  "type": "no-passthrough",
+  "id": "domain-no-indirection",
+  "level": "warning",
+  "roots": ["packages/domain/src/**"],
+  "forms": ["reexport", "alias", "wrapper"],
+  "except": [],
+  "allow_package_entrypoints": true,
+  "allow_partial": true
+}
+```
+
+A file whose whole content is forwarding another module. Run against a real
+repository, that config found four:
+
+```
+warning packages/domain/src/plan/calcs/to-json.ts
+        [domain] domain-no-indirection — adds nothing of its own: `PlanJson`, `planToJson` only forward another module
+```
+
+`forms` defaults to all three and narrows to one question at a time. **"No
+barrel files"** is this rule with `forms: ["reexport"]` and
+`allow_package_entrypoints: false` — a barrel is a re-export and nothing else.
+
+`allow_package_entrypoints` defaults to `true` because a package's public API
+is a file whose job is forwarding. Leave it on unless you are hunting barrels.
+
+`allow_partial` defaults to `true`, so only a file where *every* export is a
+forward is reported. Setting it to `false` also reports a file that forwards
+some and declares others, naming which — on the same repository, 4 findings
+became 26. Both are true; they answer different questions.
+
+Every rule type is specified in [`RULES.md`](RULES.md).
 
 ## Presets
 
