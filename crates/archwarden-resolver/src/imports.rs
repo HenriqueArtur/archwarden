@@ -71,6 +71,7 @@ pub enum ImportError {
 pub struct ImportResolver {
     inner: oxc_resolver::Resolver,
     root: Utf8PathBuf,
+    workspace: crate::workspace::Workspace,
 }
 
 impl ImportResolver {
@@ -79,9 +80,17 @@ impl ImportResolver {
     /// `tsconfig` discovery is automatic: the nearest one to the importing file
     /// wins, which is what a monorepo where every package has its own
     /// `compilerOptions.paths` needs.
+    ///
+    /// The repository's own packages are read from their manifests and passed
+    /// as `fallback`, so `@org/domain/email/x` resolves on a machine that has
+    /// not run an install. `fallback` and not `alias`: it is consulted only
+    /// after normal resolution fails, so an installed package always wins over
+    /// the reconstruction of it. See [`crate::workspace`].
     #[must_use]
     pub fn new(root: &Utf8Path) -> Self {
+        let workspace = crate::workspace::Workspace::discover(root);
         let options = oxc_resolver::ResolveOptions {
+            fallback: workspace.fallback(root),
             extensions: EXTENSIONS.iter().map(|e| (*e).to_owned()).collect(),
             main_fields: MAIN_FIELDS.iter().map(|f| (*f).to_owned()).collect(),
             condition_names: CONDITIONS.iter().map(|c| (*c).to_owned()).collect(),
@@ -113,7 +122,18 @@ impl ImportResolver {
         Self {
             inner: oxc_resolver::Resolver::new(options),
             root: root.to_owned(),
+            workspace,
         }
+    }
+
+    /// The repository's own packages, as their manifests describe them.
+    ///
+    /// Exposed because rewriting an import needs to know whether a specifier
+    /// names a local package — one whose specifier a move changes — or an
+    /// outside dependency it must leave alone.
+    #[must_use]
+    pub fn workspace(&self) -> &crate::workspace::Workspace {
+        &self.workspace
     }
 
     /// Decides what a resolved absolute path is, from archwarden's point of
@@ -385,6 +405,101 @@ mod tests {
         drop(guard);
 
         assert_eq!(resolved, "in-repo packages/domain/src/index.ts");
+    }
+
+    /// The same import, on a machine that has not run an install.
+    ///
+    /// This is the half of a monorepo's import graph that used to disappear:
+    /// no `node_modules`, so Node's own answer is "nothing", and every
+    /// boundary rule about this edge silently passed. The subpath pattern in
+    /// `exports` says where it really lands, and that is read from the
+    /// manifest rather than from the symlink a package manager would have
+    /// left. See `crate::workspace`.
+    #[test]
+    fn a_workspace_package_resolves_with_no_node_modules_at_all() {
+        let (guard, root) = repo(&[
+            ("packages/app/src/main.ts", ""),
+            (
+                "packages/domain/package.json",
+                r#"{"name":"@org/domain","exports":{"./email/*":"./src/email/*.ts"}}"#,
+            ),
+            ("packages/domain/src/email/is-invalid.ts", TS),
+        ]);
+
+        let resolved = describe(
+            &root,
+            ImportResolver::new(&root).resolve(
+                &path("packages/app/src/main.ts"),
+                "@org/domain/email/is-invalid",
+            ),
+        );
+        drop(guard);
+
+        assert_eq!(resolved, "in-repo packages/domain/src/email/is-invalid.ts");
+    }
+
+    /// A subpath `exports` does not cover stays unresolved.
+    ///
+    /// The map fills the hole `node_modules` would have filled; it does not
+    /// widen it. An import Node refuses must be refused here too, or a
+    /// boundary rule would be evaluated against a path nobody can import.
+    #[test]
+    fn a_subpath_outside_the_exports_map_does_not_resolve() {
+        let (guard, root) = repo(&[
+            ("packages/app/src/main.ts", ""),
+            (
+                "packages/domain/package.json",
+                r#"{"name":"@org/domain","exports":{"./email/*":"./src/email/*.ts"}}"#,
+            ),
+            ("packages/domain/src/secret/internal.ts", TS),
+        ]);
+
+        let resolved = ImportResolver::new(&root).resolve(
+            &path("packages/app/src/main.ts"),
+            "@org/domain/secret/internal",
+        );
+        drop(guard);
+
+        assert!(resolved.is_err(), "{resolved:?}");
+    }
+
+    /// An installed package wins over the reconstruction of it. The map is a
+    /// `fallback`, consulted only once normal resolution has failed, so a
+    /// repository that *has* installed its dependencies resolves exactly as it
+    /// did before this existed.
+    #[cfg(unix)]
+    #[test]
+    fn an_installed_package_is_not_overruled_by_the_workspace_map() {
+        let (guard, root) = repo(&[
+            ("packages/app/src/main.ts", ""),
+            (
+                "packages/domain/package.json",
+                r#"{"name":"@org/domain","exports":{"./x":"./src/from-manifest.ts"}}"#,
+            ),
+            ("packages/domain/src/from-manifest.ts", TS),
+            ("packages/domain/src/from-link.ts", TS),
+        ]);
+        // The installed copy exports the same subpath at a different file. If
+        // the fallback were an `alias`, it would run first and win.
+        std::fs::write(
+            root.join("packages/domain/package.json"),
+            r#"{"name":"@org/domain","exports":{"./x":"./src/from-link.ts"}}"#,
+        )
+        .expect("write manifest");
+        std::fs::create_dir_all(root.join("node_modules/@org")).expect("create dirs");
+        std::os::unix::fs::symlink(
+            root.join("packages/domain"),
+            root.join("node_modules/@org/domain"),
+        )
+        .expect("symlink");
+
+        let resolved = describe(
+            &root,
+            ImportResolver::new(&root).resolve(&path("packages/app/src/main.ts"), "@org/domain/x"),
+        );
+        drop(guard);
+
+        assert_eq!(resolved, "in-repo packages/domain/src/from-link.ts");
     }
 
     /// A real dependency is not part of the repository, so no boundary glob

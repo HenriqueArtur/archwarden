@@ -17,3 +17,4 @@
 pub mod imports;
 pub mod memory;
 pub mod preset;
+pub mod workspace;

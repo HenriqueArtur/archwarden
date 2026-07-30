@@ -201,6 +201,7 @@ dependencies = [
  "archwarden-core",
  "camino",
  "oxc_resolver",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]
