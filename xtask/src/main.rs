@@ -83,8 +83,9 @@ fn install_hooks() -> Result<(), String> {
     println!("git will now run the hooks in {HOOKS_PATH}/");
     println!();
     println!("  pre-commit  rustfmt, and typos when it is installed");
+    println!("  pre-push    cargo-mutants on the diff, when it is installed");
     println!();
-    println!("`git commit --no-verify` skips them.");
+    println!("`--no-verify` skips either one.");
     Ok(())
 }
 

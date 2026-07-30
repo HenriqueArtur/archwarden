@@ -56,6 +56,63 @@ the same real repository, compare graph output, fail on divergence.
 - **Purpose**: gives us confidence that we cover the edge cases years of
   dep-cruiser use has surfaced, without importing their code.
 
+## Mutation testing runs on push, not nightly
+
+`cargo-mutants` injects bugs and checks whether the suite notices. It is the
+only thing here that answers **"is this tested?"** rather than "does this run":
+line coverage says a guard executed, and says nothing about whether deleting it
+would fail anything.
+
+It moved out of the nightly job for a reason that is worth writing down. A
+refusal that stops `impact --apply` from carrying out a move which would break
+a repository shipped with **no test at all**, and so did four of the others.
+The suite was green. Coverage was green. Flipping one boolean would have
+removed the protection and nothing would have said so. A survivor list would
+have named every one of them — and a nightly report nobody opens is a survivor
+list nobody reads.
+
+```
+.githooks/pre-push   cargo mutants --in-diff <what you are pushing>
+```
+
+Two choices in that line, both deliberate:
+
+- **Push, not commit.** It costs minutes, and the `pre-commit` hook beside it
+  argues — correctly — that a hook costing more than a couple of seconds is one
+  people bypass out of reflex. Push happens once per branch rather than once
+  per thought, and it is the last point before other people see the work.
+- **The diff, not the workspace.** `cargo mutants --workspace` takes up to
+  ninety minutes here, which is a hook nobody keeps. `--in-diff` mutates only
+  the lines being pushed, so the cost scales with the change. New code is where
+  untested code comes from.
+
+The scope widened in the move: the nightly job mutated `archwarden-core`,
+`archwarden-config` and `archwarden-rules`, and left `archwarden-cli` alone —
+which is where `impact --apply` lives, and where the untested refusals were.
+Scoping by diff covers every crate without anyone maintaining a list.
+
+**Only survivors block.** `cargo-mutants` exits 2 when mutants lived and
+something else when it could not run — a build failure, a timeout, the linker
+being killed on a small machine. The first is a statement about your tests; the
+second is not, so it warns and lets the push through.
+
+That distinction is the whole difference between a hook people keep and one
+they learn to bypass. Someone whose laptop runs out of memory linking a test
+binary must not be unable to push; they would reach for `--no-verify` once and
+never come back. Mutation testing is advisory exactly when it could not form an
+opinion, which is the honest reading of "the tool did not finish".
+
+Not installed is not a failure either: the hook says so and carries on, the
+same policy `pre-commit` applies to `typos`. `git push --no-verify` skips it,
+which is the point — a hook catches mistakes, it does not take the decision
+away from whoever is pushing.
+
+**Reading a survivor.** Each line is an edit to your code that no test
+objected to. Either write the test, or decide the mutant is harmless and say
+why — a `verdict` returning `Some("xyzzy")` that nothing catches means no test
+asserts the sentence, which may be fine for prose and is not fine for a
+refusal.
+
 ## Reference-inspired test policy
 
 archwarden's rule surface overlaps with prior tools — most notably
