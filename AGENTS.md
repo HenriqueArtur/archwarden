@@ -434,6 +434,14 @@ export, and the output says so. Run `check` afterwards: a `naming` rule will
 tell you whether the project wants them to match, and renaming an export is a
 change to every caller — your decision, not the tool's.
 
+**If the repository has a `no-passthrough` rule, run `check` for it before you
+move anything.** `--apply` moves files; it does not delete indirection. A file
+that only forwards another module survives the move and forwards the new
+location instead. Deleting those first means fewer importers for `--apply` to
+rewrite; doing it after means rewriting the same lines twice. Deleting one is
+an edit to its importers, so it is a change to propose, not one to make on your
+own initiative.
+
 ### `config explain <rule-id>` — what a rule reaches
 
 ```

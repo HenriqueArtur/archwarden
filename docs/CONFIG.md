@@ -643,6 +643,34 @@ is refused before anything is written.
 One file keeps the other reading: `--to` is the whole destination path, which
 is what makes renaming during a move expressible at all.
 
+### Sequencing a layer refactor: passthrough first, then the move
+
+`impact --apply` moves files. It does not delete indirection — a file whose
+whole content forwards another module is still there afterwards, forwarding the
+new location. So when a refactor is both ("collapse this folder away" *and*
+"the files in it are reached through wrappers"), the order changes the size of
+the diff and it is not obvious which way.
+
+**Run `no-passthrough` first.** Every passthrough file you delete is a file
+`--apply` no longer has to rewrite importers for — because its importers now
+name the real module directly.
+
+Taking it the other way round works and costs more: the move rewrites every
+specifier that goes *through* the wrapper, and then deleting the wrapper
+rewrites them again. Two commits touching the same lines, and the first one's
+diff is noise.
+
+Neither order is wrong, and neither is automatic: deleting a passthrough file
+means editing its importers to name what it forwarded, which is a change to
+call sites and archwarden does not make it. `no-passthrough` reports; you
+decide; then `--apply` moves what is left.
+
+One thing the report will not tell you: a passthrough can cross a module
+boundary. On the repository this was built against, an entity's `calcs/` file
+wrapped *another entity's* `shared/` module — so collapsing `shared/` inside
+each entity did not remove that indirection, it only moved its target. Read the
+`no-passthrough` findings before deciding what the move is meant to achieve.
+
 ### What it refuses, and why a refusal is safe
 
 Everything is computed and validated before a byte is written, so **a refusal
