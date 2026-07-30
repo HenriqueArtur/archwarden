@@ -689,6 +689,14 @@ Only the last is overridable. `--force` is a human saying they looked, and the
 report prints the file and the line to look at. The others produce a repository
 that does not build, which is not a judgement a flag should be able to make.
 
+There is one more, and it should never fire. After the plan is built, every
+file the dry run named as an importer must have come out of it with an edit.
+Nothing above is supposed to be able to break that — a specifier that cannot be
+recomputed refuses on its own — but the failure it would hide is the worst one
+here: a repository that compiles nowhere, reported as success with exit 0, and
+found by whoever runs `tsc` next. If you ever see it, it is a bug worth
+reporting with the command you ran.
+
 ## Measuring a rule change
 
 Rule 2 of [`AGENTS.md`](AGENT-INTEGRATION.md) says not to edit `arch.config.json`
