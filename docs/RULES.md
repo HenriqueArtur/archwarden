@@ -207,6 +207,37 @@ is set.
   "TDD gate" flag: it prevents empty stubs from satisfying the rule.
   **`describe(...)` does not count** — an empty `describe` block satisfies the
   letter of the rule while defeating its entire purpose.
+- `skip_type_only` (bool, default `false`) — if true, a file whose exports are
+  all `type` or `interface` needs no spec. See below.
+
+### `skip_type_only`: files with nothing to test
+
+A file with no runtime export has nothing a test can call. The rule still
+demands a spec for one, and the spec that gets written to satisfy it tests a
+mock of the contract rather than the contract — because there is nothing else
+to test. That is work which reduces no risk, and `tsc` already checks an
+interface on every build.
+
+Three boundaries, each drawn where it is for a reason:
+
+- **`enum` is a runtime export.** It has values a test can assert on, so a file
+  exporting one is not a contract in the sense this exemption means.
+- **A file with no exports at all is not type-only.** That is a file nobody
+  imports, not a contract — and exempting it would make deleting the `export`
+  keyword a way out of the rule.
+- **A re-export is not type-only either.** Its real kind needs the file on the
+  other side, which section 2 keeps this rule away from; guessing would exempt
+  files on a coin flip.
+
+**It costs a parse.** `spec-pair` otherwise reads no file at all, so a rule that
+sets this reads every file in its scope — the same trade `require_non_empty_spec`
+makes. On a repository of 3778 files with the flag on one rule, that is 137
+files parsed that were not before.
+
+What it replaces is a hand-maintained `ignore_files` list. On one real
+repository the five entries in it were all interface-only service and adapter
+files, and the flag removes all five while reporting exactly what the list
+reported.
 
 ### How a spec is named
 

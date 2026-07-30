@@ -15,7 +15,7 @@ use archwarden_core::{
     level::Level,
     path::{FileClass, RepoRelPath},
     scope::Scope,
-    traits::{DirectoryContext, FileContext, RuleEngine},
+    traits::{FileContext, RuleEngine},
 };
 
 /// Barrel files, which re-export and hold no behaviour of their own.
@@ -36,6 +36,7 @@ pub struct SpecPairEngine {
     spec_markers: Vec<String>,
     ignore_files: PathSet,
     require_non_empty_spec: bool,
+    skip_type_only: bool,
 }
 
 impl SpecPairEngine {
@@ -49,6 +50,7 @@ impl SpecPairEngine {
             spec_markers,
             ignore_files,
             require_non_empty_spec,
+            skip_type_only,
         } = &rule.kind
         else {
             return None;
@@ -60,6 +62,7 @@ impl SpecPairEngine {
             spec_markers,
             ignore_files,
             *require_non_empty_spec,
+            *skip_type_only,
         ))
     }
 
@@ -76,6 +79,7 @@ impl SpecPairEngine {
         spec_markers: &[String],
         ignore_files: &PathSet,
         require_non_empty_spec: bool,
+        skip_type_only: bool,
     ) -> Self {
         Self {
             id: rule.id.clone(),
@@ -86,6 +90,7 @@ impl SpecPairEngine {
             spec_markers: spec_markers.to_vec(),
             ignore_files: ignore_files.clone(),
             require_non_empty_spec,
+            skip_type_only,
         }
     }
 
@@ -196,6 +201,80 @@ impl SpecPairEngine {
             non_empty_spec: self.require_non_empty_spec,
         }
     }
+
+    /// Whether every export in a file is a `type` or an `interface`.
+    ///
+    /// The question `skip_type_only` asks. `enum` is deliberately not in the
+    /// set: an enum exists at runtime and has behaviour a test can call, which
+    /// is the whole distinction being drawn. Nor is a file with no exports at
+    /// all — that is a file nobody imports rather than a contract, and it is
+    /// not what this exemption is for.
+    ///
+    /// A re-export is not type-only either. Its real kind needs the file on
+    /// the other side, which `RULES.md` keeps this rule away from, and
+    /// guessing "probably a type" would exempt files on a coin flip.
+    fn is_type_only(facts: &archwarden_core::facts::FileFacts) -> bool {
+        use archwarden_core::facts::ExportKind;
+
+        !facts.exports.is_empty()
+            && facts.exports.iter().all(|export| {
+                export.tags.contains(ExportKind::Type)
+                    || export.tags.contains(ExportKind::Interface)
+            })
+    }
+
+    /// The finding for a unit file with no spec beside it.
+    ///
+    /// Lives here rather than in `check_directory` because deciding it can
+    /// need the file's exports, and a directory listing is only names. The
+    /// inputs are otherwise the same: this file, and what else is in the
+    /// folder.
+    fn missing_sibling(
+        &self,
+        parent: &RepoRelPath,
+        name: &str,
+        ctx: FileContext<'_>,
+    ) -> Vec<Finding> {
+        if self.is_exempt(ctx.path, name) {
+            return Vec::new();
+        }
+
+        // Before the sibling search, because a file with nothing to test needs
+        // no sibling to be found. Facts absent means the file could not be
+        // parsed, and the run counts that as a skipped check rather than
+        // silently exempting it.
+        if self.skip_type_only && ctx.facts.is_some_and(Self::is_type_only) {
+            return Vec::new();
+        }
+
+        let Some((stem, _extension)) = Self::split(name) else {
+            return Vec::new();
+        };
+        if ctx
+            .siblings
+            .iter()
+            .any(|sibling| self.is_spec_for(sibling, stem))
+        {
+            return Vec::new();
+        }
+
+        let Some(spec_name) = self.spec_name_for(name) else {
+            return Vec::new();
+        };
+        let Ok(spec) = parent.join(&spec_name) else {
+            return Vec::new();
+        };
+
+        vec![Finding {
+            rule_id: self.id.clone(),
+            module_id: self.module.clone(),
+            level: self.level,
+            path: ctx.path.clone(),
+            span: None,
+            observed: Observed::SiblingMissing { path: spec.clone() },
+            expected: self.expectation(spec),
+        }]
+    }
 }
 
 impl RuleEngine for SpecPairEngine {
@@ -234,7 +313,7 @@ impl RuleEngine for SpecPairEngine {
     }
 
     fn needs_facts(&self) -> bool {
-        self.require_non_empty_spec
+        self.require_non_empty_spec || self.skip_type_only
     }
 
     /// Reports a spec that exists but contains no test cases.
@@ -243,19 +322,20 @@ impl RuleEngine for SpecPairEngine {
     /// has its sibling, and what is missing is inside it. This is the flag
     /// that separates "a spec file exists" from "a spec was written".
     fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {
-        if !self.require_non_empty_spec {
-            return Vec::new();
-        }
         let Some(name) = ctx.path.file_name() else {
             return Vec::new();
         };
-        if !self.is_spec(name) {
-            return Vec::new();
-        }
         let Some(parent) = ctx.path.parent() else {
             return Vec::new();
         };
         if !self.governs(&parent) {
+            return Vec::new();
+        }
+
+        if !self.is_spec(name) {
+            return self.missing_sibling(&parent, name, ctx);
+        }
+        if !self.require_non_empty_spec {
             return Vec::new();
         }
         let Some(facts) = ctx.facts else {
@@ -285,42 +365,6 @@ impl RuleEngine for SpecPairEngine {
         }]
     }
 
-    fn check_directory(&self, ctx: DirectoryContext<'_>) -> Vec<Finding> {
-        if !self.governs(ctx.path) {
-            return Vec::new();
-        }
-
-        ctx.files
-            .iter()
-            .filter_map(|name| {
-                let file = ctx.path.join(name).ok()?;
-                if self.is_exempt(&file, name) {
-                    return None;
-                }
-
-                let (stem, _extension) = Self::split(name)?;
-                if ctx
-                    .files
-                    .iter()
-                    .any(|sibling| self.is_spec_for(sibling, stem))
-                {
-                    return None;
-                }
-
-                let spec = ctx.path.join(&self.spec_name_for(name)?).ok()?;
-                Some(Finding {
-                    rule_id: self.id.clone(),
-                    module_id: self.module.clone(),
-                    level: self.level,
-                    path: file,
-                    span: None,
-                    observed: Observed::SiblingMissing { path: spec.clone() },
-                    expected: self.expectation(spec),
-                })
-            })
-            .collect()
-    }
-
     fn describe_expectation(&self, path: &RepoRelPath) -> Vec<Expectation> {
         if !self.applies_to(path) {
             return Vec::new();
@@ -346,6 +390,7 @@ impl RuleEngine for SpecPairEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use archwarden_core::facts::FileFacts;
 
     fn path(p: &str) -> RepoRelPath {
         RepoRelPath::new(p).expect("valid path")
@@ -366,20 +411,73 @@ mod tests {
                 spec_markers: owned(&["spec", "test"]),
                 ignore_files: PathSet::compile(ignore).expect("valid globs"),
                 require_non_empty_spec: false,
+                skip_type_only: false,
             },
         };
 
         SpecPairEngine::from_rule(&rule).expect("is a spec-pair rule")
     }
 
+    /// Every file in a directory, offered to the rule one at a time.
+    ///
+    /// The missing-spec finding used to come from `check_directory`, which saw
+    /// the whole listing at once. It moved to `check_file` because deciding it
+    /// can need the file's exports, which a listing of names does not carry.
+    /// The inputs are the same either way — this file, and what else is in the
+    /// folder — so the tests written against the old shape still hold.
     fn check(engine: &SpecPairEngine, directory: &str, files: &[&str]) -> Vec<Finding> {
-        let path = path(directory);
-        let files = owned(files);
-        engine.check_directory(DirectoryContext {
-            path: &path,
-            subdirectories: &[],
-            files: &files,
-        })
+        check_with(engine, directory, files, &[])
+    }
+
+    /// The same, with facts for named files.
+    fn check_with(
+        engine: &SpecPairEngine,
+        directory: &str,
+        files: &[&str],
+        facts: &[(&str, &FileFacts)],
+    ) -> Vec<Finding> {
+        let directory = path(directory);
+        let siblings = owned(files);
+
+        files
+            .iter()
+            .flat_map(|name| {
+                let file = directory.join(name).expect("valid path");
+                let known = facts
+                    .iter()
+                    .find(|(named, _)| named == name)
+                    .map(|(_, facts)| *facts);
+                engine.check_file(FileContext {
+                    path: &file,
+                    facts: known,
+                    siblings: &siblings,
+                })
+            })
+            .collect()
+    }
+
+    /// Facts for a file exporting one symbol of each given kind.
+    fn exporting(kinds: &[archwarden_core::facts::ExportKind]) -> FileFacts {
+        use archwarden_core::facts::{ExportFact, ExportTags, Span};
+
+        FileFacts {
+            path: path("x.ts"),
+            content_hash: archwarden_core::hash::ContentHash::of(b""),
+            imports: Vec::new(),
+            exports: kinds
+                .iter()
+                .enumerate()
+                .map(|(index, kind)| ExportFact {
+                    name: Some(format!("Thing{index}")),
+                    tags: ExportTags::only(*kind),
+                    is_default: false,
+                    reexport_from: None,
+                    span: Span::new(0, 0),
+                })
+                .collect(),
+            calls: Vec::new(),
+            has_opaque_import: false,
+        }
     }
 
     fn offenders(findings: &[Finding]) -> Vec<&str> {
@@ -627,6 +725,7 @@ mod tests {
                 spec_markers: owned(&["test"]),
                 ignore_files: PathSet::default(),
                 require_non_empty_spec: false,
+                skip_type_only: false,
             },
         };
         let engine = SpecPairEngine::from_rule(&rule).expect("is a spec-pair rule");
@@ -719,6 +818,7 @@ mod tests {
                 spec_markers: owned(&["spec"]),
                 ignore_files: PathSet::default(),
                 require_non_empty_spec: true,
+                skip_type_only: false,
             },
         };
         let engine = SpecPairEngine::from_rule(&rule).expect("is a spec-pair rule");
@@ -784,6 +884,7 @@ mod tests {
                 spec_markers: owned(&["spec"]),
                 ignore_files: PathSet::default(),
                 require_non_empty_spec: true,
+                skip_type_only: false,
             },
         };
         let strict = SpecPairEngine::from_rule(&rule).expect("is a spec-pair rule");
@@ -811,6 +912,7 @@ mod tests {
                 spec_markers: owned(&["spec"]),
                 ignore_files: PathSet::default(),
                 require_non_empty_spec: true,
+                skip_type_only: false,
             },
         };
         let engine = SpecPairEngine::from_rule(&rule).expect("is a spec-pair rule");
@@ -845,6 +947,130 @@ mod tests {
             "a describe alone satisfies the letter and defeats the purpose"
         );
         assert_eq!(check_spec(&[]).len(), 1, "no calls at all is empty too");
+    }
+
+    /// An engine with `skip_type_only` set.
+    fn type_only_engine(scope: &[&str], subfolders: &[&str]) -> SpecPairEngine {
+        let rule = CompiledRule {
+            id: RuleId::new("needs-spec").expect("valid id"),
+            module: None,
+            level: Level::Error,
+            scope: Scope::compile(scope).expect("valid scope"),
+            kind: CompiledRuleKind::SpecPair {
+                subfolders: owned(subfolders),
+                spec_markers: owned(&["spec", "test"]),
+                ignore_files: PathSet::default(),
+                require_non_empty_spec: false,
+                skip_type_only: true,
+            },
+        };
+
+        SpecPairEngine::from_rule(&rule).expect("is a spec-pair rule")
+    }
+
+    /// The rule this flag exists for: a file that is nothing but a contract.
+    ///
+    /// Every `services/` and `adapters/` file in the domain layer of a real
+    /// repository is this shape — `export interface LlmAdapter`, and no
+    /// runtime export at all. A spec for one has nothing to call, so the spec
+    /// that gets written to satisfy the rule tests a mock of the contract
+    /// instead. `tsc` is what checks an interface, on every build.
+    #[test]
+    fn a_file_exporting_only_types_needs_no_spec() {
+        use archwarden_core::facts::ExportKind;
+        let engine = type_only_engine(&["packages/domain/src/*"], &["services"]);
+        let facts = exporting(&[ExportKind::Interface, ExportKind::Type]);
+
+        let findings = check_with(
+            &engine,
+            "packages/domain/src/cep/services",
+            &["cep-lookup-service.ts"],
+            &[("cep-lookup-service.ts", &facts)],
+        );
+
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    /// One runtime export is enough to bring the rule back. The flag is about
+    /// files with nothing to test, not files with little to test.
+    #[test]
+    fn a_single_runtime_export_still_needs_a_spec() {
+        use archwarden_core::facts::ExportKind;
+        let engine = type_only_engine(&["packages/domain/src/*"], &["services"]);
+        let facts = exporting(&[ExportKind::Interface, ExportKind::Function]);
+
+        let findings = check_with(
+            &engine,
+            "packages/domain/src/cep/services",
+            &["cep-lookup-service.ts"],
+            &[("cep-lookup-service.ts", &facts)],
+        );
+
+        assert_eq!(offenders(&findings).len(), 1, "{findings:?}");
+    }
+
+    /// An `enum` exists at runtime. It has values a test can assert on, so it
+    /// is not a contract in the sense this exemption means.
+    #[test]
+    fn an_enum_is_a_runtime_export() {
+        use archwarden_core::facts::ExportKind;
+        let engine = type_only_engine(&["src/*"], &["."]);
+        let facts = exporting(&[ExportKind::Enum]);
+
+        let findings = check_with(&engine, "src/user", &["kind.ts"], &[("kind.ts", &facts)]);
+
+        assert_eq!(offenders(&findings).len(), 1, "{findings:?}");
+    }
+
+    /// A file exporting nothing is not a contract. It is a file nobody
+    /// imports, and exempting it would turn the flag into a way to disappear
+    /// from the rule by deleting the `export` keyword.
+    #[test]
+    fn a_file_with_no_exports_is_not_type_only() {
+        let engine = type_only_engine(&["src/*"], &["."]);
+        let facts = exporting(&[]);
+
+        let findings = check_with(&engine, "src/user", &["thing.ts"], &[("thing.ts", &facts)]);
+
+        assert_eq!(offenders(&findings).len(), 1, "{findings:?}");
+    }
+
+    /// Without the flag, exports are not consulted at all and a type-only file
+    /// is reported exactly as it was before this existed.
+    #[test]
+    fn the_flag_is_off_by_default() {
+        use archwarden_core::facts::ExportKind;
+        let engine = engine(&["src/*"], &["."], &[]);
+        let facts = exporting(&[ExportKind::Interface]);
+
+        let findings = check_with(
+            &engine,
+            "src/user",
+            &["contract.ts"],
+            &[("contract.ts", &facts)],
+        );
+
+        assert_eq!(offenders(&findings).len(), 1, "{findings:?}");
+    }
+
+    /// Facts absent means the file would not parse. Exempting it would let an
+    /// unparseable file slip the rule; the run counts it as a skipped check
+    /// instead, which is what `checks_skipped` is for.
+    #[test]
+    fn a_file_that_could_not_be_parsed_is_not_exempted() {
+        let engine = type_only_engine(&["src/*"], &["."]);
+
+        let findings = check_with(&engine, "src/user", &["contract.ts"], &[]);
+
+        assert_eq!(offenders(&findings).len(), 1, "{findings:?}");
+    }
+
+    /// The flag is what makes this rule read files at all. Without it the rule
+    /// is still the cheap one that only looks at names.
+    #[test]
+    fn the_flag_is_what_opens_the_file() {
+        assert!(type_only_engine(&["src/*"], &["."]).needs_facts());
+        assert!(!engine(&["src/*"], &["."], &[]).needs_facts());
     }
 
     #[test]

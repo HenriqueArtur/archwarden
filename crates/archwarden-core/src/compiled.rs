@@ -112,6 +112,11 @@ pub enum CompiledRuleKind {
         ignore_files: PathSet,
         /// Whether the spec must contain at least one `it` or `test` call.
         require_non_empty_spec: bool,
+        /// Whether a file whose exports are all `type` or `interface` is
+        /// exempt. A file with no runtime export has nothing to test, and the
+        /// spec written to satisfy the rule tests a mock rather than the
+        /// contract. See `docs/RULES.md`.
+        skip_type_only: bool,
     },
     /// Layer A may not import from layer B, or must import from layer C.
     ImportBoundary {
@@ -158,8 +163,9 @@ impl CompiledRuleKind {
             Self::Structure { .. } => false,
             Self::SpecPair {
                 require_non_empty_spec,
+                skip_type_only,
                 ..
-            } => *require_non_empty_spec,
+            } => *require_non_empty_spec || *skip_type_only,
             Self::Naming { .. } | Self::ImportBoundary { .. } | Self::CallObligation { .. } => true,
         }
     }
@@ -416,12 +422,14 @@ mod tests {
             spec_markers: vec!["spec".to_owned()],
             ignore_files: PathSet::default(),
             require_non_empty_spec: false,
+            skip_type_only: false,
         };
         let thorough = CompiledRuleKind::SpecPair {
             subfolders: vec![".".to_owned()],
             spec_markers: vec!["spec".to_owned()],
             ignore_files: PathSet::default(),
             require_non_empty_spec: true,
+            skip_type_only: false,
         };
 
         assert!(!cheap.needs_parse());
@@ -438,6 +446,7 @@ mod tests {
                 spec_markers: vec!["spec".to_owned()],
                 ignore_files: PathSet::default(),
                 require_non_empty_spec: false,
+                skip_type_only: false,
             },
             CompiledRuleKind::ImportBoundary {
                 forbid: PathSet::default(),

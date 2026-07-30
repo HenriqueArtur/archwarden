@@ -177,6 +177,23 @@ pub struct SpecPairRule {
     /// satisfies the letter of the rule while defeating its purpose.
     #[serde(default)]
     pub require_non_empty_spec: bool,
+    /// Whether a file whose exports are all `type` or `interface` is exempt.
+    ///
+    /// A file with no runtime export has nothing a test could call. Demanding
+    /// a spec for one produces work that reduces no risk — and the spec that
+    /// gets written to satisfy the rule tests a mock of the contract rather
+    /// than the contract, because there is nothing else to test. `tsc` is the
+    /// tool that checks an interface, and it checks it on every build.
+    ///
+    /// `enum` is a runtime export and does not count as type-only. A file with
+    /// no exports at all does not either: that is a file with no callers, not
+    /// a contract, and the rule has something to say about it.
+    ///
+    /// Costs a parse. `spec-pair` otherwise reads no file, so a rule that sets
+    /// this reads every file in its scope — the same trade
+    /// `require_non_empty_spec` makes.
+    #[serde(default)]
+    pub skip_type_only: bool,
 }
 
 fn default_spec_markers() -> Patterns {

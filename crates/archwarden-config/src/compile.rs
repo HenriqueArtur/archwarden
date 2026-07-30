@@ -206,6 +206,7 @@ fn compile_rule(
             spec_markers: spec_markers(&id, r)?,
             ignore_files: globs(&id, "ignore_files", &r.ignore_files)?,
             require_non_empty_spec: r.require_non_empty_spec,
+            skip_type_only: r.skip_type_only,
         },
 
         Rule::ImportBoundary(r) => CompiledRuleKind::ImportBoundary {
