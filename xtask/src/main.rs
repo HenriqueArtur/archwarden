@@ -63,22 +63,7 @@ enum Mode {
 /// someone runs when they are already in a hurry. An explicit setup step is
 /// slower to adopt and easier to trust.
 fn install_hooks() -> Result<(), String> {
-    let root = repository_root();
-    let hooks = root.join(HOOKS_PATH);
-    if !hooks.is_dir() {
-        return Err(format!("`{}` is not there", hooks.display()));
-    }
-
-    let status = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&root)
-        .args(["config", "core.hooksPath", HOOKS_PATH])
-        .status()
-        .map_err(|error| format!("cannot run git: {error}"))?;
-
-    if !status.success() {
-        return Err("git refused to set `core.hooksPath`".to_owned());
-    }
+    point_git_at_hooks(&repository_root())?;
 
     println!("git will now run the hooks in {HOOKS_PATH}/");
     println!();
@@ -86,6 +71,34 @@ fn install_hooks() -> Result<(), String> {
     println!("  pre-push    cargo-mutants on the diff, when it is installed");
     println!();
     println!("`--no-verify` skips either one.");
+    Ok(())
+}
+
+/// Sets `core.hooksPath` on the repository at `root`.
+///
+/// Split from the printing so it can be tested against a throwaway repository
+/// rather than against the one you are standing in — a test for the whole task
+/// would set `core.hooksPath` on the working copy running it.
+///
+/// Mutation testing is why this is a separate function: `install_hooks`
+/// replaced by `Ok(())` survived every test, which is the shape of a task that
+/// reports success and does nothing.
+fn point_git_at_hooks(root: &std::path::Path) -> Result<(), String> {
+    let hooks = root.join(HOOKS_PATH);
+    if !hooks.is_dir() {
+        return Err(format!("`{}` is not there", hooks.display()));
+    }
+
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["config", "core.hooksPath", HOOKS_PATH])
+        .status()
+        .map_err(|error| format!("cannot run git: {error}"))?;
+
+    if !status.success() {
+        return Err("git refused to set `core.hooksPath`".to_owned());
+    }
     Ok(())
 }
 
@@ -138,4 +151,57 @@ fn repository_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map_or_else(|| PathBuf::from("."), PathBuf::from)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(root: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .status()
+            .expect("git runs");
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// The task has to actually set the config. Replacing its body with
+    /// `Ok(())` — a task that reports success and does nothing — is a mutant
+    /// no test caught before this one, and the failure it stands for is
+    /// silent: hooks that never run, on a machine whose owner believes they
+    /// are installed.
+    #[test]
+    fn pointing_git_at_the_hooks_sets_the_config() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = dir.path();
+        git(root, &["init", "-q"]);
+        std::fs::create_dir(root.join(HOOKS_PATH)).expect("create the hooks directory");
+
+        point_git_at_hooks(root).expect("installs");
+
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(["config", "core.hooksPath"])
+            .output()
+            .expect("git runs");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim(),
+            HOOKS_PATH,
+            "the config is what makes the committed hooks run at all"
+        );
+    }
+
+    /// And it refuses when there is nothing to point at, rather than setting a
+    /// path to a directory that is not there.
+    #[test]
+    fn a_missing_hooks_directory_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        git(dir.path(), &["init", "-q"]);
+
+        let error = point_git_at_hooks(dir.path()).expect_err("refuses");
+        assert!(error.contains(HOOKS_PATH), "{error}");
+    }
 }

@@ -12,5 +12,8 @@ archwarden-config = { workspace = true }
 schemars = { workspace = true }
 serde_json = { workspace = true }
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

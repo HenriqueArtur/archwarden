@@ -2257,6 +2257,7 @@ dependencies = [
  "archwarden-config",
  "schemars",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
