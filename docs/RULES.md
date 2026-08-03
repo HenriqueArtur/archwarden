@@ -20,6 +20,7 @@ directory:
 | `structure` | `allowed_subfolders`, `warn_subfolders` | the direct child directories |
 | `structure` | `filename_patterns` | the direct child files, by basename |
 | `naming` | `file_pattern` | the direct child files, by basename |
+| `naming` | `dir_pattern` | the selected directory itself, by its own basename |
 | `spec-pair` | `subfolders` | the listed subdirectories (`"."` = the directory itself), then files in them |
 | `call-obligation` | `file_pattern` | the direct child files, by basename |
 | `import-boundary` | *(scope only)* | every file in the directory is a candidate importer |
@@ -126,9 +127,11 @@ derivable from the filename by a case transform.
 **Shape**:
 
 - `file_pattern` — regex with a named capture group (typically `name`).
+- `dir_pattern` — optional regex over the *name of the directory the file sits
+  in*, contributing its own capture groups. See below.
 - `must_export` — describes the required export:
   - `kind` — one tag or a list of tags (see table below).
-  - `name` — templated from the capture group.
+  - `name` — templated from the capture groups.
   - `signature_hint` — optional free-form string. **Never verified.** It exists
     so `scaffold` can show a realistic skeleton
     (`export function Foo(deps: FooDeps): UseCase<FooInput, FooOutput>`)
@@ -137,6 +140,62 @@ derivable from the filename by a case transform.
 
 **Case transformers available in templates**: `pascal`, `camel`, `kebab`,
 `snake`, `upper`, `lower`, `raw`.
+
+### When the directory is part of the name
+
+Some conventions spell the export from both halves of the path. A per-entity
+repository layer is the common shape: the entity names the folder, the action
+names the file, and the export is the two joined.
+
+```
+Infrastructure/Repositories/Entities/
+├── Order/
+│   ├── fetch-by-id.ts   → export function OrderFetchByIdRepository
+│   └── insert.ts        → export function OrderInsertRepository
+└── Wallet/
+    └── fetch-by-id.ts   → export function WalletFetchByIdRepository
+```
+
+`fetch-by-id.ts` may exist forty times over, and the entity prefix is what a
+grep for the implementation lands on and what a stack trace names. `dir_pattern`
+captures it:
+
+```json
+{
+  "type": "naming",
+  "id": "repository-action-export-name",
+  "level": "error",
+  "roots": ["src/Infrastructure/Repositories/Entities/*"],
+  "dir_pattern": "^(?<entity>[A-Za-z0-9]+)$",
+  "file_pattern": "^(?<action>[a-z0-9-]+)\\.ts$",
+  "must_export": {
+    "kind": "function",
+    "name": "{{pascal(entity)}}{{pascal(action)}}Repository"
+  }
+}
+```
+
+Four things about it, each load-bearing:
+
+- **It matches the last segment, not the path.** The scope glob has already
+  chosen which directories are in play; what is offered to `dir_pattern` is
+  `Order`, not `src/Infrastructure/Repositories/Entities/Order`. A pattern
+  anchored with `^` and `$` — which is how anyone writes one — could not match
+  the full path at all, so `config doctor` reports `dir-pattern-matches-nothing`
+  rather than letting the rule quietly apply to nothing.
+- **When set, it must match.** A file whose directory does not match is a file
+  the rule is not about, exactly as with `file_pattern`. It is not a violation.
+  A file with no directory at all — one at the repository root — is likewise
+  outside a rule that asks about one.
+- **One template namespace.** `{{pascal(entity)}}` and `{{pascal(action)}}` do
+  not say which pattern each came from and do not have to. A group defined by
+  *both* patterns is refused when the config compiles: it would have two values
+  and no rule for choosing, and silently preferring one would make the rule
+  demand the wrong export on every file in the scope.
+- **Still purely lexical.** `dirname` and `basename` of a path archwarden
+  already has. No parse, no resolution, no disk — so `describe` and `scaffold`
+  keep answering for files that do not exist yet, and `check` and `describe`
+  still share one matcher.
 
 **Export kinds**. Each export in a file is tagged. `kind` matches if the
 export carries **any** of the listed tags. Note that an arrow function is not

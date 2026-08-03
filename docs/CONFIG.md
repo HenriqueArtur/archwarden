@@ -229,6 +229,30 @@ never verified — it only makes `scaffold` output realistic.
 `name` from `file_pattern` gets fed to a case transformer. Supported:
 `pascal`, `camel`, `kebab`, `snake`, `upper`, `lower`, `raw`.
 
+When the convention spells the export from the directory as well as the
+filename — `Order/fetch-by-id.ts` exporting `OrderFetchByIdRepository` — add
+`dir_pattern`, whose capture groups join the same template:
+
+```json
+{
+  "type": "naming",
+  "id": "repository-action-export-name",
+  "level": "error",
+  "roots": ["src/Infrastructure/Repositories/Entities/*"],
+  "dir_pattern": "^(?<entity>[A-Za-z0-9]+)$",
+  "file_pattern": "^(?<action>[a-z0-9-]+)\\.ts$",
+  "must_export": {
+    "kind": "function",
+    "name": "{{pascal(entity)}}{{pascal(action)}}Repository"
+  }
+}
+```
+
+`dir_pattern` is matched against the *name* of the directory the file sits in —
+`Order` — not against the path leading to it. A group defined by both patterns
+is refused when the config compiles, because it would have two values and no
+rule for choosing between them. See `docs/RULES.md` for the full semantics.
+
 ### Spec pairing (TDD gate)
 
 ```json

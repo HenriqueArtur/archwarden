@@ -89,6 +89,12 @@ pub enum CompiledRuleKind {
     Naming {
         /// Regex over the filename, with the capture groups the template uses.
         file_pattern: Pattern,
+        /// Regex over the name of the containing directory, contributing its
+        /// own capture groups to the same template.
+        ///
+        /// `None` for the common rule, whose export name is spelled from the
+        /// filename alone.
+        dir_pattern: Option<Pattern>,
         /// The required name, as a template over those groups.
         name_template: String,
         /// Which declaration forms satisfy the rule.
@@ -346,6 +352,7 @@ mod tests {
     fn naming() -> CompiledRuleKind {
         CompiledRuleKind::Naming {
             file_pattern: Pattern::compile(r"^(?<name>[a-z-]+)\.ts$").expect("valid"),
+            dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
             signature_hint: None,

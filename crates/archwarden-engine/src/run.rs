@@ -436,6 +436,7 @@ mod tests {
                 r"^(?<name>[a-z0-9-]+)\.use-case\.ts$",
             )
             .expect("valid pattern"),
+            dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: archwarden_core::facts::KindFilter::OneOf(
                 archwarden_core::facts::ExportTags::only(

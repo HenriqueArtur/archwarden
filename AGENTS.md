@@ -524,7 +524,7 @@ configuration, not findings about code.
 | kind | asks | you satisfy it by |
 |---|---|---|
 | `structure` | may this folder or filename exist here? | putting the file where `allowed_subfolders` / `filename_patterns` allow |
-| `naming` | does the filename match the exported symbol? | exporting the exact name `scaffold` gives you |
+| `naming` | does the filename — and sometimes its directory — match the exported symbol? | exporting the exact name `scaffold` gives you |
 | `spec-pair` | is there a test beside it? | creating the sibling `.spec.ts` — **write it, do not leave it empty** if `non_empty_spec` is true |
 | `import-boundary` | may this layer import that one? | importing through whatever `except` allows, or not at all |
 | `call-obligation` | does this file call the required symbol? | calling it **anywhere in the file**, including from a local helper |
@@ -537,6 +537,10 @@ Two details that decide most cases:
   selects everything underneath.
 - `spec-pair` takes the extension from the source file: `Component.tsx` pairs
   with `Component.spec.tsx`, not `.spec.ts`.
+- A `naming` rule may spell the export from the **directory as well as the
+  file** — `Order/fetch-by-id.ts` wanting `OrderFetchByIdRepository`. Never
+  guess that name from the pattern. Ask `scaffold`, which renders it, and note
+  that moving such a file to another directory changes the name it must export.
 
 ## Reading a finding
 

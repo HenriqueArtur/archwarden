@@ -205,13 +205,22 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
         }
         CompiledRuleKind::Naming {
             file_pattern,
+            dir_pattern,
             name_template,
             kind,
             signature_hint,
         } => {
+            // The directory half belongs in the same sentence, not in a note
+            // under it. An agent reading "files matching `^(?<action>...)$`
+            // must export `{{pascal(entity)}}{{pascal(action)}}`" without being
+            // told where `entity` comes from cannot produce the name, and this
+            // digest is what it has instead of the config.
             let mut lines = vec![format!(
-                "files matching `{}` must export `{name_template}`{}",
+                "files matching `{}`{} must export `{name_template}`{}",
                 file_pattern.as_str(),
+                dir_pattern.as_ref().map_or_else(String::new, |pattern| {
+                    format!(", in a directory matching `{}`", pattern.as_str())
+                }),
                 declared_as(kind),
             )];
             if let Some(hint) = signature_hint {
@@ -419,6 +428,7 @@ mod tests {
         CompiledRuleKind::Naming {
             file_pattern: Pattern::compile(r"^(?<name>[a-z0-9-]+)\.use-case\.ts$")
                 .expect("valid pattern"),
+            dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
             signature_hint: Some("(deps: Deps): UseCase".to_owned()),
@@ -913,6 +923,7 @@ mod tests {
                 &["src/*"],
                 CompiledRuleKind::Naming {
                     file_pattern: Pattern::compile("^(?<name>[a-z]+)\\.ts$").expect("valid"),
+                    dir_pattern: None,
                     name_template: "{{pascal(name)}}".to_owned(),
                     kind: KindFilter::Any,
                     signature_hint: None,

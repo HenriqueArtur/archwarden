@@ -234,6 +234,13 @@
               "description": "Regex over the filename, with a named capture group.",
               "type": "string"
             },
+            "dir_pattern": {
+              "description": "Regex over the name of the directory the file sits in, with named\ncapture groups that join `file_pattern`'s in the template.\n\nFor the convention where the entity is the folder and the action is the\nfile — `Order/fetch-by-id.ts` exporting `OrderFetchByIdRepository` — the\nexport name is spelled from both halves of the path, and `file_pattern`\nalone can only see one of them.\n\nMatched against the *last segment* of the directory, not the whole path:\nunder `roots: \".../Entities/*\"` the file `.../Entities/Order/insert.ts`\noffers `Order`. When set, it must match, exactly as `file_pattern` must\n— a file whose directory does not match is a file the rule is not about.\n\nStays purely lexical: `dirname` and `basename` of a path archwarden\nalready has, with no parse, no resolution and no disk access, so\n`describe` and `scaffold` keep answering for files that do not exist yet.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "must_export": {
               "description": "The export the file must carry.",
               "$ref": "#/$defs/MustExport"

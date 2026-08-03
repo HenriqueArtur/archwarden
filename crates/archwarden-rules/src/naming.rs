@@ -26,6 +26,7 @@ pub struct NamingEngine {
     level: Level,
     scope: Scope,
     file_pattern: Pattern,
+    dir_pattern: Option<Pattern>,
     name_template: String,
     kind: KindFilter,
     signature_hint: Option<String>,
@@ -39,6 +40,7 @@ impl NamingEngine {
     pub fn from_rule(rule: &CompiledRule) -> Option<Self> {
         let CompiledRuleKind::Naming {
             file_pattern,
+            dir_pattern,
             name_template,
             kind,
             signature_hint,
@@ -50,6 +52,7 @@ impl NamingEngine {
         Some(Self::build(
             rule,
             file_pattern,
+            dir_pattern.as_ref(),
             name_template,
             kind,
             signature_hint.as_deref(),
@@ -66,6 +69,7 @@ impl NamingEngine {
     pub(crate) fn build(
         rule: &CompiledRule,
         file_pattern: &Pattern,
+        dir_pattern: Option<&Pattern>,
         name_template: &str,
         kind: &KindFilter,
         signature_hint: Option<&str>,
@@ -76,6 +80,7 @@ impl NamingEngine {
             level: rule.level,
             scope: rule.scope.clone(),
             file_pattern: file_pattern.clone(),
+            dir_pattern: dir_pattern.cloned(),
             name_template: name_template.to_owned(),
             kind: kind.clone(),
             signature_hint: signature_hint.map(str::to_owned),
@@ -95,16 +100,57 @@ impl NamingEngine {
         if !self.file_pattern.is_match(name) {
             return None;
         }
+        if !self.directory_matches(path) {
+            return None;
+        }
 
-        self.render(&self.name_template, name)
+        self.render(&self.name_template, path)
     }
 
-    /// Renders a template against the filename's capture groups.
-    fn render(&self, template: &str, filename: &str) -> Option<String> {
+    /// The name of the directory the file sits in, for `dir_pattern` to read.
+    ///
+    /// The last segment rather than the whole path: the scope glob has already
+    /// chosen which directories are in play, and what a rule wants to capture
+    /// out of `.../Entities/Order/insert.ts` is `Order`. A pattern anchored
+    /// with `^` and `$` — which is how anyone writes one — could not match the
+    /// full path at all.
+    fn directory_name(path: &RepoRelPath) -> Option<String> {
+        path.parent()?.file_name().map(ToOwned::to_owned)
+    }
+
+    /// Whether `dir_pattern` is satisfied, which a rule without one always is.
+    ///
+    /// A file directly at the repository root has no directory to offer, so a
+    /// rule that asks about one does not apply to it. That is the same answer
+    /// `file_pattern` gives to a filename it does not match: not a violation,
+    /// just not this rule's business.
+    fn directory_matches(&self, path: &RepoRelPath) -> bool {
+        let Some(pattern) = self.dir_pattern.as_ref() else {
+            return true;
+        };
+        Self::directory_name(path).is_some_and(|directory| pattern.is_match(&directory))
+    }
+
+    /// Renders a template against the capture groups of both patterns.
+    ///
+    /// One namespace, deliberately: `{{pascal(entity)}}{{pascal(action)}}` does
+    /// not say which pattern each group came from, and it should not have to.
+    /// A group defined by both patterns is refused when the config is compiled,
+    /// so the order these are tried in cannot decide an answer.
+    fn render(&self, template: &str, path: &RepoRelPath) -> Option<String> {
+        let filename = path.file_name()?;
+        let directory = Self::directory_name(path);
+
         template::render(template, |group| {
             self.file_pattern
                 .capture(filename, group)
                 .map(ToOwned::to_owned)
+                .or_else(|| {
+                    let pattern = self.dir_pattern.as_ref()?;
+                    pattern
+                        .capture(directory.as_deref()?, group)
+                        .map(ToOwned::to_owned)
+                })
         })
         .ok()
     }
@@ -115,14 +161,13 @@ impl NamingEngine {
     /// never verified, but it is *shown* -- by `scaffold`, and in a finding --
     /// and showing `{{pascal(name)}}` to a user is showing them our internals.
     fn expectation(&self, path: &RepoRelPath) -> Option<Expectation> {
-        let filename = path.file_name()?;
         Some(Expectation::RequiredExport {
             kind: self.kind.clone(),
             name: self.required_name(path)?,
             signature_hint: self
                 .signature_hint
                 .as_ref()
-                .and_then(|hint| self.render(hint, filename)),
+                .and_then(|hint| self.render(hint, path)),
         })
     }
 
@@ -251,6 +296,7 @@ mod tests {
             scope: Scope::compile(scope).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
                 file_pattern: Pattern::compile(file_pattern).expect("valid pattern"),
+                dir_pattern: None,
                 name_template: name_template.to_owned(),
                 kind,
                 signature_hint: signature_hint.map(ToOwned::to_owned),
@@ -270,6 +316,30 @@ mod tests {
             KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
             None,
         )
+    }
+
+    /// The rule from issue #16, which needs both halves of the path: the
+    /// entity names the directory, the action names the file, and the export
+    /// is spelled from the two.
+    fn entity_engine() -> NamingEngine {
+        let rule = CompiledRule {
+            id: RuleId::new("repository-action-export-name").expect("valid id"),
+            module: None,
+            level: Level::Error,
+            scope: Scope::compile(["src/Repositories/Entities/*"]).expect("valid scope"),
+            kind: CompiledRuleKind::Naming {
+                file_pattern: Pattern::compile(r"^(?<action>[a-z0-9-]+)\.ts$")
+                    .expect("valid pattern"),
+                dir_pattern: Some(
+                    Pattern::compile(r"^(?<entity>[A-Za-z0-9]+)$").expect("valid pattern"),
+                ),
+                name_template: "{{pascal(entity)}}{{pascal(action)}}Repository".to_owned(),
+                kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
+                signature_hint: None,
+            },
+        };
+
+        NamingEngine::from_rule(&rule).expect("is a naming rule")
     }
 
     fn facts_with(file: &str, exports: Vec<ExportFact>) -> FileFacts {
@@ -629,5 +699,143 @@ mod tests {
         assert_eq!(engine.id().as_str(), "usecase-factory-name");
         assert_eq!(engine.module(), None);
         assert_eq!(engine.level(), Level::Error);
+    }
+
+    /// The case issue #16 was filed with. `fetch-by-id.ts` exists forty times
+    /// over in that repository, and what makes each one findable is the entity
+    /// its directory names. Without this the closest expressible rule asks for
+    /// `FetchByIdRepository` and is wrong on all 310 files -- not finding
+    /// drift, disagreeing with the convention, which is the state where a rule
+    /// gets deleted.
+    #[test]
+    fn an_export_name_can_be_spelled_from_the_directory_and_the_filename() {
+        let engine = entity_engine();
+
+        for (file, expected) in [
+            (
+                "src/Repositories/Entities/Order/fetch-by-id.ts",
+                "OrderFetchByIdRepository",
+            ),
+            (
+                "src/Repositories/Entities/Order/fetch-many-for-replay.ts",
+                "OrderFetchManyForReplayRepository",
+            ),
+            (
+                "src/Repositories/Entities/Wallet/apply-balance-delta.ts",
+                "WalletApplyBalanceDeltaRepository",
+            ),
+        ] {
+            let facts = facts_with(
+                file,
+                vec![export(expected, ExportTags::only(ExportKind::Function))],
+            );
+            assert!(
+                check(&engine, &facts).is_empty(),
+                "{file} exports {expected} and should pass"
+            );
+
+            // And the same file under the wrong name is reported by the name it
+            // should have had, which is the half a reader acts on.
+            let wrong = facts_with(
+                file,
+                vec![export("FetchById", ExportTags::only(ExportKind::Function))],
+            );
+            let findings = check(&engine, &wrong);
+            assert_eq!(findings.len(), 1, "{file}");
+            assert_eq!(
+                findings[0].observed,
+                Observed::ExportMissing {
+                    name: expected.to_owned()
+                },
+                "{file}"
+            );
+        }
+    }
+
+    /// A directory the pattern does not match is a directory the rule is not
+    /// about. Not a violation -- the same answer `file_pattern` gives to a
+    /// filename it does not match.
+    ///
+    /// This is the assertion that keeps `dir_pattern` from being decorative: a
+    /// rule that applied regardless and only used the pattern for the template
+    /// would report every file in every sibling directory.
+    #[test]
+    fn a_directory_that_does_not_match_puts_the_file_outside_the_rule() {
+        let engine = entity_engine();
+        // `_shared` fails `^[A-Za-z0-9]+$` on the underscore.
+        let facts = facts_with(
+            "src/Repositories/Entities/_shared/fetch-by-id.ts",
+            vec![export("Anything", ExportTags::only(ExportKind::Function))],
+        );
+
+        assert!(!engine.applies_to(&facts.path));
+        assert!(check(&engine, &facts).is_empty());
+    }
+
+    /// A file at the repository root has no directory to offer, so a rule that
+    /// asks about one does not reach it. Reached through `describe`, which is
+    /// the command an agent calls before writing a file anywhere.
+    #[test]
+    fn a_file_with_no_directory_is_outside_a_rule_that_asks_about_one() {
+        let rule = CompiledRule {
+            id: RuleId::new("root-level").expect("valid id"),
+            module: None,
+            level: Level::Error,
+            scope: Scope::compile(["."]).expect("valid scope"),
+            kind: CompiledRuleKind::Naming {
+                file_pattern: Pattern::compile(r"^(?<action>[a-z]+)\.ts$").expect("valid"),
+                dir_pattern: Some(Pattern::compile(r"^(?<entity>[A-Za-z]+)$").expect("valid")),
+                name_template: "{{pascal(entity)}}{{pascal(action)}}".to_owned(),
+                kind: KindFilter::Any,
+                signature_hint: None,
+            },
+        };
+        let engine = NamingEngine::from_rule(&rule).expect("is a naming rule");
+
+        assert!(!engine.applies_to(&path("index.ts")));
+        assert!(engine.describe_expectation(&path("index.ts")).is_empty());
+    }
+
+    /// The directory groups reach `signature_hint` too. It is never verified,
+    /// but `scaffold` prints it, and printing `{{pascal(entity)}}` at someone
+    /// is showing them our internals.
+    #[test]
+    fn the_signature_hint_sees_the_directory_groups_as_well() {
+        let rule = CompiledRule {
+            id: RuleId::new("hinted").expect("valid id"),
+            module: None,
+            level: Level::Error,
+            scope: Scope::compile(["src/Entities/*"]).expect("valid scope"),
+            kind: CompiledRuleKind::Naming {
+                file_pattern: Pattern::compile(r"^(?<action>[a-z-]+)\.ts$").expect("valid"),
+                dir_pattern: Some(Pattern::compile(r"^(?<entity>[A-Za-z]+)$").expect("valid")),
+                name_template: "{{pascal(entity)}}{{pascal(action)}}".to_owned(),
+                kind: KindFilter::Any,
+                signature_hint: Some(
+                    "function {{pascal(entity)}}{{pascal(action)}}(input: {{pascal(entity)}}): void"
+                        .to_owned(),
+                ),
+            },
+        };
+        let engine = NamingEngine::from_rule(&rule).expect("is a naming rule");
+
+        let [expectation] = engine
+            .describe_expectation(&path("src/Entities/Order/insert.ts"))
+            .try_into()
+            .expect("one expectation");
+        let Expectation::RequiredExport {
+            name,
+            signature_hint,
+            ..
+        } = expectation
+        else {
+            panic!("naming describes a required export");
+        };
+
+        assert_eq!(name, "OrderInsert");
+        assert_eq!(
+            signature_hint.as_deref(),
+            Some("function OrderInsert(input: Order): void")
+        );
     }
 }

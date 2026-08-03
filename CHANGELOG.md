@@ -17,6 +17,42 @@ saying so.
 
 ## [Unreleased]
 
+### Added
+
+- **`naming` rules can spell the export name from the directory as well as the
+  filename**, through a new optional `dir_pattern` whose capture groups join
+  `file_pattern`'s in the same template.
+  ([#16](https://github.com/HenriqueArtur/archwarden/issues/16))
+
+  ```json
+  {
+    "type": "naming",
+    "roots": ["src/Infrastructure/Repositories/Entities/*"],
+    "dir_pattern": "^(?<entity>[A-Za-z0-9]+)$",
+    "file_pattern": "^(?<action>[a-z0-9-]+)\\.ts$",
+    "must_export": {
+      "kind": "function",
+      "name": "{{pascal(entity)}}{{pascal(action)}}Repository"
+    }
+  }
+  ```
+
+  This is the per-entity repository shape, where `fetch-by-id.ts` exists once
+  per entity and the entity prefix is what a stack trace names. Previously the
+  closest expressible rule asked for `FetchByIdRepository` and was wrong on
+  every file it touched.
+
+  `dir_pattern` matches the *name* of the directory the file sits in, not the
+  path to it. When set, it must match, exactly as `file_pattern` must. A group
+  defined by both patterns is refused at compile time rather than resolved by
+  precedence. The rule stays purely lexical, so `describe` and `scaffold` keep
+  answering for files that do not exist yet.
+
+- `config doctor` reports **`dir-pattern-matches-nothing`** when a `dir_pattern`
+  matches no directory in its scope — the mistake being writing it against the
+  whole path — because such a rule applies to no file and is indistinguishable
+  from one that passes.
+
 ### Changed
 
 - **`checks_skipped` no longer counts files that are not JavaScript or

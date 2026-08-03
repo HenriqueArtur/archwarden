@@ -94,8 +94,8 @@ pub enum CompileError {
         marker: String,
     },
 
-    /// A `must_export.name` template refers to a capture group that its
-    /// `file_pattern` does not define.
+    /// A `must_export.name` template refers to a capture group that neither
+    /// pattern on the rule defines.
     #[error("rule `{rule}`: {source}")]
     Template {
         /// The rule.
@@ -103,6 +103,20 @@ pub enum CompileError {
         /// What went wrong.
         #[source]
         source: template::TemplateError,
+    },
+
+    /// `file_pattern` and `dir_pattern` both define the same capture group.
+    #[error(
+        "rule `{rule}`: capture group `{group}` is defined by both \
+         `file_pattern` and `dir_pattern`, so `{{{{...({group})}}}}` in the \
+         template has two values and no rule for choosing between them. \
+         Rename one of them."
+    )]
+    DuplicateCaptureGroup {
+        /// The rule.
+        rule: RuleId,
+        /// The group both patterns define.
+        group: String,
     },
 
     /// The top-level `ignore` list holds an invalid glob.
@@ -191,13 +205,19 @@ fn compile_rule(
 
         Rule::Naming(r) => {
             let file_pattern = pattern(&id, "file_pattern", &r.file_pattern)?;
-            check_template(&id, &file_pattern, &r.must_export)?;
+            let dir_pattern = r
+                .dir_pattern
+                .as_deref()
+                .map(|source| pattern(&id, "dir_pattern", source))
+                .transpose()?;
+            check_template(&id, &file_pattern, dir_pattern.as_ref(), &r.must_export)?;
 
             CompiledRuleKind::Naming {
                 kind: export_kind(&id, &r.must_export)?,
                 name_template: r.must_export.name.clone(),
                 signature_hint: r.must_export.signature_hint.clone(),
                 file_pattern,
+                dir_pattern,
             }
         }
 
@@ -305,20 +325,36 @@ fn export_kind(rule: &RuleId, must_export: &MustExport) -> Result<KindFilter, Co
     Ok(KindFilter::OneOf(tags))
 }
 
-/// Renders the export-name template against the pattern's capture groups.
+/// Renders the export-name template against both patterns' capture groups.
 ///
-/// A rule whose template names a group its `file_pattern` never defines is a
-/// config bug that would otherwise surface only when a file happened to match,
-/// which could be months later or never.
+/// A rule whose template names a group no pattern defines is a config bug that
+/// would otherwise surface only when a file happened to match, which could be
+/// months later or never.
 fn check_template(
     rule: &RuleId,
     file_pattern: &Pattern,
+    dir_pattern: Option<&Pattern>,
     must_export: &MustExport,
 ) -> Result<(), CompileError> {
-    let available = file_pattern.capture_names();
+    let from_file = file_pattern.capture_names();
+    let from_dir = dir_pattern.map(Pattern::capture_names).unwrap_or_default();
+
+    // Refused rather than resolved by precedence. The two patterns share one
+    // template namespace so that `{{pascal(entity)}}{{pascal(action)}}` reads
+    // as one name rather than as two sources spliced together -- and the price
+    // of that is that a group defined twice has no answer. Picking the
+    // filename's silently would make the rule demand the wrong export on every
+    // file in the scope, which is the state where a `naming` rule gets deleted
+    // rather than fixed.
+    if let Some(group) = from_file.iter().find(|group| from_dir.contains(group)) {
+        return Err(CompileError::DuplicateCaptureGroup {
+            rule: rule.clone(),
+            group: (*group).to_owned(),
+        });
+    }
+
     let lookup = |group: &str| {
-        available
-            .contains(&group)
+        (from_file.contains(&group) || from_dir.contains(&group))
             // The value is irrelevant: only whether the group exists is being
             // checked here.
             .then(|| "placeholder".to_owned())
@@ -559,6 +595,75 @@ mod tests {
         .expect_err("should fail");
 
         assert!(err.to_string().contains("missing"), "{err}");
+    }
+
+    /// The rule from issue #16: the entity names the directory, the action
+    /// names the file, and both reach the template.
+    #[test]
+    fn a_template_may_take_a_group_from_the_directory_pattern() {
+        let compiled = compile_json(
+            r#"{"version":0,"rules":[
+                {"type":"naming","id":"repo-name","level":"error",
+                 "roots":"src/Entities/*",
+                 "file_pattern":"^(?<action>[a-z0-9-]+)\\.ts$",
+                 "dir_pattern":"^(?<entity>[A-Za-z0-9]+)$",
+                 "must_export":{"kind":"function",
+                                "name":"{{pascal(entity)}}{{pascal(action)}}Repository"}}]}"#,
+        )
+        .expect("compiles");
+
+        let CompiledRuleKind::Naming { dir_pattern, .. } =
+            &compiled.rules().next().expect("one rule").kind
+        else {
+            panic!("is a naming rule");
+        };
+        assert_eq!(
+            dir_pattern.as_ref().map(Pattern::as_str),
+            Some("^(?<entity>[A-Za-z0-9]+)$")
+        );
+    }
+
+    /// One namespace means one value per group, so a group both patterns
+    /// define has no answer. Refused rather than resolved by precedence:
+    /// silently preferring the filename would make the rule demand the wrong
+    /// export on every file in the scope.
+    #[test]
+    fn a_capture_group_defined_by_both_patterns_is_refused() {
+        let err = compile_json(
+            r#"{"version":0,"rules":[
+                {"type":"naming","id":"ambiguous","level":"error",
+                 "roots":"src/Entities/*",
+                 "file_pattern":"^(?<name>[a-z]+)\\.ts$",
+                 "dir_pattern":"^(?<name>[A-Za-z]+)$",
+                 "must_export":{"kind":"function","name":"{{pascal(name)}}"}}]}"#,
+        )
+        .expect_err("should fail");
+
+        let message = err.to_string();
+        assert!(message.contains("ambiguous"), "names the rule: {message}");
+        assert!(message.contains("`name`"), "names the group: {message}");
+        assert!(
+            message.contains("dir_pattern") && message.contains("file_pattern"),
+            "names both fields, so the reader knows which to rename: {message}"
+        );
+    }
+
+    /// And a broken `dir_pattern` is reported against its own field rather
+    /// than against `file_pattern`, which is the whole point of passing the
+    /// field name down.
+    #[test]
+    fn an_invalid_directory_pattern_names_its_field() {
+        let err = compile_json(
+            r#"{"version":0,"rules":[
+                {"type":"naming","id":"broken","level":"error",
+                 "roots":"src/Entities/*",
+                 "file_pattern":"^(?<action>[a-z]+)\\.ts$",
+                 "dir_pattern":"^[unclosed",
+                 "must_export":{"kind":"function","name":"{{pascal(action)}}"}}]}"#,
+        )
+        .expect_err("should fail");
+
+        assert!(err.to_string().contains("dir_pattern"), "{err}");
     }
 
     #[test]
