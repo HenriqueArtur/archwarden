@@ -17,6 +17,8 @@ saying so.
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-08-03
+
 ### Added
 
 - **`naming` rules can spell the export name from the directory as well as the
@@ -155,4 +157,5 @@ saying so.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.5.1...v0.6.0
