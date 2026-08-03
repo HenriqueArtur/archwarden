@@ -210,6 +210,23 @@ See [`docs/CONFIG.md`](docs/CONFIG.md).
   (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)), but shipping other
   languages is not on the v0/v1 roadmap.
 
+## Contributing
+
+[`CONTRIBUTING.md`](CONTRIBUTING.md) covers setup, the check battery CI runs,
+and the rules that are enforced by the build rather than by review — no
+`unsafe`, no panics in production paths, coverage floors that are floors.
+
+Two things worth knowing before you start. [`docs/DECISIONS.md`](docs/DECISIONS.md)
+records the load-bearing choices with the alternatives that lost, so arguing
+against one is normal as long as you argue against the reason written down.
+And the strongest bug reports here have named what they *ruled out* — the
+issue templates ask for it because it is what makes a bug fixable by someone
+who cannot reproduce it.
+
+Releases are cut by tag push; the process is in
+[`docs/RELEASING.md`](docs/RELEASING.md). Security issues go through the
+Security tab, not the issue tracker — see [`SECURITY.md`](SECURITY.md).
+
 ## License
 
 Dual-licensed under either of:

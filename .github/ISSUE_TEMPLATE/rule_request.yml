@@ -1,0 +1,94 @@
+name: 💡 A rule I have, that the config cannot hold
+description: Your project has an architectural rule archwarden cannot express — or a command should say something it does not.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The best feature requests this project has received all had the same shape: **a rule
+        the repository genuinely has, enforced nowhere or enforced somewhere else.** Not a
+        capability in the abstract — the actual convention, from an actual codebase, with the
+        thing that silently breaks when someone violates it.
+
+        Start there. The config syntax is the easy half and we can design it; knowing whether
+        the rule is worth a rule kind is the hard half, and only you have that.
+
+        Before writing: `docs/RULES.md` states what each rule kind deliberately *cannot*
+        express and why, and `docs/DECISIONS.md` records capabilities that were declined on
+        purpose. Arguing against one of those is entirely fair — argue against the reason
+        given.
+
+  - type: textarea
+    id: the-rule
+    attributes:
+      label: The rule your project actually has
+      description: In one or two sentences, as you would tell a new colleague. Concrete names, real directories.
+      placeholder: "Only `src/scripts/three/**` may import `three`. Everywhere else the 3D module is reached through a dynamic import behind an IntersectionObserver, so its cost never lands in the initial bundle."
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-breaks
+    attributes:
+      label: What happens when someone violates it
+      description: Especially — is the violation silent? A rule whose breach fails a test or a type-check needs archwarden much less than one that just makes the page slower and is found weeks later in a Lighthouse report.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why-not-expressible
+    attributes:
+      label: Why it cannot be expressed today
+      description: |
+        What you tried. If there is a closest-expressible rule, show it and show what it does
+        wrong — "it reports 310 errors on 310 files, disagreeing with the convention rather
+        than finding drift" is exactly the kind of detail that makes the gap undeniable.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: shape
+    attributes:
+      label: What would express it
+      description: A config sketch. The shape is a suggestion; the capability is the ask. Say which parts you care about and which you would happily see designed differently.
+      render: json
+    validations:
+      required: false
+
+  - type: textarea
+    id: today
+    attributes:
+      label: What enforces it today, and why that is unsatisfying
+      description: |
+        Biome, ESLint, a CI grep, code review, nothing. There is no wrong answer here and
+        "another tool does this fine" is a legitimate reason for us to decline.
+
+        Worth naming if it applies: a rule living in a second config file is a rule
+        `describe` and `agent-guide` cannot report, so an agent that consults archwarden
+        before writing gets an incomplete answer and writes the violation.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How much you need this
+      description: Answer honestly — it genuinely affects ordering, and "low" costs a request nothing.
+      options:
+        - Low — something else covers it; I am filing it because the use case seems worth recording
+        - Medium — I work around it, and the workaround has a cost I can name
+        - High — this is blocking, or the layer is going unlinted because of it
+    validations:
+      required: true
+
+  - type: dropdown
+    id: implement
+    attributes:
+      label: Would you want to implement it?
+      options:
+        - "No"
+        - Maybe, if the design is settled first
+        - "Yes"
+    validations:
+      required: false
