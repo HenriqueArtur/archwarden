@@ -40,8 +40,8 @@ pub struct Report {
     pub unreadable_files: Vec<(RepoRelPath, String)>,
     /// How many files were parsed from source.
     pub files_parsed: usize,
-    /// Checks that could not be made: one per rule that wanted a file whose
-    /// facts were unavailable.
+    /// Checks that could not be made: one per rule that wanted a *source*
+    /// file whose facts were unavailable.
     ///
     /// Counted in *checks* rather than files, because one unreadable file that
     /// three rules wanted is three answers nobody got. `unreadable_files` names
@@ -50,6 +50,15 @@ pub struct Report {
     /// as a repository with nothing wrong — the failure mode `check --file`
     /// already refuses through `skipped` (correction C6), and the full run
     /// used to allow.
+    ///
+    /// A rule whose scope reaches a file that is not JavaScript or TypeScript
+    /// does *not* count here. That is not a check nobody could make; it is a
+    /// file the rule was never about, and `RULES.md` already declines to make
+    /// anyone declare that a PNG needs no test. Counting it made the number
+    /// unreachable for any repository that keeps a `DOC.md` beside its code.
+    /// `check --file` still reports it, under `not-source`, because that
+    /// command is answering "what happened to *this* file" and "nothing, it is
+    /// not source" is a real answer there. Issue #15.
     pub checks_skipped: usize,
     /// Which rule wanted which file, for every skipped check.
     ///
@@ -189,12 +198,15 @@ pub fn check(run: Run<'_>) -> Report {
                 continue;
             }
 
+            // Bound once, because two decisions below depend on it and they
+            // must not drift: whether to read the file, and whether failing to
+            // have facts for it was a check nobody could make.
+            let is_source = file.class == FileClass::Source;
+
             // Read the file only if a rule that applies to it actually looks
             // inside. Deciding this per file rather than per run is what keeps
             // a mostly-structural configuration off the disk.
-            let mut facts = if file.class == FileClass::Source
-                && wanted_by.iter().any(|engine| engine.needs_facts())
-            {
+            let mut facts = if is_source && wanted_by.iter().any(|engine| engine.needs_facts()) {
                 match facts_for(root, &file.path, cache.as_deref_mut()) {
                     Ok((facts, Source::Cache)) => {
                         facts_reused += 1;
@@ -227,7 +239,22 @@ pub fn check(run: Run<'_>) -> Report {
                 // decide anything -- it returns nothing, which is
                 // indistinguishable from deciding the file is fine. Counted so
                 // the report can say the difference out loud.
-                if engine.needs_facts() && facts.is_none() {
+                //
+                // `is_source` is what makes the number mean something. A
+                // boundary rule whose scope catches a `DOC.md` has no facts for
+                // it either, but that is not an answer anybody lost: the rule
+                // was never about that file, and archwarden classified it as
+                // such before deciding to skip. Counting those pinned the
+                // number at one per rule per documented layer, permanently and
+                // with nothing to fix -- and `AGENTS.md` tells an agent a run
+                // with skips must not be reported as clean, so a count that is
+                // forever non-zero and forever benign teaches it to stop
+                // reading the number, which is the state that instruction
+                // exists to prevent. Issue #15.
+                //
+                // The skip a file with no parser deserves is a different
+                // reason, not this one, and it is issue #13's to add.
+                if engine.needs_facts() && facts.is_none() && is_source {
                     checks_skipped += 1;
                     skipped_checks.push((engine.id().to_string(), file.path.clone()));
                 }
@@ -1036,6 +1063,93 @@ mod tests {
         drop(guard);
 
         assert!(report.skipped_checks.is_empty());
+    }
+
+    /// A boundary rule whose scope reaches a `DOC.md` has no facts for it and
+    /// never could. That is not an answer anybody lost, and counting it pinned
+    /// the number at one per rule per documented layer -- permanently non-zero,
+    /// permanently benign, and impossible to fix, because there is nothing
+    /// wrong with the file. `AGENTS.md` says a run with skips must not be
+    /// reported as clean, so such a count teaches a reader to ignore the one
+    /// number it tells them to watch. Issue #15.
+    #[test]
+    fn a_file_that_is_not_source_is_not_a_check_nobody_could_make() {
+        let (guard, root) = tree_at(&[
+            ("src/domain/order.ts", "export const order = 1;\n"),
+            ("src/domain/DOC.md", "# The domain layer\n"),
+        ]);
+        let config = config(vec![rule(
+            "domain-forbids-infrastructure",
+            None,
+            &["src/*"],
+            boundary(&["src/infrastructure/**"], &[], &[]),
+        )]);
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let report = check(Run {
+            root: &root,
+            config: &config,
+            tree: &tree,
+            cache: None,
+        });
+        drop(guard);
+
+        assert_eq!(
+            report.checks_skipped, 0,
+            "a markdown file is not a check nobody could make"
+        );
+        assert!(
+            report.skipped_checks.is_empty(),
+            "and nothing points at it to investigate: {:?}",
+            report.skipped_checks
+        );
+    }
+
+    /// The other half of the same line, and the half that must not move: a
+    /// source file that would not parse is still a lost answer, and still
+    /// counted. Without this the fix above could be "stop counting", which is
+    /// the failure `checks_skipped` exists to prevent.
+    ///
+    /// Both files sit under one `import-boundary` rule on purpose. A boundary
+    /// rule applies to everything in its scope, so the `.md` and the broken
+    /// `.ts` both reach the decision and the assertion is about which of them
+    /// is counted -- with a `naming` rule the `file_pattern` would filter the
+    /// `.md` out first and this would pass without testing anything.
+    #[test]
+    fn a_source_file_that_will_not_parse_still_counts_beside_one_that_is_not_source() {
+        let (guard, root) = tree_at(&[("src/user/DOC.md", "# Users\n")]);
+        std::fs::write(
+            root.join("src/user/broken.ts"),
+            [0x65, 0x78, 0x70, 0x6f, 0x72, 0x74, 0xff, 0xfe],
+        )
+        .expect("write file");
+
+        let config = config(vec![rule(
+            "user-forbids-infrastructure",
+            None,
+            &["src/*"],
+            boundary(&["src/infrastructure/**"], &[], &[]),
+        )]);
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let report = check(Run {
+            root: &root,
+            config: &config,
+            tree: &tree,
+            cache: None,
+        });
+        drop(guard);
+
+        assert_eq!(
+            report.checks_skipped, 1,
+            "the unparsable `.ts` counts, the `.md` beside it does not"
+        );
+        assert_eq!(
+            report
+                .skipped_checks
+                .iter()
+                .map(|(rule, path)| format!("{rule} {path}"))
+                .collect::<Vec<_>>(),
+            ["user-forbids-infrastructure src/user/broken.ts"],
+        );
     }
 
     /// A run where everything could be read skips nothing, so the common

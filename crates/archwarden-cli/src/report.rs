@@ -624,6 +624,34 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
 
     for (path, reason) in &report.unreadable_files {
         let _ = writeln!(out, "note: `{path}` was not checked — {reason}");
+
+        // And which rules went unanswered because of it. `AGENTS.md` calls
+        // `checks_skipped` "the number to watch" and tells a reader not to
+        // report such a run as clean; a bare count leaves them nothing to act
+        // on but stopping. The JSON has carried `rule_id` and `path` for a
+        // while and the text output carried neither, so the only reader who
+        // could answer "which ones, and where" was one already piping through
+        // `jq`. Issue #12.
+        //
+        // Under the file rather than beside the count, because every counted
+        // skip is a rule that wanted a file this loop is already naming: the
+        // count only rises where `facts_for` failed, and that is the same
+        // branch that pushes here.
+        let rules: Vec<&str> = report
+            .skipped_checks
+            .iter()
+            .filter(|(_, skipped)| skipped == path)
+            .map(|(rule_id, _)| rule_id.as_str())
+            .collect();
+        if !rules.is_empty() {
+            let _ = writeln!(
+                out,
+                "      {} {} skipped there: {}",
+                rules.len(),
+                plural(rules.len(), "check", "checks"),
+                rules.join(", "),
+            );
+        }
     }
 
     // Without this, `0 errors` beside exit 1 is a contradiction the reader
@@ -1462,6 +1490,74 @@ mod tests {
             "{}",
             rendered(&report, Format::Text)
         );
+    }
+
+    /// The count says a run decided less than it looks like. It does not say
+    /// which decisions, and `AGENTS.md` asks the reader to act on it — so the
+    /// only responses a bare number leaves are to ignore it or to stop.
+    /// Issue #12.
+    #[test]
+    fn the_text_output_names_which_rules_were_skipped_and_where() {
+        let report = Report {
+            checks_skipped: 2,
+            unreadable_files: vec![(path("src/broken.ts"), "unexpected token".to_owned())],
+            skipped_checks: vec![
+                (
+                    "domain-forbids-infrastructure".to_owned(),
+                    path("src/broken.ts"),
+                ),
+                ("usecase-export-name".to_owned(), path("src/broken.ts")),
+            ],
+            ..report(Vec::new())
+        };
+
+        let text = rendered(&report, Format::Text);
+
+        assert!(
+            text.contains(
+                "      2 checks skipped there: domain-forbids-infrastructure, \
+                 usecase-export-name\n"
+            ),
+            "both rules are named, under the file that cost them: {text}"
+        );
+    }
+
+    /// One reads as one here too, and the count is the rules on this file
+    /// rather than the run's total.
+    #[test]
+    fn a_lone_skipped_check_names_its_rule_in_the_singular() {
+        let report = Report {
+            checks_skipped: 1,
+            unreadable_files: vec![(path("src/broken.ts"), "unexpected token".to_owned())],
+            skipped_checks: vec![("usecase-export-name".to_owned(), path("src/broken.ts"))],
+            ..report(Vec::new())
+        };
+
+        assert!(
+            rendered(&report, Format::Text)
+                .contains("      1 check skipped there: usecase-export-name\n"),
+            "{}",
+            rendered(&report, Format::Text)
+        );
+    }
+
+    /// A file nobody could read that no rule wanted to look inside still says
+    /// so, and says nothing more. The note is about the file; the line under it
+    /// is about answers that were lost, and there were none.
+    #[test]
+    fn an_unreadable_file_no_rule_wanted_names_no_skipped_checks() {
+        let report = Report {
+            unreadable_files: vec![(path("src/broken.ts"), "unexpected token".to_owned())],
+            ..report(Vec::new())
+        };
+
+        let text = rendered(&report, Format::Text);
+
+        assert!(
+            text.contains("note: `src/broken.ts` was not checked"),
+            "{text}"
+        );
+        assert!(!text.contains("skipped there"), "{text}");
     }
 
     /// And a run that skipped nothing says nothing, because on almost every

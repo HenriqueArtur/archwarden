@@ -212,18 +212,21 @@ The text format ends with the same numbers on one line, how long it took last:
 ```
 
 **`checks_skipped` is the number to watch.** It counts checks nobody could
-make — one per rule that wanted a file whose facts were unavailable, usually
-because the file would not parse. It appears in the text line only when it is
-not zero:
+make — one per rule that wanted a source file whose facts were unavailable,
+which in practice means the file would not parse. It appears in the text line
+only when it is not zero, and the run names every one of them:
 
 ```
+note: `src/user/broken.ts` was not checked — unexpected token
+      2 checks skipped there: calcs-need-spec, domain-forbids-infrastructure
 1 error, 0 warnings, 2 skipped · 3 files, 3 directories · 1 parsed · 2ms
 ```
 
 A run with skips is a run that decided less than it looks like. Do not report
 it as clean.
 
-`summary.skipped_checks` names them, so the number is one you can act on:
+`summary.skipped_checks` carries the same pairs, for a consumer rather than a
+reader:
 
 ```json
 "skipped_checks": [{ "rule_id": "calcs-need-spec", "path": "src/user/broken.ts" }]
@@ -231,6 +234,15 @@ it as clean.
 
 Usually one file that will not parse, wanted by every rule that reads inside a
 file. Fix the file, or find out why it does not parse.
+
+**Zero is reachable, and that is the point.** A rule whose scope also covers a
+`DOC.md`, a `package.json` or an image does not skip a check on it — those are
+not answers anybody lost, they are files the rule was never about, and counting
+them would pin the number above zero for any repository that keeps
+documentation beside its code. If that were so, this instruction would teach
+you to ignore the one number it asks you to watch. `check --file` still reports
+them, under `not-source`, because that command answers "what happened to *this*
+file" and "nothing, it is not source" is a real answer there.
 
 `files_parsed` and `facts_reused` are the cache working. A warm run parses
 nothing and is not much faster in wall clock — it still reads and hashes every
