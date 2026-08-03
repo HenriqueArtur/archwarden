@@ -1048,6 +1048,58 @@ mod tests {
         );
     }
 
+    /// A file leaving its package is the case the warning exists for: a
+    /// different `tsconfig` applies at the destination, so a path alias in the
+    /// moved file can mean something else there.
+    ///
+    /// Untested until `cargo-mutants` could reach it. The computation predates
+    /// this test and lived inline inside `plan`, where a mutant had nothing to
+    /// replace; extracting it made the gap visible, and returning a constant
+    /// `true` or `false` broke nothing.
+    #[test]
+    fn a_move_out_of_a_package_is_what_crosses_a_boundary() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = camino::Utf8Path::from_path(dir.path()).expect("utf-8");
+        std::fs::create_dir_all(root.join("packages/app")).expect("dirs");
+        std::fs::write(
+            root.join("packages/app/package.json"),
+            r#"{"name":"@org/app"}"#,
+        )
+        .expect("write");
+        let workspace = workspace_at(root);
+
+        let moved = |from: &str, to: &str| Move {
+            from: path(from),
+            to: path(to),
+            is_spec_sibling: false,
+        };
+
+        assert!(
+            crosses_packages(
+                &[moved(
+                    "packages/domain/src/email/a.ts",
+                    "packages/app/src/a.ts"
+                )],
+                &workspace
+            ),
+            "domain to app is two packages"
+        );
+        assert!(
+            !crosses_packages(
+                &[moved(
+                    "packages/domain/src/email/a.ts",
+                    "packages/domain/src/calcs/a.ts"
+                )],
+                &workspace
+            ),
+            "and moving within one is not, however far the file travels"
+        );
+        assert!(
+            !crosses_packages(&[], &workspace),
+            "nothing moving crosses nothing"
+        );
+    }
+
     /// The refusal has to name the file, the specifier, and what to do — it
     /// fires in the state where a workspace is not installed, which is a state
     /// the reader can fix in one command and will not guess at from "cannot
