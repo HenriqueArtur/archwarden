@@ -117,6 +117,17 @@ saying so.
 
 ### Fixed
 
+- **A refusal from `impact --apply` now names the file to go and fix.** It had
+  one sentence for four different causes, and the sentence it used said
+  `tsconfig` path alias. A repository whose `exports` map does not reach the
+  destination — the realistic case, and the one issue #11 was filed from — was
+  told to look in the wrong file.
+
+  The four causes are now distinct: a `tsconfig` alias this does not read, an
+  `exports` map that reaches no subpath at the destination, a file leaving the
+  package its specifier names, and an importer at the repository root. Each one
+  names a different thing to open.
+
 - **`impact --apply` no longer reports success after leaving imports pointing at
   a file it just deleted.**
   ([#11](https://github.com/HenriqueArtur/archwarden/issues/11))

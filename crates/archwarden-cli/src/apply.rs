@@ -85,6 +85,8 @@ pub enum Refusal {
         importer: RepoRelPath,
         /// The specifier as written.
         specifier: String,
+        /// Which of the four reasons, so the message can name the right file.
+        why: crate::respecify::Unknown,
     },
     /// The specifier could not be located in the file's bytes.
     ///
@@ -377,10 +379,11 @@ pub fn replacements_for(
         ) {
             Rewrite::Unchanged => continue,
             Rewrite::To(now) => now,
-            Rewrite::Unknown => {
+            Rewrite::Unknown(why) => {
                 refusals.push(Refusal::UnreadableSpecifier {
                     importer: file.clone(),
                     specifier: import.specifier.clone(),
+                    why,
                 });
                 continue;
             }
@@ -806,12 +809,16 @@ pub fn render_refusals(plan: &Plan, force: bool, out: &mut dyn std::io::Write) {
             Refusal::UnreadableSpecifier {
                 importer,
                 specifier,
+                why,
             } => {
                 let _ = writeln!(
                     out,
-                    "  `{importer}` imports `{specifier}`, which resolves into the repository\n  \
-                     through a map this does not read — a `tsconfig` path alias. Rewriting the\n  \
-                     rest and leaving this one would produce a repository that does not build."
+                    "  `{importer}` imports `{specifier}`, and no new specifier could be\n  \
+                     worked out for it:\n  \
+                     {}.\n  \
+                     Rewriting the rest and leaving this one would produce a repository\n  \
+                     that does not build.",
+                    why.explain()
                 );
             }
             Refusal::SpecifierNotFound {
@@ -1033,6 +1040,7 @@ mod tests {
             !Refusal::UnreadableSpecifier {
                 importer: path("src/a.ts"),
                 specifier: "@Components/x".to_owned(),
+                why: crate::respecify::Unknown::PathAlias,
             }
             .is_forceable()
         );
@@ -1363,6 +1371,7 @@ mod tests {
             [Refusal::UnreadableSpecifier {
                 importer: path("apps/web/src/main.ts"),
                 specifier: "@Components/email".to_owned(),
+                why: crate::respecify::Unknown::PathAlias,
             }]
         );
     }

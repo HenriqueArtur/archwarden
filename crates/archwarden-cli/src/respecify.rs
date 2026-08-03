@@ -13,12 +13,16 @@
 //!
 //! # What it refuses
 //!
-//! A specifier it does not understand the shape of comes back as
-//! [`Rewrite::Unknown`], and the caller must refuse the whole move rather than
-//! rewrite the rest. A `tsconfig` path alias (`@Components/x`) is the case
-//! that reaches this: it resolves through `compilerOptions.paths`, which is a
-//! map this does not read, and a half-rewritten repository is worse than one
-//! that was never touched.
+//! A specifier it cannot recompute comes back as [`Rewrite::Unknown`], and the
+//! caller must refuse the whole move rather than rewrite the rest — a
+//! half-rewritten repository is worse than one that was never touched.
+//!
+//! It carries [`Unknown`], which says *which* of four reasons, because they are
+//! four different files to go and look at: a `tsconfig` whose `paths` this does
+//! not read, a `package.json` whose `exports` does not reach the destination,
+//! the destination package's manifest, or a file at the repository root. They
+//! were one message until issue #11 turned up a repository that hit the
+//! `exports` case and was told to check its `tsconfig`.
 
 use archwarden_core::path::RepoRelPath;
 use archwarden_resolver::workspace::{Package, Workspace};
@@ -30,8 +34,78 @@ pub enum Rewrite {
     Unchanged,
     /// Replace it with this.
     To(String),
-    /// The shape is one this does not read. The caller must refuse.
-    Unknown,
+    /// Nothing can, and here is which of the reasons it is.
+    ///
+    /// The caller must refuse either way, so carrying the reason changes no
+    /// decision — it changes what the refusal *says*, and that is the whole
+    /// point. These four are four different files to go and look at, and a
+    /// message that names the wrong one costs more time than the check saves.
+    Unknown(Unknown),
+}
+
+/// Why a specifier could not be recomputed.
+///
+/// Four causes, and they were one message until issue #11 turned up a
+/// repository that hit the fourth and was told to check the third.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Unknown {
+    /// The specifier resolves into the repository through a map this does not
+    /// read — a `tsconfig` path alias.
+    ///
+    /// It is not relative and names no workspace package, yet it reached a file
+    /// here, so something else mapped it. `compilerOptions.paths` is that
+    /// something in every case seen so far.
+    PathAlias,
+    /// The importing file is at the repository root, so a relative specifier
+    /// has no directory to be measured from.
+    NoImporterDirectory,
+    /// The target is leaving the package whose name the specifier uses.
+    ///
+    /// Which package it should name instead is a question about the
+    /// destination's manifest rather than this one's, and guessing would
+    /// produce an import that does not resolve.
+    LeavesThePackage,
+    /// The package's `exports` covers no subpath that reaches the destination.
+    ///
+    /// The move is legal and the file lands somewhere real; there is simply no
+    /// specifier the package's own manifest would let an importer write for it.
+    /// Reached when `exports` is absent, or its patterns do not match where the
+    /// file is going.
+    NotExported,
+}
+
+impl Unknown {
+    /// What to look at, in one sentence.
+    ///
+    /// Written as an instruction rather than a diagnosis: whoever reads this is
+    /// mid-refactor and wants the next step, not a classification.
+    ///
+    /// Wrapped with the two-space continuation the rest of the refusals use, so
+    /// a long reason does not run off the side of a terminal the others fit in.
+    #[must_use]
+    pub fn explain(self) -> &'static str {
+        match self {
+            Self::PathAlias => {
+                "it resolves through a `tsconfig` path alias, which is a map\n  \
+                 this does not read"
+            }
+            Self::NoImporterDirectory => {
+                "the importing file is at the repository root, so a relative\n  \
+                 specifier has no directory to be measured from"
+            }
+            Self::LeavesThePackage => {
+                "the file is leaving the package that specifier names, and\n  \
+                 which package offers it next is a question about the\n  \
+                 destination's `package.json`"
+            }
+            Self::NotExported => {
+                "the package's `exports` reaches no subpath at the destination,\n  \
+                 so there is no specifier an importer could write for it --\n  \
+                 add one, or land the file where `exports` already reaches"
+            }
+        }
+    }
 }
 
 /// The new specifier for one import, after a move.
@@ -54,9 +128,9 @@ pub enum Rewrite {
 /// must be recomputed when the target moves.
 ///
 /// [`Rewrite::Unknown`] is a refusal the caller must honour by abandoning the
-/// whole move. It is reached when a specifier resolves into the repository
-/// through a map this does not read — a `tsconfig` path alias — where leaving
-/// it alone would silently point it at a file that is no longer there.
+/// whole move: leaving such a specifier alone would silently point it at a file
+/// that is no longer there. The [`Unknown`] it carries says which of the four
+/// reasons it is, and each one names a different thing to go and fix.
 #[must_use]
 pub fn respecify(
     specifier: &str,
@@ -78,14 +152,14 @@ pub fn respecify(
     }
     match workspace.package_for(specifier) {
         Some(package) => by_package(specifier, package, new_target),
-        None => Rewrite::Unknown,
+        None => Rewrite::Unknown(Unknown::PathAlias),
     }
 }
 
 /// A relative specifier, recomputed from the importer's directory.
 fn relative(specifier: &str, importer: &RepoRelPath, to: &RepoRelPath) -> Rewrite {
     let Some(directory) = importer.parent() else {
-        return Rewrite::Unknown;
+        return Rewrite::Unknown(Unknown::NoImporterDirectory);
     };
 
     // The extension the author wrote, kept. A repository on TypeScript's ESM
@@ -159,7 +233,7 @@ fn by_package(specifier: &str, package: &Package, to: &RepoRelPath) -> Rewrite {
         // Moved out of the package. The specifier has to name a different
         // package, and which one is a question about the destination's
         // manifest rather than this one's.
-        return Rewrite::Unknown;
+        return Rewrite::Unknown(Unknown::LeavesThePackage);
     };
     let inside = inside.as_str();
 
@@ -189,7 +263,7 @@ fn by_package(specifier: &str, package: &Package, to: &RepoRelPath) -> Rewrite {
         return settle(specifier, format!("{}/{tail}", package.name));
     }
 
-    Rewrite::Unknown
+    Rewrite::Unknown(Unknown::NotExported)
 }
 
 fn settle(specifier: &str, rewritten: String) -> Rewrite {
@@ -345,7 +419,7 @@ mod tests {
         for specifier in ["@Components/button", "~/components/button", "#internal/x"] {
             assert_eq!(
                 rewrite(specifier, "src/a.ts", "src/b/thing.ts"),
-                Rewrite::Unknown,
+                Rewrite::Unknown(Unknown::PathAlias),
                 "{specifier}"
             );
         }
@@ -361,7 +435,9 @@ mod tests {
                 "apps/app/src/main.ts",
                 "packages/domain/src/internal/x.ts",
             ),
-            Rewrite::Unknown
+            Rewrite::Unknown(Unknown::NotExported),
+            "the file lands somewhere real; `exports` simply offers no \
+             specifier that reaches it"
         );
     }
 
@@ -375,7 +451,7 @@ mod tests {
                 "apps/app/src/main.ts",
                 "packages/system/src/x.ts",
             ),
-            Rewrite::Unknown
+            Rewrite::Unknown(Unknown::LeavesThePackage)
         );
     }
 
@@ -404,6 +480,34 @@ mod tests {
                 "packages/domain/src/b/c/old.ts"
             ),
             Rewrite::To("../b/c/old".to_owned())
+        );
+    }
+
+    /// Each reason has to send the reader somewhere different, or splitting the
+    /// enum bought nothing. The assertion is on the file each sentence names,
+    /// because that is what the reader goes and opens.
+    #[test]
+    fn every_reason_names_the_thing_to_go_and_look_at() {
+        for (reason, must_name) in [
+            (Unknown::PathAlias, "tsconfig"),
+            (Unknown::NoImporterDirectory, "repository root"),
+            (Unknown::LeavesThePackage, "package.json"),
+            (Unknown::NotExported, "exports"),
+        ] {
+            let sentence = reason.explain();
+            assert!(
+                sentence.contains(must_name),
+                "{reason:?} should point at `{must_name}`: {sentence}"
+            );
+        }
+
+        // And the two that are most easily confused stay distinguishable: the
+        // repository this came from hit `NotExported` and was told to check its
+        // `tsconfig`. Issue #11.
+        assert_ne!(Unknown::NotExported.explain(), Unknown::PathAlias.explain());
+        assert!(
+            !Unknown::NotExported.explain().contains("tsconfig"),
+            "an `exports` problem must not send anyone to the `tsconfig`"
         );
     }
 }
