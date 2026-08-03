@@ -86,6 +86,33 @@ saying so.
   1 error, 0 warnings, 2 skipped · 3 files, 3 directories · 1 parsed · 2ms
   ```
 
+### Fixed
+
+- **`impact --apply` no longer reports success after leaving imports pointing at
+  a file it just deleted.**
+  ([#11](https://github.com/HenriqueArtur/archwarden/issues/11))
+
+  A file that imports a moving package by name — `@org/domain/thing` rather than
+  `../thing` — is invisible to archwarden when that package does not resolve.
+  Nothing listed it as an importer, so nothing rewrote it and nothing refused:
+  the move went through, printed the files it *had* rewritten, and exited `0`
+  over a repository that no longer type-checks. The existing guard could not
+  catch it, because it asks whether every *known* importer was rewritten and
+  this was a file that was never known.
+
+  `--apply` now refuses when an import names a package the move is taking files
+  out of and archwarden cannot place it. The refusal is total, as every refusal
+  here is, and `--force` does not override it — `--force` was in the command
+  that produced the broken repository.
+
+  The usual cause is a workspace that is not installed, so the message says so.
+  An unresolved import to a real dependency does *not* refuse: `react` names no
+  package in the repository, and no move could change what it means.
+
+  Reproduced from two `exports` shapes archwarden reads differently from the
+  bundler (`"./*/*": "./src/*/*.ts"`, and a package with no `exports` at all); a
+  clone before `install` reaches the same state.
+
 ---
 
 [Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.5.1...HEAD

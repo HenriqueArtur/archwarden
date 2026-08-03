@@ -53,6 +53,18 @@ pub struct Importers {
     /// the difference between a tool that is honest about its blind spot and
     /// one that quietly hands over a wrong answer.
     pub opaque: Vec<RepoRelPath>,
+    /// Imports that name a workspace package and did not resolve, with the file
+    /// that wrote them.
+    ///
+    /// The same blind spot as `opaque`, reached the other way. A specifier
+    /// naming a package that lives in this repository is one that *should* land
+    /// on a file here; when it does not, archwarden cannot tell whether it names
+    /// the target or something else in the same package, so `direct` above is
+    /// incomplete by an unknown amount.
+    ///
+    /// A bare `react` is not this: it names no local package, so nothing here
+    /// was ever going to resolve it and its absence costs no accuracy.
+    pub unresolved_local: Vec<(RepoRelPath, String)>,
 }
 
 /// Every file that imports `target`.
@@ -90,6 +102,7 @@ pub fn importers_of_each(
 ) -> std::collections::BTreeMap<RepoRelPath, Importers> {
     let resolver = archwarden_resolver::imports::ImportResolver::new(root);
     let parser = archwarden_parser::oxc::OxcParser;
+    let workspace = archwarden_resolver::workspace::Workspace::discover(root);
 
     let wanted: std::collections::BTreeSet<&RepoRelPath> = targets.iter().collect();
     let mut found: std::collections::BTreeMap<RepoRelPath, Importers> = targets
@@ -97,6 +110,7 @@ pub fn importers_of_each(
         .map(|target| (target.clone(), Importers::default()))
         .collect();
     let mut opaque = Vec::new();
+    let mut unresolved_local: Vec<(RepoRelPath, String)> = Vec::new();
 
     for file in tree.files() {
         if file.class != FileClass::Source || config.is_ignored(&file.path) {
@@ -122,6 +136,14 @@ pub fn importers_of_each(
             std::collections::BTreeMap::new();
         for import in &facts.imports {
             let Some(landed) = import.resolved.as_ref() else {
+                // A specifier naming a package that lives in this repository
+                // should have landed on a file in it. That it did not means the
+                // answer this function gives is incomplete, and silence here is
+                // what let `impact --apply` rewrite the importers it could see
+                // and report success. Issue #11.
+                if workspace.package_for(&import.specifier).is_some() {
+                    unresolved_local.push((file.path.clone(), import.specifier.clone()));
+                }
                 continue;
             };
             if let Some(target) = wanted.get(landed) {
@@ -142,9 +164,12 @@ pub fn importers_of_each(
     // Determinism is a design goal, and the walk's order is not one a reader
     // can predict.
     opaque.sort();
+    unresolved_local.sort();
+    unresolved_local.dedup();
     for entry in found.values_mut() {
         entry.direct.sort_by(|a, b| a.path.cmp(&b.path));
         entry.opaque.clone_from(&opaque);
+        entry.unresolved_local.clone_from(&unresolved_local);
     }
     found
 }
@@ -544,6 +569,78 @@ mod tests {
             found.direct.len(),
             1,
             "the readable importer is still found"
+        );
+    }
+
+    /// An import naming a local package that does not resolve is the blind spot
+    /// issue #11 was about: the file never appears in `direct`, so a caller
+    /// counting importers is short by an amount it has no way to learn.
+    ///
+    /// The workspace here declares `exports` archwarden reads differently from
+    /// the bundler, which is one of the three ways to arrive in this state; a
+    /// clone before `install` is the common one.
+    #[test]
+    fn an_unresolved_import_of_a_local_package_is_reported_as_a_blind_spot() {
+        let found = importers(
+            &[
+                (
+                    "packages/domain/package.json",
+                    r#"{"name":"@scope/domain","exports":{"./*/*":"./src/*/*.ts"}}"#,
+                ),
+                (
+                    "packages/domain/src/email/target.ts",
+                    "export const v = 1;\n",
+                ),
+                ("packages/app/package.json", r#"{"name":"@scope/app"}"#),
+                (
+                    "packages/app/src/a.ts",
+                    "import { v } from '@scope/domain/email/target';\n",
+                ),
+            ],
+            "packages/domain/src/email/target.ts",
+        );
+
+        assert!(
+            paths(&found).is_empty(),
+            "the specifier did not resolve, so nothing knows it is an importer"
+        );
+        assert_eq!(
+            found.unresolved_local,
+            vec![(
+                RepoRelPath::new("packages/app/src/a.ts").expect("valid"),
+                "@scope/domain/email/target".to_owned()
+            )],
+            "and that gap is stated rather than left for a caller to assume away"
+        );
+    }
+
+    /// A dependency that is not installed is not a blind spot. It names no
+    /// package in this repository, so no move could ever have changed what it
+    /// means -- and a repository with no `node_modules` has thousands of them,
+    /// which is exactly why this distinction has to be drawn rather than
+    /// reporting every unresolved import.
+    #[test]
+    fn an_unresolved_import_of_a_real_dependency_is_not_one() {
+        let found = importers(
+            &[
+                (
+                    "packages/domain/package.json",
+                    r#"{"name":"@scope/domain"}"#,
+                ),
+                ("packages/domain/src/target.ts", "export const v = 1;\n"),
+                (
+                    "packages/domain/src/a.ts",
+                    "import React from 'react';\nimport { v } from './target';\n",
+                ),
+            ],
+            "packages/domain/src/target.ts",
+        );
+
+        assert_eq!(paths(&found).len(), 1, "the relative import still resolves");
+        assert!(
+            found.unresolved_local.is_empty(),
+            "`react` is not a package of ours: {:?}",
+            found.unresolved_local
         );
     }
 }

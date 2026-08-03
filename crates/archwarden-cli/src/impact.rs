@@ -372,6 +372,7 @@ mod tests {
                 })
                 .collect(),
             opaque: opaque.iter().map(|p| path(p)).collect(),
+            unresolved_local: Vec::new(),
         }
     }
 

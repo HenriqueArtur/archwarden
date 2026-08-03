@@ -445,6 +445,13 @@ written, so there is no half-done state to clean up. Exit 2 with a reason: a
 dirty working tree, a specifier archwarden cannot recompute, a destination that
 exists. Fix the reason and run again; do not work around it.
 
+**Install the workspace before moving anything in a monorepo.** A file that
+imports a moving package by name — `@org/domain/thing` rather than `../thing` —
+is invisible when that package does not resolve, which is the normal state of a
+fresh clone before `install`. `--apply` refuses rather than rewriting the
+importers it happens to see, and the refusal names the file and the specifier.
+Run your package manager's install and try again.
+
 **`--force` covers exactly one refusal** — a dynamic import naming no module,
 where whether that file imports the target is unknowable. The report names the
 file. Look at it. Do not reach for `--force` on anything else; it does not
