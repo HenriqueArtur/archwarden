@@ -624,6 +624,34 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
 
     for (path, reason) in &report.unreadable_files {
         let _ = writeln!(out, "note: `{path}` was not checked — {reason}");
+
+        // And which rules went unanswered because of it. `AGENTS.md` calls
+        // `checks_skipped` "the number to watch" and tells a reader not to
+        // report such a run as clean; a bare count leaves them nothing to act
+        // on but stopping. The JSON has carried `rule_id` and `path` for a
+        // while and the text output carried neither, so the only reader who
+        // could answer "which ones, and where" was one already piping through
+        // `jq`. Issue #12.
+        //
+        // Under the file rather than beside the count, because every counted
+        // skip is a rule that wanted a file this loop is already naming: the
+        // count only rises where `facts_for` failed, and that is the same
+        // branch that pushes here.
+        let rules: Vec<&str> = report
+            .skipped_checks
+            .iter()
+            .filter(|(_, skipped)| skipped == path)
+            .map(|(rule_id, _)| rule_id.as_str())
+            .collect();
+        if !rules.is_empty() {
+            let _ = writeln!(
+                out,
+                "      {} {} skipped there: {}",
+                rules.len(),
+                plural(rules.len(), "check", "checks"),
+                rules.join(", "),
+            );
+        }
     }
 
     // Without this, `0 errors` beside exit 1 is a contradiction the reader
@@ -829,6 +857,22 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
             specifier,
             resolved,
         } => format!("imports `{specifier}`, which resolves to `{resolved}`"),
+        Observed::ForbiddenPackageImport { specifier, package } => {
+            // Named separately only when they differ, because for a deep import
+            // they do and reading "imports `three/examples/jsm/loaders/
+            // GLTFLoader.js`" without being told the rule is about `three`
+            // leaves the reader to work out which package they hit.
+            //
+            // `node:` is stripped from both first: `fs` is not *part of*
+            // `node:fs`, it is the same module spelled the other way, and
+            // saying otherwise reads as a bug in the rule.
+            let bare = |name: &str| name.strip_prefix("node:").unwrap_or(name).to_owned();
+            if bare(specifier) == bare(package) {
+                format!("imports the package `{package}`")
+            } else {
+                format!("imports `{specifier}`, which is part of the package `{package}`")
+            }
+        }
         Observed::RequiredImportMissing => "no import satisfies the requirement".to_owned(),
         Observed::RequiredCallMissing { symbol } => {
             format!("`{symbol}` is imported but never called")
@@ -900,6 +944,18 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
                 base
             } else {
                 format!("{base}, except {}", join_or(except, ""))
+            }
+        }
+        Expectation::ForbiddenPackages {
+            packages,
+            except_from,
+            ..
+        } => {
+            let base = format!("no import of {}", join_or(packages, "any package"));
+            if except_from.is_empty() {
+                base
+            } else {
+                format!("{base}, except from {}", join_or(except_from, ""))
             }
         }
         Expectation::RequiredImport { patterns } => {
@@ -1464,6 +1520,74 @@ mod tests {
         );
     }
 
+    /// The count says a run decided less than it looks like. It does not say
+    /// which decisions, and `AGENTS.md` asks the reader to act on it — so the
+    /// only responses a bare number leaves are to ignore it or to stop.
+    /// Issue #12.
+    #[test]
+    fn the_text_output_names_which_rules_were_skipped_and_where() {
+        let report = Report {
+            checks_skipped: 2,
+            unreadable_files: vec![(path("src/broken.ts"), "unexpected token".to_owned())],
+            skipped_checks: vec![
+                (
+                    "domain-forbids-infrastructure".to_owned(),
+                    path("src/broken.ts"),
+                ),
+                ("usecase-export-name".to_owned(), path("src/broken.ts")),
+            ],
+            ..report(Vec::new())
+        };
+
+        let text = rendered(&report, Format::Text);
+
+        assert!(
+            text.contains(
+                "      2 checks skipped there: domain-forbids-infrastructure, \
+                 usecase-export-name\n"
+            ),
+            "both rules are named, under the file that cost them: {text}"
+        );
+    }
+
+    /// One reads as one here too, and the count is the rules on this file
+    /// rather than the run's total.
+    #[test]
+    fn a_lone_skipped_check_names_its_rule_in_the_singular() {
+        let report = Report {
+            checks_skipped: 1,
+            unreadable_files: vec![(path("src/broken.ts"), "unexpected token".to_owned())],
+            skipped_checks: vec![("usecase-export-name".to_owned(), path("src/broken.ts"))],
+            ..report(Vec::new())
+        };
+
+        assert!(
+            rendered(&report, Format::Text)
+                .contains("      1 check skipped there: usecase-export-name\n"),
+            "{}",
+            rendered(&report, Format::Text)
+        );
+    }
+
+    /// A file nobody could read that no rule wanted to look inside still says
+    /// so, and says nothing more. The note is about the file; the line under it
+    /// is about answers that were lost, and there were none.
+    #[test]
+    fn an_unreadable_file_no_rule_wanted_names_no_skipped_checks() {
+        let report = Report {
+            unreadable_files: vec![(path("src/broken.ts"), "unexpected token".to_owned())],
+            ..report(Vec::new())
+        };
+
+        let text = rendered(&report, Format::Text);
+
+        assert!(
+            text.contains("note: `src/broken.ts` was not checked"),
+            "{text}"
+        );
+        assert!(!text.contains("skipped there"), "{text}");
+    }
+
     /// And a run that skipped nothing says nothing, because on almost every
     /// run there is nothing to say and a `0 skipped` would only invite the
     /// question of why it is there.
@@ -1775,6 +1899,34 @@ mod tests {
         }
     }
 
+    /// A deep import names a package the specifier does not spell, so the
+    /// sentence has to carry both; a bare one would read "imports `three`,
+    /// which is part of the package `three`". And `fs` is not *part of*
+    /// `node:fs` — it is the same module, spelled the other way.
+    #[test]
+    fn a_forbidden_package_names_the_package_only_when_it_differs() {
+        let observed = |specifier: &str, package: &str| {
+            describe_observed(&Observed::ForbiddenPackageImport {
+                specifier: specifier.to_owned(),
+                package: package.to_owned(),
+            })
+        };
+
+        assert_eq!(observed("three", "three"), "imports the package `three`");
+        assert_eq!(
+            observed("three/examples/jsm/loaders/GLTFLoader.js", "three"),
+            "imports `three/examples/jsm/loaders/GLTFLoader.js`, which is part \
+             of the package `three`"
+        );
+        for (written, configured) in [("fs", "node:fs"), ("node:fs", "fs")] {
+            assert_eq!(
+                observed(written, configured),
+                format!("imports the package `{configured}`"),
+                "`{written}` and `{configured}` are one module"
+            );
+        }
+    }
+
     #[test]
     fn every_expectation_has_a_sentence() {
         let sibling = describe_expectation(&Expectation::RequiredSibling {
@@ -1796,6 +1948,25 @@ mod tests {
             include_type_only: true,
         });
         assert!(forbidden.contains("except"), "{forbidden}");
+
+        let packages = describe_expectation(&Expectation::ForbiddenPackages {
+            packages: vec!["three".to_owned()],
+            except_from: vec!["src/scripts/three/**".to_owned()],
+            include_type_only: true,
+        });
+        assert!(packages.contains("three"), "{packages}");
+        assert!(
+            packages.contains("except from"),
+            "the exemption is on the importing side, and the sentence says so: \
+             {packages}"
+        );
+
+        let no_exemption = describe_expectation(&Expectation::ForbiddenPackages {
+            packages: vec!["three".to_owned()],
+            except_from: Vec::new(),
+            include_type_only: true,
+        });
+        assert_eq!(no_exemption, "no import of `three`");
     }
 
     /// A warn-listed folder is part of the expectation, so a reader can see

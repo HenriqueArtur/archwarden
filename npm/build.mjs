@@ -2,7 +2,7 @@
 // Builds the npm packages from the release archives.
 //
 // Six packages: the one people install, and five that carry a binary each.
-// The seven are generated rather than kept in the tree, because their only
+// The five are generated rather than kept in the tree, because their only
 // contents are a manifest and a file the release already produced, and a
 // checked-in copy is a copy that goes stale.
 //
@@ -61,7 +61,7 @@ export function manifestFor(platform, version) {
  */
 const FROM_ROOT = ["README.md", "AGENTS.md", "schema/v0.json"];
 
-/** Builds all eight packages. Exported so a test can run it. */
+/** Builds all six packages. Exported so a test can run it. */
 export async function build(dist, out, version) {
   await rm(out, { recursive: true, force: true });
 

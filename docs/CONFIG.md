@@ -229,6 +229,30 @@ never verified — it only makes `scaffold` output realistic.
 `name` from `file_pattern` gets fed to a case transformer. Supported:
 `pascal`, `camel`, `kebab`, `snake`, `upper`, `lower`, `raw`.
 
+When the convention spells the export from the directory as well as the
+filename — `Order/fetch-by-id.ts` exporting `OrderFetchByIdRepository` — add
+`dir_pattern`, whose capture groups join the same template:
+
+```json
+{
+  "type": "naming",
+  "id": "repository-action-export-name",
+  "level": "error",
+  "roots": ["src/Infrastructure/Repositories/Entities/*"],
+  "dir_pattern": "^(?<entity>[A-Za-z0-9]+)$",
+  "file_pattern": "^(?<action>[a-z0-9-]+)\\.ts$",
+  "must_export": {
+    "kind": "function",
+    "name": "{{pascal(entity)}}{{pascal(action)}}Repository"
+  }
+}
+```
+
+`dir_pattern` is matched against the *name* of the directory the file sits in —
+`Order` — not against the path leading to it. A group defined by both patterns
+is refused when the config compiles, because it would have two values and no
+rule for choosing between them. See `docs/RULES.md` for the full semantics.
+
 ### Spec pairing (TDD gate)
 
 ```json
@@ -290,6 +314,29 @@ There is no `graph` key. Boundaries are rules like any other, so they go
 through the same matcher, the same `describe_expectation()`, and show up in
 `describe` and `agent-guide` with no special-casing — which is what keeps
 those commands in lockstep with the checker (decision 9).
+
+A boundary can also name a **dependency**, which has no repo-relative path for
+a glob to match:
+
+```json
+{
+  "type": "import-boundary",
+  "id": "three-is-quarantined",
+  "level": "error",
+  "from": "src/**",
+  "forbid_import_from_packages": ["three"],
+  "except_from": ["src/scripts/three/**"]
+}
+```
+
+`forbid_import_from_packages` takes package names, matched as "this package and
+anything under it" — so `three/examples/jsm/loaders/GLTFLoader.js` is caught and
+`three-mesh-bvh` is not. `node:fs` and `fs` are one identity.
+
+`except_from` exempts the *importing* file from the whole rule, which is the
+side an exception to a dependency rule sits on: `except` is about what is
+imported. See [`RULES.md`](RULES.md) for the full semantics, including why this
+is a separate field rather than a prefix inside `forbid_import_from`.
 
 ### Call obligation
 

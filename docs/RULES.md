@@ -20,6 +20,7 @@ directory:
 | `structure` | `allowed_subfolders`, `warn_subfolders` | the direct child directories |
 | `structure` | `filename_patterns` | the direct child files, by basename |
 | `naming` | `file_pattern` | the direct child files, by basename |
+| `naming` | `dir_pattern` | the selected directory itself, by its own basename |
 | `spec-pair` | `subfolders` | the listed subdirectories (`"."` = the directory itself), then files in them |
 | `call-obligation` | `file_pattern` | the direct child files, by basename |
 | `import-boundary` | *(scope only)* | every file in the directory is a candidate importer |
@@ -126,9 +127,11 @@ derivable from the filename by a case transform.
 **Shape**:
 
 - `file_pattern` — regex with a named capture group (typically `name`).
+- `dir_pattern` — optional regex over the *name of the directory the file sits
+  in*, contributing its own capture groups. See below.
 - `must_export` — describes the required export:
   - `kind` — one tag or a list of tags (see table below).
-  - `name` — templated from the capture group.
+  - `name` — templated from the capture groups.
   - `signature_hint` — optional free-form string. **Never verified.** It exists
     so `scaffold` can show a realistic skeleton
     (`export function Foo(deps: FooDeps): UseCase<FooInput, FooOutput>`)
@@ -137,6 +140,62 @@ derivable from the filename by a case transform.
 
 **Case transformers available in templates**: `pascal`, `camel`, `kebab`,
 `snake`, `upper`, `lower`, `raw`.
+
+### When the directory is part of the name
+
+Some conventions spell the export from both halves of the path. A per-entity
+repository layer is the common shape: the entity names the folder, the action
+names the file, and the export is the two joined.
+
+```
+Infrastructure/Repositories/Entities/
+├── Order/
+│   ├── fetch-by-id.ts   → export function OrderFetchByIdRepository
+│   └── insert.ts        → export function OrderInsertRepository
+└── Wallet/
+    └── fetch-by-id.ts   → export function WalletFetchByIdRepository
+```
+
+`fetch-by-id.ts` may exist forty times over, and the entity prefix is what a
+grep for the implementation lands on and what a stack trace names. `dir_pattern`
+captures it:
+
+```json
+{
+  "type": "naming",
+  "id": "repository-action-export-name",
+  "level": "error",
+  "roots": ["src/Infrastructure/Repositories/Entities/*"],
+  "dir_pattern": "^(?<entity>[A-Za-z0-9]+)$",
+  "file_pattern": "^(?<action>[a-z0-9-]+)\\.ts$",
+  "must_export": {
+    "kind": "function",
+    "name": "{{pascal(entity)}}{{pascal(action)}}Repository"
+  }
+}
+```
+
+Four things about it, each load-bearing:
+
+- **It matches the last segment, not the path.** The scope glob has already
+  chosen which directories are in play; what is offered to `dir_pattern` is
+  `Order`, not `src/Infrastructure/Repositories/Entities/Order`. A pattern
+  anchored with `^` and `$` — which is how anyone writes one — could not match
+  the full path at all, so `config doctor` reports `dir-pattern-matches-nothing`
+  rather than letting the rule quietly apply to nothing.
+- **When set, it must match.** A file whose directory does not match is a file
+  the rule is not about, exactly as with `file_pattern`. It is not a violation.
+  A file with no directory at all — one at the repository root — is likewise
+  outside a rule that asks about one.
+- **One template namespace.** `{{pascal(entity)}}` and `{{pascal(action)}}` do
+  not say which pattern each came from and do not have to. A group defined by
+  *both* patterns is refused when the config compiles: it would have two values
+  and no rule for choosing, and silently preferring one would make the rule
+  demand the wrong export on every file in the scope.
+- **Still purely lexical.** `dirname` and `basename` of a path archwarden
+  already has. No parse, no resolution, no disk — so `describe` and `scaffold`
+  keep answering for files that do not exist yet, and `check` and `describe`
+  still share one matcher.
 
 **Export kinds**. Each export in a file is tagged. `kind` matches if the
 export carries **any** of the listed tags. Note that an arrow function is not
@@ -329,11 +388,60 @@ are extracted separately. Rules may opt in with `include_type_only: false`
 any chain"). That is a graph reachability question and belongs to a future
 rule if there is demand.
 
-**Also cannot express, in v0**: a prohibition on a *dependency* or a runtime
-builtin — "the UI may not import `lodash` directly", "nobody imports
-`node:fs`". Globs are matched against repo-relative paths, and neither an
-installed package nor a builtin has one. The run counts them separately, so
-the information is there when a rule for it is designed.
+### Forbidding a dependency
+
+`forbid_import_from_packages` names packages rather than paths:
+
+```json
+{
+  "type": "import-boundary",
+  "id": "three-is-quarantined",
+  "level": "error",
+  "from": "src/**",
+  "forbid_import_from_packages": ["three"],
+  "except_from": ["src/scripts/three/**"]
+}
+```
+
+> Only `src/scripts/three/**` may import `three`. Everywhere else the 3D module
+> is reached through a dynamic `import()` behind an `IntersectionObserver`, so
+> the cost never lands in the initial bundle.
+
+That is an architecture rule in the same sense as the others — which layer may
+reach which thing — and violating it is silent: nothing breaks, no test fails,
+the page just gets slower and it is found weeks later in a Lighthouse report.
+
+A separate field rather than a glob, because a dependency has no repo-relative
+path. Matching `node_modules/three/**` would be a lie under pnpm's store layout
+and does not exist at all under yarn PnP, so the rule names the **package**.
+
+- **The package, and anything under it.** A rule naming `three` catches
+  `three/examples/jsm/loaders/GLTFLoader.js`, which is the import that actually
+  costs the bytes. A package that merely shares a prefix — `three-mesh-bvh` — is
+  a different package and is left alone.
+- **Builtins are one identity.** `node:fs` and `fs` are the same module; either
+  spelling in the config matches either spelling in the source. "Nobody in
+  `src/lib/**` imports `node:fs`" is expressible.
+- **`except_from` is on the importing side.** `except` is about what is
+  imported and cannot say "this directory may". They are separate fields because
+  they exempt different ends of the same edge, and `except_from` exempts the
+  importer from the whole rule.
+- **An import that lands in this repository is a path, not a package.** A
+  `tsconfig` alias spelling a local shim `three` is matched by
+  `forbid_import_from`, never here. The two fields never both fire on one
+  import.
+- **It works before `install`.** An unresolved specifier is exactly what this
+  reads, so a CI job that lints before installing dependencies still enforces
+  the rule — unlike the path half, which needs resolution.
+
+A separate field rather than a scheme prefix (`"pkg:three"`) inside
+`forbid_import_from`, for the reason issue #14 gives: treating `three` as
+*either* a path glob or a package name depending on what it happened to match is
+the ambiguity that produces a rule enforcing nothing.
+
+**Still cannot express**: transitivity. `src/lib` importing `src/scripts/three`,
+which imports `three`, is not flagged — the same reachability question declined
+above, declined the same way.
 
 ---
 

@@ -431,6 +431,56 @@ fn pattern_matches_nothing(
                 .to_owned(),
         });
     }
+
+    dir_pattern_matches_nothing(config, rule, tree, concerns);
+}
+
+/// The same silent failure, one level up: a `dir_pattern` that matches no
+/// directory in scope stops the rule applying to anything at all.
+///
+/// Worth its own check rather than folding into the loop above, because the
+/// text a reader needs is different. A `file_pattern` that matches nothing is
+/// usually a regex written against a path; a `dir_pattern` that matches nothing
+/// is usually one written against the whole path when only the last segment is
+/// offered, and saying "filename" to someone debugging a directory regex sends
+/// them the wrong way.
+fn dir_pattern_matches_nothing(
+    config: &CompiledConfig,
+    rule: &CompiledRule,
+    tree: &RepoTree,
+    concerns: &mut Vec<Concern>,
+) {
+    let CompiledRuleKind::Naming {
+        dir_pattern: Some(pattern),
+        ..
+    } = &rule.kind
+    else {
+        return;
+    };
+
+    let matches = in_scope(config, rule, tree).any(|file| {
+        file.path
+            .parent()
+            .and_then(|parent| parent.file_name().map(ToOwned::to_owned))
+            .is_some_and(|directory| pattern.is_match(&directory))
+    });
+    if matches {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "dir-pattern-matches-nothing",
+        rule_id: Some(rule.id.clone()),
+        path: None,
+        message: format!(
+            "`{}` matches no directory in {}, so the rule applies to no file",
+            pattern.as_str(),
+            list(rule.scope.patterns())
+        ),
+        fix: "`dir_pattern` is matched against the name of the directory the \
+              file sits in -- `Order`, not `src/entities/Order`"
+            .to_owned(),
+    });
 }
 
 /// A `call-obligation` naming a module nothing in scope imports.
@@ -670,7 +720,9 @@ mod tests {
         CompiledRuleKind::ImportBoundary {
             forbid: PathSet::compile(["src/infra/**".to_owned()]).expect("valid globs"),
             require: PathSet::default(),
+            forbid_packages: Vec::new(),
             except: PathSet::default(),
+            except_from: PathSet::default(),
             include_type_only: true,
         }
     }
@@ -678,9 +730,22 @@ mod tests {
     fn naming(hint: Option<&str>, kind: KindFilter) -> CompiledRuleKind {
         CompiledRuleKind::Naming {
             file_pattern: Pattern::compile("^(?<name>[a-z]+)\\.ts$").expect("valid"),
+            dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind,
             signature_hint: hint.map(str::to_owned),
+        }
+    }
+
+    /// A `naming` rule that spells its export from the directory as well, with
+    /// the directory pattern varying per test.
+    fn entity_naming(dir_pattern: &str) -> CompiledRuleKind {
+        CompiledRuleKind::Naming {
+            file_pattern: Pattern::compile("^(?<action>[a-z]+)\\.ts$").expect("valid"),
+            dir_pattern: Some(Pattern::compile(dir_pattern).expect("valid")),
+            name_template: "{{pascal(entity)}}{{pascal(action)}}".to_owned(),
+            kind: KindFilter::Any,
+            signature_hint: None,
         }
     }
 
@@ -1085,6 +1150,43 @@ mod tests {
         );
 
         assert!(!codes.contains(&"pattern-matches-nothing"), "{codes:?}");
+    }
+
+    /// The same silent failure one level up. The mistake this catches is
+    /// writing `dir_pattern` against the whole path when only the last segment
+    /// is offered — and a rule whose directory pattern matches nothing applies
+    /// to no file at all, which `CONFIG.md` calls the worst failure a linter
+    /// has, because it is indistinguishable from a rule that passes.
+    #[test]
+    fn a_directory_pattern_matching_nothing_is_reported() {
+        let codes = repository_codes(
+            &[("src/Order/insert.ts", "export function OrderInsert() {}")],
+            &config(vec![rule(
+                "repo-name",
+                &["src/*"],
+                entity_naming(r"^src/(?<entity>[A-Za-z]+)$"),
+            )]),
+        );
+
+        assert!(
+            codes.contains(&"dir-pattern-matches-nothing"),
+            "a pattern anchored against the path matches no directory name: {codes:?}"
+        );
+    }
+
+    /// And the same rule written against the segment is quiet.
+    #[test]
+    fn a_directory_pattern_that_matches_is_not_reported() {
+        let codes = repository_codes(
+            &[("src/Order/insert.ts", "export function OrderInsert() {}")],
+            &config(vec![rule(
+                "repo-name",
+                &["src/*"],
+                entity_naming(r"^(?<entity>[A-Za-z]+)$"),
+            )]),
+        );
+
+        assert!(!codes.contains(&"dir-pattern-matches-nothing"), "{codes:?}");
     }
 
     /// A `structure` rule's `filename_patterns` are regexes too, and one that

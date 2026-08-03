@@ -146,6 +146,21 @@ fn absorb(shape: &mut Scaffold, expectation: Expectation) {
                 except: except.clone(),
                 include_type_only,
             })),
+        // A forbidden package belongs in the same list as a forbidden path: for
+        // someone about to write the file the two are one instruction, "do not
+        // import this". The pattern slot carries the package name, which is
+        // what the rule matches on and what the writer needs to see.
+        Expectation::ForbiddenPackages {
+            packages,
+            except_from,
+            include_type_only,
+        } => shape
+            .forbidden_imports
+            .extend(packages.into_iter().map(|package| ImportConstraint {
+                pattern: package,
+                except: except_from.clone(),
+                include_type_only,
+            })),
         Expectation::RequiredImport { patterns } => {
             shape
                 .required_imports
@@ -380,6 +395,7 @@ mod tests {
         CompiledRuleKind::Naming {
             file_pattern: Pattern::compile(r"^(?<name>[a-z0-9-]+)\.use-case\.ts$")
                 .expect("valid pattern"),
+            dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind,
             signature_hint: hint.map(str::to_owned),
@@ -400,7 +416,9 @@ mod tests {
         CompiledRuleKind::ImportBoundary {
             forbid: set(forbid),
             require: set(require),
+            forbid_packages: Vec::new(),
             except: set(except),
+            except_from: PathSet::default(),
             include_type_only: true,
         }
     }
@@ -468,6 +486,42 @@ mod tests {
         assert_eq!(
             shape.required_imports.first().map(|c| c.pattern.as_str()),
             Some("src/telemetry/**")
+        );
+    }
+
+    /// A forbidden package sits in the same list as a forbidden path. For
+    /// someone about to write the file the two are one instruction — "do not
+    /// import this" — and splitting them would make an agent consult two lists
+    /// to answer one question.
+    #[test]
+    fn a_forbidden_package_lands_beside_the_forbidden_paths() {
+        let shape = shape_of(vec![rule(
+            "three-is-quarantined",
+            &["src/**"],
+            CompiledRuleKind::ImportBoundary {
+                forbid: set(&["src/infra/**"]),
+                require: PathSet::default(),
+                forbid_packages: vec!["three".to_owned()],
+                except: PathSet::default(),
+                except_from: set(&["src/scripts/three/**"]),
+                include_type_only: true,
+            },
+        )]);
+
+        let patterns: Vec<_> = shape
+            .forbidden_imports
+            .iter()
+            .map(|c| c.pattern.as_str())
+            .collect();
+        assert_eq!(
+            patterns,
+            ["src/infra/**", "three"],
+            "the package name is what the rule matches on, so it is what is shown"
+        );
+        assert_eq!(
+            shape.forbidden_imports.last().map(|c| c.except.as_slice()),
+            Some(["src/scripts/three/**".to_owned()].as_slice()),
+            "and the one directory allowed travels with it"
         );
     }
 
@@ -814,7 +868,9 @@ mod tests {
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
                     require: PathSet::default(),
+                    forbid_packages: Vec::new(),
                     except: PathSet::default(),
+                    except_from: PathSet::default(),
                     include_type_only: false,
                 },
             )]),

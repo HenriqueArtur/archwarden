@@ -212,18 +212,21 @@ The text format ends with the same numbers on one line, how long it took last:
 ```
 
 **`checks_skipped` is the number to watch.** It counts checks nobody could
-make — one per rule that wanted a file whose facts were unavailable, usually
-because the file would not parse. It appears in the text line only when it is
-not zero:
+make — one per rule that wanted a source file whose facts were unavailable,
+which in practice means the file would not parse. It appears in the text line
+only when it is not zero, and the run names every one of them:
 
 ```
+note: `src/user/broken.ts` was not checked — unexpected token
+      2 checks skipped there: calcs-need-spec, domain-forbids-infrastructure
 1 error, 0 warnings, 2 skipped · 3 files, 3 directories · 1 parsed · 2ms
 ```
 
 A run with skips is a run that decided less than it looks like. Do not report
 it as clean.
 
-`summary.skipped_checks` names them, so the number is one you can act on:
+`summary.skipped_checks` carries the same pairs, for a consumer rather than a
+reader:
 
 ```json
 "skipped_checks": [{ "rule_id": "calcs-need-spec", "path": "src/user/broken.ts" }]
@@ -231,6 +234,15 @@ it as clean.
 
 Usually one file that will not parse, wanted by every rule that reads inside a
 file. Fix the file, or find out why it does not parse.
+
+**Zero is reachable, and that is the point.** A rule whose scope also covers a
+`DOC.md`, a `package.json` or an image does not skip a check on it — those are
+not answers anybody lost, they are files the rule was never about, and counting
+them would pin the number above zero for any repository that keeps
+documentation beside its code. If that were so, this instruction would teach
+you to ignore the one number it asks you to watch. `check --file` still reports
+them, under `not-source`, because that command answers "what happened to *this*
+file" and "nothing, it is not source" is a real answer there.
 
 `files_parsed` and `facts_reused` are the cache working. A warm run parses
 nothing and is not much faster in wall clock — it still reads and hashes every
@@ -433,6 +445,13 @@ written, so there is no half-done state to clean up. Exit 2 with a reason: a
 dirty working tree, a specifier archwarden cannot recompute, a destination that
 exists. Fix the reason and run again; do not work around it.
 
+**Install the workspace before moving anything in a monorepo.** A file that
+imports a moving package by name — `@org/domain/thing` rather than `../thing` —
+is invisible when that package does not resolve, which is the normal state of a
+fresh clone before `install`. `--apply` refuses rather than rewriting the
+importers it happens to see, and the refusal names the file and the specifier.
+Run your package manager's install and try again.
+
 **`--force` covers exactly one refusal** — a dynamic import naming no module,
 where whether that file imports the target is unknowable. The report names the
 file. Look at it. Do not reach for `--force` on anything else; it does not
@@ -512,9 +531,9 @@ configuration, not findings about code.
 | kind | asks | you satisfy it by |
 |---|---|---|
 | `structure` | may this folder or filename exist here? | putting the file where `allowed_subfolders` / `filename_patterns` allow |
-| `naming` | does the filename match the exported symbol? | exporting the exact name `scaffold` gives you |
+| `naming` | does the filename — and sometimes its directory — match the exported symbol? | exporting the exact name `scaffold` gives you |
 | `spec-pair` | is there a test beside it? | creating the sibling `.spec.ts` — **write it, do not leave it empty** if `non_empty_spec` is true |
-| `import-boundary` | may this layer import that one? | importing through whatever `except` allows, or not at all |
+| `import-boundary` | may this layer import that one — or that *dependency*? | importing through whatever `except` allows, or not at all |
 | `call-obligation` | does this file call the required symbol? | calling it **anywhere in the file**, including from a local helper |
 | `no-passthrough` | does this file add anything of its own? | writing something here, or deleting the file and importing what it forwards |
 
@@ -525,6 +544,15 @@ Two details that decide most cases:
   selects everything underneath.
 - `spec-pair` takes the extension from the source file: `Component.tsx` pairs
   with `Component.spec.tsx`, not `.spec.ts`.
+- A `naming` rule may spell the export from the **directory as well as the
+  file** — `Order/fetch-by-id.ts` wanting `OrderFetchByIdRepository`. Never
+  guess that name from the pattern. Ask `scaffold`, which renders it, and note
+  that moving such a file to another directory changes the name it must export.
+- An `import-boundary` rule may forbid a **dependency**, not only a layer:
+  "only `src/scripts/three/**` may import `three`". Reaching for a package
+  because it is installed is not enough — `describe` tells you whether this
+  file may. The rule covers subpaths, so `three/examples/...` is the same
+  package, and it fires even when dependencies are not installed.
 
 ## Reading a finding
 

@@ -136,6 +136,24 @@ pub struct NamingRule {
     pub roots: Patterns,
     /// Regex over the filename, with a named capture group.
     pub file_pattern: String,
+    /// Regex over the name of the directory the file sits in, with named
+    /// capture groups that join `file_pattern`'s in the template.
+    ///
+    /// For the convention where the entity is the folder and the action is the
+    /// file — `Order/fetch-by-id.ts` exporting `OrderFetchByIdRepository` — the
+    /// export name is spelled from both halves of the path, and `file_pattern`
+    /// alone can only see one of them.
+    ///
+    /// Matched against the *last segment* of the directory, not the whole path:
+    /// under `roots: ".../Entities/*"` the file `.../Entities/Order/insert.ts`
+    /// offers `Order`. When set, it must match, exactly as `file_pattern` must
+    /// — a file whose directory does not match is a file the rule is not about.
+    ///
+    /// Stays purely lexical: `dirname` and `basename` of a path archwarden
+    /// already has, with no parse, no resolution and no disk access, so
+    /// `describe` and `scaffold` keep answering for files that do not exist yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir_pattern: Option<String>,
     /// The export the file must carry.
     pub must_export: MustExport,
 }
@@ -224,9 +242,36 @@ pub struct ImportBoundaryRule {
     /// imports match, the file is illegal.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub must_import_from: Patterns,
+    /// Package names this file may not import. Matching means the import is
+    /// illegal.
+    ///
+    /// A package name, not a glob: `"three"` forbids `three` and everything
+    /// under it, so `three/examples/jsm/loaders/GLTFLoader.js` does not sail
+    /// past. `node:fs` and `fs` are the same module and either spelling matches
+    /// both.
+    ///
+    /// A separate field rather than a scheme prefix inside `forbid_import_from`
+    /// on purpose: treating `three` as *either* a path glob or a package name
+    /// depending on what it happened to match is the ambiguity that produces a
+    /// rule enforcing nothing.
+    ///
+    /// An import that resolves to a file in this repository is never matched
+    /// here, however it is spelled — that is a path, and `forbid_import_from`
+    /// is the field for it.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub forbid_import_from_packages: Patterns,
     /// Exceptions, also matched against the resolved path.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub except: Patterns,
+    /// Globs matched against the *importing* file, exempting it from the whole
+    /// rule.
+    ///
+    /// `except` is about what is imported; this is about who imports it, which
+    /// is where an exception to a rule about a dependency naturally sits —
+    /// "only `src/scripts/three/**` may import `three`" is one forbid and one
+    /// exempt importer.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub except_from: Patterns,
     /// Whether `import type` and inline `type` marks count.
     #[serde(default = "default_true")]
     pub include_type_only: bool,

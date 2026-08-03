@@ -380,6 +380,7 @@ mod tests {
         CompiledRuleKind::Naming {
             file_pattern: Pattern::compile(r"^(?<name>[a-z0-9-]+)\.use-case\.ts$")
                 .expect("valid pattern"),
+            dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
             signature_hint: Some("(deps: Deps) => UseCase".to_owned()),

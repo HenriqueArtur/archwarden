@@ -111,8 +111,11 @@ pub enum TemplateError {
         /// Comma-separated list of valid names.
         available: String,
     },
-    /// The template referenced a capture group the regex does not define.
-    #[error("template references capture group `{group}`, which `file_pattern` does not define")]
+    /// The template referenced a capture group no pattern on the rule defines.
+    #[error(
+        "template references capture group `{group}`, which the rule's \
+         patterns do not define"
+    )]
     UnknownGroup {
         /// The group name as written.
         group: String,

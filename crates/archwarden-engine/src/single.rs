@@ -387,6 +387,7 @@ mod tests {
         CompiledRuleKind::Naming {
             file_pattern: Pattern::compile(r"^(?<name>[a-z0-9-]+)\.use-case\.ts$")
                 .expect("valid pattern"),
+            dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
             signature_hint: None,
@@ -467,7 +468,9 @@ mod tests {
                         forbid: PathSet::compile(["packages/domain/**".to_owned()])
                             .expect("valid globs"),
                         require: PathSet::default(),
+                        forbid_packages: Vec::new(),
                         except: PathSet::default(),
+                        except_from: PathSet::default(),
                         include_type_only: true,
                     },
                 )],

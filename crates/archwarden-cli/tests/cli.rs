@@ -611,6 +611,127 @@ fn apply_moves_the_file_and_rewrites_a_package_specifier() {
     );
 }
 
+/// Issue #11, end to end. The importer lives in another package and names it
+/// by package name; the package's `exports` do not cover that subpath the way
+/// the bundler resolves it, so archwarden cannot place the specifier.
+///
+/// What used to happen: the specifier resolved to nothing, so the file was not
+/// an importer, so nothing rewrote it and nothing refused. The move went
+/// through, printed a success line, exited `0`, and left an import pointing at
+/// a path that had just been deleted. `AGENTS.md` promises the opposite —
+/// "a refusal means nothing happened, everything is validated before a byte is
+/// written" — and the promise held; there was simply no refusal.
+///
+/// `--force` is in the command because it was in the one that produced the
+/// broken repository. It must not help.
+#[test]
+fn apply_refuses_when_an_importer_names_a_package_it_cannot_place() {
+    let dir = git_repo(&[
+        ("arch.config.json", MINIMAL),
+        // `./id/*` covers `id/shared/x`; `./*/*/*` does not cover it the way
+        // this reads patterns, so the specifier below lands nowhere.
+        (
+            "packages/domain/package.json",
+            r#"{"name":"@org/domain","exports":{"./*/*/*":"./src/*/*/*.ts"}}"#,
+        ),
+        (
+            "packages/domain/src/id/shared/is-id-invalid-shared.ts",
+            "export function isIdInvalidShared(id: string) {\n  return id === '';\n}\n",
+        ),
+        (
+            "apps/web/package.json",
+            r#"{"name":"@org/web","dependencies":{"@org/domain":"workspace:*"}}"#,
+        ),
+        (
+            "apps/web/use-it.ts",
+            "import { isIdInvalidShared } from \"@org/domain/id/shared/is-id-invalid-shared\";\n\
+             export const check = isIdInvalidShared;\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "impact",
+            "packages/domain/src/id/shared/is-id-invalid-shared.ts",
+            "--to",
+            "packages/domain/src/id/calcs/is-id-invalid.ts",
+            "--apply",
+            "--force",
+        ])
+        .assert()
+        .code(2)
+        .stderr(contains("nothing was moved"))
+        .stderr(contains("apps/web/use-it.ts"))
+        .stderr(contains("install"));
+
+    assert!(
+        dir.path()
+            .join("packages/domain/src/id/shared/is-id-invalid-shared.ts")
+            .is_file(),
+        "the refusal is total: the source is where it was"
+    );
+    let importer = std::fs::read_to_string(dir.path().join("apps/web/use-it.ts")).expect("read");
+    assert!(
+        importer.contains("\"@org/domain/id/shared/is-id-invalid-shared\""),
+        "and the import still points at a file that still exists: {importer}"
+    );
+}
+
+/// The same shape, resolving. A workspace archwarden *can* place is not made
+/// harder by the guard above — which is the half that decides whether the
+/// guard is a protection or an obstacle.
+#[test]
+fn apply_is_untouched_when_the_package_specifier_resolves() {
+    let dir = git_repo(&[
+        ("arch.config.json", MINIMAL),
+        (
+            "packages/domain/package.json",
+            r#"{"name":"@org/domain","exports":{"./id/*":"./src/id/*.ts"}}"#,
+        ),
+        (
+            "packages/domain/src/id/shared/is-id-invalid-shared.ts",
+            "export function isIdInvalidShared(id: string) {\n  return id === '';\n}\n",
+        ),
+        (
+            "apps/web/package.json",
+            r#"{"name":"@org/web","dependencies":{"@org/domain":"workspace:*"}}"#,
+        ),
+        (
+            // An uninstalled real dependency beside the workspace one. It does
+            // not resolve either, and it must not block anything: a repository
+            // before `install` has thousands of these, and no move could ever
+            // change what `react` means.
+            "apps/web/use-it.ts",
+            "import React from \"react\";\n\
+             import { isIdInvalidShared } from \"@org/domain/id/shared/is-id-invalid-shared\";\n\
+             export const check = [React, isIdInvalidShared];\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "impact",
+            "packages/domain/src/id/shared/is-id-invalid-shared.ts",
+            "--to",
+            "packages/domain/src/id/calcs/is-id-invalid.ts",
+            "--apply",
+        ])
+        .assert()
+        .success();
+
+    let importer = std::fs::read_to_string(dir.path().join("apps/web/use-it.ts")).expect("read");
+    assert!(
+        importer.contains("\"@org/domain/id/calcs/is-id-invalid\""),
+        "the package specifier followed the file: {importer}"
+    );
+    assert!(
+        importer.contains("\"react\""),
+        "and the dependency was left alone: {importer}"
+    );
+}
+
 /// `git` is the undo, so an undo that would take uncommitted work with it is
 /// refused. Nothing is written, which is why the refusal can be total.
 #[test]

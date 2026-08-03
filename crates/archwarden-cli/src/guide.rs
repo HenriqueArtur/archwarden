@@ -205,13 +205,22 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
         }
         CompiledRuleKind::Naming {
             file_pattern,
+            dir_pattern,
             name_template,
             kind,
             signature_hint,
         } => {
+            // The directory half belongs in the same sentence, not in a note
+            // under it. An agent reading "files matching `^(?<action>...)$`
+            // must export `{{pascal(entity)}}{{pascal(action)}}`" without being
+            // told where `entity` comes from cannot produce the name, and this
+            // digest is what it has instead of the config.
             let mut lines = vec![format!(
-                "files matching `{}` must export `{name_template}`{}",
+                "files matching `{}`{} must export `{name_template}`{}",
                 file_pattern.as_str(),
+                dir_pattern.as_ref().map_or_else(String::new, |pattern| {
+                    format!(", in a directory matching `{}`", pattern.as_str())
+                }),
                 declared_as(kind),
             )];
             if let Some(hint) = signature_hint {
@@ -242,7 +251,9 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
         CompiledRuleKind::ImportBoundary {
             forbid,
             require,
+            forbid_packages,
             except,
+            except_from,
             include_type_only,
         } => {
             let mut lines = Vec::new();
@@ -253,6 +264,20 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
                 }
                 if !include_type_only {
                     line.push_str(" (type-only imports are exempt)");
+                }
+                lines.push(line);
+            }
+            // The dependency half, in the same voice. An agent about to reach
+            // for `three` has to learn it here or not at all: this digest is
+            // what it has instead of the config, and a rule the digest omits is
+            // a rule it will violate.
+            if !forbid_packages.is_empty() {
+                let mut line = format!(
+                    "must not import the package {} (nor anything under it)",
+                    join(forbid_packages)
+                );
+                if !except_from.is_empty() {
+                    let _ = write!(line, "; only {} may", join(except_from.patterns()));
                 }
                 lines.push(line);
             }
@@ -419,6 +444,7 @@ mod tests {
         CompiledRuleKind::Naming {
             file_pattern: Pattern::compile(r"^(?<name>[a-z0-9-]+)\.use-case\.ts$")
                 .expect("valid pattern"),
+            dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
             signature_hint: Some("(deps: Deps): UseCase".to_owned()),
@@ -449,9 +475,58 @@ mod tests {
         CompiledRuleKind::ImportBoundary {
             forbid: set(&["src/infra/**"]),
             require: PathSet::default(),
+            forbid_packages: Vec::new(),
             except: PathSet::default(),
+            except_from: PathSet::default(),
             include_type_only: true,
         }
+    }
+
+    /// A boundary about a dependency rather than a layer.
+    fn package_boundary(except_from: &[&str]) -> CompiledRuleKind {
+        CompiledRuleKind::ImportBoundary {
+            forbid: PathSet::default(),
+            require: PathSet::default(),
+            forbid_packages: vec!["three".to_owned()],
+            except: PathSet::default(),
+            except_from: set(except_from),
+            include_type_only: true,
+        }
+    }
+
+    /// The digest is what an agent has instead of the config, so a rule it
+    /// omits is a rule the agent will violate. Issue #14's angle: the rule
+    /// used to live in a second config file archwarden never read.
+    #[test]
+    fn the_guide_names_a_forbidden_package_and_who_may_import_it() {
+        let quarantined = config(vec![rule(
+            "three-is-quarantined",
+            None,
+            &["src/**"],
+            package_boundary(&["src/scripts/three/**"]),
+        )]);
+        let markdown = rendered(&quarantined, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains("must not import the package `three` (nor anything under it)"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("only `src/scripts/three/**` may"),
+            "the one directory allowed is the half an agent needs most: {markdown}"
+        );
+
+        // And with nothing exempt, the sentence stops rather than trailing off
+        // into an empty list.
+        let everywhere = config(vec![rule(
+            "no-three",
+            None,
+            &["src/**"],
+            package_boundary(&[]),
+        )]);
+        let markdown = rendered(&everywhere, None, GuideFormat::Markdown);
+        assert!(markdown.contains("(nor anything under it)"), "{markdown}");
+        assert!(!markdown.contains("only "), "{markdown}");
     }
 
     fn mixed() -> CompiledConfig {
@@ -575,7 +650,9 @@ mod tests {
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
                     require: PathSet::default(),
+                    forbid_packages: Vec::new(),
                     except: PathSet::default(),
+                    except_from: PathSet::default(),
                     include_type_only: true,
                 },
             ),
@@ -842,7 +919,9 @@ mod tests {
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
                     require: set(&["src/telemetry/**"]),
+                    forbid_packages: Vec::new(),
                     except: set(&["src/infra/types/**"]),
+                    except_from: PathSet::default(),
                     include_type_only: false,
                 },
             ),
@@ -913,6 +992,7 @@ mod tests {
                 &["src/*"],
                 CompiledRuleKind::Naming {
                     file_pattern: Pattern::compile("^(?<name>[a-z]+)\\.ts$").expect("valid"),
+                    dir_pattern: None,
                     name_template: "{{pascal(name)}}".to_owned(),
                     kind: KindFilter::Any,
                     signature_hint: None,

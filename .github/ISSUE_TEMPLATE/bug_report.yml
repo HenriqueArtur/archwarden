@@ -1,0 +1,102 @@
+name: 🐛 Bug report
+description: archwarden reported something wrong, missed something, refused when it should not have, or wrote something it should not have.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The failure this project cares most about is a rule that **silently enforces nothing** —
+        it is indistinguishable from a rule that passes. If you suspect that, say so up front:
+        it is more urgent than a false positive, because nobody finds it on their own.
+
+        Fill in what you have. A partial report is worth filing; only the version and a
+        reproduction are genuinely load-bearing.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, in a few sentences.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `archwarden --version`. If you can, add the platform package and its checksum — `npm ls @archwarden/cli-*` and the `.sha256` from the release. It tells us whether you are on the published artifact or a source build.
+      placeholder: "archwarden 0.5.1 · @archwarden/cli-linux-arm64@0.5.1"
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The exact command, and the repository shape it ran against. A link to a repository that reproduces it is the fastest possible version of this field.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Config
+      description: The smallest `arch.config.json` that still shows the problem. Trim it — a rule that is not involved is a rule we will spend time eliminating.
+      render: json
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected
+      description: What should have happened, and where that expectation comes from if a doc states it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual
+      description: Real output, pasted rather than described. `--format json` says more than the text output does, and includes the exit code if you can capture it.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: |
+        OS and architecture, Node version, package manager, and the shape of the repository —
+        monorepo or single package, roughly how many files, and whether `node_modules` was
+        installed at the time. That last one has been the trigger condition before.
+      placeholder: |
+        - Linux, aarch64, Node 24
+        - pnpm workspace monorepo, ~3800 files
+        - no node_modules installed (fresh clone)
+    validations:
+      required: false
+
+  - type: textarea
+    id: ruled-out
+    attributes:
+      label: What you ruled out
+      description: |
+        Optional, and the single most useful field on this form. Anything you tested and
+        eliminated, and anything you tried to isolate and could not. "A minimal fixture does
+        not reproduce it" is a real finding and worth writing down — it tells us the trigger
+        is in the shape of the repository rather than in the command.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before filing
+      options:
+        - label: I am on the latest release, or I have said which version I am on and why.
+          required: true
+        - label: This is not a security issue. (Those go through the Security tab — see SECURITY.md.)
+          required: true

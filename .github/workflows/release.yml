@@ -189,7 +189,7 @@ jobs:
     steps:
       # `download-artifact` v8 fails on a hash mismatch rather than warning,
       # which is what you want when the bytes downloaded here become the
-      # binaries inside seven published npm packages.
+      # binaries inside six published npm packages.
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -215,13 +215,13 @@ jobs:
 
       # `download-artifact` v8 fails on a hash mismatch rather than warning,
       # which is what you want when the bytes downloaded here become the
-      # binaries inside seven published npm packages.
+      # binaries inside six published npm packages.
       - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
 
-      # Eight packages: the one people install, and seven carrying a binary
+      # Six packages: the one people install, and five carrying a binary
       # each. No postinstall anywhere -- pnpm 10 blocks dependencies' install
       # scripts by default, so a package that downloaded its binary would
       # install silently without one, and fail at first run in someone else's

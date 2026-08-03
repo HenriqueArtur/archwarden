@@ -82,12 +82,14 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                 )),
                 CompiledRuleKind::Naming {
                     file_pattern,
+                    dir_pattern,
                     name_template,
                     kind,
                     signature_hint,
                 } => Box::new(naming::NamingEngine::build(
                     rule,
                     file_pattern,
+                    dir_pattern.as_ref(),
                     name_template,
                     kind,
                     signature_hint.as_deref(),
@@ -95,13 +97,17 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                 CompiledRuleKind::ImportBoundary {
                     forbid,
                     require,
+                    forbid_packages,
                     except,
+                    except_from,
                     include_type_only,
                 } => Box::new(import_boundary::ImportBoundaryEngine::build(
                     rule,
                     forbid,
                     require,
+                    forbid_packages,
                     except,
+                    except_from,
                     *include_type_only,
                 )),
                 CompiledRuleKind::CallObligation {
@@ -173,6 +179,7 @@ mod tests {
     fn naming_rule() -> CompiledRuleKind {
         CompiledRuleKind::Naming {
             file_pattern: Pattern::compile("^(?<name>[a-z]+)\\.ts$").expect("valid"),
+            dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: archwarden_core::facts::KindFilter::Any,
             signature_hint: None,
@@ -191,7 +198,9 @@ mod tests {
         CompiledRuleKind::ImportBoundary {
             forbid: PathSet::compile(["packages/domain/**".to_owned()]).expect("valid"),
             require: PathSet::default(),
+            forbid_packages: Vec::new(),
             except: PathSet::default(),
+            except_from: PathSet::default(),
             include_type_only: true,
         }
     }

@@ -1,0 +1,24 @@
+# Blank issues stay enabled on purpose. The strongest reports this project has
+# received were freeform, and several would have been worse squeezed into a
+# form: they carried a "ruled out" section, a probe that isolated the trigger,
+# and an explicit note on what the reporter could *not* narrow down. The
+# templates below are a floor for someone who does not know what we need, not a
+# cage for someone who does.
+blank_issues_enabled: true
+
+contact_links:
+  - name: 🔒 Security vulnerability
+    url: https://github.com/HenriqueArtur/archwarden/security/advisories/new
+    about: Report privately. Do not open a public issue — see SECURITY.md.
+
+  - name: 📖 How a rule is meant to behave
+    url: https://github.com/HenriqueArtur/archwarden/blob/main/docs/RULES.md
+    about: The semantics of every rule kind, including what each one deliberately cannot express.
+
+  - name: ⚙️ What the config accepts
+    url: https://github.com/HenriqueArtur/archwarden/blob/main/docs/CONFIG.md
+    about: The config surface, and the refusals you can hit.
+
+  - name: 🤔 Why archwarden works this way
+    url: https://github.com/HenriqueArtur/archwarden/blob/main/docs/DECISIONS.md
+    about: Load-bearing choices, with the alternatives that lost and why. Read before proposing a reversal.

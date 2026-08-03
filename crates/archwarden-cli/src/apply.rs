@@ -85,6 +85,8 @@ pub enum Refusal {
         importer: RepoRelPath,
         /// The specifier as written.
         specifier: String,
+        /// Which of the four reasons, so the message can name the right file.
+        why: crate::respecify::Unknown,
     },
     /// The specifier could not be located in the file's bytes.
     ///
@@ -124,6 +126,25 @@ pub enum Refusal {
     },
     /// A file could not be read.
     Unreadable(RepoRelPath, String),
+    /// An import naming a package something is moving out of did not resolve.
+    ///
+    /// The same blind spot as [`Opaque`](Self::Opaque), reached the other way.
+    /// A dynamic import names no module; this names one that should be in the
+    /// repository and was not found, so whether it points at a moving file is
+    /// equally unknowable — and unlike a dynamic import, it looks like an
+    /// ordinary specifier, so nothing about it invites suspicion.
+    ///
+    /// The state that produces it is a workspace whose packages do not resolve:
+    /// a clone before `install`, a package manager layout with no
+    /// `node_modules/<scope>/<pkg>`, or an `exports` map whose patterns
+    /// archwarden reads differently from the bundler. In all three the move can
+    /// still be carried out — after the imports resolve.
+    UnresolvedLocalImport {
+        /// The file that wrote the specifier.
+        importer: RepoRelPath,
+        /// The specifier as written.
+        specifier: String,
+    },
 }
 
 impl Refusal {
@@ -358,10 +379,11 @@ pub fn replacements_for(
         ) {
             Rewrite::Unchanged => continue,
             Rewrite::To(now) => now,
-            Rewrite::Unknown => {
+            Rewrite::Unknown(why) => {
                 refusals.push(Refusal::UnreadableSpecifier {
                     importer: file.clone(),
                     specifier: import.specifier.clone(),
+                    why,
                 });
                 continue;
             }
@@ -443,16 +465,7 @@ pub fn plan(
         .collect();
 
     let workspace = archwarden_resolver::workspace::Workspace::discover(root);
-    plan.crosses_packages = plan.moves.iter().any(|m| {
-        let package_of = |path: &RepoRelPath| {
-            workspace
-                .packages()
-                .iter()
-                .find(|package| path.as_path().starts_with(package.directory.as_path()))
-                .map(|package| package.name.clone())
-        };
-        package_of(&m.from) != package_of(&m.to)
-    });
+    plan.crosses_packages = crosses_packages(&plan.moves, &workspace);
 
     // A renamed file keeps its exported symbol. Said out loud, because the
     // rename is the moment somebody assumes otherwise — and renaming it would
@@ -467,6 +480,14 @@ pub fn plan(
         && !opaque.opaque.is_empty()
     {
         plan.refusals.push(Refusal::Opaque(opaque.opaque.clone()));
+    }
+
+    if let Some(entry) = found.values().next() {
+        plan.refusals.extend(blind_spots(
+            &entry.unresolved_local,
+            &plan.moves,
+            &workspace,
+        ));
     }
 
     // Every file that needs rewriting: the importers of anything moving, plus
@@ -538,6 +559,69 @@ pub fn plan(
     }
 
     plan
+}
+
+/// Whether any move leaves the workspace package it started in.
+///
+/// Worth reporting on its own: a different `tsconfig` applies at the
+/// destination, so a path alias in the moved file can mean something else
+/// there — which no specifier rewrite can decide and a reader has to check.
+fn crosses_packages(moves: &[Move], workspace: &archwarden_resolver::workspace::Workspace) -> bool {
+    let package_of = |path: &RepoRelPath| {
+        workspace
+            .packages()
+            .iter()
+            .find(|package| path.as_path().starts_with(package.directory.as_path()))
+            .map(|package| package.name.as_str())
+    };
+    moves
+        .iter()
+        .any(|m| package_of(&m.from) != package_of(&m.to))
+}
+
+/// Imports archwarden cannot place, in packages this move is taking files out
+/// of.
+///
+/// An import that names a workspace package and did not resolve is one nothing
+/// can locate, so nothing can say whether it points at a file that is about to
+/// move. The importer never appears among the known importers either, which is
+/// why the `ImporterNotRewritten` guard below never saw it: the guard asks
+/// whether every *known* importer was rewritten, and this is a file that was
+/// never known. That is how a move came to report success over a repository
+/// that no longer builds. Issue #11.
+///
+/// Narrowed to the packages something is moving out of, and the narrowing is
+/// the whole difference between a guard and an obstacle. A repository before
+/// `install` has thousands of unresolved imports to real dependencies, and
+/// `react` failing to resolve costs this move no accuracy at all — no move
+/// could ever change what it means.
+fn blind_spots(
+    unresolved: &[(RepoRelPath, String)],
+    moves: &[Move],
+    workspace: &archwarden_resolver::workspace::Workspace,
+) -> Vec<Refusal> {
+    let package_of = |path: &RepoRelPath| {
+        workspace
+            .packages()
+            .iter()
+            .find(|package| path.as_path().starts_with(package.directory.as_path()))
+            .map(|package| package.name.as_str())
+    };
+    let moving: std::collections::BTreeSet<&str> =
+        moves.iter().filter_map(|m| package_of(&m.from)).collect();
+
+    unresolved
+        .iter()
+        .filter(|(_, specifier)| {
+            workspace
+                .package_for(specifier)
+                .is_some_and(|package| moving.contains(package.name.as_str()))
+        })
+        .map(|(importer, specifier)| Refusal::UnresolvedLocalImport {
+            importer: importer.clone(),
+            specifier: specifier.clone(),
+        })
+        .collect()
 }
 
 /// Checks every move against the filesystem and against the others.
@@ -725,12 +809,16 @@ pub fn render_refusals(plan: &Plan, force: bool, out: &mut dyn std::io::Write) {
             Refusal::UnreadableSpecifier {
                 importer,
                 specifier,
+                why,
             } => {
                 let _ = writeln!(
                     out,
-                    "  `{importer}` imports `{specifier}`, which resolves into the repository\n  \
-                     through a map this does not read — a `tsconfig` path alias. Rewriting the\n  \
-                     rest and leaving this one would produce a repository that does not build."
+                    "  `{importer}` imports `{specifier}`, and no new specifier could be\n  \
+                     worked out for it:\n  \
+                     {}.\n  \
+                     Rewriting the rest and leaving this one would produce a repository\n  \
+                     that does not build.",
+                    why.explain()
                 );
             }
             Refusal::SpecifierNotFound {
@@ -769,6 +857,21 @@ pub fn render_refusals(plan: &Plan, force: bool, out: &mut dyn std::io::Write) {
                      worked out for it. Applying the rest would leave that import pointing at\n  \
                      nothing. This is a bug in archwarden — please report it with the command\n  \
                      you ran."
+                );
+            }
+            Refusal::UnresolvedLocalImport {
+                importer,
+                specifier,
+            } => {
+                let _ = writeln!(
+                    out,
+                    "  `{importer}` imports `{specifier}`, which names a package this move is\n  \
+                     taking files out of — and it does not resolve to a file here. Whether it\n  \
+                     points at one of them cannot be known, so rewriting the rest would leave\n  \
+                     this one pointing at nothing.\n  \
+                     Usually the workspace is not installed: run your package manager's install\n  \
+                     and try again. If it is installed, the package's `exports` map does not\n  \
+                     cover this subpath the way the bundler resolves it."
                 );
             }
             Refusal::Unreadable(path, message) => {
@@ -937,9 +1040,96 @@ mod tests {
             !Refusal::UnreadableSpecifier {
                 importer: path("src/a.ts"),
                 specifier: "@Components/x".to_owned(),
+                why: crate::respecify::Unknown::PathAlias,
             }
             .is_forceable()
         );
+        // The one issue #11 added. `--force` was in the command that produced
+        // the broken repository, so a refusal a flag can wave through would
+        // have changed nothing about that outcome.
+        assert!(
+            !Refusal::UnresolvedLocalImport {
+                importer: path("apps/app/src/a.ts"),
+                specifier: "@scope/domain/email/shared/x".to_owned(),
+            }
+            .is_forceable()
+        );
+    }
+
+    /// A file leaving its package is the case the warning exists for: a
+    /// different `tsconfig` applies at the destination, so a path alias in the
+    /// moved file can mean something else there.
+    ///
+    /// Untested until `cargo-mutants` could reach it. The computation predates
+    /// this test and lived inline inside `plan`, where a mutant had nothing to
+    /// replace; extracting it made the gap visible, and returning a constant
+    /// `true` or `false` broke nothing.
+    #[test]
+    fn a_move_out_of_a_package_is_what_crosses_a_boundary() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = camino::Utf8Path::from_path(dir.path()).expect("utf-8");
+        std::fs::create_dir_all(root.join("packages/app")).expect("dirs");
+        std::fs::write(
+            root.join("packages/app/package.json"),
+            r#"{"name":"@org/app"}"#,
+        )
+        .expect("write");
+        let workspace = workspace_at(root);
+
+        let moved = |from: &str, to: &str| Move {
+            from: path(from),
+            to: path(to),
+            is_spec_sibling: false,
+        };
+
+        assert!(
+            crosses_packages(
+                &[moved(
+                    "packages/domain/src/email/a.ts",
+                    "packages/app/src/a.ts"
+                )],
+                &workspace
+            ),
+            "domain to app is two packages"
+        );
+        assert!(
+            !crosses_packages(
+                &[moved(
+                    "packages/domain/src/email/a.ts",
+                    "packages/domain/src/calcs/a.ts"
+                )],
+                &workspace
+            ),
+            "and moving within one is not, however far the file travels"
+        );
+        assert!(
+            !crosses_packages(&[], &workspace),
+            "nothing moving crosses nothing"
+        );
+    }
+
+    /// The refusal has to name the file, the specifier, and what to do — it
+    /// fires in the state where a workspace is not installed, which is a state
+    /// the reader can fix in one command and will not guess at from "cannot
+    /// resolve".
+    #[test]
+    fn the_unresolved_local_import_refusal_says_what_to_do_about_it() {
+        let plan = Plan {
+            refusals: vec![Refusal::UnresolvedLocalImport {
+                importer: path("apps/app/src/a.ts"),
+                specifier: "@scope/domain/email/shared/x".to_owned(),
+            }],
+            ..Plan::default()
+        };
+        let mut out = Vec::new();
+        render_refusals(&plan, false, &mut out);
+        let text = String::from_utf8(out).expect("utf-8");
+
+        assert!(text.contains("nothing was moved"), "{text}");
+        assert!(text.contains("apps/app/src/a.ts"), "{text}");
+        assert!(text.contains("@scope/domain/email/shared/x"), "{text}");
+        assert!(text.contains("install"), "the usual cause, named: {text}");
+        assert!(text.contains("exports"), "and the other one: {text}");
     }
 
     /// The guard must never become forceable, and this test exists to make
@@ -1181,6 +1371,7 @@ mod tests {
             [Refusal::UnreadableSpecifier {
                 importer: path("apps/web/src/main.ts"),
                 specifier: "@Components/email".to_owned(),
+                why: crate::respecify::Unknown::PathAlias,
             }]
         );
     }

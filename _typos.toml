@@ -9,6 +9,18 @@ extend-exclude = [
     "docs/PLAN-V0.md",
 ]
 
+[default]
+# Git SHAs in backticks. `RELEASING.md` points at the release commits by hash
+# and the decision log cites them too, so this will keep happening -- and a
+# hash is not English, it just happens to be spelled out of the letters `a`
+# to `f`. `ba1fbce` is the one that caught it: typos split it and offered `by`.
+#
+# Anchored on the backticks rather than matching bare hex, so a real word made
+# only of hex letters -- `defaced`, `deaf`, `facade` -- is still checked
+# wherever it is prose. Inside backticks it is a code span, and spell-checking
+# one of those was never the intent.
+extend-ignore-re = ["`[0-9a-f]{7,40}`"]
+
 [default.extend-identifiers]
 # Checked before words are split, which is what these need: typos otherwise
 # breaks "PnP" into "Pn" and offers "On".
