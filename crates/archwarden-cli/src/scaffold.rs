@@ -489,6 +489,42 @@ mod tests {
         );
     }
 
+    /// A forbidden package sits in the same list as a forbidden path. For
+    /// someone about to write the file the two are one instruction — "do not
+    /// import this" — and splitting them would make an agent consult two lists
+    /// to answer one question.
+    #[test]
+    fn a_forbidden_package_lands_beside_the_forbidden_paths() {
+        let shape = shape_of(vec![rule(
+            "three-is-quarantined",
+            &["src/**"],
+            CompiledRuleKind::ImportBoundary {
+                forbid: set(&["src/infra/**"]),
+                require: PathSet::default(),
+                forbid_packages: vec!["three".to_owned()],
+                except: PathSet::default(),
+                except_from: set(&["src/scripts/three/**"]),
+                include_type_only: true,
+            },
+        )]);
+
+        let patterns: Vec<_> = shape
+            .forbidden_imports
+            .iter()
+            .map(|c| c.pattern.as_str())
+            .collect();
+        assert_eq!(
+            patterns,
+            ["src/infra/**", "three"],
+            "the package name is what the rule matches on, so it is what is shown"
+        );
+        assert_eq!(
+            shape.forbidden_imports.last().map(|c| c.except.as_slice()),
+            Some(["src/scripts/three/**".to_owned()].as_slice()),
+            "and the one directory allowed travels with it"
+        );
+    }
+
     /// One entry per glob, not per rule. An agent asks "may I import this?"
     /// about one path at a time, and a list it has to unpack first is a list
     /// it can get wrong.

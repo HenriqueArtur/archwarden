@@ -482,6 +482,53 @@ mod tests {
         }
     }
 
+    /// A boundary about a dependency rather than a layer.
+    fn package_boundary(except_from: &[&str]) -> CompiledRuleKind {
+        CompiledRuleKind::ImportBoundary {
+            forbid: PathSet::default(),
+            require: PathSet::default(),
+            forbid_packages: vec!["three".to_owned()],
+            except: PathSet::default(),
+            except_from: set(except_from),
+            include_type_only: true,
+        }
+    }
+
+    /// The digest is what an agent has instead of the config, so a rule it
+    /// omits is a rule the agent will violate. Issue #14's angle: the rule
+    /// used to live in a second config file archwarden never read.
+    #[test]
+    fn the_guide_names_a_forbidden_package_and_who_may_import_it() {
+        let quarantined = config(vec![rule(
+            "three-is-quarantined",
+            None,
+            &["src/**"],
+            package_boundary(&["src/scripts/three/**"]),
+        )]);
+        let markdown = rendered(&quarantined, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains("must not import the package `three` (nor anything under it)"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("only `src/scripts/three/**` may"),
+            "the one directory allowed is the half an agent needs most: {markdown}"
+        );
+
+        // And with nothing exempt, the sentence stops rather than trailing off
+        // into an empty list.
+        let everywhere = config(vec![rule(
+            "no-three",
+            None,
+            &["src/**"],
+            package_boundary(&[]),
+        )]);
+        let markdown = rendered(&everywhere, None, GuideFormat::Markdown);
+        assert!(markdown.contains("(nor anything under it)"), "{markdown}");
+        assert!(!markdown.contains("only "), "{markdown}");
+    }
+
     fn mixed() -> CompiledConfig {
         config(vec![
             rule("usecase-name", None, &["src/*"], naming()),

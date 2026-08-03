@@ -1899,6 +1899,34 @@ mod tests {
         }
     }
 
+    /// A deep import names a package the specifier does not spell, so the
+    /// sentence has to carry both; a bare one would read "imports `three`,
+    /// which is part of the package `three`". And `fs` is not *part of*
+    /// `node:fs` — it is the same module, spelled the other way.
+    #[test]
+    fn a_forbidden_package_names_the_package_only_when_it_differs() {
+        let observed = |specifier: &str, package: &str| {
+            describe_observed(&Observed::ForbiddenPackageImport {
+                specifier: specifier.to_owned(),
+                package: package.to_owned(),
+            })
+        };
+
+        assert_eq!(observed("three", "three"), "imports the package `three`");
+        assert_eq!(
+            observed("three/examples/jsm/loaders/GLTFLoader.js", "three"),
+            "imports `three/examples/jsm/loaders/GLTFLoader.js`, which is part \
+             of the package `three`"
+        );
+        for (written, configured) in [("fs", "node:fs"), ("node:fs", "fs")] {
+            assert_eq!(
+                observed(written, configured),
+                format!("imports the package `{configured}`"),
+                "`{written}` and `{configured}` are one module"
+            );
+        }
+    }
+
     #[test]
     fn every_expectation_has_a_sentence() {
         let sibling = describe_expectation(&Expectation::RequiredSibling {
@@ -1920,6 +1948,25 @@ mod tests {
             include_type_only: true,
         });
         assert!(forbidden.contains("except"), "{forbidden}");
+
+        let packages = describe_expectation(&Expectation::ForbiddenPackages {
+            packages: vec!["three".to_owned()],
+            except_from: vec!["src/scripts/three/**".to_owned()],
+            include_type_only: true,
+        });
+        assert!(packages.contains("three"), "{packages}");
+        assert!(
+            packages.contains("except from"),
+            "the exemption is on the importing side, and the sentence says so: \
+             {packages}"
+        );
+
+        let no_exemption = describe_expectation(&Expectation::ForbiddenPackages {
+            packages: vec!["three".to_owned()],
+            except_from: Vec::new(),
+            include_type_only: true,
+        });
+        assert_eq!(no_exemption, "no import of `three`");
     }
 
     /// A warn-listed folder is part of the expectation, so a reader can see

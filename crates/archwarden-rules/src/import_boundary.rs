@@ -810,6 +810,12 @@ mod tests {
                 package: "three".to_owned(),
             }
         );
+        assert_eq!(
+            findings[0].span,
+            Some(Span::new(0, 40)),
+            "the finding carries the import's span, or the caret has nothing to \
+             point at and the reader has to search the file"
+        );
     }
 
     /// The deep import is the one that actually costs the bytes, so it is the
