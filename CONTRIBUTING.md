@@ -44,6 +44,15 @@ cargo install cargo-nextest cargo-llvm-cov cargo-deny cargo-machete
 cargo install typos-cli cargo-mutants
 ```
 
+`typos-cli` may not build on a small machine: its dictionary is one enormous
+generated table, and `rustc` holds the whole thing in memory whatever the
+optimisation level. On a 4 GB box it is killed by the OOM killer, at
+`opt-level=0` too. Take the prebuilt binary instead — it is what CI does:
+
+```bash
+gh release download --repo crate-ci/typos --pattern '*aarch64-unknown-linux-musl.tar.gz'
+```
+
 Node 22 and `python3` are needed only for the distribution tests
 (`npm/archwarden/test/`, `scripts/test_*.py`).
 
