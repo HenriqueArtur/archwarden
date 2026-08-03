@@ -1102,6 +1102,21 @@ mod tests {
             "and nothing points at it to investigate: {:?}",
             report.skipped_checks
         );
+
+        // The other half of the same `is_source`, one decision earlier: the
+        // markdown is not read at all. Asserted because it is the difference
+        // between "we knew not to ask" and "we asked and threw the answer
+        // away" -- and because on a repository whose boundary scope covers a
+        // directory of images, asking is the expensive half.
+        assert_eq!(
+            report.files_parsed, 1,
+            "only the `.ts` was parsed; the `.md` was never opened"
+        );
+        assert!(
+            report.unreadable_files.is_empty(),
+            "and it is not reported as unreadable, because nothing read it: {:?}",
+            report.unreadable_files
+        );
     }
 
     /// The other half of the same line, and the half that must not move: a
