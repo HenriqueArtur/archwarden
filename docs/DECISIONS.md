@@ -17,6 +17,69 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 17 — A boundary may name a package, in a field of its own
+Status: accepted.
+Context: `RULES.md` declared a prohibition on a dependency out of scope for
+v0, and gave a real reason: globs are matched against repo-relative
+paths, and an installed package does not have one. Issue #14 is the
+motivating case — `three` is 150 KB gzipped against a page budget that is
+otherwise a few KB, and the project's actual rule is "only
+`src/scripts/three/**` may import it".
+
+The argument that changed the answer is not the lint. Biome's
+`noRestrictedImports` covers it and covers it well. It is that the rule
+then lives in a second config file, and `describe` and `agent-guide` read
+only the first — so an agent that consults archwarden before writing, which
+is the whole premise of `AGENTS.md`, gets an incomplete answer and writes
+the violation. A config that structurally cannot hold a project's rule
+makes the agent-facing commands wrong, not merely incomplete.
+Decision: `import-boundary` gains `forbid_import_from_packages`, matching
+**package identity** rather than any path, plus `except_from` for the
+importing side.
+
+Four things fall out of "identity, not path", and each is load-bearing:
+
+- The package **and everything under it**. `three/examples/jsm/loaders/
+  GLTFLoader.js` is the import that costs the bytes; a rule that caught
+  only the bare name would miss the case it exists for. `three-mesh-bvh`
+  is a different package.
+- `node:fs` and `fs` are one module and one identity.
+- An import that resolves **into this repository** is a path, and
+  `forbid_import_from` is its field. The two never both fire on one
+  import, so a `tsconfig` alias spelling a local shim `three` is not
+  caught by a rule about the dependency.
+- Reading the specifier rather than the resolution means the rule holds on
+  a repository whose dependencies are not installed. That is the opposite
+  of the path half, which is blind there, and it is worth having: a CI job
+  that lints before installing still enforces it.
+Alternatives:
+- **A glob against `node_modules/three/**`.** Rejected as a lie: under
+  pnpm's store layout that path is a symlink into a content-addressed
+  store, and under yarn PnP there is no such path at all. A rule that
+  depends on a package manager's on-disk layout enforces nothing on half
+  the ecosystem, silently.
+- **A scheme prefix inside `forbid_import_from` (`"pkg:three"`).** One
+  field and one mental model, which is genuinely attractive. Rejected on
+  the same ground the issue raises: the day someone writes `"three"`
+  without the prefix, it is silently a path glob that matches nothing —
+  and a rule enforcing nothing is indistinguishable from a rule that
+  passes. A separate field cannot be got wrong that way.
+- **Reusing `except` for the importer side.** Rejected: `except` already
+  means "and these imported paths are fine". Overloading it to sometimes
+  mean the importer would make an existing rule's meaning depend on which
+  other fields are present.
+Consequences: transitivity is still declined, exactly as for the path
+half — `src/lib` importing `src/scripts/three`, which imports `three`, is
+not flagged. `RULES.md` declined reachability and this declines it the
+same way, so the two halves of the rule stay one idea.
+
+The rule reads the specifier, so it says nothing about a dependency
+reached through a path alias this does not read. That is the same blind
+spot decision 6 accepts everywhere else, and `check` already reports
+unresolved imports.
+
+---
+
 ### 16 — `impact --apply` moves what you named; it never picks what to move
 Status: accepted.
 Context: decision 2 puts archwarden in the report-only space and decision

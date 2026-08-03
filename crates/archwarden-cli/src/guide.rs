@@ -251,7 +251,9 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
         CompiledRuleKind::ImportBoundary {
             forbid,
             require,
+            forbid_packages,
             except,
+            except_from,
             include_type_only,
         } => {
             let mut lines = Vec::new();
@@ -262,6 +264,20 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
                 }
                 if !include_type_only {
                     line.push_str(" (type-only imports are exempt)");
+                }
+                lines.push(line);
+            }
+            // The dependency half, in the same voice. An agent about to reach
+            // for `three` has to learn it here or not at all: this digest is
+            // what it has instead of the config, and a rule the digest omits is
+            // a rule it will violate.
+            if !forbid_packages.is_empty() {
+                let mut line = format!(
+                    "must not import the package {} (nor anything under it)",
+                    join(forbid_packages)
+                );
+                if !except_from.is_empty() {
+                    let _ = write!(line, "; only {} may", join(except_from.patterns()));
                 }
                 lines.push(line);
             }
@@ -459,7 +475,9 @@ mod tests {
         CompiledRuleKind::ImportBoundary {
             forbid: set(&["src/infra/**"]),
             require: PathSet::default(),
+            forbid_packages: Vec::new(),
             except: PathSet::default(),
+            except_from: PathSet::default(),
             include_type_only: true,
         }
     }
@@ -585,7 +603,9 @@ mod tests {
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
                     require: PathSet::default(),
+                    forbid_packages: Vec::new(),
                     except: PathSet::default(),
+                    except_from: PathSet::default(),
                     include_type_only: true,
                 },
             ),
@@ -852,7 +872,9 @@ mod tests {
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
                     require: set(&["src/telemetry/**"]),
+                    forbid_packages: Vec::new(),
                     except: set(&["src/infra/types/**"]),
+                    except_from: PathSet::default(),
                     include_type_only: false,
                 },
             ),

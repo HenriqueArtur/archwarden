@@ -388,11 +388,60 @@ are extracted separately. Rules may opt in with `include_type_only: false`
 any chain"). That is a graph reachability question and belongs to a future
 rule if there is demand.
 
-**Also cannot express, in v0**: a prohibition on a *dependency* or a runtime
-builtin — "the UI may not import `lodash` directly", "nobody imports
-`node:fs`". Globs are matched against repo-relative paths, and neither an
-installed package nor a builtin has one. The run counts them separately, so
-the information is there when a rule for it is designed.
+### Forbidding a dependency
+
+`forbid_import_from_packages` names packages rather than paths:
+
+```json
+{
+  "type": "import-boundary",
+  "id": "three-is-quarantined",
+  "level": "error",
+  "from": "src/**",
+  "forbid_import_from_packages": ["three"],
+  "except_from": ["src/scripts/three/**"]
+}
+```
+
+> Only `src/scripts/three/**` may import `three`. Everywhere else the 3D module
+> is reached through a dynamic `import()` behind an `IntersectionObserver`, so
+> the cost never lands in the initial bundle.
+
+That is an architecture rule in the same sense as the others — which layer may
+reach which thing — and violating it is silent: nothing breaks, no test fails,
+the page just gets slower and it is found weeks later in a Lighthouse report.
+
+A separate field rather than a glob, because a dependency has no repo-relative
+path. Matching `node_modules/three/**` would be a lie under pnpm's store layout
+and does not exist at all under yarn PnP, so the rule names the **package**.
+
+- **The package, and anything under it.** A rule naming `three` catches
+  `three/examples/jsm/loaders/GLTFLoader.js`, which is the import that actually
+  costs the bytes. A package that merely shares a prefix — `three-mesh-bvh` — is
+  a different package and is left alone.
+- **Builtins are one identity.** `node:fs` and `fs` are the same module; either
+  spelling in the config matches either spelling in the source. "Nobody in
+  `src/lib/**` imports `node:fs`" is expressible.
+- **`except_from` is on the importing side.** `except` is about what is
+  imported and cannot say "this directory may". They are separate fields because
+  they exempt different ends of the same edge, and `except_from` exempts the
+  importer from the whole rule.
+- **An import that lands in this repository is a path, not a package.** A
+  `tsconfig` alias spelling a local shim `three` is matched by
+  `forbid_import_from`, never here. The two fields never both fire on one
+  import.
+- **It works before `install`.** An unresolved specifier is exactly what this
+  reads, so a CI job that lints before installing dependencies still enforces
+  the rule — unlike the path half, which needs resolution.
+
+A separate field rather than a scheme prefix (`"pkg:three"`) inside
+`forbid_import_from`, for the reason issue #14 gives: treating `three` as
+*either* a path glob or a package name depending on what it happened to match is
+the ambiguity that produces a rule enforcing nothing.
+
+**Still cannot express**: transitivity. `src/lib` importing `src/scripts/three`,
+which imports `three`, is not flagged — the same reachability question declined
+above, declined the same way.
 
 ---
 

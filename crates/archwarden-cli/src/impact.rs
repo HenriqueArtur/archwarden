@@ -332,7 +332,9 @@ mod tests {
             kind: CompiledRuleKind::ImportBoundary {
                 forbid: PathSet::compile([forbid.to_owned()]).expect("valid glob"),
                 require: PathSet::default(),
+                forbid_packages: Vec::new(),
                 except: PathSet::default(),
+                except_from: PathSet::default(),
                 include_type_only: true,
             },
         }

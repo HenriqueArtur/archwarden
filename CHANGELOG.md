@@ -48,6 +48,35 @@ saying so.
   precedence. The rule stays purely lexical, so `describe` and `scaffold` keep
   answering for files that do not exist yet.
 
+- **`import-boundary` can forbid a dependency**, through
+  `forbid_import_from_packages` and an importer-side `except_from`.
+  ([#14](https://github.com/HenriqueArtur/archwarden/issues/14), decision 17)
+
+  ```json
+  {
+    "type": "import-boundary",
+    "id": "three-is-quarantined",
+    "level": "error",
+    "from": "src/**",
+    "forbid_import_from_packages": ["three"],
+    "except_from": ["src/scripts/three/**"]
+  }
+  ```
+
+  `RULES.md` declared this out of scope for v0 because a dependency has no
+  repo-relative path for a glob to match. It still has none — the field names
+  the *package*, which is why it is correct under pnpm's store layout and under
+  yarn PnP, where `node_modules/three/**` is a lie or does not exist.
+
+  Matched as "the package and anything under it", so
+  `three/examples/jsm/loaders/GLTFLoader.js` is caught and `three-mesh-bvh` is
+  not. `node:fs` and `fs` are one identity. An import that resolves into the
+  repository is a path and is matched by `forbid_import_from` instead, never
+  both. Transitivity is still declined.
+
+  It reads the specifier rather than the resolution, so unlike the path half it
+  still fires on a repository whose dependencies are not installed.
+
 - `config doctor` reports **`dir-pattern-matches-nothing`** when a `dir_pattern`
   matches no directory in its scope — the mistake being writing it against the
   whole path — because such a rule applies to no file and is indistinguishable

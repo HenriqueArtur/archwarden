@@ -243,7 +243,9 @@ fn compile_rule(
         Rule::ImportBoundary(r) => CompiledRuleKind::ImportBoundary {
             forbid: globs(&id, "forbid_import_from", &r.forbid_import_from)?,
             require: globs(&id, "must_import_from", &r.must_import_from)?,
+            forbid_packages: r.forbid_import_from_packages.iter().cloned().collect(),
             except: globs(&id, "except", &r.except)?,
+            except_from: globs(&id, "except_from", &r.except_from)?,
             include_type_only: r.include_type_only,
         },
 
@@ -595,6 +597,36 @@ mod tests {
         .expect_err("should fail");
 
         assert!(err.to_string().contains("missing"), "{err}");
+    }
+
+    /// The rule from issue #14, through the wire format: a quarantined
+    /// dependency and the one directory allowed to reach it.
+    #[test]
+    fn a_boundary_may_name_a_package_and_exempt_an_importer() {
+        let compiled = compile_json(
+            r#"{"version":0,"rules":[
+                {"type":"import-boundary","id":"three-is-quarantined","level":"error",
+                 "from":"src/**",
+                 "forbid_import_from_packages":["three"],
+                 "except_from":["src/scripts/three/**"]}]}"#,
+        )
+        .expect("compiles");
+
+        let CompiledRuleKind::ImportBoundary {
+            forbid_packages,
+            except_from,
+            forbid,
+            ..
+        } = &compiled.rules().next().expect("one rule").kind
+        else {
+            panic!("is an import-boundary rule");
+        };
+        assert_eq!(forbid_packages, &["three".to_owned()]);
+        assert_eq!(except_from.patterns(), ["src/scripts/three/**".to_owned()]);
+        assert!(
+            forbid.is_empty(),
+            "a package rule puts nothing in the path field"
+        );
     }
 
     /// The rule from issue #16: the entity names the directory, the action

@@ -73,6 +73,21 @@ pub enum Expectation {
         /// Whether `import type` counts.
         include_type_only: bool,
     },
+    /// Imports of these packages are not allowed.
+    ///
+    /// Separate from [`ForbiddenImport`](Self::ForbiddenImport) because the
+    /// thing matched is different in kind: a package name, not a repo-relative
+    /// path. Under pnpm's store layout and yarn `PnP` a dependency has no path
+    /// this repository could name, so a glob was never going to reach one.
+    ForbiddenPackages {
+        /// The package names, matched as "this package, and anything under it".
+        packages: Vec<String>,
+        /// Globs matched against the *importing* file, which is where an
+        /// exception to a rule about a dependency naturally sits.
+        except_from: Vec<String>,
+        /// Whether `import type` counts.
+        include_type_only: bool,
+    },
     /// At least one import must match these patterns.
     RequiredImport {
         /// Glob patterns matched against the resolved import path.
@@ -160,6 +175,13 @@ pub enum Observed {
         specifier: String,
         /// Where it resolved to.
         resolved: RepoRelPath,
+    },
+    /// An import of a package the rule forbids.
+    ForbiddenPackageImport {
+        /// The specifier as written, which may name a subpath.
+        specifier: String,
+        /// The forbidden package it names.
+        package: String,
     },
     /// No import satisfied a `must_import_from`.
     RequiredImportMissing,

@@ -142,8 +142,17 @@ pub enum CompiledRuleKind {
         forbid: PathSet,
         /// Resolved import paths at least one import must match.
         require: PathSet,
+        /// Package names that are illegal, matched as "this package, and
+        /// anything under it".
+        ///
+        /// Kept as plain names rather than compiled globs: a dependency has no
+        /// repo-relative path, and under pnpm's store layout or yarn `PnP` it may
+        /// have no path this repository could name at all.
+        forbid_packages: Vec<String>,
         /// Exceptions to `forbid`.
         except: PathSet,
+        /// Importing files exempt from the whole rule.
+        except_from: PathSet,
         /// Whether `import type` counts.
         include_type_only: bool,
     },
@@ -485,7 +494,9 @@ mod tests {
             CompiledRuleKind::ImportBoundary {
                 forbid: PathSet::default(),
                 require: PathSet::default(),
+                forbid_packages: Vec::new(),
                 except: PathSet::default(),
+                except_from: PathSet::default(),
                 include_type_only: true,
             },
             CompiledRuleKind::CallObligation {

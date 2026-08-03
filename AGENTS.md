@@ -533,7 +533,7 @@ configuration, not findings about code.
 | `structure` | may this folder or filename exist here? | putting the file where `allowed_subfolders` / `filename_patterns` allow |
 | `naming` | does the filename — and sometimes its directory — match the exported symbol? | exporting the exact name `scaffold` gives you |
 | `spec-pair` | is there a test beside it? | creating the sibling `.spec.ts` — **write it, do not leave it empty** if `non_empty_spec` is true |
-| `import-boundary` | may this layer import that one? | importing through whatever `except` allows, or not at all |
+| `import-boundary` | may this layer import that one — or that *dependency*? | importing through whatever `except` allows, or not at all |
 | `call-obligation` | does this file call the required symbol? | calling it **anywhere in the file**, including from a local helper |
 | `no-passthrough` | does this file add anything of its own? | writing something here, or deleting the file and importing what it forwards |
 
@@ -548,6 +548,11 @@ Two details that decide most cases:
   file** — `Order/fetch-by-id.ts` wanting `OrderFetchByIdRepository`. Never
   guess that name from the pattern. Ask `scaffold`, which renders it, and note
   that moving such a file to another directory changes the name it must export.
+- An `import-boundary` rule may forbid a **dependency**, not only a layer:
+  "only `src/scripts/three/**` may import `three`". Reaching for a package
+  because it is installed is not enough — `describe` tells you whether this
+  file may. The rule covers subpaths, so `three/examples/...` is the same
+  package, and it fires even when dependencies are not installed.
 
 ## Reading a finding
 

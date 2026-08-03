@@ -146,6 +146,21 @@ fn absorb(shape: &mut Scaffold, expectation: Expectation) {
                 except: except.clone(),
                 include_type_only,
             })),
+        // A forbidden package belongs in the same list as a forbidden path: for
+        // someone about to write the file the two are one instruction, "do not
+        // import this". The pattern slot carries the package name, which is
+        // what the rule matches on and what the writer needs to see.
+        Expectation::ForbiddenPackages {
+            packages,
+            except_from,
+            include_type_only,
+        } => shape
+            .forbidden_imports
+            .extend(packages.into_iter().map(|package| ImportConstraint {
+                pattern: package,
+                except: except_from.clone(),
+                include_type_only,
+            })),
         Expectation::RequiredImport { patterns } => {
             shape
                 .required_imports
@@ -401,7 +416,9 @@ mod tests {
         CompiledRuleKind::ImportBoundary {
             forbid: set(forbid),
             require: set(require),
+            forbid_packages: Vec::new(),
             except: set(except),
+            except_from: PathSet::default(),
             include_type_only: true,
         }
     }
@@ -815,7 +832,9 @@ mod tests {
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
                     require: PathSet::default(),
+                    forbid_packages: Vec::new(),
                     except: PathSet::default(),
+                    except_from: PathSet::default(),
                     include_type_only: false,
                 },
             )]),

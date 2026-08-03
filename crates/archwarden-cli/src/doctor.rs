@@ -720,7 +720,9 @@ mod tests {
         CompiledRuleKind::ImportBoundary {
             forbid: PathSet::compile(["src/infra/**".to_owned()]).expect("valid globs"),
             require: PathSet::default(),
+            forbid_packages: Vec::new(),
             except: PathSet::default(),
+            except_from: PathSet::default(),
             include_type_only: true,
         }
     }

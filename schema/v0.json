@@ -340,8 +340,16 @@
               "description": "Globs matched against the resolved import path. If none of the file's\nimports match, the file is illegal.",
               "$ref": "#/$defs/OneOrMany"
             },
+            "forbid_import_from_packages": {
+              "description": "Package names this file may not import. Matching means the import is\nillegal.\n\nA package name, not a glob: `\"three\"` forbids `three` and everything\nunder it, so `three/examples/jsm/loaders/GLTFLoader.js` does not sail\npast. `node:fs` and `fs` are the same module and either spelling matches\nboth.\n\nA separate field rather than a scheme prefix inside `forbid_import_from`\non purpose: treating `three` as *either* a path glob or a package name\ndepending on what it happened to match is the ambiguity that produces a\nrule enforcing nothing.\n\nAn import that resolves to a file in this repository is never matched\nhere, however it is spelled — that is a path, and `forbid_import_from`\nis the field for it.",
+              "$ref": "#/$defs/OneOrMany"
+            },
             "except": {
               "description": "Exceptions, also matched against the resolved path.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "except_from": {
+              "description": "Globs matched against the *importing* file, exempting it from the whole\nrule.\n\n`except` is about what is imported; this is about who imports it, which\nis where an exception to a rule about a dependency naturally sits —\n\"only `src/scripts/three/**` may import `three`\" is one forbid and one\nexempt importer.",
               "$ref": "#/$defs/OneOrMany"
             },
             "include_type_only": {

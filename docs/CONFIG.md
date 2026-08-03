@@ -315,6 +315,29 @@ through the same matcher, the same `describe_expectation()`, and show up in
 `describe` and `agent-guide` with no special-casing — which is what keeps
 those commands in lockstep with the checker (decision 9).
 
+A boundary can also name a **dependency**, which has no repo-relative path for
+a glob to match:
+
+```json
+{
+  "type": "import-boundary",
+  "id": "three-is-quarantined",
+  "level": "error",
+  "from": "src/**",
+  "forbid_import_from_packages": ["three"],
+  "except_from": ["src/scripts/three/**"]
+}
+```
+
+`forbid_import_from_packages` takes package names, matched as "this package and
+anything under it" — so `three/examples/jsm/loaders/GLTFLoader.js` is caught and
+`three-mesh-bvh` is not. `node:fs` and `fs` are one identity.
+
+`except_from` exempts the *importing* file from the whole rule, which is the
+side an exception to a dependency rule sits on: `except` is about what is
+imported. See [`RULES.md`](RULES.md) for the full semantics, including why this
+is a separate field rather than a prefix inside `forbid_import_from`.
+
 ### Call obligation
 
 The semantic rule that no lint plugin does well:

@@ -242,9 +242,36 @@ pub struct ImportBoundaryRule {
     /// imports match, the file is illegal.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub must_import_from: Patterns,
+    /// Package names this file may not import. Matching means the import is
+    /// illegal.
+    ///
+    /// A package name, not a glob: `"three"` forbids `three` and everything
+    /// under it, so `three/examples/jsm/loaders/GLTFLoader.js` does not sail
+    /// past. `node:fs` and `fs` are the same module and either spelling matches
+    /// both.
+    ///
+    /// A separate field rather than a scheme prefix inside `forbid_import_from`
+    /// on purpose: treating `three` as *either* a path glob or a package name
+    /// depending on what it happened to match is the ambiguity that produces a
+    /// rule enforcing nothing.
+    ///
+    /// An import that resolves to a file in this repository is never matched
+    /// here, however it is spelled — that is a path, and `forbid_import_from`
+    /// is the field for it.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub forbid_import_from_packages: Patterns,
     /// Exceptions, also matched against the resolved path.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub except: Patterns,
+    /// Globs matched against the *importing* file, exempting it from the whole
+    /// rule.
+    ///
+    /// `except` is about what is imported; this is about who imports it, which
+    /// is where an exception to a rule about a dependency naturally sits —
+    /// "only `src/scripts/three/**` may import `three`" is one forbid and one
+    /// exempt importer.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub except_from: Patterns,
     /// Whether `import type` and inline `type` marks count.
     #[serde(default = "default_true")]
     pub include_type_only: bool,

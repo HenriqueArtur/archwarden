@@ -32,7 +32,9 @@ pub struct ImportBoundaryEngine {
     scope: Scope,
     forbid: PathSet,
     require: PathSet,
+    forbid_packages: Vec<String>,
     except: PathSet,
+    except_from: PathSet,
     include_type_only: bool,
 }
 
@@ -45,7 +47,9 @@ impl ImportBoundaryEngine {
         let CompiledRuleKind::ImportBoundary {
             forbid,
             require,
+            forbid_packages,
             except,
+            except_from,
             include_type_only,
         } = &rule.kind
         else {
@@ -56,7 +60,9 @@ impl ImportBoundaryEngine {
             rule,
             forbid,
             require,
+            forbid_packages,
             except,
+            except_from,
             *include_type_only,
         ))
     }
@@ -72,7 +78,9 @@ impl ImportBoundaryEngine {
         rule: &CompiledRule,
         forbid: &PathSet,
         require: &PathSet,
+        forbid_packages: &[String],
         except: &PathSet,
+        except_from: &PathSet,
         include_type_only: bool,
     ) -> Self {
         Self {
@@ -82,7 +90,9 @@ impl ImportBoundaryEngine {
             scope: rule.scope.clone(),
             forbid: forbid.clone(),
             require: require.clone(),
+            forbid_packages: forbid_packages.to_vec(),
             except: except.clone(),
+            except_from: except_from.clone(),
             include_type_only,
         }
     }
@@ -107,6 +117,42 @@ impl ImportBoundaryEngine {
     /// be a requirement nobody has to meet.
     fn is_forbidden(&self, resolved: &RepoRelPath) -> bool {
         self.forbid.is_match(resolved.as_path()) && !self.except.is_match(resolved.as_path())
+    }
+
+    /// Which forbidden package this specifier names, if any.
+    ///
+    /// Matched as "the package, and anything under it", so a rule naming
+    /// `three` catches `three/examples/jsm/loaders/GLTFLoader.js` — otherwise
+    /// the deep import, which is the one that actually costs the bytes, would
+    /// be the one that sails past.
+    ///
+    /// `node:fs` and `fs` are the same module, so both spellings are stripped
+    /// on both sides and either one in the config matches either one in the
+    /// source.
+    ///
+    /// A relative specifier is never a package, whatever it is called.
+    fn forbidden_package(&self, specifier: &str) -> Option<&str> {
+        if specifier.starts_with('.') {
+            return None;
+        }
+        let bare = specifier.strip_prefix("node:").unwrap_or(specifier);
+
+        self.forbid_packages
+            .iter()
+            .find(|package| {
+                let package = package.strip_prefix("node:").unwrap_or(package);
+                bare.strip_prefix(package)
+                    .is_some_and(|tail| tail.is_empty() || tail.starts_with('/'))
+            })
+            .map(String::as_str)
+    }
+
+    fn forbidden_packages_expectation(&self) -> Expectation {
+        Expectation::ForbiddenPackages {
+            packages: self.forbid_packages.clone(),
+            except_from: self.except_from.patterns().to_vec(),
+            include_type_only: self.include_type_only,
+        }
     }
 
     fn forbidden_expectation(&self) -> Expectation {
@@ -171,10 +217,45 @@ impl RuleEngine for ImportBoundaryEngine {
             return Vec::new();
         };
 
+        // The importer is exempt from the whole rule. `except` is about what is
+        // imported and cannot express this: "only `src/scripts/three/**` may
+        // import `three`" is one forbid and one exempt importer, and the
+        // exemption is on the side that does the importing.
+        if self.except_from.is_match(ctx.path.as_path()) {
+            return Vec::new();
+        }
+
         let mut findings = Vec::new();
         let mut satisfies_requirement = false;
 
         for import in &facts.imports {
+            if import.type_only && !self.include_type_only {
+                continue;
+            }
+
+            // A package rule and a path rule ask about different imports, and
+            // never about the same one. An import that landed on a file here is
+            // a path — whatever its specifier looks like, including a
+            // `tsconfig` alias that spells a local shim `three`. Everything
+            // else names a package: a dependency, a builtin, or one that did
+            // not resolve, which on a repository before `install` is most of
+            // them and is exactly where this rule still has to work.
+            if import.resolved.is_none()
+                && let Some(package) = self.forbidden_package(&import.specifier)
+            {
+                findings.push(Finding {
+                    span: Some(import.span),
+                    ..self.finding(
+                        ctx.path,
+                        Observed::ForbiddenPackageImport {
+                            specifier: import.specifier.clone(),
+                            package: package.to_owned(),
+                        },
+                        self.forbidden_packages_expectation(),
+                    )
+                });
+            }
+
             let Some(resolved) = self.visible(import) else {
                 continue;
             };
@@ -211,13 +292,19 @@ impl RuleEngine for ImportBoundaryEngine {
     }
 
     fn describe_expectation(&self, path: &RepoRelPath) -> Vec<Expectation> {
-        if !self.applies_to(path) {
+        // Same exemption `check_file` applies, and it has to be the same or
+        // `describe` would tell an agent about a rule that will not fire —
+        // which is the write-fail-retry loop the command exists to avoid.
+        if !self.applies_to(path) || self.except_from.is_match(path.as_path()) {
             return Vec::new();
         }
 
         let mut expectations = Vec::new();
         if !self.forbid.is_empty() {
             expectations.push(self.forbidden_expectation());
+        }
+        if !self.forbid_packages.is_empty() {
+            expectations.push(self.forbidden_packages_expectation());
         }
         if !self.require.is_empty() {
             expectations.push(self.required_expectation());
@@ -256,7 +343,9 @@ mod tests {
             kind: CompiledRuleKind::ImportBoundary {
                 forbid: set(forbid),
                 require: set(require),
+                forbid_packages: Vec::new(),
                 except: set(except),
+                except_from: PathSet::default(),
                 include_type_only: type_only,
             },
         }
@@ -674,5 +763,202 @@ mod tests {
         };
 
         assert!(ImportBoundaryEngine::from_rule(&structure).is_none());
+    }
+
+    /// A rule that quarantines a dependency: `three` may be imported from one
+    /// directory and nowhere else.
+    fn quarantine(packages: &[&str], except_from: &[&str]) -> ImportBoundaryEngine {
+        let rule = CompiledRule {
+            id: RuleId::new("three-is-quarantined").expect("valid id"),
+            module: None,
+            level: Level::Error,
+            scope: Scope::compile(["src/**"]).expect("valid scope"),
+            kind: CompiledRuleKind::ImportBoundary {
+                forbid: PathSet::default(),
+                require: PathSet::default(),
+                forbid_packages: packages.iter().map(|p| (*p).to_owned()).collect(),
+                except: PathSet::default(),
+                except_from: PathSet::compile(
+                    except_from
+                        .iter()
+                        .map(|p| (*p).to_owned())
+                        .collect::<Vec<_>>(),
+                )
+                .expect("valid globs"),
+                include_type_only: true,
+            },
+        };
+        ImportBoundaryEngine::from_rule(&rule).expect("an import-boundary rule")
+    }
+
+    /// Issue #14's case. Violating it is silent — nothing breaks, no test
+    /// fails, the page just gets slower and it is found weeks later in a
+    /// Lighthouse report — which is exactly the kind of rule archwarden is for.
+    #[test]
+    fn an_import_of_a_forbidden_package_is_reported() {
+        let engine = quarantine(&["three"], &["src/scripts/three/**"]);
+        let findings = check(
+            &engine,
+            &facts("src/pages/home.ts", &[("three", None, false)]),
+        );
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].observed,
+            Observed::ForbiddenPackageImport {
+                specifier: "three".to_owned(),
+                package: "three".to_owned(),
+            }
+        );
+    }
+
+    /// The deep import is the one that actually costs the bytes, so it is the
+    /// one that must not sail past. A rule naming `three` covers everything
+    /// under it.
+    #[test]
+    fn a_subpath_of_a_forbidden_package_is_the_same_package() {
+        let engine = quarantine(&["three"], &[]);
+        let findings = check(
+            &engine,
+            &facts(
+                "src/pages/home.ts",
+                &[("three/examples/jsm/loaders/GLTFLoader.js", None, false)],
+            ),
+        );
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings[0].observed,
+            Observed::ForbiddenPackageImport {
+                specifier: "three/examples/jsm/loaders/GLTFLoader.js".to_owned(),
+                package: "three".to_owned(),
+            }
+        );
+    }
+
+    /// And a package whose name merely starts the same way is a different
+    /// package. Without the boundary test, `three-mesh-bvh` would be caught by
+    /// a rule about `three`, and a rule that reports things nobody asked about
+    /// is one that gets deleted.
+    #[test]
+    fn a_package_that_only_shares_a_prefix_is_left_alone() {
+        let engine = quarantine(&["three"], &[]);
+
+        assert!(
+            check(
+                &engine,
+                &facts("src/pages/home.ts", &[("three-mesh-bvh", None, false)])
+            )
+            .is_empty()
+        );
+    }
+
+    /// The exemption is on the importing side, which is where an exception to a
+    /// rule about a dependency naturally sits: one forbid, one directory that
+    /// may.
+    #[test]
+    fn the_directory_allowed_to_import_it_is_exempt() {
+        let engine = quarantine(&["three"], &["src/scripts/three/**"]);
+
+        assert!(
+            check(
+                &engine,
+                &facts("src/scripts/three/scene.ts", &[("three", None, false)])
+            )
+            .is_empty(),
+            "the quarantine directory is the one place it is allowed"
+        );
+        assert!(
+            engine
+                .describe_expectation(&path("src/scripts/three/scene.ts"))
+                .is_empty(),
+            "and `describe` says the same, or an agent is told about a rule \
+             that will not fire"
+        );
+    }
+
+    /// `node:fs` and `fs` are the same module, so either spelling in the config
+    /// matches either spelling in the source. Four combinations, all of them
+    /// the same import.
+    #[test]
+    fn a_builtin_matches_whichever_way_either_side_spells_it() {
+        for configured in ["fs", "node:fs"] {
+            for written in ["fs", "node:fs"] {
+                let engine = quarantine(&[configured], &[]);
+                assert_eq!(
+                    check(&engine, &facts("src/lib/a.ts", &[(written, None, false)])).len(),
+                    1,
+                    "config `{configured}` should match source `{written}`"
+                );
+            }
+        }
+    }
+
+    /// An import that landed on a file in this repository is a path, whatever
+    /// its specifier looks like. A `tsconfig` alias spelling a local shim
+    /// `three` is the case: `forbid_import_from` is the field for it, and
+    /// reporting it here would be the rule firing on the wrong thing.
+    #[test]
+    fn a_specifier_that_resolved_into_the_repository_is_a_path_not_a_package() {
+        let engine = quarantine(&["three"], &[]);
+
+        assert!(
+            check(
+                &engine,
+                &facts(
+                    "src/pages/home.ts",
+                    &[("three", Some("src/shims/three.ts"), false)]
+                )
+            )
+            .is_empty()
+        );
+    }
+
+    /// A relative specifier is never a package, however it is named.
+    #[test]
+    fn a_relative_specifier_is_never_a_package() {
+        let engine = quarantine(&["three"], &[]);
+
+        assert!(
+            check(
+                &engine,
+                &facts("src/pages/home.ts", &[("./three", None, false)])
+            )
+            .is_empty()
+        );
+    }
+
+    /// The rule holds on a repository whose dependencies are not installed,
+    /// which is the state a CI job that lints before installing is in. An
+    /// unresolved import is exactly what this rule reads, so nothing is lost.
+    #[test]
+    fn the_rule_still_fires_when_nothing_resolves() {
+        let engine = quarantine(&["three"], &["src/scripts/three/**"]);
+        let findings = check(
+            &engine,
+            &facts(
+                "src/pages/home.ts",
+                &[("three", None, false), ("react", None, false)],
+            ),
+        );
+
+        assert_eq!(findings.len(), 1, "`react` is not forbidden: {findings:?}");
+    }
+
+    /// `include_type_only` governs this half too. `import type { Vector3 }`
+    /// costs no bytes at runtime, which is the whole reason a bundle-budget
+    /// rule would opt out of them.
+    #[test]
+    fn a_type_only_import_obeys_the_same_opt_out() {
+        let mut rule = quarantine(&["three"], &[]);
+        let type_only = facts("src/pages/home.ts", &[("three", None, true)]);
+
+        assert_eq!(check(&rule, &type_only).len(), 1, "counted by default");
+
+        rule.include_type_only = false;
+        assert!(
+            check(&rule, &type_only).is_empty(),
+            "and exempt when the rule opted out"
+        );
     }
 }

@@ -857,6 +857,22 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
             specifier,
             resolved,
         } => format!("imports `{specifier}`, which resolves to `{resolved}`"),
+        Observed::ForbiddenPackageImport { specifier, package } => {
+            // Named separately only when they differ, because for a deep import
+            // they do and reading "imports `three/examples/jsm/loaders/
+            // GLTFLoader.js`" without being told the rule is about `three`
+            // leaves the reader to work out which package they hit.
+            //
+            // `node:` is stripped from both first: `fs` is not *part of*
+            // `node:fs`, it is the same module spelled the other way, and
+            // saying otherwise reads as a bug in the rule.
+            let bare = |name: &str| name.strip_prefix("node:").unwrap_or(name).to_owned();
+            if bare(specifier) == bare(package) {
+                format!("imports the package `{package}`")
+            } else {
+                format!("imports `{specifier}`, which is part of the package `{package}`")
+            }
+        }
         Observed::RequiredImportMissing => "no import satisfies the requirement".to_owned(),
         Observed::RequiredCallMissing { symbol } => {
             format!("`{symbol}` is imported but never called")
@@ -928,6 +944,18 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
                 base
             } else {
                 format!("{base}, except {}", join_or(except, ""))
+            }
+        }
+        Expectation::ForbiddenPackages {
+            packages,
+            except_from,
+            ..
+        } => {
+            let base = format!("no import of {}", join_or(packages, "any package"));
+            if except_from.is_empty() {
+                base
+            } else {
+                format!("{base}, except from {}", join_or(except_from, ""))
             }
         }
         Expectation::RequiredImport { patterns } => {
