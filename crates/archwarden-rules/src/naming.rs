@@ -755,10 +755,6 @@ mod tests {
     /// A directory the pattern does not match is a directory the rule is not
     /// about. Not a violation -- the same answer `file_pattern` gives to a
     /// filename it does not match.
-    ///
-    /// This is the assertion that keeps `dir_pattern` from being decorative: a
-    /// rule that applied regardless and only used the pattern for the template
-    /// would report every file in every sibling directory.
     #[test]
     fn a_directory_that_does_not_match_puts_the_file_outside_the_rule() {
         let engine = entity_engine();
@@ -770,6 +766,44 @@ mod tests {
 
         assert!(!engine.applies_to(&facts.path));
         assert!(check(&engine, &facts).is_empty());
+    }
+
+    /// `dir_pattern` may be a filter and nothing more -- "only files in a
+    /// directory named like an entity are subject to this rule", with the
+    /// export name coming from the filename alone.
+    ///
+    /// This is the case that gives the match its own reason to exist. When the
+    /// template *does* use a directory group, a non-matching directory would
+    /// fail to render anyway and the file would fall out of the rule by
+    /// accident; `cargo-mutants` found that by replacing the match with `true`
+    /// and breaking nothing. Here nothing else would catch it, and dropping the
+    /// guard would put every file in every sibling directory under the rule.
+    #[test]
+    fn a_directory_pattern_whose_groups_the_template_ignores_still_filters() {
+        let rule = CompiledRule {
+            id: RuleId::new("entities-only").expect("valid id"),
+            module: None,
+            level: Level::Error,
+            scope: Scope::compile(["src/Entities/*"]).expect("valid scope"),
+            kind: CompiledRuleKind::Naming {
+                file_pattern: Pattern::compile(r"^(?<action>[a-z-]+)\.ts$").expect("valid"),
+                dir_pattern: Some(Pattern::compile(r"^[A-Z][A-Za-z0-9]*$").expect("valid")),
+                name_template: "{{pascal(action)}}".to_owned(),
+                kind: KindFilter::Any,
+                signature_hint: None,
+            },
+        };
+        let engine = NamingEngine::from_rule(&rule).expect("is a naming rule");
+
+        assert!(
+            engine.applies_to(&path("src/Entities/Order/insert.ts")),
+            "`Order` is an entity directory"
+        );
+        assert!(
+            !engine.applies_to(&path("src/Entities/_helpers/insert.ts")),
+            "`_helpers` is not, and the template would render happily without \
+             the match -- it never asks the directory anything"
+        );
     }
 
     /// A file at the repository root has no directory to offer, so a rule that
