@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Runnable by hand, and not only for convenience: during the GitHub Actions
+  # incident of 2026-08-06, webhook delivery was throttled to ~15% and pull
+  # request events created no run at all for hours. A dispatch goes through
+  # the API instead, so CI stays reachable when the trigger that normally
+  # reaches it does not. `gh workflow run ci.yml --ref <branch>`.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
