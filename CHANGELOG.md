@@ -17,6 +17,60 @@ saying so.
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-06
+
+A minor for a bug fix, because it changes what an existing, unchanged config
+reports — and in the direction of reporting files that were never checked.
+
+### Changed
+
+- **`spec-pair` covers files below a named subfolder, and a nested path in
+  `subfolders` means what it looks like.**
+  ([#34](https://github.com/HenriqueArtur/archwarden/issues/34))
+
+  **This changes what an existing config reports.** A repository that groups
+  related files into a folder under a named subfolder will gain findings on the
+  next run. They are files the gate was never applied to.
+
+  An entry was compared against a directory's *name*, so only a direct child
+  was covered:
+
+  - `subfolders: ["calcs"]` reached `Entity/calcs/direct.ts` and never
+    `Entity/calcs/group/nested.ts`;
+  - `subfolders: ["calcs/group"]` could not equal a single component, so it was
+    accepted by the schema, reported valid by `config validate`, shown as
+    unchanged coverage by `config explain`, and matched nothing.
+
+  An entry now names a directory relative to the selected one and covers it and
+  everything below it. `["."]` is unchanged and stays non-recursive — naming
+  `calcs` is how a project says which subtree is under the gate, and a
+  recursive `.` would swallow `types` and everything else it did not name.
+
+  The cost of the old behaviour, measured in the reporting repository: two
+  entities grouped their validation steps the same way, one had thirteen files
+  and thirteen specs, the other eleven files and no test at all. Neither the
+  report nor the baseline had ever mentioned it. Sixteen files sat in that
+  blind spot.
+
+  Run `archwarden baseline --dry-run` after upgrading to see what appears
+  before deciding what to do about it.
+
+### Fixed
+
+- **The nightly job is gone; the differential tier runs on CI.**
+
+  It had failed every night for at least six days with
+  ``ARCHWARDEN_DIFF_REPO=`` is not a readable path``: an unset repository
+  variable substitutes as the empty string, `env::var` succeeds with `""`, and
+  the empty path cannot be canonicalised — while the test file promised a
+  missing target "prints why it did nothing and passes". An empty value is now
+  the same state as an unset one, with a test for it.
+
+  The job moved into CI rather than being repaired in place, for the reason
+  `docs/TESTING.md` already gives about mutation testing: a red job nobody
+  opens is not a test, it is a habit of ignoring red. Nothing in this project
+  runs on a schedule any more.
+
 ## [0.8.1] — 2026-08-06
 
 ### Fixed
@@ -406,7 +460,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.6.0...v0.7.0
