@@ -52,12 +52,21 @@ pub fn expand(
     let mut requests = Vec::new();
     for (directory, file) in matched {
         let landing = relocate(&directory, destination)?;
-        let name = file
-            .file_name()
-            .ok_or_else(|| format!("`{file}` has no filename"))?;
+
+        // The file's path *inside the match*, not its name. Taking the name
+        // alone flattened the tree: `src/Group/A/alpha.ts` moved to
+        // `src/Renamed/alpha.ts` and `A/` was gone. Silently, when no two
+        // basenames collided -- and where they did, the collision guard
+        // refused, which was the symptom being caught instead of the cause.
+        // Two files in different directories should never be landing on one
+        // path. Issue #32.
+        let inside = file
+            .as_path()
+            .strip_prefix(directory.as_path())
+            .map_err(|_| format!("`{file}` is not inside `{directory}`"))?;
         let to = landing
-            .join(name)
-            .map_err(|error| format!("`{landing}/{name}`: {error}"))?;
+            .join(inside.as_str())
+            .map_err(|error| format!("`{landing}/{inside}`: {error}"))?;
         requests.push((file, to));
     }
     Ok(requests)
@@ -195,6 +204,38 @@ mod tests {
         RepoRelPath::new(p).expect("valid path")
     }
 
+    fn tree_at(entries: &[&str]) -> (tempfile::TempDir, camino::Utf8PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                .expect("temp path is UTF-8");
+        for relative in entries {
+            let file = root.join(relative);
+            std::fs::create_dir_all(file.parent().expect("a file has a parent"))
+                .expect("create dirs");
+            std::fs::write(&file, "export const x = 1;").expect("write file");
+        }
+        (dir, root)
+    }
+
+    /// `expand` against a real tree, as pairs of strings: the assertion is
+    /// about where each file lands, which is the whole of this module.
+    fn expanded(root: &camino::Utf8Path, source: &str, destination: &str) -> Vec<String> {
+        let config = CompiledConfig::new(
+            Vec::new(),
+            archwarden_core::glob::PathSet::default(),
+            archwarden_core::compiled::SkipDirs::default(),
+            archwarden_core::hash::ContentHash::of(b"batch"),
+        );
+        let tree = archwarden_engine::walk::walk(root, &config).expect("walks");
+
+        expand(root, root, &tree, source, destination)
+            .expect("expands")
+            .into_iter()
+            .map(|(from, to)| format!("{from} -> {to}"))
+            .collect()
+    }
+
     /// The batch form's whole point: the destination is measured from the
     /// directory the glob matched, so `shared` becomes the `calcs` beside it.
     #[test]
@@ -207,10 +248,85 @@ mod tests {
         );
     }
 
+    /// A directory move carries the directory. Every level between the match
+    /// and the file survives, which is what makes it a rename rather than a
+    /// flatten.
+    ///
+    /// It used to take the file's *name* and drop everything between, so
+    /// `src/Group/A/alpha.ts` landed at `src/Renamed/alpha.ts` and `A/` was
+    /// gone. Silent whenever no two basenames collided; where they did, the
+    /// collision guard refused — catching the symptom, since two files in
+    /// different directories have no business landing on one path. Issue #32.
+    #[test]
+    fn a_directory_move_keeps_the_shape_of_what_it_moves() {
+        let (guard, root) = tree_at(&[
+            "src/Group/A/alpha.ts",
+            "src/Group/B/beta.ts",
+            "src/Group/top.ts",
+        ]);
+        let requests = expanded(&root, "src/Group", "../Renamed");
+        drop(guard);
+
+        assert_eq!(
+            requests,
+            vec![
+                "src/Group/A/alpha.ts -> src/Renamed/A/alpha.ts",
+                "src/Group/B/beta.ts -> src/Renamed/B/beta.ts",
+                "src/Group/top.ts -> src/Renamed/top.ts",
+            ]
+        );
+    }
+
+    /// The shape survives however deep it goes, and two files that share a
+    /// basename in different directories stay two files. Under the flatten
+    /// they were a collision, which is the state the reporter'
+    /// s 93-file rename hit: 93 sources, 57 distinct destinations.
+    #[test]
+    fn files_sharing_a_basename_in_different_directories_do_not_collide() {
+        let (guard, root) = tree_at(&[
+            "src/Legacy/Client/index.ts",
+            "src/Legacy/Order/index.ts",
+            "src/Legacy/Order/calcs/total.ts",
+        ]);
+        let requests = expanded(&root, "src/Legacy", "../_Legacy");
+        drop(guard);
+
+        assert_eq!(
+            requests,
+            vec![
+                "src/Legacy/Client/index.ts -> src/_Legacy/Client/index.ts",
+                "src/Legacy/Order/calcs/total.ts -> src/_Legacy/Order/calcs/total.ts",
+                "src/Legacy/Order/index.ts -> src/_Legacy/Order/index.ts",
+            ]
+        );
+    }
+
+    /// The same for the glob form, where the match is an ancestor the glob
+    /// selected rather than the argument itself.
+    #[test]
+    fn the_glob_form_keeps_the_shape_below_each_match() {
+        let (guard, root) = tree_at(&[
+            "src/email/shared/consts/list.ts",
+            "src/email/shared/thing.ts",
+            "src/id/shared/other.ts",
+        ]);
+        let requests = expanded(&root, "src/*/shared", "../calcs");
+        drop(guard);
+
+        assert_eq!(
+            requests,
+            vec![
+                "src/email/shared/consts/list.ts -> src/email/calcs/consts/list.ts",
+                "src/email/shared/thing.ts -> src/email/calcs/thing.ts",
+                "src/id/shared/other.ts -> src/id/calcs/other.ts",
+            ]
+        );
+    }
+
     /// And from the matched directory even for a file nested inside it. This
     /// is the case that made the distinction necessary:
-    /// `feature/shared/consts/list-shared.ts` belongs in `feature/calcs`, and
-    /// measuring from the file's own folder would land it in
+    /// `feature/shared/consts/list-shared.ts` belongs under `feature/calcs`,
+    /// and measuring from the file's own folder would land it in
     /// `feature/shared/calcs` — inside the very directory being emptied.
     #[test]
     fn a_file_nested_inside_the_match_still_lands_in_the_destination() {

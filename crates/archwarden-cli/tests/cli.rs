@@ -964,12 +964,22 @@ fn a_batch_move_relocates_every_match_and_rewrites_across_packages() {
         .success()
         .stdout(contains("Moved"));
 
-    // Measured from the matched directory, so `order/shared/calcs/total.ts`
-    // lands in `order/calcs/` — not in `order/shared/calcs/`, inside the very
-    // folder being emptied.
+    // Measured from the matched directory, and the path *below* the match
+    // comes along: `order/shared/calcs/total.ts` lands in
+    // `order/calcs/calcs/`. Not `order/shared/calcs/`, which would be inside
+    // the very folder being emptied — and not `order/calcs/`, which is what
+    // this test asserted until issue #32.
+    //
+    // The doubled `calcs` looks odd and is the honest answer: the file was in
+    // `shared/calcs/`, `shared` is becoming `calcs`, so it is in `calcs/calcs/`.
+    // Collapsing the level is a guess about what the author meant, and the same
+    // guess flattened a 19-entity namespace into one directory — 93 files onto
+    // 57 paths. A move relocates what it is pointed at and changes nothing else
+    // about it; the dry run prints every destination, so a surprising one is
+    // visible before `--apply`.
     for landed in [
-        "packages/domain/src/order/calcs/total.ts",
-        "packages/domain/src/order/calcs/total.spec.ts",
+        "packages/domain/src/order/calcs/calcs/total.ts",
+        "packages/domain/src/order/calcs/calcs/total.spec.ts",
         "packages/domain/src/user/calcs/name.ts",
     ] {
         assert!(dir.path().join(landed).is_file(), "{landed} did not land");
@@ -985,7 +995,7 @@ fn a_batch_move_relocates_every_match_and_rewrites_across_packages() {
 
     let importer = std::fs::read_to_string(dir.path().join("apps/web/src/main.ts")).expect("read");
     assert!(
-        importer.contains("\"@org/domain/order/calcs/total\""),
+        importer.contains("\"@org/domain/order/calcs/calcs/total\""),
         "{importer}"
     );
     assert!(
@@ -997,7 +1007,7 @@ fn a_batch_move_relocates_every_match_and_rewrites_across_packages() {
     // Named twice, it must be moved once rather than colliding with itself.
     let spec = std::fs::read_to_string(
         dir.path()
-            .join("packages/domain/src/order/calcs/total.spec.ts"),
+            .join("packages/domain/src/order/calcs/calcs/total.spec.ts"),
     )
     .expect("read");
     assert!(

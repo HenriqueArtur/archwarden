@@ -17,6 +17,42 @@ saying so.
 
 ## [Unreleased]
 
+## [0.8.1] — 2026-08-06
+
+### Fixed
+
+- **`impact <dir> --to … --apply` renames the directory instead of flattening
+  it.** ([#32](https://github.com/HenriqueArtur/archwarden/issues/32))
+
+  **This changes what an existing command does, and the old behaviour lost
+  directory structure.** Every file landed directly in the destination and the
+  levels between were gone:
+
+  ```console
+  $ archwarden impact src/Group --to '../Renamed' --apply
+    src/Group/A/alpha.ts → src/Renamed/alpha.ts     # `A/` gone
+    src/Group/B/beta.ts  → src/Renamed/beta.ts      # `B/` gone
+  ```
+
+  Silent, with exit 0, whenever no two basenames collided. Where they did the
+  collision guard refused — which is how it stayed hidden, and is itself the
+  bug stated plainly: two files in different directories have no business
+  landing on one path. On a real 19-entity namespace, 93 source files mapped to
+  57 destinations.
+
+  The path below the match now comes along, so `src/Group/A/alpha.ts` lands at
+  `src/Renamed/A/alpha.ts`.
+
+  **The glob form changed with it**, and this is worth reading if you use it. A
+  file nested inside a match keeps its nesting: with
+  `'src/*/shared' --to '../calcs'`, a file at `order/shared/calcs/total.ts`
+  now lands at `order/calcs/calcs/total.ts` where it used to land at
+  `order/calcs/total.ts`. The doubled name looks odd and is the honest answer —
+  the file was in `shared/calcs/`, and `shared` is becoming `calcs`. Collapsing
+  that level is a guess about intent, and it is the same guess that flattened
+  the namespace above. The dry run prints every destination, so an unwanted one
+  is visible before `--apply`.
+
 ## [0.8.0] — 2026-08-06
 
 Nine reported issues. Read the first two entries before upgrading: both change
@@ -370,7 +406,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.5.1...v0.6.0
