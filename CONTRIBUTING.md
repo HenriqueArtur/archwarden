@@ -126,8 +126,9 @@ checked-in `node_modules` — resolvers get synthetic `package.json` stubs.
 
 **Tier 3 — differential.** archwarden against `dependency-cruiser` over the
 same real repository, `cargo test -p archwarden-engine --features differential`.
-Nightly, never on PR CI, and target repos come from `ARCHWARDEN_DIFF_REPO`
-rather than being checked in.
+Runs on PR CI like every other tier; target repos come from the
+`ARCHWARDEN_DIFF_REPO` repository variable rather than being checked in, and
+with none configured the test says why it did nothing and passes.
 
 Write the test first. `cargo nextest` treats "zero tests ran" as an error,
 which on this project is exactly right.

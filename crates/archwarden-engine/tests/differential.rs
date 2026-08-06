@@ -75,6 +75,23 @@ struct Cruise {
     unresolved: BTreeSet<(String, String)>,
 }
 
+/// An unset target and one set to the empty string are the same state, and
+/// the second is the one CI produces.
+#[test]
+fn an_unconfigured_target_is_not_a_failure() {
+    assert_eq!(configured(None), None);
+    assert_eq!(
+        configured(Some(String::new())),
+        None,
+        "GitHub's substitution"
+    );
+    assert_eq!(configured(Some("   ".to_owned())), None);
+    assert_eq!(
+        configured(Some("/repos/target".to_owned())),
+        Some("/repos/target".to_owned())
+    );
+}
+
 #[test]
 fn archwarden_and_dependency_cruiser_agree_about_the_graph() {
     let Some(repo) = target() else {
@@ -157,12 +174,29 @@ fn archwarden_and_dependency_cruiser_agree_about_the_graph() {
 
 /// The repository to cruise, canonicalised.
 fn target() -> Option<Utf8PathBuf> {
-    let raw = std::env::var(REPO).ok()?;
+    let raw = configured(std::env::var(REPO).ok())?;
     let path = std::path::Path::new(&raw)
         .canonicalize()
         .unwrap_or_else(|error| panic!("{REPO}=`{raw}` is not a readable path: {error}"));
 
     Some(Utf8PathBuf::from_path_buf(path).expect("the repository path is UTF-8"))
+}
+
+/// A configured value, where empty means *not* configured.
+///
+/// GitHub Actions substitutes an unset repository variable as the empty
+/// string, so a workflow that passes one through sets this variable to the
+/// empty string rather than leaving it unset. `env::var` then succeeds, the
+/// empty path fails to canonicalise, and the job panicked saying the path was
+/// not readable -- every night, for the six days anybody has records of, while
+/// the file above promised that a missing target "prints why it did nothing
+/// and passes".
+///
+/// Which is the argument for running this on CI rather than nightly, in one
+/// sentence: nobody opened the report.
+fn configured(raw: Option<String>) -> Option<String> {
+    raw.map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
 }
 
 /// Runs `depcruise` and reads the edges out of its JSON.
