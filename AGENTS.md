@@ -569,6 +569,33 @@ regexes matching nothing, scopes pointing at paths that do not exist.
 `doctor` exits **0 even with findings** — they are advice about a
 configuration, not findings about code.
 
+### `config verify-rules` — does a rule actually bite?
+
+`explain` answers about **coverage**; this answers about **efficacy**. A rule
+can be schema-valid, cover the right paths, appear in `explain` and still
+enforce nothing, and that state is invisible from the outside: a rule enforcing
+nothing looks exactly like a repository that satisfies it.
+
+Each rule is handed a synthesised violation of its own terms and asked whether
+it fires. Nothing is written to the repository.
+
+```
+✓ domain-is-self-contained — fires on `packages/domain/order.ts` importing `apps/api/env.ts`
+✗ cancelled-by-its-own-except — silent on `packages/domain/order.ts` importing `apps/api/env.ts`
+? usecase-name — not verified: a violation means inventing a filename that matches
+  this rule's `file_pattern`, which is a regex run backwards
+
+3 enforce something, 1 enforce nothing, 2 not verified
+```
+
+It exits **non-zero on `✗`**, so it belongs in CI beside `check`.
+
+**What it does not prove.** That a rule fires on a violation of *its own terms*.
+It cannot know what you meant: a `forbid_import_from_packages` list missing an
+entry is a question about intent, and a rule with that hole in it ticks here.
+Rules whose violation cannot be synthesised are reported as `?` with the reason
+rather than left out — an unchecked rule has to be visible as unchecked.
+
 ## The six rule kinds
 
 | kind | asks | you satisfy it by |

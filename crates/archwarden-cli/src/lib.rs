@@ -23,6 +23,7 @@ pub mod report;
 pub mod respecify;
 pub mod scaffold;
 pub mod schema;
+pub mod verify;
 
 use archwarden_cache::store::Cache;
 use archwarden_config::{
@@ -438,6 +439,25 @@ pub enum ConfigCommand {
         format: Format,
     },
 
+    /// Prove that each rule bites: hand it a violation and see whether it
+    /// fires.
+    ///
+    /// `explain` says what a rule *reaches*. This says whether it *catches*
+    /// anything — a rule can be schema-valid, cover the right paths, appear in
+    /// `explain` and still enforce nothing.
+    ///
+    /// Nothing is written to the repository. Exits non-zero when a rule was
+    /// handed a violation and said nothing.
+    ///
+    /// It proves a rule fires on a violation of its own terms, and cannot know
+    /// what you meant: a `forbid_import_from_packages` list missing an entry
+    /// is a question about intent, and ticks here.
+    VerifyRules {
+        /// How to render the verdicts.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+
     /// Show what one rule reaches, and what it is reporting.
     Explain {
         /// The rule's id, as written in the config.
@@ -578,15 +598,32 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             claude_code,
             remove,
         } => install_hooks(*claude_code, *remove, working_directory, output),
-        Command::Config { command } => match command {
-            ConfigCommand::Validate => validate(cli.location(), working_directory, output),
-            ConfigCommand::Doctor { format } => {
-                doctor(cli.location(), working_directory, *format, output)
-            }
-            ConfigCommand::Explain { rule_id, format } => {
-                explain(cli.location(), working_directory, rule_id, *format, output)
-            }
-        },
+        Command::Config { command } => {
+            run_config(command, cli.location(), working_directory, output)
+        }
+    }
+}
+
+/// The `config` family: four questions about the configuration itself.
+///
+/// Its own function rather than a fourth arm, because the dispatch above is
+/// long enough that a reader looking for one command should not have to scroll
+/// past three sub-arms of another.
+fn run_config(
+    command: &ConfigCommand,
+    location: Location<'_>,
+    working_directory: &Utf8Path,
+    output: &mut Output<'_>,
+) -> Exit {
+    match command {
+        ConfigCommand::Validate => validate(location, working_directory, output),
+        ConfigCommand::Doctor { format } => doctor(location, working_directory, *format, output),
+        ConfigCommand::VerifyRules { format } => {
+            verify_rules(location, working_directory, *format, output)
+        }
+        ConfigCommand::Explain { rule_id, format } => {
+            explain(location, working_directory, rule_id, *format, output)
+        }
     }
 }
 
@@ -1764,6 +1801,44 @@ fn load(
 /// Exits clean even with concerns. They are advice about a configuration, not
 /// findings about code, and a non-zero exit would put them in a CI gate where
 /// a deliberate choice would start failing builds.
+/// Hands every rule a violation and reports which ones did not notice.
+///
+/// A rule that enforces nothing is indistinguishable from a repository that
+/// satisfies it, and `explain` cannot tell them apart: it answers about
+/// coverage, and this answers about efficacy. Issue #24, whose author settled
+/// the question by planting a file with three escapes in it, running `check`,
+/// and deleting it again.
+///
+/// Needs the walked tree, because the probe is placed at a path this repository
+/// actually has. See [`crate::verify`] for why that is not a glob generator.
+fn verify_rules(
+    location: Location<'_>,
+    working_directory: &Utf8Path,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let Ok((merged, compiled)) = prepare(location, working_directory, output) else {
+        return Exit::ConfigProblem;
+    };
+
+    let tree = match walked(&merged.root, working_directory, &compiled, output) {
+        Ok(tree) => tree,
+        Err(exit) => return exit,
+    };
+
+    let verifications = crate::verify::verify(&compiled, &tree);
+    crate::verify::render(&verifications, format, output.out);
+
+    if verifications
+        .iter()
+        .any(|verification| verification.verdict.is_silent())
+    {
+        Exit::Errors
+    } else {
+        Exit::Clean
+    }
+}
+
 fn doctor(
     location: Location<'_>,
     working_directory: &Utf8Path,
@@ -3218,6 +3293,79 @@ mod tests {
             "a dry run that wrote would be the bug it exists to prevent: {on_disk}"
         );
         drop(guard);
+    }
+
+    /// `explain` answers about coverage; this answers about efficacy. The
+    /// second rule here covers the right files, appears in `explain`, and its
+    /// own `except` cancels the thing it forbids -- which reads exactly like a
+    /// repository that satisfies it. Issue #24.
+    #[test]
+    fn verify_rules_fails_on_a_rule_that_enforces_nothing() {
+        let (_guard, result) = run_in(
+            &[
+                (
+                    "arch.config.json",
+                    r#"{"version":0,"rules":[
+                        {"type":"import-boundary","id":"domain-is-self-contained","level":"error",
+                         "from":"packages/domain/**","forbid_import_from":["apps/**"]},
+                        {"type":"import-boundary","id":"cancelled-by-its-own-except","level":"error",
+                         "from":"packages/domain/**","forbid_import_from":["apps/**"],
+                         "except":["apps/**"]}]}"#,
+                ),
+                ("packages/domain/order.ts", "export const x = 1;"),
+                ("apps/api/src/env.ts", "export const e = 1;"),
+            ],
+            &["config", "verify-rules"],
+        );
+
+        assert_eq!(result.exit, Exit::Errors, "{}", result.out);
+        assert!(
+            result.out.contains("✓ domain-is-self-contained — fires on"),
+            "{}",
+            result.out
+        );
+        assert!(
+            result
+                .out
+                .contains("✗ cancelled-by-its-own-except — silent on"),
+            "{}",
+            result.out
+        );
+        // Said on every run, clean or not: a wall of ticks that let a reader
+        // conclude their config is sound would be this issue one level up.
+        assert!(
+            result.out.contains("It cannot"),
+            "the limitation is stated: {}",
+            result.out
+        );
+    }
+
+    /// And a rule whose violation cannot be synthesised is reported as
+    /// unchecked rather than left out. A partial answer that says which part
+    /// is missing beats a confident one that is wrong.
+    #[test]
+    fn verify_rules_names_what_it_could_not_check() {
+        let (_guard, result) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export function CreateClient() {}",
+                ),
+            ],
+            &["config", "verify-rules", "--format", "json"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean, "nothing was proven silent");
+        let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("valid JSON");
+        assert_eq!(parsed[0]["verdict"], "unverified");
+        assert!(
+            parsed[0]["reason"]
+                .as_str()
+                .is_some_and(|why| why.contains("file_pattern")),
+            "{}",
+            result.out
+        );
     }
 
     const WRITE_EVENT: &str = r#"{
