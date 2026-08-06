@@ -398,7 +398,20 @@ pub enum Command {
     /// Unlike the filters on `check`, this changes the exit code. That is what
     /// it is for, and why it is a file in the repository rather than a flag: a
     /// line added to it is a decision, visible in a pull request.
-    Baseline,
+    Baseline {
+        /// Say what regenerating would change, and write nothing.
+        ///
+        /// A reviewer looking at a regenerated baseline has one question the
+        /// count cannot answer: was debt paid, or was debt added? Accepting a
+        /// new finding by accident is permanent and silent, which makes it
+        /// the worst thing this file can do.
+        ///
+        /// Findings that only changed path are reported as moved rather than
+        /// as a removal and an addition, so a refactor that shifted a
+        /// directory stays one line instead of two per finding.
+        #[arg(long)]
+        dry_run: bool,
+    },
 
     /// Inspect the configuration itself.
     Config {
@@ -527,7 +540,9 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             output,
         ),
         Command::Init => init(working_directory, output),
-        Command::Baseline => write_baseline(cli.location(), working_directory, output),
+        Command::Baseline { dry_run } => {
+            write_baseline(cli.location(), working_directory, *dry_run, output)
+        }
         Command::Impact {
             path,
             to,
@@ -840,6 +855,7 @@ fn orphans(
 fn write_baseline(
     location: Location<'_>,
     working_directory: &Utf8Path,
+    dry_run: bool,
     output: &mut Output<'_>,
 ) -> Exit {
     let (merged, compiled) = match prepare(location, working_directory, output) {
@@ -868,12 +884,17 @@ fn write_baseline(
     }
 
     let baseline = crate::baseline::Baseline::of(&outcome.findings);
+    let path = merged.root.join(crate::baseline::BASELINE_PATH);
+
+    if dry_run {
+        return report_baseline_changes(&merged.root, &path, &baseline, output);
+    }
+
     if let Err(message) = baseline.write(&merged.root) {
         let _ = writeln!(output.err, "{message}");
         return Exit::ConfigProblem;
     }
 
-    let path = merged.root.join(crate::baseline::BASELINE_PATH);
     if baseline.is_empty() {
         // Still written, so `check` has something to read and the next person
         // does not wonder whether the command ran.
@@ -900,6 +921,116 @@ fn write_baseline(
     }
 
     Exit::Clean
+}
+
+/// Says what regenerating the baseline would change, and writes nothing.
+///
+/// The count the command printed before -- "accepting 106 findings" -- cannot
+/// answer the question a reviewer has to ask: was debt paid, or was debt
+/// added? Issue #23, whose author wrote a Python script twice in one session
+/// to answer it, once to prove debt paid and once to prove a pure rename.
+///
+/// Exits clean whatever it finds. `check` is the gate, and it already fails on
+/// a finding no baseline accepts; this answers "what would regenerating do",
+/// which is a review question rather than a build one.
+fn report_baseline_changes(
+    root: &Utf8Path,
+    path: &Utf8Path,
+    next: &crate::baseline::Baseline,
+    output: &mut Output<'_>,
+) -> Exit {
+    let committed = match crate::baseline::Baseline::load(root) {
+        Ok(Some(committed)) => committed,
+        // No baseline yet: everything this run found is what would be
+        // accepted, which is the decision `archwarden baseline` is for and
+        // exactly what someone adopting it should read first.
+        Ok(None) => {
+            let _ = writeln!(
+                output.out,
+                "no baseline yet. `archwarden baseline` would write {path}, accepting {} {}:\n",
+                next.len(),
+                plural(next.len(), "finding", "findings"),
+            );
+            for entry in next.entries() {
+                let _ = writeln!(
+                    output.out,
+                    "  + {} {} — {}",
+                    entry.rule, entry.path, entry.note
+                );
+            }
+            return Exit::Clean;
+        }
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    let changes = committed.changes(next);
+    if changes.is_empty() {
+        let _ = writeln!(
+            output.out,
+            "{path} is up to date, accepting {} {}. Nothing was written.",
+            committed.len(),
+            plural(committed.len(), "finding", "findings"),
+        );
+        return Exit::Clean;
+    }
+
+    // Paid first. It is the only cheerful number archwarden prints, and a
+    // reviewer who reads nothing else should read the additions last, where
+    // they are still on screen.
+    for entry in &changes.removed {
+        let _ = writeln!(
+            output.out,
+            "  - {} {} — no longer occurs",
+            entry.rule, entry.path
+        );
+    }
+    for moved in &changes.moved {
+        let _ = writeln!(
+            output.out,
+            "  ~ {} {} → {}",
+            moved.from.rule, moved.from.path, moved.to.path
+        );
+    }
+    for entry in &changes.added {
+        let _ = writeln!(
+            output.out,
+            "  + {} {} — {}",
+            entry.rule, entry.path, entry.note
+        );
+    }
+
+    let _ = writeln!(
+        output.out,
+        "\n{path} would change: {} added, {} no longer occur, {} moved. Nothing was written.",
+        changes.added.len(),
+        changes.removed.len(),
+        changes.moved.len(),
+    );
+
+    // The sentence the command exists for. An addition is a decision; the
+    // other two are bookkeeping catching up with work already done.
+    if changes.added.is_empty() {
+        let _ = writeln!(
+            output.out,
+            "Nothing new would be accepted. Run `archwarden baseline` to apply."
+        );
+    } else {
+        let _ = writeln!(
+            output.out,
+            "The {} marked `+` would become debt this project has decided to carry.\n\
+             Fix them, or run `archwarden baseline` to accept them on purpose.",
+            plural(changes.added.len(), "finding", "findings"),
+        );
+    }
+
+    Exit::Clean
+}
+
+fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
+    if count == 1 { one } else { many }
 }
 
 /// Writes a starter configuration, if there is not one already.
@@ -3038,6 +3169,55 @@ mod tests {
         );
         let parsed: serde_json::Value = serde_json::from_str(&json.out).expect("valid JSON");
         assert_eq!(parsed["unresolved_imports"][0], "@Domain/Order/types");
+    }
+
+    /// The question a reviewer has about a regenerated baseline, which the
+    /// count could not answer: was debt paid, or was debt added? Issue #23.
+    #[test]
+    fn a_baseline_dry_run_says_what_would_change_and_writes_nothing() {
+        let structure = r#"{"version":0,"rules":[{
+            "type":"structure","id":"entity-shape","level":"error",
+            "roots":["src/*"],"allowed_subfolders":["types"]}]}"#;
+
+        let (guard, accepted) = run_in(
+            &[
+                ("arch.config.json", structure),
+                ("src/order/handlers/a.ts", ""),
+            ],
+            &["baseline"],
+        );
+        assert_eq!(accepted.exit, Exit::Clean);
+        let root = Utf8PathBuf::from_path_buf(guard.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+
+        // Then break something else and ask what regenerating would do.
+        std::fs::create_dir_all(root.join("src/billing/handlers")).expect("create dirs");
+        std::fs::write(root.join("src/billing/handlers/b.ts"), "").expect("write");
+        let dry = run_at(&root, &["baseline", "--dry-run"]);
+
+        assert_eq!(dry.exit, Exit::Clean, "it reports, it does not gate");
+        assert!(
+            dry.out.contains("+ entity-shape src/billing/handlers"),
+            "the addition is the line that matters: {}",
+            dry.out
+        );
+        assert!(dry.out.contains("Nothing was written."), "{}", dry.out);
+        assert!(
+            dry.out
+                .contains("would become debt this project has decided to carry"),
+            "{}",
+            dry.out
+        );
+
+        // And it wrote nothing: the committed file still accepts only the one.
+        let on_disk = std::fs::read_to_string(root.join(crate::baseline::BASELINE_PATH))
+            .expect("the baseline is still there");
+        assert!(on_disk.contains("src/order/handlers"), "{on_disk}");
+        assert!(
+            !on_disk.contains("src/billing/handlers"),
+            "a dry run that wrote would be the bug it exists to prevent: {on_disk}"
+        );
+        drop(guard);
     }
 
     const WRITE_EVENT: &str = r#"{

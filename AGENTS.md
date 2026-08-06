@@ -297,6 +297,24 @@ for a human, made once, reviewed in a pull request. If your change fails
 `12 no longer occur` means someone fixed accepted debt — the entries are
 removable, and regenerating is the only time that command is right to run.
 
+**`archwarden baseline --dry-run` says what regenerating would change and
+writes nothing.** Use it to answer the only question that matters about a
+regenerated baseline — was debt paid, or was debt added:
+
+```
+  - domain-needs-spec  apps/api/src/order.ts — no longer occurs
+  ~ domain-entity-shape apps/api/src/Domain/user → packages/domain/user
+  + domain-forbids-outer apps/api/src/billing.ts — imports `@Infrastructure/Auth`
+
+.archwarden/baseline.json would change: 1 added, 1 no longer occur, 1 moved.
+```
+
+Only `+` is a decision. A finding that merely changed path is reported as
+moved, so a refactor that shifted a directory does not read as a hundred
+acceptances — but two paths are only paired when the same directory move
+explains at least two of them, so a fix and a new finding that happen to share
+a folder name can never be laundered into one.
+
 `--no-baseline` shows everything, including accepted findings. Use it to answer
 "how much debt is there", never to decide whether your change is clean.
 
