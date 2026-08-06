@@ -258,10 +258,16 @@ note: 2 imports could not resolve, so boundary rules did not see them
 text names the first ten files and says how many it left out.
 
 Usually one of two things. A dependency that is not installed — run `install`
-and the note goes away. Or a `tsconfig` path alias, which archwarden does not
-read: those are the ones to look at, because an alias pointing across a
-boundary is exactly the import the rule exists to catch and exactly the one it
-cannot see. Neither fails the build on its own.
+and the note goes away. Or an alias no `tsconfig` *governing that file*
+declares.
+
+`compilerOptions.paths` **is** read, per importer and by TypeScript's own rule:
+the nearest `tsconfig.json` to the file wins, whole. So an alias declared in
+another package's `tsconfig` does not apply here, and a bare `tsconfig.json`
+in a directory takes the repository's aliases away from every file under it
+unless it `extends` the one that declares them. That is the usual cause, and
+the fix is in the `tsconfig`, not in archwarden. Neither case fails the build
+on its own.
 
 `files_parsed` and `facts_reused` are the cache working. A warm run parses
 nothing and is not much faster in wall clock — it still reads and hashes every

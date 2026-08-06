@@ -271,9 +271,10 @@ $ archwarden check --file packages/domain/row.ts
 note: `@Domain/Order/types` did not resolve, so boundary rules did not see it
 ```
 
-It does not block the write. archwarden does not read `tsconfig` path aliases
-([`CONFIG.md`](CONFIG.md)), so an unresolved specifier is not by itself a
-violation of anything — it is the statement that no rule could tell.
+It does not block the write. An unresolved specifier is not by itself a
+violation of anything — it is the statement that no rule could tell. Usually
+the dependency is not installed, or the alias is declared in a `tsconfig` that
+does not govern this file ([`CONFIG.md`](CONFIG.md)).
 
 ## Recommended setup
 

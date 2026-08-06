@@ -456,6 +456,83 @@ mod tests {
         );
     }
 
+    /// The other side of per-importer discovery: an alias declared by a
+    /// `tsconfig` that does not govern the importing file does not apply to it.
+    ///
+    /// This is what issue #22 hit while extracting a package out of an app.
+    /// The files sit in `packages/domain` and still write `@Domain/*`, which
+    /// only `apps/api/tsconfig.json` declares. `tsc` resolves it because those
+    /// files are still in the app's program; archwarden asks the `tsconfig`
+    /// that governs the file on disk, and that one has never heard of it.
+    ///
+    /// Not a bug to fix by merging every `paths` map in the repository into
+    /// one. `each_package_gets_its_own_tsconfig` above is why: `@/*` is the
+    /// most common alias there is, it means a different directory in each
+    /// package, and a merged map would resolve one package's import into
+    /// another's source. A boundary rule fed a wrong edge is worse than one
+    /// fed no edge, because `check` now names the import it could not place
+    /// (issue #18) and says nothing about the one it placed wrongly.
+    #[test]
+    fn an_alias_from_a_tsconfig_that_does_not_govern_the_file_does_not_apply() {
+        let entries = [
+            (
+                "apps/api/tsconfig.json",
+                r#"{"compilerOptions":{"baseUrl":".","paths":{"@Domain/*":["src/Domain/*"]}}}"#,
+            ),
+            ("apps/api/src/Domain/order.ts", TS),
+            ("packages/domain/row.ts", ""),
+        ];
+
+        assert!(
+            landed(&entries, "packages/domain/row.ts", "@Domain/order").starts_with("error"),
+            "the app's alias is not the package's"
+        );
+        assert_eq!(
+            landed(&entries, "apps/api/src/main.ts", "@Domain/order"),
+            "in-repo apps/api/src/Domain/order.ts",
+            "and inside the app it resolves, because there it is declared"
+        );
+    }
+
+    /// A `tsconfig` with no `paths` shadows an ancestor that has them, unless
+    /// it extends it. The nearest one wins whole, which is TypeScript's own
+    /// rule and the trap in it: adding a bare `tsconfig.json` to a package
+    /// silently takes the repository's aliases away from every file under it.
+    #[test]
+    fn a_nearer_tsconfig_shadows_an_ancestors_paths_unless_it_extends_it() {
+        fn root_declares(package_tsconfig: &str) -> [(&str, &str); 4] {
+            [
+                (
+                    "tsconfig.json",
+                    r#"{"compilerOptions":{"baseUrl":".","paths":{"@Domain/*":["apps/api/src/Domain/*"]}}}"#,
+                ),
+                ("apps/api/src/Domain/order.ts", TS),
+                ("packages/domain/tsconfig.json", package_tsconfig),
+                ("packages/domain/row.ts", ""),
+            ]
+        }
+
+        assert!(
+            landed(
+                &root_declares(r#"{"compilerOptions":{"strict":true}}"#),
+                "packages/domain/row.ts",
+                "@Domain/order",
+            )
+            .starts_with("error"),
+            "a bare `tsconfig.json` takes the ancestor's aliases away"
+        );
+
+        assert_eq!(
+            landed(
+                &root_declares(r#"{"extends":"../../tsconfig.json"}"#),
+                "packages/domain/row.ts",
+                "@Domain/order",
+            ),
+            "in-repo apps/api/src/Domain/order.ts",
+            "and `extends` gives them back, which is how a monorepo writes it"
+        );
+    }
+
     /// A workspace package is linked into `node_modules`, but it is source in
     /// this repository. Following the link is what lets a boundary rule written
     /// against `packages/domain/**` see an import of `@org/domain`.

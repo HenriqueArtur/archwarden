@@ -50,12 +50,18 @@ pub enum Rewrite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Unknown {
-    /// The specifier resolves into the repository through a map this does not
-    /// read — a `tsconfig` path alias.
+    /// The specifier resolves into the repository through a `tsconfig` path
+    /// alias, which is read forwards and cannot be written backwards.
     ///
     /// It is not relative and names no workspace package, yet it reached a file
     /// here, so something else mapped it. `compilerOptions.paths` is that
-    /// something in every case seen so far.
+    /// something in every case seen so far — and archwarden does read it, which
+    /// is how this variant is reached at all.
+    ///
+    /// What it cannot do is invert the map. Given a destination, which alias to
+    /// write is not a question `paths` answers: several patterns may reach the
+    /// same file, and none may reach the new location. Guessing produces an
+    /// import that does not compile.
     PathAlias,
     /// The importing file is at the repository root, so a relative specifier
     /// has no directory to be measured from.
@@ -87,8 +93,8 @@ impl Unknown {
     pub fn explain(self) -> &'static str {
         match self {
             Self::PathAlias => {
-                "it resolves through a `tsconfig` path alias, which is a map\n  \
-                 this does not read"
+                "it resolves through a `tsconfig` path alias, and which alias\n  \
+                 to write for the new location is not something that map says"
             }
             Self::NoImporterDirectory => {
                 "the importing file is at the repository root, so a relative\n  \
