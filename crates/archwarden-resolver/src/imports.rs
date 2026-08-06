@@ -32,7 +32,19 @@ const EXTENSIONS: [&str; 9] = [
 const MAIN_FIELDS: [&str; 3] = ["types", "module", "main"];
 
 /// `exports` conditions, in the order a TypeScript ESM build would apply them.
-const CONDITIONS: [&str; 4] = ["types", "import", "require", "default"];
+///
+/// `node` is here because a package may offer *only* platform conditions.
+/// `bwip-js` maps `.` to `browser`, `electron`, `react-native` and `node` with
+/// no `default` at all, so a resolver applying none of them matches nothing --
+/// and because `exports` is present there is no legitimate fall back to `main`.
+/// The package is installed, Node runs it and `tsc` type-checks it; only
+/// archwarden called it unresolved, which put a boundary rule's blind spot on a
+/// dependency that was never a blind spot. Issue #21.
+///
+/// `node` rather than `browser` because that is what archwarden itself runs
+/// under, and because the alternative would be to guess at a repository's
+/// target from nothing.
+const CONDITIONS: [&str; 5] = ["types", "node", "import", "require", "default"];
 
 /// The directory whose presence makes a resolved file a dependency rather than
 /// part of the repository.
@@ -660,6 +672,52 @@ mod tests {
         drop(guard);
 
         assert_eq!(resolved, "external node_modules/lodash/index.js");
+    }
+
+    /// A package whose `exports` offers only platform conditions and no
+    /// `default`. Applying none of them matches nothing, and `exports` being
+    /// present blocks the fall back to `main`, so an installed dependency was
+    /// reported as an import nothing could place -- with the note sending the
+    /// reader to run `install`, which was already done.
+    ///
+    /// This is `bwip-js@4.11.2`'s manifest, trimmed to the shape that matters.
+    /// Issue #21.
+    #[test]
+    fn a_dependency_with_only_platform_conditions_resolves() {
+        let (guard, root) = repo(&[
+            ("src/barcode.ts", ""),
+            (
+                "node_modules/bwip-js/package.json",
+                r#"{
+                    "name": "bwip-js",
+                    "main": "./dist/bwip-js-node.js",
+                    "exports": {
+                        ".": {
+                            "browser": { "import": "./dist/bwip-js-browser.mjs" },
+                            "react-native": { "default": "./dist/bwip-js-rn.js" },
+                            "node": {
+                                "types": "./dist/bwip-js-node.d.ts",
+                                "import": "./dist/bwip-js-node.mjs",
+                                "require": "./dist/bwip-js-node.js"
+                            }
+                        }
+                    }
+                }"#,
+            ),
+            ("node_modules/bwip-js/dist/bwip-js-node.d.ts", "export {};"),
+            ("node_modules/bwip-js/dist/bwip-js-node.mjs", "export {};"),
+        ]);
+
+        let resolved = describe(
+            &root,
+            ImportResolver::new(&root).resolve(&path("src/barcode.ts"), "bwip-js"),
+        );
+        drop(guard);
+
+        assert_eq!(
+            resolved, "external node_modules/bwip-js/dist/bwip-js-node.d.ts",
+            "installed, and a dependency rather than a blind spot"
+        );
     }
 
     /// A builtin has no file at all. Reporting it as unresolved would make a
