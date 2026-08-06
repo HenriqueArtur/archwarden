@@ -116,6 +116,19 @@ not themselves part of the module structure. Configurable at the top level:
 rules only. Files inside it are still parsed, still enter the import graph,
 and are still subject to every other rule.
 
+**Wherever the directory sits.** A `_`-prefixed directory is exempt as a
+subfolder of a governed directory *and* as a root a scope selects — the second
+case being the one this hatch describes best, since a directory that is "not
+itself part of the module structure" is usually a sibling of the modules
+rather than a child of one.
+
+Only the directory's own name is asked about, never an ancestor's, and that is
+what makes a namespace expressible: `_Legacy` is exempt, so its nineteen
+entities are not subfolders to complain about, while a rule with
+`roots: ["packages/domain/_Legacy/*"]` governs each of them normally. To
+silence a whole subtree instead, that is `skip_dirs.globs` with a `/**` — a
+different request, and one worth making on purpose.
+
 `scope: "walk"` removes them from the walk entirely, making them invisible to
 everything. This is available but rarely what you want: it turns
 `mkdir _x && mv offender.ts _x/` into a way to bypass any import boundary.
