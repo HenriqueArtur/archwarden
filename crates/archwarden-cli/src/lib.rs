@@ -2715,6 +2715,13 @@ mod tests {
             "{}",
             result.out
         );
+        assert!(
+            result
+                .out
+                .contains("`packages/ui/button.tsx`: `@org/never-installed`"),
+            "and which one, or the note is a blind spot of its own: {}",
+            result.out
+        );
     }
 
     /// The command an agent calls before it writes. The file does not exist,
@@ -2975,6 +2982,62 @@ mod tests {
             "{}",
             result.out
         );
+        assert!(
+            parsed["unresolved_imports"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+            "and the blind spots, for the same reason: {}",
+            result.out
+        );
+    }
+
+    /// A boundary rule that ran against an import nothing could place ran
+    /// blind, and this command answered `is fine.` either way -- which is what
+    /// a pre-write hook asks it, about the import the agent has just written.
+    /// Issue #18.
+    #[test]
+    fn check_file_names_an_import_the_boundary_rules_did_not_see() {
+        let files = [
+            (
+                "arch.config.json",
+                r#"{"version":0,"rules":[{
+                    "type":"import-boundary","id":"domain-is-self-contained","level":"error",
+                    "from":"packages/domain/**","forbid_import_from":"apps/**"}]}"#,
+            ),
+            (
+                "packages/domain/row.ts",
+                "import type { Order } from '@Domain/Order/types';\nexport type Violation = Order;",
+            ),
+        ];
+
+        let (_guard, result) = run_in(&files, &["check", "--file", "packages/domain/row.ts"]);
+
+        assert_eq!(result.exit, Exit::Clean, "nothing was found -- nor seen");
+        assert!(
+            result
+                .out
+                .contains("note: `@Domain/Order/types` did not resolve"),
+            "{}",
+            result.out
+        );
+        assert!(
+            !result.out.contains("is fine"),
+            "it is not fine, it is unseen: {}",
+            result.out
+        );
+
+        let (_guard, json) = run_in(
+            &files,
+            &[
+                "check",
+                "--file",
+                "packages/domain/row.ts",
+                "--format",
+                "json",
+            ],
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json.out).expect("valid JSON");
+        assert_eq!(parsed["unresolved_imports"][0], "@Domain/Order/types");
     }
 
     const WRITE_EVENT: &str = r#"{

@@ -76,7 +76,9 @@ pub struct Report {
     /// All zero when no rule needed resolution. The `unresolved` count is the
     /// one that matters to a reader: a boundary rule cannot see an import it
     /// could not place, so a clean report over a repository whose dependencies
-    /// are not installed means less than it looks like.
+    /// are not installed means less than it looks like. Each of those is named
+    /// in `unresolved_imports`, sorted, because the count alone left a reader
+    /// nothing to open (issue #18).
     pub imports: crate::resolve::Outcomes,
 }
 
@@ -268,9 +270,12 @@ pub fn check(run: Run<'_>) -> Report {
     }
 
     // Determinism is a design goal: the same inputs must produce byte-identical
-    // output, or every snapshot test and CI diff becomes noise.
+    // output, or every snapshot test and CI diff becomes noise. The blind spots
+    // arrive in whatever order the walk reached the files, which is not one a
+    // reader can predict; sorted, they group by file on their own.
     findings.sort();
     unreadable_files.sort();
+    imports.unresolved_imports.sort();
 
     Report {
         findings,
@@ -915,6 +920,54 @@ mod tests {
         assert_eq!(report.imports.unresolved, 1);
         assert_eq!(report.imports.builtin, 1);
         assert_eq!(report.imports.in_repo, 0);
+        assert_eq!(
+            report.imports.unresolved_imports,
+            vec![(
+                RepoRelPath::new("packages/ui/button.tsx").expect("valid"),
+                "@org/never-installed".to_owned()
+            )],
+            "and named, or the count is a blind spot nobody can find"
+        );
+    }
+
+    /// The blind spots are sorted, like every other list in a report: the walk
+    /// reaches files in an order nobody can predict, and a CI diff that moves
+    /// between two identical runs is noise.
+    #[test]
+    fn the_unresolved_imports_of_a_run_are_sorted() {
+        let report = run(
+            &[
+                (
+                    "packages/ui/z-last.tsx",
+                    "import { x } from '@Domain/Order';\nexport const Z = 1;",
+                ),
+                (
+                    "packages/ui/a-first.tsx",
+                    "import { y } from '@Shared/thing';\nimport { z } from '@Domain/Id';\nexport const A = 1;",
+                ),
+            ],
+            &config(vec![rule(
+                "ui-forbids-domain",
+                None,
+                &["packages/ui/**"],
+                boundary(&["packages/domain/**"], &[], &[]),
+            )]),
+        );
+
+        let named: Vec<(&str, &str)> = report
+            .imports
+            .unresolved_imports
+            .iter()
+            .map(|(path, specifier)| (path.as_str(), specifier.as_str()))
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                ("packages/ui/a-first.tsx", "@Domain/Id"),
+                ("packages/ui/a-first.tsx", "@Shared/thing"),
+                ("packages/ui/z-last.tsx", "@Domain/Order"),
+            ]
+        );
     }
 
     /// `FileFacts` come from a TypeScript parser, so only a source file may

@@ -244,6 +244,25 @@ you to ignore the one number it asks you to watch. `check --file` still reports
 them, under `not-source`, because that command answers "what happened to *this*
 file" and "nothing, it is not source" is a real answer there.
 
+**An import that did not resolve is the other kind of blind spot.** A boundary
+rule matches globs against where an import *lands*, so one that landed nowhere
+was never checked. The run says how many, and names them:
+
+```
+note: 2 imports could not resolve, so boundary rules did not see them
+      `packages/domain/row.ts`: `@Domain/Order/id`, `@Domain/Order/types`
+0 errors, 0 warnings · 4153 files, 1268 directories · 820ms
+```
+
+`summary.imports.unresolved_imports` carries every pair for a consumer; the
+text names the first ten files and says how many it left out.
+
+Usually one of two things. A dependency that is not installed — run `install`
+and the note goes away. Or a `tsconfig` path alias, which archwarden does not
+read: those are the ones to look at, because an alias pointing across a
+boundary is exactly the import the rule exists to catch and exactly the one it
+cannot see. Neither fails the build on its own.
+
 `files_parsed` and `facts_reused` are the cache working. A warm run parses
 nothing and is not much faster in wall clock — it still reads and hashes every
 file, because that is the only honest way to know one did not change. The cache

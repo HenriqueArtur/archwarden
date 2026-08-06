@@ -17,6 +17,43 @@ saying so.
 
 ## [Unreleased]
 
+### Added
+
+- **`check` names every import that did not resolve**, where it used to report
+  only how many.
+  ([#18](https://github.com/HenriqueArtur/archwarden/issues/18))
+
+  ```
+  note: 2 imports could not resolve, so boundary rules did not see them
+        `packages/domain/row.ts`: `@Domain/Order/id`, `@Domain/Order/types`
+  0 errors, 0 warnings · 4153 files, 1268 directories · 820ms
+  ```
+
+  A boundary rule matches globs against where an import *lands*, so one that
+  landed nowhere was never checked — and the note that said so gave the reader
+  nothing to open. The person who reported it found theirs by deleting imports
+  until the count moved, in a repository of four thousand files.
+
+  It bites hardest where the rule matters most: extracting a package out of an
+  app, where imports still written with the app's `tsconfig` aliases resolve to
+  nothing and are precisely the ones that cross the boundary being introduced.
+
+  `summary.imports.unresolved_imports` carries every `{path, specifier}` pair,
+  for a CI job gating on "no import escapes the rules". The text names the
+  first ten files and says how many it left out — a repository whose
+  dependencies are not installed cannot place a single bare specifier, and a
+  line each would bury the findings the run was for.
+
+  `check --file` reports the same thing for one file, under
+  `unresolved_imports`, and no longer answers `is fine.` about a file whose
+  imports nothing could see. That is the shape a pre-write hook asks in: the
+  import an agent has just written is exactly the one nothing has seen yet.
+
+  Unchanged: `tsconfig` path aliases are still not read
+  ([`CONFIG.md`](docs/CONFIG.md)), and an unresolved import is still a note
+  rather than a finding. It is the statement that no rule could tell, not a
+  rule saying no.
+
 ## [0.6.0] — 2026-08-03
 
 ### Added

@@ -345,12 +345,30 @@ fn is_zero(value: &usize) -> bool {
 }
 
 /// Where a run's imports went.
+#[allow(
+    clippy::struct_field_names,
+    reason = "`unresolved_imports` is a JSON key a consumer reads, not a name this struct is free to shorten"
+)]
 #[derive(Debug, Serialize)]
 struct Imports {
     in_repo: usize,
     external: usize,
     builtin: usize,
     unresolved: usize,
+    /// Which file wrote each import that did not resolve.
+    ///
+    /// Every one of them, where the text format shows the first few: a CI job
+    /// gating on "no import escapes the boundary rules" needs the whole list,
+    /// and nothing is scrolling past it. Absent when everything resolved.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unresolved_imports: Vec<UnresolvedImport>,
+}
+
+/// One import no boundary rule could see.
+#[derive(Debug, Serialize)]
+struct UnresolvedImport {
+    path: String,
+    specifier: String,
 }
 
 impl Summary {
@@ -384,6 +402,15 @@ impl Summary {
                 external: report.imports.external,
                 builtin: report.imports.builtin,
                 unresolved: report.imports.unresolved,
+                unresolved_imports: report
+                    .imports
+                    .unresolved_imports
+                    .iter()
+                    .map(|(path, specifier)| UnresolvedImport {
+                        path: path.as_str().to_owned(),
+                        specifier: specifier.clone(),
+                    })
+                    .collect(),
             }),
         }
     }
@@ -667,9 +694,6 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
     }
 
     // An import a boundary rule could not place is an import it did not check.
-    // Counted rather than listed: on a repository whose dependencies are not
-    // installed this is every bare specifier, and a line each would bury the
-    // findings the user came for.
     let unresolved = report.imports.unresolved;
     if unresolved > 0 {
         let _ = writeln!(
@@ -682,6 +706,7 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
             },
             if unresolved == 1 { "it" } else { "them" },
         );
+        render_unresolved_imports(&report.imports.unresolved_imports, out);
     }
 
     let summary = Summary::of(report, view, elapsed);
@@ -725,6 +750,54 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
     let _ = writeln!(out, " · {}", human_duration(elapsed));
 }
 
+/// How many files may be named under the unresolved-imports note.
+///
+/// The list is not always short. A repository whose dependencies are not
+/// installed cannot place a single bare specifier, and a line per file would
+/// push the findings the user came for off the screen. Ten is enough for the
+/// case the note is for -- a package mid-extraction, whose aliases resolve
+/// nowhere yet -- and the JSON carries every one for the CI job that gates on
+/// them.
+const UNRESOLVED_FILES_SHOWN: usize = 10;
+
+/// Which file wrote each import nothing could place, under the note counting
+/// them.
+///
+/// Without this the note says an import is unprotected and gives the reader
+/// nowhere to look; issue #18 found its own by deleting imports until the
+/// count moved. Grouped by file rather than a line each, because one file
+/// written against an alias that resolves nowhere usually has several.
+fn render_unresolved_imports(unresolved: &[(RepoRelPath, String)], out: &mut dyn std::io::Write) {
+    // Sorted by the engine, so a file's imports arrive together.
+    let mut by_file: Vec<(&RepoRelPath, Vec<&str>)> = Vec::new();
+    for (path, specifier) in unresolved {
+        match by_file.last_mut() {
+            Some((last, specifiers)) if *last == path => specifiers.push(specifier),
+            _ => by_file.push((path, vec![specifier.as_str()])),
+        }
+    }
+
+    for (path, specifiers) in by_file.iter().take(UNRESOLVED_FILES_SHOWN) {
+        let written: Vec<String> = specifiers
+            .iter()
+            .map(|specifier| format!("`{specifier}`"))
+            .collect();
+        let _ = writeln!(out, "      `{path}`: {}", written.join(", "));
+    }
+
+    // Saying how many were left out, rather than trailing off: a reader who
+    // cannot tell whether the list ended or was cut has to check.
+    if let Some(hidden) = by_file.len().checked_sub(UNRESOLVED_FILES_SHOWN)
+        && hidden > 0
+    {
+        let _ = writeln!(
+            out,
+            "      … and {hidden} more {}, all of them under `--format json`",
+            plural(hidden, "file", "files"),
+        );
+    }
+}
+
 /// The JSON envelope for a single-file check.
 #[derive(Debug, Serialize)]
 struct JsonSingle<'a> {
@@ -735,6 +808,13 @@ struct JsonSingle<'a> {
     /// empty rather than infer it from absence -- that is the whole point of
     /// reporting skips (correction C6).
     skipped: Vec<JsonSkipped<'a>>,
+    /// Imports of this file that nothing could resolve, so no boundary rule
+    /// saw them.
+    ///
+    /// Always present for the same reason as `skipped`: a caller has to be
+    /// able to tell "this file has no blind spot" from "this build does not
+    /// report them". Issue #18.
+    unresolved_imports: &'a [String],
 }
 
 #[derive(Debug, Serialize)]
@@ -768,6 +848,7 @@ fn render_single_json(single: &archwarden_engine::single::Single, out: &mut dyn 
                 reason: skipped.reason.as_str(),
             })
             .collect(),
+        unresolved_imports: &single.unresolved_imports,
     };
 
     match serde_json::to_string_pretty(&envelope) {
@@ -794,7 +875,19 @@ fn render_single_text(single: &archwarden_engine::single::Single, out: &mut dyn 
         );
     }
 
-    if single.findings.is_empty() && single.skipped.is_empty() {
+    // A boundary rule that ran against an import nothing could place ran
+    // blind, and `is fine.` is not what happened. Issue #18.
+    for specifier in &single.unresolved_imports {
+        let _ = writeln!(
+            out,
+            "note: `{specifier}` did not resolve, so boundary rules did not see it"
+        );
+    }
+
+    if single.findings.is_empty()
+        && single.skipped.is_empty()
+        && single.unresolved_imports.is_empty()
+    {
         let _ = writeln!(out, "{} is fine.", single.path);
     }
 }
@@ -1036,6 +1129,23 @@ mod tests {
                 external,
                 builtin,
                 unresolved,
+                unresolved_imports: Vec::new(),
+            },
+            ..report(Vec::new())
+        }
+    }
+
+    /// A run whose only news is that these imports were never placed, sorted
+    /// as the engine hands them over.
+    fn blind_spots(unresolved: &[(&str, &str)]) -> Report {
+        Report {
+            imports: archwarden_engine::resolve::Outcomes {
+                unresolved: unresolved.len(),
+                unresolved_imports: unresolved
+                    .iter()
+                    .map(|(file, specifier)| (path(file), (*specifier).to_owned()))
+                    .collect(),
+                ..archwarden_engine::resolve::Outcomes::default()
             },
             ..report(Vec::new())
         }
@@ -2048,6 +2158,110 @@ mod tests {
         assert_eq!(parsed["summary"]["imports"]["external"], 12);
         assert_eq!(parsed["summary"]["imports"]["builtin"], 3);
         assert_eq!(parsed["summary"]["imports"]["unresolved"], 7);
+    }
+
+    /// And the count alone is not enough. It says an import is unprotected and
+    /// leaves the reader nowhere to look; issue #18 found its own by deleting
+    /// imports until the number moved.
+    #[test]
+    fn the_text_output_names_each_import_that_did_not_resolve() {
+        let text = rendered(
+            &blind_spots(&[
+                ("packages/domain/row.ts", "@Domain/Order/id"),
+                ("packages/domain/row.ts", "@Domain/Order/types"),
+                ("packages/domain/seed.ts", "@Shared/clock"),
+            ]),
+            Format::Text,
+        );
+
+        assert!(text.contains("3 imports could not resolve"), "{text}");
+        assert!(
+            text.contains(
+                "      `packages/domain/row.ts`: `@Domain/Order/id`, `@Domain/Order/types`\n"
+            ),
+            "one line per file, however many it wrote: {text}"
+        );
+        assert!(
+            text.contains("      `packages/domain/seed.ts`: `@Shared/clock`\n"),
+            "{text}"
+        );
+    }
+
+    /// Every one of them in the JSON, where the text shows the first few: a CI
+    /// job gating on "no import escapes the boundary rules" reads the whole
+    /// list, and nothing is scrolling past it.
+    #[test]
+    fn the_json_carries_every_import_that_did_not_resolve() {
+        let json = rendered(
+            &blind_spots(&[
+                ("packages/domain/row.ts", "@Domain/Order/id"),
+                ("packages/domain/seed.ts", "@Shared/clock"),
+            ]),
+            Format::Json,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        let named = &parsed["summary"]["imports"]["unresolved_imports"];
+        assert_eq!(named[0]["path"], "packages/domain/row.ts");
+        assert_eq!(named[0]["specifier"], "@Domain/Order/id");
+        assert_eq!(named[1]["path"], "packages/domain/seed.ts");
+        assert_eq!(named[1]["specifier"], "@Shared/clock");
+        assert_eq!(
+            named.as_array().map(Vec::len),
+            Some(2),
+            "as many as the count: {json}"
+        );
+    }
+
+    /// A repository whose dependencies are not installed cannot place a single
+    /// bare specifier, and a line per file would push the findings the user
+    /// came for off the screen. Cut, and said to be cut -- a reader who cannot
+    /// tell whether the list ended or was truncated has to go and check.
+    #[test]
+    fn a_wall_of_unresolved_imports_is_cut_and_says_so() {
+        let files: Vec<(String, &str)> = (0..14)
+            .map(|n| (format!("src/file-{n:02}.ts"), "react"))
+            .collect();
+        let text = rendered(
+            &blind_spots(
+                &files
+                    .iter()
+                    .map(|(file, specifier)| (file.as_str(), *specifier))
+                    .collect::<Vec<_>>(),
+            ),
+            Format::Text,
+        );
+
+        assert!(text.contains("`src/file-09.ts`: `react`"), "{text}");
+        assert!(
+            !text.contains("`src/file-10.ts`"),
+            "the eleventh file is past the cut: {text}"
+        );
+        assert!(
+            text.contains("      … and 4 more files, all of them under `--format json`\n"),
+            "{text}"
+        );
+    }
+
+    /// Exactly at the cut there is nothing left out, and saying "and 0 more"
+    /// would send a reader looking for a list that is already complete.
+    #[test]
+    fn a_list_that_fits_is_not_announced_as_cut() {
+        let files: Vec<String> = (0..UNRESOLVED_FILES_SHOWN)
+            .map(|n| format!("src/file-{n:02}.ts"))
+            .collect();
+        let text = rendered(
+            &blind_spots(
+                &files
+                    .iter()
+                    .map(|file| (file.as_str(), "react"))
+                    .collect::<Vec<_>>(),
+            ),
+            Format::Text,
+        );
+
+        assert!(text.contains("`src/file-09.ts`: `react`"), "{text}");
+        assert!(!text.contains("more files"), "{text}");
     }
 
     /// One is one. The note is read by someone deciding whether to trust the

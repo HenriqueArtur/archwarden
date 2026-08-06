@@ -208,6 +208,7 @@ mod tests {
                 },
             }],
             skipped: Vec::new(),
+            unresolved_imports: Vec::new(),
         };
 
         let message = explain(&single, "archwarden");
@@ -254,6 +255,7 @@ mod tests {
                 },
             }],
             skipped: Vec::new(),
+            unresolved_imports: Vec::new(),
         };
 
         let message = explain(&single, "npx archwarden");
