@@ -117,13 +117,30 @@ The bodies on `ba1fbce` (0.5.0) and `b2cdc33` (0.5.1) are the models.
 
 ### 5. A dry run, when you want one
 
-The release workflow accepts a `workflow_dispatch` with a `tag` input. It
-builds every target and runs every check, then stops: both the `publish` and
-`npm` jobs are gated on `startsWith(github.ref, 'refs/tags/v')`, which a
-dispatch never satisfies. Nothing is published and nothing is tagged.
+The release workflow accepts a `workflow_dispatch` with a `tag` input. Run it
+**from a branch** and it builds every target and runs every check, then stops:
+both the `publish` and `npm` jobs are gated on
+`startsWith(github.ref, 'refs/tags/v')`, and a dispatch from `main` gives
+`refs/heads/main`. Nothing is published and nothing is tagged.
 
 That is the way to test a change to the workflow itself, and it is cheap
 insurance before a release that touches distribution.
+
+**The ref is what decides, not the event.** This paragraph used to say a
+dispatch "never satisfies" that gate, and that is wrong: `gh workflow run
+release.yml --ref v0.8.0 -f tag=v0.8.0` dispatches *on the tag*, so
+`github.ref` is `refs/tags/v0.8.0` and both jobs run and publish exactly as a
+tag push would.
+
+Which is a real escape hatch, and 0.8.0 needed it. GitHub Actions was in a
+major incident with webhook delivery throttled to about 15%, so pushing the
+tag created no run at all — nine re-pushes over half an hour, none of which
+fired. A dispatch goes through the API rather than webhook delivery, and it
+started immediately.
+
+Reach for it when a tag push produces no run. Stop any retry loop first, so
+two runs cannot publish the same version: the second would fail on npm's
+duplicate-version rejection, which is a safe failure but a confusing one.
 
 ## The tag
 
