@@ -318,7 +318,10 @@ fn facts_for(
     let content = ContentHash::of(source.as_bytes());
 
     if let Some(cache) = cache {
-        if let Some(facts) = cache.facts(content) {
+        // The path is passed in, not read out: the entry is keyed by content
+        // alone, so the file it was stamped from is not necessarily this one.
+        // Issue #20.
+        if let Some(facts) = cache.facts(content, path) {
             return Ok((facts, Source::Cache));
         }
 
@@ -778,6 +781,76 @@ mod tests {
             "a warm run reports exactly what a cold one did"
         );
         drop(guard);
+    }
+
+    /// Two files with identical bytes are one cache entry, and the entry was
+    /// handed back stamped with whichever file wrote it. `resolve_imports`
+    /// reads that field to know which directory a relative specifier points
+    /// from, so on a warm run one file's imports were resolved from another
+    /// file's directory.
+    ///
+    /// The consequence is the worst a linter has. Here the violation is in
+    /// `src/app`, the twin in `src/zzz` imports something that is not
+    /// forbidden, and the cold run says so correctly -- then the warm run over
+    /// an untouched tree reported nothing at all and exited clean. Reverse
+    /// which twin is stored and the mirror happens: a finding against a file
+    /// that imports nothing forbidden. Issue #20.
+    #[test]
+    fn a_warm_run_does_not_resolve_one_file_from_another_files_directory() {
+        use archwarden_cache::store::Cache;
+
+        // Same bytes, two directories, and `../domain/x` means a different
+        // file from each of them.
+        const TWIN: &str = "import { x } from '../domain/x';\nexport const use = x;";
+        let (guard, root) = tree_at(&[
+            ("src/domain/x.ts", "export const x = 1;"),
+            ("src/zzz/domain/x.ts", "export const x = 2;"),
+            ("src/app/thing.ts", TWIN),
+            ("src/zzz/deep/thing.ts", TWIN),
+        ]);
+        let config = config(vec![rule(
+            "nothing-imports-domain",
+            None,
+            &["src/**"],
+            boundary(&["src/domain/**"], &[], &[]),
+        )]);
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let cache_path = root.join(".archwarden/cache/db.redb");
+
+        let run_with_cache = || {
+            let mut cache = Cache::open(&cache_path).expect("opens");
+            let report = check(Run {
+                root: &root,
+                config: &config,
+                tree: &tree,
+                cache: Some(&mut cache),
+            });
+            cache.flush().expect("flushes");
+            report
+        };
+
+        let cold = run_with_cache();
+        let warm = run_with_cache();
+        drop(guard);
+
+        assert_eq!(
+            warm.facts_reused, 4,
+            "the cache was warm, or this proves nothing"
+        );
+        assert_eq!(
+            cold.findings.len(),
+            1,
+            "one real violation, from `src/app`: {:?}",
+            cold.findings
+        );
+        assert_eq!(
+            cold.findings.first().map(|f| f.path.as_str()),
+            Some("src/app/thing.ts")
+        );
+        assert_eq!(
+            warm.findings, cold.findings,
+            "and a warm run over an untouched tree says the same"
+        );
     }
 
     /// A file that changed is parsed again, which is the half of the contract
