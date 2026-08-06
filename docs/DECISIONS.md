@@ -185,6 +185,18 @@ backwards, a destination already occupied, two files landing on one path
 — refuses outright, because forcing past one produces a repository that
 does not build.
 
+That promise was unconditional and, until issue #28, untrue in one case.
+A file being moved that git does not track is refused by `git mv` — and
+refused *during* the move, after the specifier rewrites are on disk, so
+the repository was left with importers naming a module that had never
+been created. The recovery the message offered, `git checkout .`, is
+precisely what cannot restore an untracked file: the trigger and the
+reason the advice fails are the same fact. Untrackedness now joins the
+preconditions, asked in one `git ls-files` before anything is written.
+The general lesson is the one the promise already implied: a question
+answered by the tool performing the write is not a precondition, however
+early in the write it happens to be asked.
+
 The emptied source directory is removed. Not cosmetic: `structure` rules
 are about directories, so an emptied `shared/` keeps reporting the exact
 finding the refactor was run to remove. Measured before the fix: nine
