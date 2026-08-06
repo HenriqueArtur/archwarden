@@ -47,7 +47,8 @@ the same real repository, compare graph output, fail on divergence.
 - **Targets**: Flowmaatik (~2.8k TS files) and the larger sibling project
   (~30k files). Repos are configured via env vars, not checked in.
 - **When it runs**: manual (`cargo test --features differential`), and on
-  a nightly CI job. Not on the fast PR CI.
+  PR CI beside every other tier. With no target configured the test says why
+  it did nothing and passes, so the job costs a compile.
 - **Divergence handling**: when archwarden and dep-cruiser disagree, the
   reviewer decides whether (a) archwarden is wrong (fix it), (b)
   dep-cruiser is wrong (record as known divergence with rationale in
@@ -55,6 +56,21 @@ the same real repository, compare graph output, fail on divergence.
   side is ambiguous (fix the config).
 - **Purpose**: gives us confidence that we cover the edge cases years of
   dep-cruiser use has surfaced, without importing their code.
+
+## Nothing here runs on a schedule
+
+There is no nightly job, and the reason is the same one that moved mutation
+testing onto the push hook below.
+
+The differential tier *was* a nightly. It failed every night for at least six
+days — an unset repository variable substitutes as the empty string, so the
+target path was `""` and could not be canonicalised — while the test file
+promised that a missing target "prints why it did nothing and passes". Nobody
+opened the report. A red job nobody reads is not a test; it is a habit of
+ignoring red, and it costs more than the job was ever worth.
+
+So every tier runs where the person who caused the failure is looking: on the
+pull request, or on the push that would carry it.
 
 ## Mutation testing runs on push, not nightly
 
@@ -205,10 +221,10 @@ synthetic fixtures:
   `tests/snapshots/flowmaatik.json`. Any change to the snapshot requires
   reviewer approval — that is how we notice unintended rule behaviour
   changes.
-- **The larger sibling project** — runs nightly. Not committed as
-  snapshot (too large, moves too fast); instead, the job asserts that
-  the output structure is well-formed and the run finishes under the
-  performance budget declared in `ROADMAP.md`.
+- **The larger sibling project** — runs on CI when configured, like every
+  other tier. Not committed as snapshot (too large, moves too fast);
+  instead, the job asserts that the output structure is well-formed and the
+  run finishes under the performance budget declared in `ROADMAP.md`.
 
 Both repos are pulled by CI as read-only references. No changes ever
 flow from archwarden CI back to them.

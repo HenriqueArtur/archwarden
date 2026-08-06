@@ -139,8 +139,23 @@ fired. A dispatch goes through the API rather than webhook delivery, and it
 started immediately.
 
 Reach for it when a tag push produces no run. Stop any retry loop first, so
-two runs cannot publish the same version: the second would fail on npm's
-duplicate-version rejection, which is a safe failure but a confusing one.
+two runs cannot publish the same version.
+
+Stopping the loop is not enough on its own, and 0.8.0 showed why: a throttled
+webhook is *delayed*, not dropped. Three of the nine re-pushed tags arrived
+twenty minutes after the dispatch had already published, and each started a
+release run of its own. What happened is worth knowing, because it is the
+answer to "how bad is this":
+
+- the GitHub release step ran again and updated the existing release with the
+  same artefacts — 10 assets, unchanged, original publish timestamp intact;
+- the npm step failed with `E403 — You cannot publish over the previously
+  published versions`, which is npm refusing exactly as it should.
+
+So the damage is three red runs in the history and nothing else. Do not delete
+the tag to tidy it up: the release is published and the tag is what it points
+at. If you want the runs gone, they can be deleted from the Actions history —
+but leaving them is more honest.
 
 ## The tag
 

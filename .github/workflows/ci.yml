@@ -4,6 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Runnable by hand, and not only for convenience: during the GitHub Actions
+  # incident of 2026-08-06, webhook delivery was throttled to ~15% and pull
+  # request events created no run at all for hours. A dispatch goes through
+  # the API instead, so CI stays reachable when the trigger that normally
+  # reaches it does not. `gh workflow run ci.yml --ref <branch>`.
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -153,3 +159,39 @@ jobs:
           toolchain: stable
           rustflags: ""
       - run: cargo test --workspace --all-features
+
+  differential:
+    name: 🔬 differential vs dependency-cruiser
+    runs-on: ubuntu-latest
+    # Tier 3 in docs/TESTING.md, and here rather than on a schedule.
+    #
+    # It was a nightly. It failed every night for at least six days with
+    # `ARCHWARDEN_DIFF_REPO=` is not a readable path -- an unset repository
+    # variable substitutes as the empty string -- and nobody opened the
+    # report. That is the same argument docs/TESTING.md already makes for
+    # moving mutation testing onto the push hook: a red job nobody reads is
+    # not a test, it is a habit of ignoring red.
+    #
+    # Target repositories are private and configured through the
+    # `ARCHWARDEN_DIFF_REPO` repository variable rather than checked in. With
+    # none configured the test says why it did nothing and passes, so this job
+    # costs a compile and stays honest -- an `if: false` job rots, and so does
+    # one that has been failing so long its failure means nothing.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      # dependency-cruiser resolves TypeScript through the *target* repo's own
+      # typescript, so it is installed there rather than globally. It needs
+      # TypeScript 5: dependency-cruiser 18 declares `>=2 <7` and silently
+      # cruises nothing when only 7 is present.
+      - name: install the reference tool into the target
+        if: vars.ARCHWARDEN_DIFF_REPO != ''
+        run: npm install --no-audit --no-fund dependency-cruiser typescript@5
+        working-directory: ${{ vars.ARCHWARDEN_DIFF_REPO }}
+      - run: cargo test -p archwarden-engine --features differential -- --nocapture
+        env:
+          ARCHWARDEN_DIFF_REPO: ${{ vars.ARCHWARDEN_DIFF_REPO }}
+          ARCHWARDEN_DIFF_DIRS: ${{ vars.ARCHWARDEN_DIFF_DIRS }}

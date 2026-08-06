@@ -21,7 +21,7 @@ directory:
 | `structure` | `filename_patterns` | the direct child files, by basename |
 | `naming` | `file_pattern` | the direct child files, by basename |
 | `naming` | `dir_pattern` | the selected directory itself, by its own basename |
-| `spec-pair` | `subfolders` | the listed subdirectories (`"."` = the directory itself), then files in them |
+| `spec-pair` | `subfolders` | the listed subdirectories **and everything below them** (`"."` = the directory itself, its own files only), then files in them |
 | `call-obligation` | `file_pattern` | the direct child files, by basename |
 | `import-boundary` | *(scope only)* | every file in the directory is a candidate importer |
 | `no-passthrough` | *(scope only)* | every direct child file's exports |
@@ -283,7 +283,15 @@ is set.
 **Shape**:
 
 - `subfolders` — which folders under each selected directory are subject to
-  the rule. Use `["."]` to apply to the directory itself.
+  the rule. Each entry covers that folder **and everything below it**, so
+  `calcs` reaches `Entity/calcs/group/nested.ts`; grouping related files into
+  a subfolder does not take them out of the gate. An entry is a path relative
+  to the selected directory, so `calcs/group` names that subtree exactly.
+
+  Use `["."]` to apply to the directory itself — that one is not recursive,
+  because naming `calcs` is how a project says which subtree is under the
+  gate, and a recursive `.` would swallow `types` and everything else it did
+  not name.
 - `spec_markers` — what makes a filename a spec. Default `["spec", "test"]`.
 - `ignore_files` — repo-relative **globs** exempted (usually type-only files
   with no runtime behaviour to test). Globs, not exact paths, for consistency
