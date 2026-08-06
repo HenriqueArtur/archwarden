@@ -186,6 +186,14 @@ Ported from Flowmaatik's `check-structure.config.ts`:
 }
 ```
 
+`recurse_into` names a **container whose children** are entities of the same
+shape: `user/variants/nfe` is governed, `user/variants` is not, and `nfe` may
+be called anything. It is one level deeper than it reads, and it *removes*
+findings — the directories inside the container stop being unexpected
+subfolders and become entities. That is a decision worth making on purpose;
+`config explain domain-entity-shape` lists every directory the rule governs,
+which is how to see that you made it.
+
 ### Filename rule
 
 ```json
@@ -728,7 +736,8 @@ rewritten.
 |---|---|
 | the working tree is dirty | `git` is the undo, and one that takes your own work with it is not one |
 | not a git repository | same reason: no undo |
-| a specifier this cannot recompute | a `tsconfig` path alias resolves through a map archwarden does not read; rewriting the rest would leave that one pointing at nothing |
+| a file being moved is untracked | `git mv` cannot move it, and `git checkout .` cannot bring it back — the two halves of the same fact. Asked before anything is written, because git asks it in the middle of the move |
+| a specifier this cannot recompute | a `tsconfig` path alias is read forwards but not backwards: which alias to write for the new location is a question the map does not answer, and rewriting the rest would leave that one pointing at nothing |
 | the destination exists, or two files land on one path | carrying it out would delete something |
 | a dynamic import naming no module | whether that file imports the target is unknowable |
 

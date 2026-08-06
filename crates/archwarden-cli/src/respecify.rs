@@ -50,12 +50,18 @@ pub enum Rewrite {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Unknown {
-    /// The specifier resolves into the repository through a map this does not
-    /// read — a `tsconfig` path alias.
+    /// The specifier resolves into the repository through a `tsconfig` path
+    /// alias, which is read forwards and cannot be written backwards.
     ///
     /// It is not relative and names no workspace package, yet it reached a file
     /// here, so something else mapped it. `compilerOptions.paths` is that
-    /// something in every case seen so far.
+    /// something in every case seen so far — and archwarden does read it, which
+    /// is how this variant is reached at all.
+    ///
+    /// What it cannot do is invert the map. Given a destination, which alias to
+    /// write is not a question `paths` answers: several patterns may reach the
+    /// same file, and none may reach the new location. Guessing produces an
+    /// import that does not compile.
     PathAlias,
     /// The importing file is at the repository root, so a relative specifier
     /// has no directory to be measured from.
@@ -70,8 +76,11 @@ pub enum Unknown {
     ///
     /// The move is legal and the file lands somewhere real; there is simply no
     /// specifier the package's own manifest would let an importer write for it.
-    /// Reached when `exports` is absent, or its patterns do not match where the
-    /// file is going.
+    ///
+    /// Reached when the map's patterns do not match where the file is going.
+    /// **Not** when `exports` is absent: a package without one exports
+    /// everything, so the specifier is the destination's path under the
+    /// package root and is computed rather than refused (issue #27).
     NotExported,
 }
 
@@ -87,8 +96,8 @@ impl Unknown {
     pub fn explain(self) -> &'static str {
         match self {
             Self::PathAlias => {
-                "it resolves through a `tsconfig` path alias, which is a map\n  \
-                 this does not read"
+                "it resolves through a `tsconfig` path alias, and which alias\n  \
+                 to write for the new location is not something that map says"
             }
             Self::NoImporterDirectory => {
                 "the importing file is at the repository root, so a relative\n  \
@@ -237,6 +246,26 @@ fn by_package(specifier: &str, package: &Package, to: &RepoRelPath) -> Rewrite {
     };
     let inside = inside.as_str();
 
+    // A package with no `exports` exports everything: subpath resolution is
+    // plain path resolution under the package root, which is what
+    // `Package::subpaths` already says an empty map means and what `check`
+    // resolves these imports by. So the new specifier is derivable by
+    // construction -- the destination's path relative to the package root --
+    // and refusing it sent the user to add an `exports` map instead.
+    //
+    // That remedy was not available to the repository that reported it. A
+    // package resolving subpaths through directory + `index.ts` has no
+    // `exports` map that reproduces its current resolution, because `exports`
+    // drops directory-index resolution; adding one changes what every consumer
+    // may import. Asking for a production resolution change in order to
+    // perform a rename is not a fix. Issue #27.
+    if package.subpaths.is_empty() {
+        return settle(
+            specifier,
+            format!("{}/{}", package.name, in_the_shape_of(specifier, inside)),
+        );
+    }
+
     for (subpath, target) in &package.subpaths {
         let Some(subpath) = subpath.strip_prefix("./") else {
             continue;
@@ -264,6 +293,38 @@ fn by_package(specifier: &str, package: &Package, to: &RepoRelPath) -> Rewrite {
     }
 
     Rewrite::Unknown(Unknown::NotExported)
+}
+
+/// A path under a package root, written the way the old specifier was written.
+///
+/// Three forms resolve to the same file and all three are legal:
+/// `thing/index.ts`, `thing/index` and `thing`. Which one to write is not a
+/// question the move can answer from the destination alone -- so it is
+/// answered from what the author already wrote, and a rename leaves everything
+/// about the import except where it points.
+fn in_the_shape_of(specifier: &str, inside: &str) -> String {
+    const EXTENSIONS: [&str; 8] = ["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"];
+
+    let spelled_out = specifier
+        .rsplit_once('.')
+        .is_some_and(|(_, extension)| EXTENSIONS.contains(&extension));
+    if spelled_out {
+        return inside.to_owned();
+    }
+
+    let without_extension = inside
+        .rsplit_once('.')
+        .filter(|(_, extension)| EXTENSIONS.contains(extension))
+        .map_or(inside, |(stem, _)| stem);
+
+    if specifier.ends_with("/index") {
+        return without_extension.to_owned();
+    }
+
+    without_extension
+        .strip_suffix("/index")
+        .unwrap_or(without_extension)
+        .to_owned()
 }
 
 fn settle(specifier: &str, rewritten: String) -> Rewrite {
@@ -307,6 +368,83 @@ mod tests {
     /// itself stayed put.
     fn rewrite(specifier: &str, importer: &str, to: &str) -> Rewrite {
         respecify(specifier, &path(importer), &path(to), true, &domain())
+    }
+
+    /// A package that declares no `exports` at all, which means every file in
+    /// it is importable by path. The shape issue #27 reported, and the shape a
+    /// `exports` map cannot reproduce once directory + `index.ts` is in play.
+    fn open_package() -> Workspace {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::create_dir_all(root.join("packages/lib")).expect("dirs");
+        std::fs::write(
+            root.join("packages/lib/package.json"),
+            r#"{"name":"@x/lib","version":"0.1.0","type":"module"}"#,
+        )
+        .expect("write");
+        let workspace = Workspace::discover(&root);
+        drop(dir);
+        workspace
+    }
+
+    fn in_open_package(specifier: &str, to: &str) -> Rewrite {
+        respecify(
+            specifier,
+            &path("packages/app/use.ts"),
+            &path(to),
+            true,
+            &open_package(),
+        )
+    }
+
+    /// With no `exports`, subpath resolution is plain path resolution under
+    /// the package root -- which is what `check` already resolves these
+    /// imports by -- so the new specifier is derivable by construction.
+    ///
+    /// It used to refuse and tell the reader to add an `exports` map. That
+    /// remedy was unavailable to the repository that reported it: `exports`
+    /// drops directory-index resolution, so no map reproduces a package whose
+    /// subpaths resolve through `index.ts`, and adding one changes what every
+    /// consumer may import. Issue #27.
+    #[test]
+    fn a_package_with_no_exports_still_gets_a_new_specifier() {
+        assert_eq!(
+            in_open_package("@x/lib/thing", "packages/lib/things/index.ts"),
+            Rewrite::To("@x/lib/things".to_owned()),
+            "the directory-index form the author wrote"
+        );
+        assert_eq!(
+            in_open_package("@x/lib/other", "packages/lib/moved/other.ts"),
+            Rewrite::To("@x/lib/moved/other".to_owned()),
+            "and a plain file"
+        );
+    }
+
+    /// Three spellings resolve to one file, and a rename is not the moment to
+    /// change which one a project uses. Whatever the author wrote goes back --
+    /// the same rule `an_explicit_extension_survives_the_rewrite` holds for
+    /// relative specifiers.
+    #[test]
+    fn the_written_form_of_a_subpath_survives_the_rewrite() {
+        assert_eq!(
+            in_open_package("@x/lib/thing/index.ts", "packages/lib/things/index.ts"),
+            Rewrite::To("@x/lib/things/index.ts".to_owned()),
+        );
+        assert_eq!(
+            in_open_package("@x/lib/thing/index", "packages/lib/things/index.ts"),
+            Rewrite::To("@x/lib/things/index".to_owned()),
+        );
+    }
+
+    /// Leaving the package is still refused, `exports` or no `exports`: which
+    /// package offers it next is a question about the destination's manifest.
+    #[test]
+    fn a_move_out_of_an_open_package_is_still_refused() {
+        assert_eq!(
+            in_open_package("@x/lib/thing", "packages/other/thing/index.ts"),
+            Rewrite::Unknown(Unknown::LeavesThePackage),
+        );
     }
 
     /// One of the moved file's own imports: the importer moved, the target

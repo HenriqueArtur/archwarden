@@ -17,6 +17,54 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 18 — `tsconfig.paths` is read per importer, and the maps are never merged
+Status: accepted.
+Context: issue #22 reported that the aliased half of a boundary rule
+silently enforces nothing, and proposed reading `compilerOptions.paths`
+into one repository-wide map. The premise was taken from this project's
+own documentation, which said in five places that archwarden does not
+read the alias map.
+
+That documentation was wrong, and had been for as long as
+`TsconfigDiscovery::Auto` has been set on the resolver. `paths` is read,
+per importing file, and a boundary rule fires on an aliased import that
+crosses it — `a_tsconfig_path_alias_resolves_to_the_same_file_as_the_relative_form`
+has asserted so since v0. The cost of the wrong sentence was real: the
+reporter duplicated their boundary by hand into
+`forbid_import_from_packages`, their hand-written list was missing two
+entries, and imports crossed the boundary with the build green. A false
+claim of a blind spot produced an actual one.
+
+What they hit is narrower than the docs led them to believe. Aliases are
+resolved by TypeScript's own rule — the nearest `tsconfig.json` to the
+file wins, whole — so an alias declared in an app's `tsconfig` does not
+apply to a file in a package, and a bare `tsconfig.json` in a directory
+takes the repository's aliases away from everything under it unless it
+`extends` the one that declares them. Their files were mid-extraction:
+physically in `packages/domain`, still compiled by the app's program.
+Decision: keep per-importer discovery, and decline to merge every
+`paths` map in a repository into one.
+Alternatives:
+- Merge all `paths` maps repository-wide, as the issue proposed.
+  Rejected: `@/*` is the most common alias there is and means a
+  different directory in every package — `each_package_gets_its_own_tsconfig`
+  is that test. A merged map resolves one package's import into
+  another package's source, and a boundary rule fed a *wrong* edge is
+  worse than one fed no edge: `check` names the import it could not
+  place (issue #18) and says nothing about the one it placed wrongly.
+- Let `arch.config.json` declare the aliases. Rejected for the reason
+  the issue itself gives: a second source of truth for the same fact,
+  where an alias changed in the `tsconfig` and not mirrored here is a
+  silent false green.
+Consequences: an import that resolves under the build but not under the
+file's own `tsconfig` is reported as unresolved and named, which is the
+honest answer — under that file's compilation context it does not
+resolve either. The fix is in the `tsconfig`: declare the path where the
+file lives, or `extends` the config that does. Two tests pin the
+behaviour so the documentation cannot drift away from it again.
+
+---
+
 ### 17 — A boundary may name a package, in a field of its own
 Status: accepted.
 Context: `RULES.md` declared a prohibition on a dependency out of scope for
@@ -73,10 +121,10 @@ half — `src/lib` importing `src/scripts/three`, which imports `three`, is
 not flagged. `RULES.md` declined reachability and this declines it the
 same way, so the two halves of the rule stay one idea.
 
-The rule reads the specifier, so it says nothing about a dependency
-reached through a path alias this does not read. That is the same blind
-spot decision 6 accepts everywhere else, and `check` already reports
-unresolved imports.
+The rule reads the specifier rather than the resolution, so a dependency
+reached through a `tsconfig` alias is spelled by the alias and not by the
+package name this field matches. `check` names every import it could not
+place (issue #18), which is where such a case shows up.
 
 ---
 
@@ -132,9 +180,22 @@ imports are rewritten. A dynamic import naming no module blocks the
 apply, because whether such a file imports the target is unknowable;
 `--force` is the only refusal a flag may override, and the report prints
 the file to look at first. Everything else — a specifier resolving
-through a `tsconfig` alias this does not read, a destination already
-occupied, two files landing on one path — refuses outright, because
-forcing past one produces a repository that does not build.
+through a `tsconfig` alias, which is read forwards and cannot be written
+backwards, a destination already occupied, two files landing on one path
+— refuses outright, because forcing past one produces a repository that
+does not build.
+
+That promise was unconditional and, until issue #28, untrue in one case.
+A file being moved that git does not track is refused by `git mv` — and
+refused *during* the move, after the specifier rewrites are on disk, so
+the repository was left with importers naming a module that had never
+been created. The recovery the message offered, `git checkout .`, is
+precisely what cannot restore an untracked file: the trigger and the
+reason the advice fails are the same fact. Untrackedness now joins the
+preconditions, asked in one `git ls-files` before anything is written.
+The general lesson is the one the promise already implied: a question
+answered by the tool performing the write is not a precondition, however
+early in the write it happens to be asked.
 
 The emptied source directory is removed. Not cosmetic: `structure` rules
 are about directories, so an emptied `shared/` keeps reporting the exact

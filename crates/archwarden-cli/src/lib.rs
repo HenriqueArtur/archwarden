@@ -23,6 +23,7 @@ pub mod report;
 pub mod respecify;
 pub mod scaffold;
 pub mod schema;
+pub mod verify;
 
 use archwarden_cache::store::Cache;
 use archwarden_config::{
@@ -398,7 +399,20 @@ pub enum Command {
     /// Unlike the filters on `check`, this changes the exit code. That is what
     /// it is for, and why it is a file in the repository rather than a flag: a
     /// line added to it is a decision, visible in a pull request.
-    Baseline,
+    Baseline {
+        /// Say what regenerating would change, and write nothing.
+        ///
+        /// A reviewer looking at a regenerated baseline has one question the
+        /// count cannot answer: was debt paid, or was debt added? Accepting a
+        /// new finding by accident is permanent and silent, which makes it
+        /// the worst thing this file can do.
+        ///
+        /// Findings that only changed path are reported as moved rather than
+        /// as a removal and an addition, so a refactor that shifted a
+        /// directory stays one line instead of two per finding.
+        #[arg(long)]
+        dry_run: bool,
+    },
 
     /// Inspect the configuration itself.
     Config {
@@ -421,6 +435,25 @@ pub enum ConfigCommand {
     /// that passes, which is what this exists to catch.
     Doctor {
         /// How to render the diagnosis.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+
+    /// Prove that each rule bites: hand it a violation and see whether it
+    /// fires.
+    ///
+    /// `explain` says what a rule *reaches*. This says whether it *catches*
+    /// anything — a rule can be schema-valid, cover the right paths, appear in
+    /// `explain` and still enforce nothing.
+    ///
+    /// Nothing is written to the repository. Exits non-zero when a rule was
+    /// handed a violation and said nothing.
+    ///
+    /// It proves a rule fires on a violation of its own terms, and cannot know
+    /// what you meant: a `forbid_import_from_packages` list missing an entry
+    /// is a question about intent, and ticks here.
+    VerifyRules {
+        /// How to render the verdicts.
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
@@ -527,7 +560,9 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             output,
         ),
         Command::Init => init(working_directory, output),
-        Command::Baseline => write_baseline(cli.location(), working_directory, output),
+        Command::Baseline { dry_run } => {
+            write_baseline(cli.location(), working_directory, *dry_run, output)
+        }
         Command::Impact {
             path,
             to,
@@ -563,15 +598,32 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             claude_code,
             remove,
         } => install_hooks(*claude_code, *remove, working_directory, output),
-        Command::Config { command } => match command {
-            ConfigCommand::Validate => validate(cli.location(), working_directory, output),
-            ConfigCommand::Doctor { format } => {
-                doctor(cli.location(), working_directory, *format, output)
-            }
-            ConfigCommand::Explain { rule_id, format } => {
-                explain(cli.location(), working_directory, rule_id, *format, output)
-            }
-        },
+        Command::Config { command } => {
+            run_config(command, cli.location(), working_directory, output)
+        }
+    }
+}
+
+/// The `config` family: four questions about the configuration itself.
+///
+/// Its own function rather than a fourth arm, because the dispatch above is
+/// long enough that a reader looking for one command should not have to scroll
+/// past three sub-arms of another.
+fn run_config(
+    command: &ConfigCommand,
+    location: Location<'_>,
+    working_directory: &Utf8Path,
+    output: &mut Output<'_>,
+) -> Exit {
+    match command {
+        ConfigCommand::Validate => validate(location, working_directory, output),
+        ConfigCommand::Doctor { format } => doctor(location, working_directory, *format, output),
+        ConfigCommand::VerifyRules { format } => {
+            verify_rules(location, working_directory, *format, output)
+        }
+        ConfigCommand::Explain { rule_id, format } => {
+            explain(location, working_directory, rule_id, *format, output)
+        }
     }
 }
 
@@ -840,6 +892,7 @@ fn orphans(
 fn write_baseline(
     location: Location<'_>,
     working_directory: &Utf8Path,
+    dry_run: bool,
     output: &mut Output<'_>,
 ) -> Exit {
     let (merged, compiled) = match prepare(location, working_directory, output) {
@@ -868,12 +921,17 @@ fn write_baseline(
     }
 
     let baseline = crate::baseline::Baseline::of(&outcome.findings);
+    let path = merged.root.join(crate::baseline::BASELINE_PATH);
+
+    if dry_run {
+        return report_baseline_changes(&merged.root, &path, &baseline, output);
+    }
+
     if let Err(message) = baseline.write(&merged.root) {
         let _ = writeln!(output.err, "{message}");
         return Exit::ConfigProblem;
     }
 
-    let path = merged.root.join(crate::baseline::BASELINE_PATH);
     if baseline.is_empty() {
         // Still written, so `check` has something to read and the next person
         // does not wonder whether the command ran.
@@ -900,6 +958,116 @@ fn write_baseline(
     }
 
     Exit::Clean
+}
+
+/// Says what regenerating the baseline would change, and writes nothing.
+///
+/// The count the command printed before -- "accepting 106 findings" -- cannot
+/// answer the question a reviewer has to ask: was debt paid, or was debt
+/// added? Issue #23, whose author wrote a Python script twice in one session
+/// to answer it, once to prove debt paid and once to prove a pure rename.
+///
+/// Exits clean whatever it finds. `check` is the gate, and it already fails on
+/// a finding no baseline accepts; this answers "what would regenerating do",
+/// which is a review question rather than a build one.
+fn report_baseline_changes(
+    root: &Utf8Path,
+    path: &Utf8Path,
+    next: &crate::baseline::Baseline,
+    output: &mut Output<'_>,
+) -> Exit {
+    let committed = match crate::baseline::Baseline::load(root) {
+        Ok(Some(committed)) => committed,
+        // No baseline yet: everything this run found is what would be
+        // accepted, which is the decision `archwarden baseline` is for and
+        // exactly what someone adopting it should read first.
+        Ok(None) => {
+            let _ = writeln!(
+                output.out,
+                "no baseline yet. `archwarden baseline` would write {path}, accepting {} {}:\n",
+                next.len(),
+                plural(next.len(), "finding", "findings"),
+            );
+            for entry in next.entries() {
+                let _ = writeln!(
+                    output.out,
+                    "  + {} {} — {}",
+                    entry.rule, entry.path, entry.note
+                );
+            }
+            return Exit::Clean;
+        }
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    let changes = committed.changes(next);
+    if changes.is_empty() {
+        let _ = writeln!(
+            output.out,
+            "{path} is up to date, accepting {} {}. Nothing was written.",
+            committed.len(),
+            plural(committed.len(), "finding", "findings"),
+        );
+        return Exit::Clean;
+    }
+
+    // Paid first. It is the only cheerful number archwarden prints, and a
+    // reviewer who reads nothing else should read the additions last, where
+    // they are still on screen.
+    for entry in &changes.removed {
+        let _ = writeln!(
+            output.out,
+            "  - {} {} — no longer occurs",
+            entry.rule, entry.path
+        );
+    }
+    for moved in &changes.moved {
+        let _ = writeln!(
+            output.out,
+            "  ~ {} {} → {}",
+            moved.from.rule, moved.from.path, moved.to.path
+        );
+    }
+    for entry in &changes.added {
+        let _ = writeln!(
+            output.out,
+            "  + {} {} — {}",
+            entry.rule, entry.path, entry.note
+        );
+    }
+
+    let _ = writeln!(
+        output.out,
+        "\n{path} would change: {} added, {} no longer occur, {} moved. Nothing was written.",
+        changes.added.len(),
+        changes.removed.len(),
+        changes.moved.len(),
+    );
+
+    // The sentence the command exists for. An addition is a decision; the
+    // other two are bookkeeping catching up with work already done.
+    if changes.added.is_empty() {
+        let _ = writeln!(
+            output.out,
+            "Nothing new would be accepted. Run `archwarden baseline` to apply."
+        );
+    } else {
+        let _ = writeln!(
+            output.out,
+            "The {} marked `+` would become debt this project has decided to carry.\n\
+             Fix them, or run `archwarden baseline` to accept them on purpose.",
+            plural(changes.added.len(), "finding", "findings"),
+        );
+    }
+
+    Exit::Clean
+}
+
+fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
+    if count == 1 { one } else { many }
 }
 
 /// Writes a starter configuration, if there is not one already.
@@ -1633,6 +1801,44 @@ fn load(
 /// Exits clean even with concerns. They are advice about a configuration, not
 /// findings about code, and a non-zero exit would put them in a CI gate where
 /// a deliberate choice would start failing builds.
+/// Hands every rule a violation and reports which ones did not notice.
+///
+/// A rule that enforces nothing is indistinguishable from a repository that
+/// satisfies it, and `explain` cannot tell them apart: it answers about
+/// coverage, and this answers about efficacy. Issue #24, whose author settled
+/// the question by planting a file with three escapes in it, running `check`,
+/// and deleting it again.
+///
+/// Needs the walked tree, because the probe is placed at a path this repository
+/// actually has. See [`crate::verify`] for why that is not a glob generator.
+fn verify_rules(
+    location: Location<'_>,
+    working_directory: &Utf8Path,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let Ok((merged, compiled)) = prepare(location, working_directory, output) else {
+        return Exit::ConfigProblem;
+    };
+
+    let tree = match walked(&merged.root, working_directory, &compiled, output) {
+        Ok(tree) => tree,
+        Err(exit) => return exit,
+    };
+
+    let verifications = crate::verify::verify(&compiled, &tree);
+    crate::verify::render(&verifications, format, output.out);
+
+    if verifications
+        .iter()
+        .any(|verification| verification.verdict.is_silent())
+    {
+        Exit::Errors
+    } else {
+        Exit::Clean
+    }
+}
+
 fn doctor(
     location: Location<'_>,
     working_directory: &Utf8Path,
@@ -3038,6 +3244,128 @@ mod tests {
         );
         let parsed: serde_json::Value = serde_json::from_str(&json.out).expect("valid JSON");
         assert_eq!(parsed["unresolved_imports"][0], "@Domain/Order/types");
+    }
+
+    /// The question a reviewer has about a regenerated baseline, which the
+    /// count could not answer: was debt paid, or was debt added? Issue #23.
+    #[test]
+    fn a_baseline_dry_run_says_what_would_change_and_writes_nothing() {
+        let structure = r#"{"version":0,"rules":[{
+            "type":"structure","id":"entity-shape","level":"error",
+            "roots":["src/*"],"allowed_subfolders":["types"]}]}"#;
+
+        let (guard, accepted) = run_in(
+            &[
+                ("arch.config.json", structure),
+                ("src/order/handlers/a.ts", ""),
+            ],
+            &["baseline"],
+        );
+        assert_eq!(accepted.exit, Exit::Clean);
+        let root = Utf8PathBuf::from_path_buf(guard.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+
+        // Then break something else and ask what regenerating would do.
+        std::fs::create_dir_all(root.join("src/billing/handlers")).expect("create dirs");
+        std::fs::write(root.join("src/billing/handlers/b.ts"), "").expect("write");
+        let dry = run_at(&root, &["baseline", "--dry-run"]);
+
+        assert_eq!(dry.exit, Exit::Clean, "it reports, it does not gate");
+        assert!(
+            dry.out.contains("+ entity-shape src/billing/handlers"),
+            "the addition is the line that matters: {}",
+            dry.out
+        );
+        assert!(dry.out.contains("Nothing was written."), "{}", dry.out);
+        assert!(
+            dry.out
+                .contains("would become debt this project has decided to carry"),
+            "{}",
+            dry.out
+        );
+
+        // And it wrote nothing: the committed file still accepts only the one.
+        let on_disk = std::fs::read_to_string(root.join(crate::baseline::BASELINE_PATH))
+            .expect("the baseline is still there");
+        assert!(on_disk.contains("src/order/handlers"), "{on_disk}");
+        assert!(
+            !on_disk.contains("src/billing/handlers"),
+            "a dry run that wrote would be the bug it exists to prevent: {on_disk}"
+        );
+        drop(guard);
+    }
+
+    /// `explain` answers about coverage; this answers about efficacy. The
+    /// second rule here covers the right files, appears in `explain`, and its
+    /// own `except` cancels the thing it forbids -- which reads exactly like a
+    /// repository that satisfies it. Issue #24.
+    #[test]
+    fn verify_rules_fails_on_a_rule_that_enforces_nothing() {
+        let (_guard, result) = run_in(
+            &[
+                (
+                    "arch.config.json",
+                    r#"{"version":0,"rules":[
+                        {"type":"import-boundary","id":"domain-is-self-contained","level":"error",
+                         "from":"packages/domain/**","forbid_import_from":["apps/**"]},
+                        {"type":"import-boundary","id":"cancelled-by-its-own-except","level":"error",
+                         "from":"packages/domain/**","forbid_import_from":["apps/**"],
+                         "except":["apps/**"]}]}"#,
+                ),
+                ("packages/domain/order.ts", "export const x = 1;"),
+                ("apps/api/src/env.ts", "export const e = 1;"),
+            ],
+            &["config", "verify-rules"],
+        );
+
+        assert_eq!(result.exit, Exit::Errors, "{}", result.out);
+        assert!(
+            result.out.contains("✓ domain-is-self-contained — fires on"),
+            "{}",
+            result.out
+        );
+        assert!(
+            result
+                .out
+                .contains("✗ cancelled-by-its-own-except — silent on"),
+            "{}",
+            result.out
+        );
+        // Said on every run, clean or not: a wall of ticks that let a reader
+        // conclude their config is sound would be this issue one level up.
+        assert!(
+            result.out.contains("It cannot"),
+            "the limitation is stated: {}",
+            result.out
+        );
+    }
+
+    /// And a rule whose violation cannot be synthesised is reported as
+    /// unchecked rather than left out. A partial answer that says which part
+    /// is missing beats a confident one that is wrong.
+    #[test]
+    fn verify_rules_names_what_it_could_not_check() {
+        let (_guard, result) = run_in(
+            &[
+                ("arch.config.json", NAMING),
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export function CreateClient() {}",
+                ),
+            ],
+            &["config", "verify-rules", "--format", "json"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean, "nothing was proven silent");
+        let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("valid JSON");
+        assert_eq!(parsed[0]["verdict"], "unverified");
+        assert!(
+            parsed[0]["reason"]
+                .as_str()
+                .is_some_and(|why| why.contains("file_pattern")),
+            "{}",
+            result.out
+        );
     }
 
     const WRITE_EVENT: &str = r#"{

@@ -110,6 +110,22 @@ pub enum Refusal {
     },
     /// The source is not there.
     SourceMissing(RepoRelPath),
+    /// A file being moved is not tracked by git.
+    ///
+    /// `git mv` refuses it, and it refuses *during* the move -- after the
+    /// specifier rewrites have already been written. That left a repository
+    /// whose importers named a module that was never created, against decision
+    /// 16's unconditional promise that a refusal means nothing happened.
+    ///
+    /// Worse than the ordering: the recovery the message offered was
+    /// `git checkout .`, which cannot restore a file git never had. The
+    /// trigger *is* the thing that makes the advice useless.
+    ///
+    /// A clean working tree was already a precondition, and it is checked with
+    /// `--untracked-files=no` -- deliberately, because untracked files are not
+    /// changes anyone can lose. They are exactly what `git mv` cannot move, so
+    /// the moved set needs its own question. Issue #28.
+    Untracked(Vec<RepoRelPath>),
     /// A file the dry run named as an importer got no edit.
     ///
     /// Nothing is supposed to reach this: a specifier that cannot be
@@ -302,6 +318,49 @@ pub fn working_tree_state(root: &Utf8Path) -> Result<Vec<String>, String> {
         .lines()
         .map(|line| line.trim().to_owned())
         .filter(|line| !line.is_empty())
+        .collect())
+}
+
+/// Which of `paths` git does not track.
+///
+/// Asked before anything is written, because `git mv` asks it *during* the
+/// move and by then the specifier rewrites are on disk. One `git ls-files`
+/// over the whole set rather than one call per file: a batch move can name
+/// hundreds, and a process each would cost more than the move.
+///
+/// A git failure is not reported here. Whether this is a repository at all is
+/// [`working_tree_state`]'s question, already asked, and answering it twice
+/// would print two messages about one problem.
+///
+/// # Errors
+/// A message when git cannot be run.
+pub fn untracked_among(root: &Utf8Path, paths: &[RepoRelPath]) -> Result<Vec<RepoRelPath>, String> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root.as_std_path())
+        .args(["ls-files", "--cached", "-z", "--"])
+        .args(paths.iter().map(RepoRelPath::as_str))
+        .output()
+        .map_err(|error| format!("cannot run git: {error}"))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+
+    let tracked: std::collections::BTreeSet<&str> = std::str::from_utf8(&output.stdout)
+        .unwrap_or_default()
+        .split('\0')
+        .filter(|line| !line.is_empty())
+        .collect();
+
+    Ok(paths
+        .iter()
+        .filter(|path| !tracked.contains(path.as_str()))
+        .cloned()
         .collect())
 }
 
@@ -642,6 +701,16 @@ fn validate(root: &Utf8Path, moves: &[Move], refusals: &mut Vec<Refusal>) {
             .push(entry.from.clone());
     }
 
+    // What `git mv` would refuse, asked before the rewrites are written rather
+    // than after. Issue #28: it used to be answered by git in the middle of the
+    // move, which left importers naming a module that was never created.
+    let sources: Vec<RepoRelPath> = moves.iter().map(|entry| entry.from.clone()).collect();
+    if let Ok(untracked) = untracked_among(root, &sources)
+        && !untracked.is_empty()
+    {
+        refusals.push(Refusal::Untracked(untracked));
+    }
+
     // Two files landing on one path. Caught before anything is written,
     // because carrying it out would silently delete one of them.
     for (destination, mut sources) in destinations {
@@ -780,6 +849,35 @@ pub fn render_refusals(plan: &Plan, force: bool, out: &mut dyn std::io::Write) {
                     out,
                     "  This is not a git repository ({message}).\n  \
                      A move rewrites files across the tree, and without git there is no undo."
+                );
+            }
+            Refusal::Untracked(paths) => {
+                let _ = writeln!(
+                    out,
+                    "  {} {} not tracked by git, and `git mv` cannot move {}:",
+                    paths.len(),
+                    if paths.len() == 1 {
+                        "file being moved is"
+                    } else {
+                        "files being moved are"
+                    },
+                    if paths.len() == 1 { "it" } else { "them" },
+                );
+                for path in paths.iter().take(10) {
+                    let _ = writeln!(out, "    {path}");
+                }
+                if paths.len() > 10 {
+                    let _ = writeln!(out, "    … and {} more", paths.len() - 10);
+                }
+                // `git add` rather than `git add -A`: what is untracked here is
+                // what is moving, and sweeping the rest in would commit work
+                // this command never looked at.
+                let _ = writeln!(
+                    out,
+                    "  `git add` {} and run this again. Untracked files are also the one\n  \
+                     thing `git checkout .` cannot bring back, which is why this refuses\n  \
+                     rather than moving what it can.",
+                    if paths.len() == 1 { "it" } else { "them" },
                 );
             }
             Refusal::Opaque(paths) => {
@@ -1054,6 +1152,58 @@ mod tests {
             }
             .is_forceable()
         );
+        // And the one issue #28 added. Forcing past it would carry out exactly
+        // the half-applied state it exists to prevent.
+        assert!(!Refusal::Untracked(vec![path("packages/lib/thing/index.ts")]).is_forceable());
+    }
+
+    /// A file git does not track is refused **before** anything is written.
+    ///
+    /// `git mv` refuses it too, but during the move, after the specifier
+    /// rewrites are on disk -- which left the reporter's repository with an
+    /// importer naming a module that had never been created, against decision
+    /// 16's unconditional promise. And the recovery the message offered,
+    /// `git checkout .`, is the one thing that cannot restore an untracked
+    /// file. Issue #28.
+    #[test]
+    fn an_untracked_file_is_refused_before_a_byte_is_written() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                .expect("UTF-8");
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(root.as_std_path())
+                .args(args)
+                .output()
+                .expect("git runs");
+        };
+        git(&["init", "-q"]);
+
+        std::fs::create_dir_all(root.join("src")).expect("dirs");
+        std::fs::write(root.join("src/tracked.ts"), "export const a = 1;").expect("write");
+        git(&["add", "-A"]);
+        git(&[
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "init",
+        ]);
+
+        // Written after the commit, so it is untracked in an otherwise clean
+        // tree -- which is what makes this reachable at all: the dirty-tree
+        // precondition asks with `--untracked-files=no`.
+        std::fs::write(root.join("src/untracked.ts"), "export const b = 2;").expect("write");
+
+        let untracked = untracked_among(&root, &[path("src/tracked.ts"), path("src/untracked.ts")])
+            .expect("git answers");
+        drop(dir);
+
+        assert_eq!(untracked, vec![path("src/untracked.ts")]);
     }
 
     /// A file leaving its package is the case the warning exists for: a

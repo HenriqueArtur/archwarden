@@ -110,7 +110,168 @@ pub struct Standing {
     pub gone: usize,
 }
 
+/// What regenerating the baseline would do to it.
+///
+/// The count on its own -- "accepting 106 findings" -- is what the command
+/// said before, and it cannot answer the question a reviewer has to ask:
+/// *did debt get paid, or did debt get added?* Accepting a new finding by
+/// accident is permanent and silent, which makes it the worst thing a
+/// baseline can do. Issue #23.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Changes<'a> {
+    /// Accepted by the new file and not by the old one. The line a reviewer
+    /// has to justify.
+    pub added: Vec<&'a Entry>,
+    /// Accepted by the old file and not by the new one: debt that was paid.
+    pub removed: Vec<&'a Entry>,
+    /// The same finding at a new path, paired rather than reported twice.
+    ///
+    /// A move of 724 files turned 41 accepted findings into 41 removals and
+    /// 41 additions, none of which was a decision anybody made. Left as two
+    /// lists it is 82 lines to read and a script to write; paired, it is one
+    /// sentence with a prefix in it.
+    pub moved: Vec<Move<'a>>,
+}
+
+/// One accepted finding that changed path without changing anything else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Move<'a> {
+    /// Where it was accepted before.
+    pub from: &'a Entry,
+    /// Where it is accepted now.
+    pub to: &'a Entry,
+}
+
+impl Changes<'_> {
+    /// Whether regenerating would leave the file byte-identical.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.removed.is_empty() && self.moved.is_empty()
+    }
+}
+
+/// The directories a move went between, when two paths differ only by a
+/// leading prefix.
+///
+/// The file name has to match, and that is what keeps this from pairing
+/// unrelated findings: a move keeps the name and changes the directory. Two
+/// findings of one rule at two files that were never the same file share no
+/// trailing component, so they are never paired.
+fn rename_between(from: &str, to: &str) -> Option<(String, String)> {
+    let shared = from
+        .split('/')
+        .rev()
+        .zip(to.split('/').rev())
+        .take_while(|(before, after)| before == after)
+        .count();
+
+    // No trailing component in common: two different files, not one moved.
+    if shared == 0 {
+        return None;
+    }
+
+    let from_prefix = leading(from, shared);
+    let to_prefix = leading(to, shared);
+    // Identical prefixes cannot happen for two entries of one rule -- the
+    // paths would be equal and neither would be in a change list.
+    (from_prefix != to_prefix).then_some((from_prefix, to_prefix))
+}
+
+/// `path` with its last `dropped` components removed.
+fn leading(path: &str, dropped: usize) -> String {
+    let total = path.split('/').count();
+    path.split('/')
+        .take(total.saturating_sub(dropped))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 impl Baseline {
+    /// What writing `next` over this baseline would change.
+    ///
+    /// Moves are paired first, by the prefix mapping that explains the most of
+    /// them: a refactor moves many findings the same way.
+    ///
+    /// A mapping has to explain **at least two** pairs to count as one, and
+    /// that threshold is the whole safety of this. Two paths that merely end
+    /// in the same component -- `Domain/user/handlers` deleted and
+    /// `domain/invoice/handlers` appearing -- describe a prefix mapping too,
+    /// and pairing them would report debt paid plus debt added as one
+    /// harmless-looking move. That is the failure this command exists to
+    /// prevent, arriving through the feature meant to prevent it. A
+    /// coincidence between two unrelated paths is possible; the same
+    /// coincidence twice, under one mapping, is a directory that moved.
+    ///
+    /// The cost is that a single file moving on its own reports as one
+    /// removal and one addition. That is what the command did before this
+    /// existed, it is not wrong, and it is the right direction to fail in:
+    /// an addition shown as an addition costs a reader a second look, and an
+    /// addition hidden inside a move costs them the review.
+    #[must_use]
+    pub fn changes<'a>(&'a self, next: &'a Self) -> Changes<'a> {
+        let mine: BTreeSet<(&str, &str)> = self.accepted.iter().map(Entry::identity).collect();
+        let theirs: BTreeSet<(&str, &str)> = next.accepted.iter().map(Entry::identity).collect();
+
+        let mut removed: Vec<&Entry> = self
+            .accepted
+            .iter()
+            .filter(|entry| !theirs.contains(&entry.identity()))
+            .collect();
+        let mut added: Vec<&Entry> = next
+            .accepted
+            .iter()
+            .filter(|entry| !mine.contains(&entry.identity()))
+            .collect();
+
+        // How many pairs each prefix mapping would explain. A `BTreeMap` so
+        // equal votes break by the mapping itself rather than by hash order:
+        // the same two files must always produce the same output.
+        let mut votes: std::collections::BTreeMap<(String, String), usize> =
+            std::collections::BTreeMap::new();
+        for gone in &removed {
+            for arrived in &added {
+                if gone.rule == arrived.rule
+                    && let Some(mapping) = rename_between(&gone.path, &arrived.path)
+                {
+                    *votes.entry(mapping).or_default() += 1;
+                }
+            }
+        }
+
+        // Two pairs or it is not a rename. See the note on this method: one
+        // coincidental shared component would otherwise launder a new
+        // acceptance into a move.
+        let mut ranked: Vec<((String, String), usize)> =
+            votes.into_iter().filter(|(_, votes)| *votes >= 2).collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        let mut moved = Vec::new();
+        for (mapping, _) in ranked {
+            let mut still_gone = Vec::new();
+            for gone in removed {
+                let matched = added.iter().position(|arrived| {
+                    gone.rule == arrived.rule
+                        && rename_between(&gone.path, &arrived.path).as_ref() == Some(&mapping)
+                });
+                match matched {
+                    Some(index) => moved.push(Move {
+                        from: gone,
+                        to: added.remove(index),
+                    }),
+                    None => still_gone.push(gone),
+                }
+            }
+            removed = still_gone;
+        }
+
+        moved.sort_by(|a, b| (&a.from.rule, &a.from.path).cmp(&(&b.from.rule, &b.from.path)));
+        Changes {
+            added,
+            removed,
+            moved,
+        }
+    }
+
     /// Builds a baseline covering every finding given.
     ///
     /// Deduplicated by identity rather than by whole entry: two findings of one
@@ -183,6 +344,15 @@ impl Baseline {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.accepted.is_empty()
+    }
+
+    /// Every accepted entry, in file order.
+    ///
+    /// For a caller that has to show the file's contents rather than ask it a
+    /// question -- `baseline --dry-run` against a repository that has none yet,
+    /// where what would be accepted *is* the answer.
+    pub fn entries(&self) -> impl Iterator<Item = &Entry> {
+        self.accepted.iter()
     }
 
     /// Reads the baseline, or `None` when the project has none.
@@ -445,6 +615,153 @@ mod tests {
 
         let message = Baseline::load(&root).expect_err("not valid");
         assert!(message.contains("is not a valid baseline"), "{message}");
+    }
+
+    /// The question a reviewer has to answer about a regenerated baseline,
+    /// and the count could not: was debt paid, or was debt added? Issue #23.
+    #[test]
+    fn a_dry_run_says_what_was_paid_and_what_would_be_accepted() {
+        let committed = Baseline::of(&debt());
+        let next = Baseline::of(&[
+            // The first is still there.
+            debt()[0].clone(),
+            // The second was fixed, and something new appeared.
+            finding("shape", "packages/app/src/orders", Level::Error, "ctrl"),
+        ]);
+
+        let changes = committed.changes(&next);
+
+        assert_eq!(changes.added.len(), 1);
+        assert_eq!(changes.added[0].path, "packages/app/src/orders");
+        assert_eq!(changes.removed.len(), 1);
+        assert_eq!(changes.removed[0].path, "packages/app/src/billing");
+        assert!(changes.moved.is_empty(), "nothing moved");
+    }
+
+    /// A regeneration that changes nothing says nothing, which is the common
+    /// case and the one that should be quiet.
+    #[test]
+    fn an_unchanged_baseline_has_no_changes() {
+        let committed = Baseline::of(&debt());
+
+        assert!(committed.changes(&Baseline::of(&debt())).is_empty());
+    }
+
+    /// The case that made the issue: 724 files moved, and 41 accepted
+    /// findings turned into 41 removals and 41 additions, none of which was a
+    /// decision anybody made. Paired, and by the prefix that explains them.
+    #[test]
+    fn a_move_is_one_change_rather_than_a_removal_and_an_addition() {
+        let committed = Baseline::of(&[
+            finding(
+                "shape",
+                "apps/api/src/Domain/order",
+                Level::Error,
+                "handlers",
+            ),
+            finding(
+                "shape",
+                "apps/api/src/Domain/user",
+                Level::Error,
+                "handlers",
+            ),
+        ]);
+        let next = Baseline::of(&[
+            finding("shape", "packages/domain/order", Level::Error, "handlers"),
+            finding("shape", "packages/domain/user", Level::Error, "handlers"),
+        ]);
+
+        let changes = committed.changes(&next);
+
+        assert!(changes.added.is_empty(), "{:?}", changes.added);
+        assert!(changes.removed.is_empty(), "{:?}", changes.removed);
+        assert_eq!(changes.moved.len(), 2);
+        assert_eq!(changes.moved[0].from.path, "apps/api/src/Domain/order");
+        assert_eq!(changes.moved[0].to.path, "packages/domain/order");
+    }
+
+    /// A move and a genuine addition in one regeneration. The pairing must not
+    /// swallow the addition -- that is the line the whole feature exists to
+    /// put in front of a reviewer.
+    #[test]
+    fn an_addition_alongside_a_move_is_still_an_addition() {
+        let committed = Baseline::of(&[
+            finding(
+                "shape",
+                "apps/api/src/Domain/order",
+                Level::Error,
+                "handlers",
+            ),
+            finding(
+                "shape",
+                "apps/api/src/Domain/user",
+                Level::Error,
+                "handlers",
+            ),
+        ]);
+        let next = Baseline::of(&[
+            finding("shape", "packages/domain/order", Level::Error, "handlers"),
+            finding("shape", "packages/domain/user", Level::Error, "handlers"),
+            finding("shape", "packages/domain/invoice", Level::Error, "handlers"),
+        ]);
+
+        let changes = committed.changes(&next);
+
+        assert_eq!(changes.moved.len(), 2);
+        assert_eq!(changes.added.len(), 1, "{:?}", changes.added);
+        assert_eq!(changes.added[0].path, "packages/domain/invoice");
+        assert!(changes.removed.is_empty());
+    }
+
+    /// The trap the pairing itself creates, found by running the command
+    /// rather than by reading it. One finding was fixed and a different one
+    /// appeared; both paths end in `handlers`, so a prefix mapping exists
+    /// between them and pairing it reported debt paid plus **new debt** as one
+    /// innocent-looking move. That is the exact failure `--dry-run` was built
+    /// to prevent, arriving through the feature meant to prevent it.
+    ///
+    /// One mapping, one pair, no move. A coincidence between two unrelated
+    /// paths is possible; the same coincidence twice is a directory.
+    #[test]
+    fn a_fix_and_a_new_finding_are_never_laundered_into_a_move() {
+        let committed = Baseline::of(&[finding(
+            "shape",
+            "apps/api/src/Domain/user/handlers",
+            Level::Error,
+            "x",
+        )]);
+        let next = Baseline::of(&[finding(
+            "shape",
+            "packages/domain/invoice/handlers",
+            Level::Error,
+            "x",
+        )]);
+
+        let changes = committed.changes(&next);
+
+        assert!(
+            changes.moved.is_empty(),
+            "these were never the same finding: {:?}",
+            changes.moved
+        );
+        assert_eq!(changes.added.len(), 1, "the new debt stays visible");
+        assert_eq!(changes.removed.len(), 1, "and the paid debt stays visible");
+    }
+
+    /// Two findings of one rule at files that were never the same file are not
+    /// a move. The trailing component is what says "this is that file
+    /// somewhere else", and without it there is nothing to pair on at all --
+    /// before the vote threshold is even consulted.
+    #[test]
+    fn two_different_files_are_not_paired_as_a_move() {
+        let committed = Baseline::of(&[finding("shape", "src/a/order", Level::Error, "handlers")]);
+        let next = Baseline::of(&[finding("shape", "src/b/invoice", Level::Error, "handlers")]);
+
+        let changes = committed.changes(&next);
+
+        assert!(changes.moved.is_empty());
+        assert_eq!(changes.added.len(), 1);
+        assert_eq!(changes.removed.len(), 1);
     }
 
     /// An unknown key is refused for the same reason a config's is: a

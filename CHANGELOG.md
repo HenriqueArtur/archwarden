@@ -17,6 +17,171 @@ saying so.
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-06
+
+Nine reported issues. Read the first two entries before upgrading: both change
+what an existing, unchanged config reports — the first towards reporting more,
+the second towards reporting less.
+
+### Changed
+
+- **A warm run no longer resolves one file's imports from another file's
+  directory.** ([#20](https://github.com/HenriqueArtur/archwarden/issues/20))
+
+  **This changes what an existing config reports.** Repositories that contain
+  two files with identical bytes — barrel files, re-export stubs, `export {};`
+  — may see boundary findings on the next run that 0.7.0 did not report, and
+  may stop seeing findings that were never real. Both directions are the same
+  fix.
+
+  The fact cache is keyed by content alone, so identical files share one entry,
+  and the entry carried the path of whichever file was stamped first.
+  `resolve_imports` reads that path to know which directory a relative
+  specifier points from. Measured on a five-file repository:
+
+  ```console
+  $ archwarden check     # cold cache
+  1 error, 0 warnings · 4 parsed, 0 reused
+
+  $ archwarden check     # warm cache, nothing touched on disk
+  0 errors, 0 warnings · 0 parsed, 4 reused
+  ```
+
+  A real boundary violation disappeared, and two runs over an unchanged tree
+  disagreed. Reverse which twin is stored and the mirror happens: a finding
+  against a file that imports nothing forbidden.
+
+  `Cache::facts` now takes the path it is being asked about and stamps the
+  answer with it. No cache format bump — existing caches heal on read rather
+  than being thrown away.
+
+- **The `_` escape hatch exempts a directory that is itself a rule root.**
+  ([#30](https://github.com/HenriqueArtur/archwarden/issues/30))
+
+  **This changes what an existing config reports.** A `structure` rule whose
+  scope selects a `_`-prefixed directory stops reporting its subfolders. If
+  your repository has such a directory and you were relying on those findings,
+  they will disappear — check with `config explain <rule-id>`, which lists
+  every directory a rule governs.
+
+  `RULES.md` documents the hatch without qualifying it by position, and it was
+  consulted for subfolders only: `_` worked on a child of a root and not on a
+  root, which is the case the sentence describes best. It was easy to believe
+  it worked — the reporter's `_database` held only allowed names, so the rule
+  had nothing to say about it either way, and their own documentation recorded
+  the exemption as fact.
+
+  Only the directory's own name is asked about, never an ancestor's, so a rule
+  rooted *below* an exempt directory still fires. That is what makes a
+  namespace expressible: `_Legacy` is exempt, and a rule rooted at
+  `_Legacy/*` governs each of its entities normally. Silencing a whole subtree
+  is still `skip_dirs.globs` with a `/**`.
+
+- **`impact --apply` refuses a move of a file git does not track**, instead of
+  discovering it mid-move.
+  ([#28](https://github.com/HenriqueArtur/archwarden/issues/28))
+
+  `git mv` refuses an untracked file *during* the move, after the specifier
+  rewrites are on disk. That left importers naming a module that had never
+  been created, against decision 16's unconditional promise that a refusal
+  means nothing happened — and the recovery the message offered,
+  `git checkout .`, is the one thing that cannot restore an untracked file.
+
+  The question is now asked in one `git ls-files` before a byte is written.
+
+- **An installed package whose `exports` offers only platform conditions
+  resolves.** ([#21](https://github.com/HenriqueArtur/archwarden/issues/21))
+
+  `bwip-js` maps `.` to `browser`, `electron`, `react-native` and `node`, with
+  no `default`, so nothing matched and `exports` blocked the fall back to
+  `main`. An installed dependency was reported as an import no boundary rule
+  could see. `node` joins the conditions; such imports move from `unresolved`
+  to `external` in `summary.imports`.
+
+- **`impact --apply` computes a destination specifier for a package with no
+  `exports`.** ([#27](https://github.com/HenriqueArtur/archwarden/issues/27))
+
+  A package without `exports` exports everything, so the new specifier is the
+  destination's path under the package root. It used to refuse and suggest
+  adding an `exports` map — which no map can do for a package resolving
+  subpaths through `index.ts`, and which changes what every consumer may
+  import. Whichever of `thing`, `thing/index` and `thing/index.ts` the author
+  wrote is what comes back.
+
+### Added
+
+- **`archwarden config verify-rules`** — proves a rule bites, where `explain`
+  only shows what it reaches.
+  ([#24](https://github.com/HenriqueArtur/archwarden/issues/24))
+
+  ```
+  ✓ domain-is-self-contained — fires on `packages/domain/order.ts` importing `apps/api/env.ts`
+  ✗ cancelled-by-its-own-except — silent on the same import
+  ? usecase-name — not verified: a violation means inventing a filename that
+    matches this rule's `file_pattern`, which is a regex run backwards
+  ```
+
+  Each rule is handed a synthesised violation of its own terms; nothing is
+  written to the repository. Exits non-zero on `✗`, so it belongs in CI beside
+  `check`.
+
+  What it cannot do is printed on every run: it proves a rule fires on a
+  violation of *its own terms* and cannot know what you meant — a
+  `forbid_import_from_packages` list missing an entry is a question about
+  intent, and a rule with that hole ticks here. Rules whose violation cannot
+  be synthesised are reported as `?` with the reason rather than left out.
+
+- **`archwarden baseline --dry-run`** — says what regenerating would change,
+  and writes nothing.
+  ([#23](https://github.com/HenriqueArtur/archwarden/issues/23))
+
+  ```
+    - domain-needs-spec   apps/api/src/order.ts — no longer occurs
+    ~ domain-entity-shape apps/api/src/Domain/user → packages/domain/user
+    + domain-forbids-outer apps/api/src/billing.ts — imports `@Infrastructure/Auth`
+
+  .archwarden/baseline.json would change: 1 added, 1 no longer occur, 1 moved.
+  ```
+
+  Only `+` is a decision. A finding that only changed path is reported as
+  moved — but a prefix mapping must explain **two** pairs before it counts as
+  one, so a fix and a new finding that happen to share a folder name are never
+  laundered into a move.
+
+### Fixed
+
+- **`tsconfig.paths` is read, and the documentation said in five places that
+  it was not.** ([#22](https://github.com/HenriqueArtur/archwarden/issues/22))
+
+  No behaviour change: aliases have resolved since `TsconfigDiscovery::Auto`
+  was set, and a boundary rule fires on an aliased import that crosses it. The
+  false claim cost a real repository real work — believing the blind spot, its
+  author duplicated a boundary by hand into `forbid_import_from_packages`, the
+  hand-written list was missing two entries, and imports crossed the boundary
+  with the build green.
+
+  Aliases apply by TypeScript's own rule: the nearest `tsconfig.json` to the
+  file wins, whole. So an app's alias does not apply to a file in a package,
+  and a bare `tsconfig.json` takes the repository's aliases away from
+  everything under it unless it `extends` the config that declares them. Two
+  tests pin both cases; decision 18 records why the maps are not merged
+  repository-wide.
+
+- **`recurse_into` names a container, not a contract.**
+  ([#29](https://github.com/HenriqueArtur/archwarden/issues/29))
+
+  No behaviour change: the recursion runs, and a directory inside a container
+  is held to the folder list. The description — "subdirectories that carry the
+  same structural contract, recursively" — reads as *the contract applies
+  inside this folder*, and means the opposite one level down: the container is
+  not governed, its children are, and a child's name is not this rule's
+  business.
+
+  So naming a container **removes** findings. One repository added a namespace
+  holding nineteen entities, cleared nineteen findings in a single run, and
+  read it as having modelled the namespace. `config explain <rule-id>` lists
+  every directory a rule governs, which is where that decision is visible.
+
 ## [0.7.0] — 2026-08-05
 
 ### Added
@@ -205,6 +370,7 @@ saying so.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.5.1...v0.6.0

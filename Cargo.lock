@@ -99,7 +99,7 @@ dependencies = [
 
 [[package]]
 name = "archwarden-cache"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "archwarden-core",
  "camino",
@@ -112,7 +112,7 @@ dependencies = [
 
 [[package]]
 name = "archwarden-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "archwarden-cache",
  "archwarden-config",
@@ -134,7 +134,7 @@ dependencies = [
 
 [[package]]
 name = "archwarden-config"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "archwarden-core",
  "archwarden-resolver",
@@ -150,7 +150,7 @@ dependencies = [
 
 [[package]]
 name = "archwarden-core"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "blake3",
  "camino",
@@ -165,7 +165,7 @@ dependencies = [
 
 [[package]]
 name = "archwarden-engine"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "archwarden-cache",
  "archwarden-core",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "archwarden-parser"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "archwarden-core",
  "oxc_allocator",
@@ -196,7 +196,7 @@ dependencies = [
 
 [[package]]
 name = "archwarden-resolver"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "archwarden-core",
  "camino",
@@ -208,7 +208,7 @@ dependencies = [
 
 [[package]]
 name = "archwarden-rules"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "archwarden-core",
 ]
@@ -2252,7 +2252,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
 name = "xtask"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "archwarden-config",
  "schemars",

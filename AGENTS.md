@@ -258,10 +258,16 @@ note: 2 imports could not resolve, so boundary rules did not see them
 text names the first ten files and says how many it left out.
 
 Usually one of two things. A dependency that is not installed — run `install`
-and the note goes away. Or a `tsconfig` path alias, which archwarden does not
-read: those are the ones to look at, because an alias pointing across a
-boundary is exactly the import the rule exists to catch and exactly the one it
-cannot see. Neither fails the build on its own.
+and the note goes away. Or an alias no `tsconfig` *governing that file*
+declares.
+
+`compilerOptions.paths` **is** read, per importer and by TypeScript's own rule:
+the nearest `tsconfig.json` to the file wins, whole. So an alias declared in
+another package's `tsconfig` does not apply here, and a bare `tsconfig.json`
+in a directory takes the repository's aliases away from every file under it
+unless it `extends` the one that declares them. That is the usual cause, and
+the fix is in the `tsconfig`, not in archwarden. Neither case fails the build
+on its own.
 
 `files_parsed` and `facts_reused` are the cache working. A warm run parses
 nothing and is not much faster in wall clock — it still reads and hashes every
@@ -290,6 +296,24 @@ for a human, made once, reviewed in a pull request. If your change fails
 
 `12 no longer occur` means someone fixed accepted debt — the entries are
 removable, and regenerating is the only time that command is right to run.
+
+**`archwarden baseline --dry-run` says what regenerating would change and
+writes nothing.** Use it to answer the only question that matters about a
+regenerated baseline — was debt paid, or was debt added:
+
+```
+  - domain-needs-spec  apps/api/src/order.ts — no longer occurs
+  ~ domain-entity-shape apps/api/src/Domain/user → packages/domain/user
+  + domain-forbids-outer apps/api/src/billing.ts — imports `@Infrastructure/Auth`
+
+.archwarden/baseline.json would change: 1 added, 1 no longer occur, 1 moved.
+```
+
+Only `+` is a decision. A finding that merely changed path is reported as
+moved, so a refactor that shifted a directory does not read as a hundred
+acceptances — but two paths are only paired when the same directory move
+explains at least two of them, so a fix and a new finding that happen to share
+a folder name can never be laundered into one.
 
 `--no-baseline` shows everything, including accepted findings. Use it to answer
 "how much debt is there", never to decide whether your change is clean.
@@ -544,6 +568,33 @@ regexes matching nothing, scopes pointing at paths that do not exist.
 
 `doctor` exits **0 even with findings** — they are advice about a
 configuration, not findings about code.
+
+### `config verify-rules` — does a rule actually bite?
+
+`explain` answers about **coverage**; this answers about **efficacy**. A rule
+can be schema-valid, cover the right paths, appear in `explain` and still
+enforce nothing, and that state is invisible from the outside: a rule enforcing
+nothing looks exactly like a repository that satisfies it.
+
+Each rule is handed a synthesised violation of its own terms and asked whether
+it fires. Nothing is written to the repository.
+
+```
+✓ domain-is-self-contained — fires on `packages/domain/order.ts` importing `apps/api/env.ts`
+✗ cancelled-by-its-own-except — silent on `packages/domain/order.ts` importing `apps/api/env.ts`
+? usecase-name — not verified: a violation means inventing a filename that matches
+  this rule's `file_pattern`, which is a regex run backwards
+
+3 enforce something, 1 enforce nothing, 2 not verified
+```
+
+It exits **non-zero on `✗`**, so it belongs in CI beside `check`.
+
+**What it does not prove.** That a rule fires on a violation of *its own terms*.
+It cannot know what you meant: a `forbid_import_from_packages` list missing an
+entry is a question about intent, and a rule with that hole in it ticks here.
+Rules whose violation cannot be synthesised are reported as `?` with the reason
+rather than left out — an unchecked rule has to be visible as unchecked.
 
 ## The six rule kinds
 

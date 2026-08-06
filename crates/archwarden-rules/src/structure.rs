@@ -105,8 +105,25 @@ impl StructureEngine {
     /// Note which directory is governed: given `recurse_into: ["variants"]`,
     /// it is `user/variants/nfe` and **not** `user/variants` itself. The
     /// container holds entities; it is not one.
+    ///
+    /// An exempt directory is governed by nothing, wherever the scope selects
+    /// it. The escape hatch used to be consulted for subfolders only, so `_`
+    /// worked on a child of a root and not on a root -- which is the case
+    /// decision 5's own sentence describes best, since a directory that is
+    /// "not itself part of the module structure" is usually a sibling of the
+    /// modules rather than a child of one. A repository read its own `_`
+    /// directory as exempt for months; it had only ever held allowed names, so
+    /// there was nothing for the rule to say either way. Issue #30.
+    ///
+    /// Only this directory's own name is asked about, never an ancestor's. A
+    /// rule rooted *below* an exempt directory still fires, which is what lets
+    /// `_Legacy` be a namespace whose entities are each governed by a rule of
+    /// their own.
     #[must_use]
     pub fn governs(&self, directory: &RepoRelPath) -> bool {
+        if self.skip_dirs.exempts(directory) {
+            return false;
+        }
         if self.scope.matches_dir(directory.as_path()) {
             return true;
         }
@@ -470,6 +487,52 @@ mod tests {
         );
     }
 
+    /// And the other half, which the hatch did not have: a `_`-prefixed
+    /// directory that is *itself* a root.
+    ///
+    /// That is the case decision 5's sentence describes best -- a directory
+    /// "not itself part of the module structure" is usually a sibling of the
+    /// modules, not a child of one. It was easy to believe it worked: a
+    /// repository's `_database` held only allowed names, so the rule had
+    /// nothing to say about it either way, and its own documentation recorded
+    /// the exemption as fact. Issue #30.
+    #[test]
+    fn an_underscore_prefixed_root_is_exempt_too() {
+        let engine = engine(&["src/*"], &["types"], &[], &[], &[]);
+
+        assert!(engine.governs(&path("src/user")));
+        assert!(
+            !engine.governs(&path("src/_namespace")),
+            "the scope selects it, and the hatch takes it back out"
+        );
+        assert!(
+            check(&engine, "src/_namespace", &["Entity", "Another"], &[]).is_empty(),
+            "so the modules inside a namespace are not subfolders to complain about"
+        );
+    }
+
+    /// Only the directory's own name is asked about, never an ancestor's.
+    ///
+    /// This is what makes the hatch useful rather than merely quiet: a rule
+    /// rooted *below* an exempt directory still fires, so `_Legacy` can be a
+    /// namespace whose nineteen entities are each governed by a rule of their
+    /// own. Exempting the whole subtree is what `skip_dirs.globs` with a `/**`
+    /// does, and it is a different request.
+    #[test]
+    fn a_rule_rooted_below_an_exempt_directory_still_fires() {
+        let engine = engine(&["src/_namespace/*"], &["types"], &[], &[], &[]);
+
+        assert!(engine.governs(&path("src/_namespace/entity")));
+
+        let findings = check(&engine, "src/_namespace/entity", &["types", "nope"], &[]);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings.first().expect("one").path.as_str(),
+            "src/_namespace/entity/nope"
+        );
+    }
+
     /// `recurse_into` governs what is *inside* the container, not the
     /// container. `variants/` holds entities; it is not one, so its own
     /// children are free-form names while *their* children are constrained.
@@ -493,6 +556,50 @@ mod tests {
             "the container itself is not"
         );
         assert!(!engine.governs(&path("packages/domain/src/user/types")));
+    }
+
+    /// The consequence of the rule above, stated on its own because it is what
+    /// a reader gets wrong: naming a container in `recurse_into` *stops* its
+    /// children's names being checked. They were subfolders of a governed
+    /// directory and are now entities, and an entity's name is no more this
+    /// rule's business than one selected by `roots`.
+    ///
+    /// It therefore removes findings. One repository added a namespace holding
+    /// nineteen entities and cleared nineteen of them in a single run, which
+    /// read as modelling the namespace and was in fact a decision about what
+    /// those nineteen directories *are*. Issue #29. `config explain` lists
+    /// every directory a rule governs, which is where that decision is
+    /// visible.
+    #[test]
+    fn a_container_stops_its_own_children_being_name_checked() {
+        let contract = |recurse: &[&str]| engine(&["src/*"], &["types", "Sub"], &[], recurse, &[]);
+
+        // Without it, a directory inside `Sub` is a subfolder like any other,
+        // and `Sub` is governed only if the scope selects it -- which here it
+        // does not, so nothing is said either way.
+        let promoted = contract(&["Sub"]);
+        assert!(
+            !promoted.governs(&path("src/Entity/Sub")),
+            "the container is not governed, so the names of its children are \
+             nobody's to check"
+        );
+        assert!(
+            promoted.governs(&path("src/Entity/Sub/anything-at-all")),
+            "and each of those children is an entity in its own right"
+        );
+
+        // Which is where the enforcement went: one level further down.
+        let findings = check(
+            &promoted,
+            "src/Entity/Sub/anything-at-all",
+            &["types", "wrong"],
+            &[],
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings.first().expect("one").path.as_str(),
+            "src/Entity/Sub/anything-at-all/wrong"
+        );
     }
 
     #[test]

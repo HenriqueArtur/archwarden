@@ -84,8 +84,21 @@ which filenames may exist inside a folder.
   least one of a set of regexes. Non-matching files are errors.
 
 **Recursion**. Some modules have nested modules of the same shape (e.g.,
-"variants" of an entity). The `recurse_into` field lists subfolders that
-carry the same structural contract as the parent, recursively.
+"variants" of an entity). The `recurse_into` field lists **containers whose
+children** are modules of the same shape, recursively.
+
+Which directory becomes governed is the whole of it, and it is one level
+deeper than the field's name suggests. With `recurse_into: ["variants"]`,
+`user/variants/nfe` is governed and `user/variants` is not — the container
+holds modules, it is not one. So `nfe` may be called anything, exactly as a
+module selected by `roots` may: naming a container here promotes its children
+from "unexpected subfolder" to "module", and a module's name is not this
+rule's business.
+
+That is a real decision, and it removes findings. Adding a namespace to
+`recurse_into` cleared nineteen of them in one repository and looked like
+modelling. `config explain <rule-id>` lists every directory a rule governs,
+and is the way to check that the promotion is the one you meant.
 
 **Escape hatch**. Directories prefixed with `_` are exempt from structure
 rules. Convention borrowed from Next.js; used for internal helpers that are
@@ -102,6 +115,19 @@ not themselves part of the module structure. Configurable at the top level:
 `scope: "structure"` (the default) exempts the directory from `structure`
 rules only. Files inside it are still parsed, still enter the import graph,
 and are still subject to every other rule.
+
+**Wherever the directory sits.** A `_`-prefixed directory is exempt as a
+subfolder of a governed directory *and* as a root a scope selects — the second
+case being the one this hatch describes best, since a directory that is "not
+itself part of the module structure" is usually a sibling of the modules
+rather than a child of one.
+
+Only the directory's own name is asked about, never an ancestor's, and that is
+what makes a namespace expressible: `_Legacy` is exempt, so its nineteen
+entities are not subfolders to complain about, while a rule with
+`roots: ["packages/domain/_Legacy/*"]` governs each of them normally. To
+silence a whole subtree instead, that is `skip_dirs.globs` with a `/**` — a
+different request, and one worth making on purpose.
 
 `scope: "walk"` removes them from the walk entirely, making them invisible to
 everything. This is available but rarely what you want: it turns

@@ -32,7 +32,19 @@ const EXTENSIONS: [&str; 9] = [
 const MAIN_FIELDS: [&str; 3] = ["types", "module", "main"];
 
 /// `exports` conditions, in the order a TypeScript ESM build would apply them.
-const CONDITIONS: [&str; 4] = ["types", "import", "require", "default"];
+///
+/// `node` is here because a package may offer *only* platform conditions.
+/// `bwip-js` maps `.` to `browser`, `electron`, `react-native` and `node` with
+/// no `default` at all, so a resolver applying none of them matches nothing --
+/// and because `exports` is present there is no legitimate fall back to `main`.
+/// The package is installed, Node runs it and `tsc` type-checks it; only
+/// archwarden called it unresolved, which put a boundary rule's blind spot on a
+/// dependency that was never a blind spot. Issue #21.
+///
+/// `node` rather than `browser` because that is what archwarden itself runs
+/// under, and because the alternative would be to guess at a repository's
+/// target from nothing.
+const CONDITIONS: [&str; 5] = ["types", "node", "import", "require", "default"];
 
 /// The directory whose presence makes a resolved file a dependency rather than
 /// part of the repository.
@@ -444,6 +456,83 @@ mod tests {
         );
     }
 
+    /// The other side of per-importer discovery: an alias declared by a
+    /// `tsconfig` that does not govern the importing file does not apply to it.
+    ///
+    /// This is what issue #22 hit while extracting a package out of an app.
+    /// The files sit in `packages/domain` and still write `@Domain/*`, which
+    /// only `apps/api/tsconfig.json` declares. `tsc` resolves it because those
+    /// files are still in the app's program; archwarden asks the `tsconfig`
+    /// that governs the file on disk, and that one has never heard of it.
+    ///
+    /// Not a bug to fix by merging every `paths` map in the repository into
+    /// one. `each_package_gets_its_own_tsconfig` above is why: `@/*` is the
+    /// most common alias there is, it means a different directory in each
+    /// package, and a merged map would resolve one package's import into
+    /// another's source. A boundary rule fed a wrong edge is worse than one
+    /// fed no edge, because `check` now names the import it could not place
+    /// (issue #18) and says nothing about the one it placed wrongly.
+    #[test]
+    fn an_alias_from_a_tsconfig_that_does_not_govern_the_file_does_not_apply() {
+        let entries = [
+            (
+                "apps/api/tsconfig.json",
+                r#"{"compilerOptions":{"baseUrl":".","paths":{"@Domain/*":["src/Domain/*"]}}}"#,
+            ),
+            ("apps/api/src/Domain/order.ts", TS),
+            ("packages/domain/row.ts", ""),
+        ];
+
+        assert!(
+            landed(&entries, "packages/domain/row.ts", "@Domain/order").starts_with("error"),
+            "the app's alias is not the package's"
+        );
+        assert_eq!(
+            landed(&entries, "apps/api/src/main.ts", "@Domain/order"),
+            "in-repo apps/api/src/Domain/order.ts",
+            "and inside the app it resolves, because there it is declared"
+        );
+    }
+
+    /// A `tsconfig` with no `paths` shadows an ancestor that has them, unless
+    /// it extends it. The nearest one wins whole, which is TypeScript's own
+    /// rule and the trap in it: adding a bare `tsconfig.json` to a package
+    /// silently takes the repository's aliases away from every file under it.
+    #[test]
+    fn a_nearer_tsconfig_shadows_an_ancestors_paths_unless_it_extends_it() {
+        fn root_declares(package_tsconfig: &str) -> [(&str, &str); 4] {
+            [
+                (
+                    "tsconfig.json",
+                    r#"{"compilerOptions":{"baseUrl":".","paths":{"@Domain/*":["apps/api/src/Domain/*"]}}}"#,
+                ),
+                ("apps/api/src/Domain/order.ts", TS),
+                ("packages/domain/tsconfig.json", package_tsconfig),
+                ("packages/domain/row.ts", ""),
+            ]
+        }
+
+        assert!(
+            landed(
+                &root_declares(r#"{"compilerOptions":{"strict":true}}"#),
+                "packages/domain/row.ts",
+                "@Domain/order",
+            )
+            .starts_with("error"),
+            "a bare `tsconfig.json` takes the ancestor's aliases away"
+        );
+
+        assert_eq!(
+            landed(
+                &root_declares(r#"{"extends":"../../tsconfig.json"}"#),
+                "packages/domain/row.ts",
+                "@Domain/order",
+            ),
+            "in-repo apps/api/src/Domain/order.ts",
+            "and `extends` gives them back, which is how a monorepo writes it"
+        );
+    }
+
     /// A workspace package is linked into `node_modules`, but it is source in
     /// this repository. Following the link is what lets a boundary rule written
     /// against `packages/domain/**` see an import of `@org/domain`.
@@ -660,6 +749,52 @@ mod tests {
         drop(guard);
 
         assert_eq!(resolved, "external node_modules/lodash/index.js");
+    }
+
+    /// A package whose `exports` offers only platform conditions and no
+    /// `default`. Applying none of them matches nothing, and `exports` being
+    /// present blocks the fall back to `main`, so an installed dependency was
+    /// reported as an import nothing could place -- with the note sending the
+    /// reader to run `install`, which was already done.
+    ///
+    /// This is `bwip-js@4.11.2`'s manifest, trimmed to the shape that matters.
+    /// Issue #21.
+    #[test]
+    fn a_dependency_with_only_platform_conditions_resolves() {
+        let (guard, root) = repo(&[
+            ("src/barcode.ts", ""),
+            (
+                "node_modules/bwip-js/package.json",
+                r#"{
+                    "name": "bwip-js",
+                    "main": "./dist/bwip-js-node.js",
+                    "exports": {
+                        ".": {
+                            "browser": { "import": "./dist/bwip-js-browser.mjs" },
+                            "react-native": { "default": "./dist/bwip-js-rn.js" },
+                            "node": {
+                                "types": "./dist/bwip-js-node.d.ts",
+                                "import": "./dist/bwip-js-node.mjs",
+                                "require": "./dist/bwip-js-node.js"
+                            }
+                        }
+                    }
+                }"#,
+            ),
+            ("node_modules/bwip-js/dist/bwip-js-node.d.ts", "export {};"),
+            ("node_modules/bwip-js/dist/bwip-js-node.mjs", "export {};"),
+        ]);
+
+        let resolved = describe(
+            &root,
+            ImportResolver::new(&root).resolve(&path("src/barcode.ts"), "bwip-js"),
+        );
+        drop(guard);
+
+        assert_eq!(
+            resolved, "external node_modules/bwip-js/dist/bwip-js-node.d.ts",
+            "installed, and a dependency rather than a blind spot"
+        );
     }
 
     /// A builtin has no file at all. Reporting it as unresolved would make a

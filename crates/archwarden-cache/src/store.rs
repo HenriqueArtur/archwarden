@@ -137,13 +137,34 @@ impl Cache {
         &self.path
     }
 
-    /// Reads cached facts for a file's content.
+    /// Reads cached facts for a file's content, as facts about `path`.
     ///
     /// A miss and a corrupt entry are the same answer: recompute. A cache that
     /// could return a wrong answer would be worse than no cache.
+    ///
+    /// `path` is a parameter, and that is the whole point of this signature.
+    /// The key is a content hash, which cannot answer "which file is this" --
+    /// two files with the same bytes are one entry, and a moved file is the
+    /// same bytes under a new name. The stored `FileFacts` carries the path of
+    /// whichever file was stamped first, and `resolve_imports` reads that field
+    /// to know where a relative specifier points from. Handing the caller that
+    /// path resolved one file's imports from another file's directory: on a
+    /// warm run a real boundary violation went unreported and an innocent file
+    /// was flagged, with nothing changed on disk between the two runs. Issue
+    /// #20.
+    ///
+    /// So the caller has to say which file it is asking about, and gets facts
+    /// stamped with that. Everything else in here is a function of the bytes
+    /// and is shared correctly.
     #[must_use]
-    pub fn facts(&self, content: ContentHash) -> Option<FileFacts> {
-        self.read(FACTS, content)
+    pub fn facts(
+        &self,
+        content: ContentHash,
+        path: &archwarden_core::path::RepoRelPath,
+    ) -> Option<FileFacts> {
+        let mut facts: FileFacts = self.read(FACTS, content)?;
+        facts.path = path.clone();
+        Some(facts)
     }
 
     /// Reads cached findings for a composite key.
@@ -244,6 +265,12 @@ mod tests {
         (dir, path)
     }
 
+    /// The path `facts()` is stamped with. Named rather than inlined because
+    /// the tests that pass it have a local `path` of their own.
+    fn stamped() -> RepoRelPath {
+        path("src/user.ts")
+    }
+
     fn path(p: &str) -> RepoRelPath {
         RepoRelPath::new(p).expect("valid path")
     }
@@ -287,19 +314,48 @@ mod tests {
         let key = ContentHash::of(b"source");
 
         let mut cache = Cache::open(&path).expect("opens");
-        assert_eq!(cache.facts(key), None, "cold");
+        assert_eq!(cache.facts(key, &stamped()), None, "cold");
 
         cache.put_facts(key, &facts());
         assert_eq!(cache.pending(), 1);
         assert_eq!(
-            cache.facts(key),
+            cache.facts(key, &stamped()),
             None,
             "queued is not stored until it is flushed"
         );
 
         cache.flush().expect("flushes");
         assert_eq!(cache.pending(), 0);
-        assert_eq!(cache.facts(key), Some(facts()));
+        assert_eq!(cache.facts(key, &stamped()), Some(facts()));
+    }
+
+    /// The entry is keyed by content, so two files with the same bytes are one
+    /// entry -- and a moved file is the same bytes under a new name. Asking
+    /// for one and being told about the other is what made a warm run report
+    /// a boundary violation that was not there and miss one that was:
+    /// `resolve_imports` reads this field to know which directory a relative
+    /// specifier points from. Issue #20.
+    #[test]
+    fn facts_come_back_stamped_with_the_file_that_was_asked_for() {
+        let (_guard, directory) = temp();
+        let key = ContentHash::of(b"source");
+
+        let mut cache = Cache::open(&directory).expect("opens");
+        cache.put_facts(key, &facts());
+        cache.flush().expect("flushes");
+
+        let twin = path("packages/domain/twin.ts");
+        let read = cache.facts(key, &twin).expect("a hit");
+
+        assert_eq!(read.path, twin, "the file asked about, not the one stored");
+        assert_eq!(
+            read.exports,
+            facts().exports,
+            "everything that is a function of the bytes is still shared"
+        );
+        assert_eq!(read.imports, facts().imports);
+        assert_eq!(read.calls, facts().calls);
+        assert_eq!(read.content_hash, facts().content_hash);
     }
 
     #[test]
@@ -330,7 +386,7 @@ mod tests {
 
         assert_eq!(cache.findings(new_key), None, "the rules changed");
         assert_eq!(
-            cache.facts(content),
+            cache.facts(content, &stamped()),
             Some(facts()),
             "but the file did not, so its facts stand"
         );
@@ -350,7 +406,7 @@ mod tests {
         }
 
         let reopened = Cache::open(&path).expect("reopens");
-        assert_eq!(reopened.facts(key), Some(facts()));
+        assert_eq!(reopened.facts(key, &stamped()), Some(facts()));
     }
 
     /// A cache written by a different version is discarded rather than
@@ -381,7 +437,11 @@ mod tests {
         }
 
         let reopened = Cache::open(&path).expect("reopens");
-        assert_eq!(reopened.facts(key), None, "the old entries are gone");
+        assert_eq!(
+            reopened.facts(key, &stamped()),
+            None,
+            "the old entries are gone"
+        );
     }
 
     /// A damaged cache is thrown away rather than fatal. Refusing to lint
@@ -397,7 +457,7 @@ mod tests {
         cache.put_facts(key, &facts());
         cache.flush().expect("flushes");
 
-        assert_eq!(cache.facts(key), Some(facts()));
+        assert_eq!(cache.facts(key, &stamped()), Some(facts()));
     }
 
     /// A wrong answer from a cache is worse than no cache, so a value that
@@ -419,7 +479,7 @@ mod tests {
             transaction.commit().expect("commit");
         }
 
-        assert_eq!(cache.facts(key), None);
+        assert_eq!(cache.facts(key, &stamped()), None);
     }
 
     /// The cache directory is created on demand: a fresh checkout has no
@@ -461,7 +521,7 @@ mod tests {
 
         cache.flush().expect("flushes");
         for key in &keys {
-            assert_eq!(cache.facts(*key), Some(facts()));
+            assert_eq!(cache.facts(*key, &stamped()), Some(facts()));
         }
     }
 
