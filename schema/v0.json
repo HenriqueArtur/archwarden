@@ -188,7 +188,7 @@
               }
             },
             "recurse_into": {
-              "description": "Subdirectories that carry the same structural contract, recursively.",
+              "description": "Containers whose *children* carry this rule's contract, recursively.\n\nThe container itself is not governed and its children's names are not\nchecked — they are modules in their own right, and a module's name is\nno more constrained here than one selected by `roots`. Given\n`recurse_into: [\"variants\"]`, the governed directory is\n`user/variants/nfe`, and `nfe` may be called anything.\n\nThis description used to read \"subdirectories that carry the same\nstructural contract, recursively\", which one reader took to mean the\ncontract applies *inside* the named folder. Adding it to a namespace\nholding nineteen modules cleared nineteen findings and read as\nmodelling; what it did was promote those nineteen directories from\n\"unexpected subfolder\" to \"module\", which is a real decision and was\nnot the one they thought they were making. Issue #29.\n\n`config explain <rule-id>` lists every directory a rule governs, which\nis the answer to \"did this mean what I think\" for exactly this field.",
               "type": "array",
               "items": {
                 "type": "string"

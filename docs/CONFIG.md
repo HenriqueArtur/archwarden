@@ -186,6 +186,14 @@ Ported from Flowmaatik's `check-structure.config.ts`:
 }
 ```
 
+`recurse_into` names a **container whose children** are entities of the same
+shape: `user/variants/nfe` is governed, `user/variants` is not, and `nfe` may
+be called anything. It is one level deeper than it reads, and it *removes*
+findings — the directories inside the container stop being unexpected
+subfolders and become entities. That is a decision worth making on purpose;
+`config explain domain-entity-shape` lists every directory the rule governs,
+which is how to see that you made it.
+
 ### Filename rule
 
 ```json

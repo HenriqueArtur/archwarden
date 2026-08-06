@@ -116,7 +116,24 @@ pub struct StructureRule {
     /// blanket severity, and the more specific declaration wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warn_subfolders: Vec<String>,
-    /// Subdirectories that carry the same structural contract, recursively.
+    /// Containers whose *children* carry this rule's contract, recursively.
+    ///
+    /// The container itself is not governed and its children's names are not
+    /// checked — they are modules in their own right, and a module's name is
+    /// no more constrained here than one selected by `roots`. Given
+    /// `recurse_into: ["variants"]`, the governed directory is
+    /// `user/variants/nfe`, and `nfe` may be called anything.
+    ///
+    /// This description used to read "subdirectories that carry the same
+    /// structural contract, recursively", which one reader took to mean the
+    /// contract applies *inside* the named folder. Adding it to a namespace
+    /// holding nineteen modules cleared nineteen findings and read as
+    /// modelling; what it did was promote those nineteen directories from
+    /// "unexpected subfolder" to "module", which is a real decision and was
+    /// not the one they thought they were making. Issue #29.
+    ///
+    /// `config explain <rule-id>` lists every directory a rule governs, which
+    /// is the answer to "did this mean what I think" for exactly this field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recurse_into: Vec<String>,
     /// Regexes every direct child file's name must match at least one of.

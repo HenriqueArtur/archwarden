@@ -495,6 +495,50 @@ mod tests {
         assert!(!engine.governs(&path("packages/domain/src/user/types")));
     }
 
+    /// The consequence of the rule above, stated on its own because it is what
+    /// a reader gets wrong: naming a container in `recurse_into` *stops* its
+    /// children's names being checked. They were subfolders of a governed
+    /// directory and are now entities, and an entity's name is no more this
+    /// rule's business than one selected by `roots`.
+    ///
+    /// It therefore removes findings. One repository added a namespace holding
+    /// nineteen entities and cleared nineteen of them in a single run, which
+    /// read as modelling the namespace and was in fact a decision about what
+    /// those nineteen directories *are*. Issue #29. `config explain` lists
+    /// every directory a rule governs, which is where that decision is
+    /// visible.
+    #[test]
+    fn a_container_stops_its_own_children_being_name_checked() {
+        let contract = |recurse: &[&str]| engine(&["src/*"], &["types", "Sub"], &[], recurse, &[]);
+
+        // Without it, a directory inside `Sub` is a subfolder like any other,
+        // and `Sub` is governed only if the scope selects it -- which here it
+        // does not, so nothing is said either way.
+        let promoted = contract(&["Sub"]);
+        assert!(
+            !promoted.governs(&path("src/Entity/Sub")),
+            "the container is not governed, so the names of its children are \
+             nobody's to check"
+        );
+        assert!(
+            promoted.governs(&path("src/Entity/Sub/anything-at-all")),
+            "and each of those children is an entity in its own right"
+        );
+
+        // Which is where the enforcement went: one level further down.
+        let findings = check(
+            &promoted,
+            "src/Entity/Sub/anything-at-all",
+            &["types", "wrong"],
+            &[],
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings.first().expect("one").path.as_str(),
+            "src/Entity/Sub/anything-at-all/wrong"
+        );
+    }
+
     #[test]
     fn a_recursed_entity_is_held_to_the_same_folder_list() {
         let engine = engine(

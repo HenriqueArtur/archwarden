@@ -84,8 +84,21 @@ which filenames may exist inside a folder.
   least one of a set of regexes. Non-matching files are errors.
 
 **Recursion**. Some modules have nested modules of the same shape (e.g.,
-"variants" of an entity). The `recurse_into` field lists subfolders that
-carry the same structural contract as the parent, recursively.
+"variants" of an entity). The `recurse_into` field lists **containers whose
+children** are modules of the same shape, recursively.
+
+Which directory becomes governed is the whole of it, and it is one level
+deeper than the field's name suggests. With `recurse_into: ["variants"]`,
+`user/variants/nfe` is governed and `user/variants` is not — the container
+holds modules, it is not one. So `nfe` may be called anything, exactly as a
+module selected by `roots` may: naming a container here promotes its children
+from "unexpected subfolder" to "module", and a module's name is not this
+rule's business.
+
+That is a real decision, and it removes findings. Adding a namespace to
+`recurse_into` cleared nineteen of them in one repository and looked like
+modelling. `config explain <rule-id>` lists every directory a rule governs,
+and is the way to check that the promotion is the one you meant.
 
 **Escape hatch**. Directories prefixed with `_` are exempt from structure
 rules. Convention borrowed from Next.js; used for internal helpers that are
