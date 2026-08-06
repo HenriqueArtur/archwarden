@@ -47,6 +47,17 @@ pub struct Single {
     /// or fail depending on what the run happened to have available, which is
     /// exactly the determinism `ARCHITECTURE.md` is about. Correction C6.
     pub skipped: Vec<Skipped>,
+    /// Specifiers this file imports that nothing could resolve.
+    ///
+    /// The same failure as a skip, one level down: a boundary rule ran, and
+    /// ran blind. Saying "is fine" about a file whose imports were never
+    /// placed is the answer issue #18 is about, and a hook is where it costs
+    /// most -- the import an agent just wrote is exactly the one nothing has
+    /// seen yet.
+    ///
+    /// In source order, which is stable between runs and is where the reader
+    /// will look.
+    pub unresolved_imports: Vec<String>,
 }
 
 /// One rule that applies but was not evaluated.
@@ -104,6 +115,7 @@ pub fn check_file(root: &Utf8Path, config: &CompiledConfig, path: &RepoRelPath) 
     let engines = archwarden_rules::engines_for(config);
     let mut findings = Vec::new();
     let mut skipped = Vec::new();
+    let mut unresolved_imports = Vec::new();
 
     // An ignored path is not checked at all, exactly as in a full run. A hook
     // that enforced rules `check` would not is worse than no hook.
@@ -112,6 +124,7 @@ pub fn check_file(root: &Utf8Path, config: &CompiledConfig, path: &RepoRelPath) 
             path: path.clone(),
             findings,
             skipped,
+            unresolved_imports,
         };
     }
 
@@ -141,7 +154,14 @@ pub fn check_file(root: &Utf8Path, config: &CompiledConfig, path: &RepoRelPath) 
                 // state the docs expected. Paid only when a rule asks.
                 if applicable.iter().any(|engine| engine.needs_resolution()) {
                     let resolver = archwarden_resolver::imports::ImportResolver::new(root);
-                    let _ = crate::resolve::resolve_imports(&resolver, &mut facts);
+                    let outcomes = crate::resolve::resolve_imports(&resolver, &mut facts);
+                    // The path in each pair is this file, which the caller
+                    // already has.
+                    unresolved_imports = outcomes
+                        .unresolved_imports
+                        .into_iter()
+                        .map(|(_, specifier)| specifier)
+                        .collect();
                 }
                 Some(facts)
             }
@@ -179,6 +199,7 @@ pub fn check_file(root: &Utf8Path, config: &CompiledConfig, path: &RepoRelPath) 
         path: path.clone(),
         findings,
         skipped,
+        unresolved_imports,
     }
 }
 
@@ -486,6 +507,89 @@ mod tests {
             "nothing was skipped: {:?}",
             result.skipped
         );
+        assert!(
+            result.unresolved_imports.is_empty(),
+            "every import was placed: {:?}",
+            result.unresolved_imports
+        );
+    }
+
+    /// A boundary rule that ran against an import nothing could place ran
+    /// blind, and this command used to answer `is fine.` either way. That is
+    /// the answer issue #18 is about, and a hook is where it costs most: the
+    /// import an agent has just written is exactly the one nothing has seen.
+    #[test]
+    fn an_import_the_boundary_rule_could_not_place_is_named() {
+        let boundary = || {
+            config(
+                vec![rule(
+                    "domain-is-self-contained",
+                    &["packages/domain/**"],
+                    CompiledRuleKind::ImportBoundary {
+                        forbid: PathSet::compile(["apps/**".to_owned()]).expect("valid globs"),
+                        require: PathSet::default(),
+                        forbid_packages: Vec::new(),
+                        except: PathSet::default(),
+                        except_from: PathSet::default(),
+                        include_type_only: true,
+                    },
+                )],
+                &[],
+            )
+        };
+
+        // `@Domain/*` is an alias declared in the app's `tsconfig`, which
+        // archwarden does not read: inside the package it resolves to nothing,
+        // and the boundary it violates is the one being introduced.
+        let (guard, root) = tree_at(&[(
+            "packages/domain/row.ts",
+            "import type { Order } from '@Domain/Order/types';\nexport type Violation = Order;",
+        )]);
+        let blind = check_file(&root, &boundary(), &path("packages/domain/row.ts"));
+        drop(guard);
+
+        assert!(blind.findings.is_empty(), "{:?}", blind.findings);
+        assert_eq!(
+            blind.unresolved_imports,
+            vec!["@Domain/Order/types".to_owned()],
+        );
+
+        // And an import that lands somewhere is not a blind spot.
+        let (guard, root) = tree_at(&[
+            (
+                "packages/domain/row.ts",
+                "import type { Order } from './order';\nexport type Violation = Order;",
+            ),
+            ("packages/domain/order.ts", "export type Order = 1;"),
+        ]);
+        let placed = check_file(&root, &boundary(), &path("packages/domain/row.ts"));
+        drop(guard);
+
+        assert!(
+            placed.unresolved_imports.is_empty(),
+            "{:?}",
+            placed.unresolved_imports
+        );
+    }
+
+    /// A configuration with no boundary rule resolves nothing, so it has no
+    /// blind spot to report. Claiming one would send a reader after an import
+    /// no rule was ever going to look at.
+    #[test]
+    fn a_configuration_that_resolves_nothing_reports_no_blind_spot() {
+        let (guard, root) = tree_at(&[(
+            "src/user/create-client.use-case.ts",
+            "import { thing } from '@org/never-installed';\nexport function CreateClient() {}",
+        )]);
+        let result = check_file(
+            &root,
+            &config(vec![rule("usecase-name", &["src/*"], naming())], &[]),
+            &path("src/user/create-client.use-case.ts"),
+        );
+        drop(guard);
+
+        assert!(result.findings.is_empty(), "{:?}", result.findings);
+        assert!(result.unresolved_imports.is_empty());
     }
 
     /// A `spec-pair` rule with `require_non_empty_spec` reads the spec itself,

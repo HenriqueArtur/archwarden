@@ -13,15 +13,19 @@
 
 use archwarden_core::{
     facts::FileFacts,
+    path::RepoRelPath,
     traits::{Resolved, Resolver},
 };
 
 /// What became of a set of imports.
 ///
-/// Counted rather than listed. On a repository whose dependencies are not
-/// installed every bare specifier fails, and a note per import would bury the
-/// one that matters under three thousand that do not.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// The three kinds that resolved are counted and nothing more: a reader who
+/// wants to know which file imports `lodash` has `grep`. The ones that did not
+/// resolve are also named, because those are the imports no boundary rule
+/// could see, and a count of blind spots is not something anyone can act on --
+/// the only way left to find them is to delete imports until the number moves.
+/// Issue #18.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Outcomes {
     /// Landed on a file in this repository. The only kind a v0 boundary rule
     /// can match, because its globs are repo-relative paths.
@@ -33,15 +37,29 @@ pub struct Outcomes {
     /// Did not resolve. Boundary rules cannot see these, which is worth
     /// saying out loud when it happens.
     pub unresolved: usize,
+    /// Which file wrote which specifier, for every import counted in
+    /// [`unresolved`](Self::unresolved).
+    ///
+    /// One entry per counted import rather than per distinct pair, so the two
+    /// can never disagree: a reader told "3 imports" and shown two lines would
+    /// be right to wonder where the third went. A file that writes the same
+    /// unresolvable specifier twice is two imports and appears twice.
+    ///
+    /// The renderer is what decides how many of these a human should be shown.
+    /// On a repository whose dependencies are not installed this is every bare
+    /// specifier in it, which is a real list and a useless wall of text.
+    pub unresolved_imports: Vec<(RepoRelPath, String)>,
 }
 
 impl Outcomes {
     /// Folds another tally into this one.
-    pub fn absorb(&mut self, other: Self) {
+    pub fn absorb(&mut self, mut other: Self) {
         self.in_repo += other.in_repo;
         self.external += other.external;
         self.builtin += other.builtin;
         self.unresolved += other.unresolved;
+        self.unresolved_imports
+            .append(&mut other.unresolved_imports);
     }
 
     /// How many imports were counted in total.
@@ -71,7 +89,12 @@ pub fn resolve_imports<R: Resolver>(resolver: &R, facts: &mut FileFacts) -> Outc
             Ok(Resolved::Builtin(_)) => outcomes.builtin += 1,
             // A variant added later is not something this pass can pretend to
             // understand, so it counts as unresolved rather than as a match.
-            Ok(_) | Err(_) => outcomes.unresolved += 1,
+            Ok(_) | Err(_) => {
+                outcomes.unresolved += 1;
+                outcomes
+                    .unresolved_imports
+                    .push((facts.path.clone(), import.specifier.clone()));
+            }
         }
     }
 
@@ -183,6 +206,7 @@ mod tests {
             resolve_imports(&InMemoryResolver::new(), &mut facts),
             Outcomes {
                 unresolved: 1,
+                unresolved_imports: vec![(path("src/app.ts"), "@org/never-installed".to_owned())],
                 ..Outcomes::default()
             }
         );
@@ -240,6 +264,7 @@ mod tests {
                 external: 1,
                 builtin: 1,
                 unresolved: 1,
+                unresolved_imports: vec![(path("src/app.ts"), "@org/never-installed".to_owned())],
             }
         );
         assert_eq!(outcomes.total(), 5);
@@ -264,12 +289,18 @@ mod tests {
             external: 1,
             builtin: 0,
             unresolved: 3,
+            unresolved_imports: vec![
+                (path("src/a.ts"), "@one".to_owned()),
+                (path("src/a.ts"), "@two".to_owned()),
+                (path("src/a.ts"), "@three".to_owned()),
+            ],
         });
         total.absorb(Outcomes {
             in_repo: 5,
             external: 0,
             builtin: 4,
             unresolved: 0,
+            unresolved_imports: Vec::new(),
         });
 
         assert_eq!(
@@ -279,9 +310,54 @@ mod tests {
                 external: 1,
                 builtin: 4,
                 unresolved: 3,
+                unresolved_imports: vec![
+                    (path("src/a.ts"), "@one".to_owned()),
+                    (path("src/a.ts"), "@two".to_owned()),
+                    (path("src/a.ts"), "@three".to_owned()),
+                ],
             }
         );
         assert_eq!(total.total(), 15);
+    }
+
+    /// The blind spot is named, not only counted. A boundary rule cannot see
+    /// an import that did not resolve, and until this list existed the only
+    /// way to find out which import that was, in a repository of four
+    /// thousand files, was to delete imports until the count moved. Issue #18.
+    #[test]
+    fn every_unresolved_import_is_named_with_the_file_that_wrote_it() {
+        let resolver =
+            InMemoryResolver::new().with("./local", Resolved::InRepo(path("src/local.ts")));
+        let mut facts = facts(&["@Domain/Order/types", "./local", "@Domain/Order/id"]);
+
+        let outcomes = resolve_imports(&resolver, &mut facts);
+
+        assert_eq!(
+            outcomes.unresolved_imports,
+            vec![
+                (path("src/app.ts"), "@Domain/Order/types".to_owned()),
+                (path("src/app.ts"), "@Domain/Order/id".to_owned()),
+            ],
+            "the file that wrote it, and what it wrote"
+        );
+        assert_eq!(
+            outcomes.unresolved_imports.len(),
+            outcomes.unresolved,
+            "a reader shown fewer lines than the count would ask where the rest went"
+        );
+    }
+
+    /// Two imports of the same unresolvable specifier are two imports. Folding
+    /// them into one entry would leave the list disagreeing with the count it
+    /// is there to explain.
+    #[test]
+    fn the_same_unresolved_specifier_twice_is_named_twice() {
+        let mut facts = facts(&["@org/never-installed", "@org/never-installed"]);
+
+        let outcomes = resolve_imports(&InMemoryResolver::new(), &mut facts);
+
+        assert_eq!(outcomes.unresolved, 2);
+        assert_eq!(outcomes.unresolved_imports.len(), 2);
     }
 
     /// Resolution is per importer: the same specifier written in two files can

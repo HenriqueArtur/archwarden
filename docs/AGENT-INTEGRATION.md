@@ -243,7 +243,8 @@ That is **reported, never silently dropped**:
   "findings": [ ... ],
   "skipped": [
     { "rule_id": "usecase-factory-name", "reason": "unreadable" }
-  ]
+  ],
+  "unresolved_imports": []
 }
 ```
 
@@ -256,6 +257,23 @@ list is empty rather than infer it from absence.
 This matters because a silent skip would make the same write pass or fail
 depending on what the run happened to have available, which contradicts the
 determinism goal in [`ARCHITECTURE.md`](ARCHITECTURE.md).
+
+**`unresolved_imports` is the same failure one level down.** A boundary rule
+that ran against an import nothing could place ran blind, and this command used
+to answer `is fine.` either way. It carries every specifier this file imports
+that did not resolve — an alias the file was written against, a dependency that
+is not installed — and is present even when empty, for the same reason
+`skipped` is. Where a hook is concerned this is the sharpest case there is: the
+import an agent has just written is exactly the one nothing has seen yet.
+
+```
+$ archwarden check --file packages/domain/row.ts
+note: `@Domain/Order/types` did not resolve, so boundary rules did not see it
+```
+
+It does not block the write. archwarden does not read `tsconfig` path aliases
+([`CONFIG.md`](CONFIG.md)), so an unresolved specifier is not by itself a
+violation of anything — it is the statement that no rule could tell.
 
 ## Recommended setup
 
