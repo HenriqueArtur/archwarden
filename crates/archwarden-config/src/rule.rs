@@ -200,7 +200,23 @@ pub struct SpecPairRule {
     pub level: Level,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
-    /// Subdirectories subject to the rule. `["."]` means the scope itself.
+    /// Subdirectories subject to the rule, each covering everything below it.
+    ///
+    /// An entry names a directory relative to a `roots`-selected one, so
+    /// `calcs` covers `Entity/calcs/group/nested.ts` as well as
+    /// `Entity/calcs/direct.ts`, and a nested entry like `calcs/group` names
+    /// that subtree exactly.
+    ///
+    /// `["."]` means the scope directory itself and only its own files —
+    /// deliberately not recursive, since naming `calcs` is how a project says
+    /// which subtree is under the gate, and a recursive `.` would swallow
+    /// `types` and everything else it did not name.
+    ///
+    /// Entries used to be compared against a single directory *name*, so only
+    /// a direct child was covered and a nested path matched nothing while
+    /// validating cleanly. Grouping related files into a folder took them out
+    /// of the gate in silence — eleven validation functions in one repository
+    /// had no test at all and had never appeared in a report. Issue #34.
     pub subfolders: Patterns,
     /// What makes a filename a spec: `spec`, `test`, or both.
     ///

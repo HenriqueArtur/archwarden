@@ -277,7 +277,7 @@
               "$ref": "#/$defs/OneOrMany"
             },
             "subfolders": {
-              "description": "Subdirectories subject to the rule. `[\".\"]` means the scope itself.",
+              "description": "Subdirectories subject to the rule, each covering everything below it.\n\nAn entry names a directory relative to a `roots`-selected one, so\n`calcs` covers `Entity/calcs/group/nested.ts` as well as\n`Entity/calcs/direct.ts`, and a nested entry like `calcs/group` names\nthat subtree exactly.\n\n`[\".\"]` means the scope directory itself and only its own files —\ndeliberately not recursive, since naming `calcs` is how a project says\nwhich subtree is under the gate, and a recursive `.` would swallow\n`types` and everything else it did not name.\n\nEntries used to be compared against a single directory *name*, so only\na direct child was covered and a nested path matched nothing while\nvalidating cleanly. Grouping related files into a folder took them out\nof the gate in silence — eleven validation functions in one repository\nhad no test at all and had never appeared in a report. Issue #34.",
               "$ref": "#/$defs/OneOrMany"
             },
             "spec_markers": {

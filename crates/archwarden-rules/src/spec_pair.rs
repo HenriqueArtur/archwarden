@@ -96,8 +96,28 @@ impl SpecPairEngine {
 
     /// Whether this rule governs `directory`.
     ///
-    /// `subfolders: ["."]` means the scope-selected directory itself; any
-    /// other entry means a directory of that name directly inside one.
+    /// `subfolders: ["."]` means the scope-selected directory itself, and only
+    /// its own files: naming `calcs` is how a project says *this* subtree is
+    /// under the gate, and a recursive `.` would swallow `types` and every
+    /// other folder it deliberately did not name.
+    ///
+    /// Any other entry names a directory relative to the scope-selected one,
+    /// and covers it **and everything below it**. `calcs` covers
+    /// `Entity/calcs/group/nested.ts`; `calcs/group` names the same subtree
+    /// one level in.
+    ///
+    /// Both halves of that used to be false. The entry was compared against a
+    /// directory's *name*, so only a direct child matched: a file one level
+    /// deeper was silently outside the gate, and a nested entry like
+    /// `calcs/group` could never equal a single component, so it was accepted,
+    /// reported as valid, and matched nothing.
+    ///
+    /// The cost was measured. Two entities in one repository grouped their
+    /// validation steps into a subfolder; one had thirteen files and thirteen
+    /// specs, the other eleven files and no test at all, and neither the
+    /// report nor the baseline had ever mentioned it. Same shape, same
+    /// convention, one side quietly unguarded — which is what a TDD gate
+    /// exists to make impossible. Issue #34.
     #[must_use]
     pub fn governs(&self, directory: &RepoRelPath) -> bool {
         if self
@@ -109,16 +129,25 @@ impl SpecPairEngine {
             return true;
         }
 
-        let Some(name) = directory.file_name() else {
-            return false;
-        };
-        if !self.subfolders.iter().any(|sub| sub == name) {
-            return false;
+        // Up to the nearest scope-selected ancestor, then ask whether the path
+        // from it enters a named subfolder. Walking rather than checking the
+        // parent alone is the whole fix: the file may sit any number of levels
+        // below the folder that was named.
+        let mut ancestor = directory.parent();
+        while let Some(root) = ancestor {
+            if self.scope.matches_dir(root.as_path())
+                && let Ok(tail) = directory.as_path().strip_prefix(root.as_path())
+                && self
+                    .subfolders
+                    .iter()
+                    .any(|sub| sub != "." && !sub.is_empty() && tail.starts_with(sub))
+            {
+                return true;
+            }
+            ancestor = root.parent();
         }
 
-        directory
-            .parent()
-            .is_some_and(|parent| self.scope.matches_dir(parent.as_path()))
+        false
     }
 
     /// Splits a filename into its stem and extension.
@@ -526,17 +555,47 @@ mod tests {
         );
     }
 
-    /// A named subfolder is a directory of that name directly inside a
-    /// scope-selected one -- not the scope directory, and not deeper.
+    /// A named subfolder is a directory inside a scope-selected one, and it
+    /// covers everything below itself. Not the scope directory, and not a
+    /// folder nobody named.
+    ///
+    /// The last assertion was `!governs(".../calcs/deep")` until issue #34.
+    /// Grouping related calcs into a folder is an organisational choice, and
+    /// it silently took them out of the gate — eleven validation functions in
+    /// one repository had no test at all and had never been reported.
     #[test]
-    fn a_named_subfolder_is_one_level_inside_the_scope() {
+    fn a_named_subfolder_covers_everything_below_it() {
         let engine = engine(&["packages/domain/src/*"], &["calcs", "services"], &[]);
 
         assert!(engine.governs(&path("packages/domain/src/user/calcs")));
         assert!(engine.governs(&path("packages/domain/src/user/services")));
+        assert!(
+            engine.governs(&path("packages/domain/src/user/calcs/deep")),
+            "a file does not leave the gate by being filed one level in"
+        );
+        assert!(engine.governs(&path("packages/domain/src/user/calcs/deep/deeper")));
         assert!(!engine.governs(&path("packages/domain/src/user")));
         assert!(!engine.governs(&path("packages/domain/src/user/types")));
-        assert!(!engine.governs(&path("packages/domain/src/user/calcs/deep")));
+        assert!(
+            !engine.governs(&path("packages/domain/src/user/types/calcs")),
+            "`calcs` is named relative to the scope directory, not found anywhere below it"
+        );
+    }
+
+    /// The other half of the same gap: a nested path in `subfolders` used to
+    /// be accepted by the schema, reported valid, and match nothing — because
+    /// an entry was compared against a single directory *name*. It now names
+    /// what it looks like it names. Issue #34.
+    #[test]
+    fn a_nested_subfolder_path_names_that_subtree() {
+        let engine = engine(&["src/*"], &["calcs/group"], &[]);
+
+        assert!(engine.governs(&path("src/Entity/calcs/group")));
+        assert!(engine.governs(&path("src/Entity/calcs/group/deeper")));
+        assert!(
+            !engine.governs(&path("src/Entity/calcs")),
+            "only the subtree that was named"
+        );
     }
 
     /// A spec is not its own unit file, or every spec would demand a spec.
