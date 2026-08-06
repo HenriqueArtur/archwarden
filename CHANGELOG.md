@@ -17,6 +17,8 @@ saying so.
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-08-05
+
 ### Added
 
 - **`check` names every import that did not resolve**, where it used to report
@@ -53,6 +55,15 @@ saying so.
   ([`CONFIG.md`](docs/CONFIG.md)), and an unresolved import is still a note
   rather than a finding. It is the statement that no rule could tell, not a
   rule saying no.
+
+### Changed
+
+- **`check --file` no longer prints `is fine.` for a file whose imports did not
+  resolve.** No finding changes and no exit code changes — a run that passed on
+  0.6.0 passes on 0.7.0. What changes is one line of text, for the one case
+  where it was not true: a boundary rule ran against that file, and ran blind.
+  Anything matching on that string, rather than on the exit code or the JSON,
+  will see the difference.
 
 ## [0.6.0] — 2026-08-03
 
@@ -194,5 +205,6 @@ saying so.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.5.1...v0.6.0
