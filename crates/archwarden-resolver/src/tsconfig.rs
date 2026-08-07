@@ -150,11 +150,12 @@ impl PathAliases {
     /// or the destination has left what the alias covers.
     #[must_use]
     pub fn rewrite(&self, specifier: &str, was: &RepoRelPath, now: &RepoRelPath) -> Option<String> {
-        // The specifier may or may not spell the extension. Whichever form the
-        // author used, the destination is written the same way.
-        for spelled_out in [false, true] {
-            let was_written = written(was, spelled_out);
-            let now_written = written(now, spelled_out);
+        // Three spellings reach one file and the author picked one. Whichever
+        // it was, the destination is written the same way -- a rename changes
+        // where an import points and nothing else about it.
+        for form in [Form::WithoutExtension, Form::WithoutIndex, Form::AsWritten] {
+            let was_written = written(was, form);
+            let now_written = written(now, form);
 
             for (pattern, target) in &self.entries {
                 // Only a wildcard entry can name a file it was not written
@@ -185,15 +186,43 @@ impl PathAliases {
     }
 }
 
-/// A path as a specifier would spell it: with its extension, or without.
-fn written(path: &RepoRelPath, spelled_out: bool) -> String {
-    if spelled_out {
+/// How a specifier spells a path.
+///
+/// `Card/types/index.ts` is imported as `@Alias/Card/types/index.ts`, as
+/// `@Alias/Card/types/index`, or -- most often -- as `@Alias/Card/types`,
+/// letting the resolver find the `index`. All three are legal and a rename
+/// must not change which one a project uses.
+///
+/// The third is what issue #36 reopened over. Comparing only the first two
+/// meant the `*` captured from the specifier never equalled the one captured
+/// from the path, so every directory-index import refused -- and a repository
+/// with `Entities/Card/types/index.ts` has those everywhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Form {
+    /// The path exactly, for a specifier that spells the extension.
+    AsWritten,
+    /// Without the source extension.
+    WithoutExtension,
+    /// Without the extension and without a trailing `/index`.
+    WithoutIndex,
+}
+
+/// A path as a specifier of that form would spell it.
+fn written(path: &RepoRelPath, form: Form) -> String {
+    if form == Form::AsWritten {
         return path.as_str().to_owned();
     }
-    path.as_str()
+
+    let stem = path
+        .as_str()
         .rsplit_once('.')
         .filter(|(_, extension)| EXTENSIONS.contains(extension))
-        .map_or_else(|| path.as_str().to_owned(), |(stem, _)| stem.to_owned())
+        .map_or_else(|| path.as_str().to_owned(), |(stem, _)| stem.to_owned());
+
+    if form == Form::WithoutIndex {
+        return stem.strip_suffix("/index").unwrap_or(&stem).to_owned();
+    }
+    stem
 }
 
 /// What happened when a pattern was held against a string.
@@ -353,6 +382,43 @@ mod tests {
             ),
             Some("@Lib/renamed".to_owned()),
             "the second entry is the one that reaches it"
+        );
+    }
+
+    /// A directory-index import, which is the form issue #36 was reopened
+    /// over. `@Infra/Ent/Card/types` reaches `Ent/Card/types/index.ts`, so the
+    /// `*` captured from the specifier is one component shorter than the one
+    /// captured from the path -- and comparing only the extension-bearing
+    /// forms made every such import refuse. A repository with
+    /// `Entities/Card/types/index.ts` has them everywhere.
+    #[test]
+    fn a_directory_index_import_is_rewritten() {
+        let aliases = aliases(&[("@Infra/*", "apps/api/src/Infra/*")]);
+
+        assert_eq!(
+            aliases.rewrite(
+                "@Infra/Ent/Card/types",
+                &path("apps/api/src/Infra/Ent/Card/types/index.ts"),
+                &path("apps/api/src/Infra/Ent/CardProbe/types/index.ts"),
+            ),
+            Some("@Infra/Ent/CardProbe/types".to_owned()),
+            "the form the author wrote, pointing at the new place"
+        );
+    }
+
+    /// And the spelled-out index keeps its shape too, which is the same rule
+    /// the extension follows.
+    #[test]
+    fn an_index_spelled_out_keeps_its_shape() {
+        let aliases = aliases(&[("@Infra/*", "src/Infra/*")]);
+
+        assert_eq!(
+            aliases.rewrite(
+                "@Infra/Card/types/index",
+                &path("src/Infra/Card/types/index.ts"),
+                &path("src/Infra/CardProbe/types/index.ts"),
+            ),
+            Some("@Infra/CardProbe/types/index".to_owned())
         );
     }
 
@@ -608,6 +674,37 @@ mod tests {
         drop(guard);
 
         assert!(aliases.is_empty());
+    }
+
+    /// The three forms, directly. `rewrite` tries all of them, which makes a
+    /// mistake in any one of them nearly invisible from the outside -- the
+    /// others still produce a match often enough to hide it.
+    #[test]
+    fn a_path_has_three_spellings() {
+        let index = path("src/Infra/Card/types/index.ts");
+        assert_eq!(
+            written(&index, Form::AsWritten),
+            "src/Infra/Card/types/index.ts"
+        );
+        assert_eq!(
+            written(&index, Form::WithoutExtension),
+            "src/Infra/Card/types/index"
+        );
+        assert_eq!(written(&index, Form::WithoutIndex), "src/Infra/Card/types");
+
+        // A file that is not an index has nothing to strip, so the last two
+        // agree -- which is why `WithoutIndex` is safe to try on everything.
+        let plain = path("src/lib/thing.ts");
+        assert_eq!(written(&plain, Form::AsWritten), "src/lib/thing.ts");
+        assert_eq!(written(&plain, Form::WithoutExtension), "src/lib/thing");
+        assert_eq!(written(&plain, Form::WithoutIndex), "src/lib/thing");
+
+        // An extension that is not a source extension is part of the name.
+        let data = path("src/lib/schema.json");
+        assert_eq!(
+            written(&data, Form::WithoutExtension),
+            "src/lib/schema.json"
+        );
     }
 
     /// `.` and `..` are removed without asking the filesystem, because a
