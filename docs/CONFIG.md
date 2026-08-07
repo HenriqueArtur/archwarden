@@ -737,7 +737,7 @@ rewritten.
 | the working tree is dirty | `git` is the undo, and one that takes your own work with it is not one |
 | not a git repository | same reason: no undo |
 | a file being moved is untracked | `git mv` cannot move it, and `git checkout .` cannot bring it back — the two halves of the same fact. Asked before anything is written, because git asks it in the middle of the move |
-| a specifier this cannot recompute | a `tsconfig` path alias is read forwards but not backwards: which alias to write for the new location is a question the map does not answer, and rewriting the rest would leave that one pointing at nothing |
+| a specifier this cannot recompute | a `tsconfig` path alias whose entry does not reach the destination. The alias the importer already writes *is* re-run against the new location, and rewritten when it still covers it; what refuses is a move out of what the alias covers, or an entry naming one file rather than a subtree |
 | the destination exists, or two files land on one path | carrying it out would delete something |
 | a dynamic import naming no module | whether that file imports the target is unknowable |
 

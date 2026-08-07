@@ -17,6 +17,47 @@ saying so.
 
 ## [Unreleased]
 
+## [0.9.1] — 2026-08-07
+
+### Fixed
+
+- **`impact --apply` rewrites an aliased specifier when the importer's own
+  alias still covers the destination.**
+  ([#36](https://github.com/HenriqueArtur/archwarden/issues/36))
+
+  It refused any move whose importer reached the file through a `tsconfig`
+  path alias. `paths` is not invertible in general — several patterns may
+  reach one file — so the refusal was right in general and wrong for the case
+  that dominates a rename: `@Lib/* → ./src/lib/*` covers both
+  `src/lib/thing.ts` and `src/lib/renamed.ts`, so `@Lib/thing` → `@Lib/renamed`
+  is determined.
+
+  The entry that reaches the file being moved is the entry that produced the
+  specifier, so re-running *that* pattern against the destination computes
+  rather than chooses. Everything else still refuses: a destination outside
+  what the alias covers, an entry that names one file rather than a subtree,
+  or aliases that could not be read.
+
+  An entry with no `*` needs no special case and gets none — `"@Env":
+  ["./src/Env.ts"]` names one file, the destination is a different file, so it
+  does not match. That case is the reason this reads the real map rather than
+  transposing strings: a string-level guess would have rewritten `@Env` to
+  `@Environment` and produced a repository that does not build.
+
+  `extends` is followed only as far as the first config that declares `paths`.
+  `oxc_resolver` merges `extends` properly for resolution and keeps that
+  private; a config whose aliases arrive another way finds none here and the
+  move refuses exactly as before.
+
+- **A legitimate refusal no longer also reports itself as a bug in
+  archwarden.**
+
+  The guard for "an importer the dry run named got no edit" fired alongside
+  the refusal that had just explained why, so a single unrewritable specifier
+  produced two messages about one import — the second asking the reader to
+  report a bug. The guard is for the *unexplained* case and now skips
+  importers a refusal already accounts for.
+
 ## [0.9.0] — 2026-08-06
 
 A minor for a bug fix, because it changes what an existing, unchanged config
@@ -460,7 +501,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.7.0...v0.8.0

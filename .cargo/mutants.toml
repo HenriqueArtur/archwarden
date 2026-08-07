@@ -13,4 +13,36 @@
 # reaches out of its own process to change the machine.
 #
 # The behaviour that matters is covered. This is the announcement around it.
-exclude_re = ["replace install_hooks"]
+
+# The invariant guard in `apply.rs` is a check for a state nothing can reach:
+# every specifier that cannot be recomputed already pushes a refusal of its
+# own. That is the point of it — its own doc comment says so, and decision 16
+# is why it exists anyway, because the failure it would hide is a repository
+# that compiles nowhere reported as success. A test that killed this mutant
+# would have to construct the unreachable state, which means reaching past the
+# code that makes it unreachable.
+#
+# The refusals it defers to are each tested. This is the net under them.
+#
+# Two more, both in `PathAliases::read`, and both about the `extends` chain:
+#
+# - the depth bound (`depth > MAX_EXTENDS_DEPTH`) mutated to `>=` or `==`.
+#   That is a difference of one level of `extends` nesting at a bound of
+#   sixteen. No repository distinguishes them, and a test asserting "seventeen
+#   deep refuses and sixteen does not" would be testing the constant rather
+#   than a behaviour. That the bound exists at all *is* tested —
+#   `an_extends_cycle_does_not_loop_forever` is what stands between a broken
+#   config and a hang.
+#
+# - `depth == 0`, passed as `TsConfig::parse`'s `root` argument. That flag only
+#   changes what `build()` does, and `build()` is `pub(crate)` in
+#   `oxc_resolver` and never called here. Mutating it is invisible because the
+#   value is genuinely unused by anything this module does; it is passed
+#   honestly rather than hard-coded, because a later reader should see which
+#   config is the caller's.
+exclude_re = [
+    "replace install_hooks",
+    "replace every_importer_was_rewritten",
+    "replace > with (==|>=) in PathAliases::read",
+    "replace == with != in PathAliases::read",
+]

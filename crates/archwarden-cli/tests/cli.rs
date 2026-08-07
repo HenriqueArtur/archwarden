@@ -1071,3 +1071,89 @@ fn force_carries_the_move_past_a_dynamic_import_nothing_can_read() {
         "and the flag actually carries it out"
     );
 }
+
+/// An aliased importer no longer blocks a move when the importer's own alias
+/// still covers the destination, and the refusal it used to produce no longer
+/// also asks the reader to report a bug. Issue #36.
+#[test]
+fn a_move_under_an_alias_rewrites_through_that_alias() {
+    let dir = git_repo(&[
+        ("arch.config.json", MINIMAL),
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@Lib/*":["./src/lib/*"]}}}"#,
+        ),
+        ("src/lib/thing.ts", "export const THING = 1;\n"),
+        (
+            "src/app/via-alias.ts",
+            "import { THING } from \"@Lib/thing\";\n",
+        ),
+        (
+            "src/app/via-relative.ts",
+            "import { THING } from \"../lib/thing\";\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "impact",
+            "src/lib/thing.ts",
+            "--to",
+            "src/lib/renamed.ts",
+            "--apply",
+        ])
+        .assert()
+        .success();
+
+    let aliased = std::fs::read_to_string(dir.path().join("src/app/via-alias.ts")).expect("read");
+    assert!(aliased.contains("\"@Lib/renamed\""), "{aliased}");
+    let relative =
+        std::fs::read_to_string(dir.path().join("src/app/via-relative.ts")).expect("read");
+    assert!(relative.contains("\"../lib/renamed\""), "{relative}");
+}
+
+/// And a destination outside what the alias covers still refuses -- with one
+/// message, not two. The second used to say "This is a bug in archwarden"
+/// about a refusal the reader had just been given the reason for.
+#[test]
+fn a_move_out_of_an_alias_refuses_once() {
+    let dir = git_repo(&[
+        ("arch.config.json", MINIMAL),
+        (
+            "tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@Lib/*":["./src/lib/*"]}}}"#,
+        ),
+        ("src/lib/thing.ts", "export const THING = 1;\n"),
+        ("src/other/keep.ts", "export const KEEP = 1;\n"),
+        (
+            "src/app/via-alias.ts",
+            "import { THING } from \"@Lib/thing\";\n",
+        ),
+    ]);
+
+    let assert = archwarden()
+        .current_dir(dir.path())
+        .args([
+            "impact",
+            "src/lib/thing.ts",
+            "--to",
+            "src/other/thing.ts",
+            "--apply",
+        ])
+        .assert()
+        .failure();
+    // Refusals go to stderr; the exit code is the gate and this is the reason.
+    let out = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+
+    assert!(out.contains("nothing was moved"), "{out}");
+    assert!(out.contains("path alias"), "the reason is named: {out}");
+    assert!(
+        !out.contains("This is a bug in archwarden"),
+        "the refusal explained itself; the guard is for the unexplained: {out}"
+    );
+
+    // And nothing was written.
+    let importer = std::fs::read_to_string(dir.path().join("src/app/via-alias.ts")).expect("read");
+    assert!(importer.contains("\"@Lib/thing\""), "{importer}");
+}
