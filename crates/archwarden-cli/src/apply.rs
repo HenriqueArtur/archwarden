@@ -409,6 +409,7 @@ pub fn replacements_for(
     facts: &archwarden_core::facts::FileFacts,
     moves: &Moves,
     workspace: &archwarden_resolver::workspace::Workspace,
+    aliases: &archwarden_resolver::tsconfig::PathAliases,
     refusals: &mut Vec<Refusal>,
 ) -> Vec<Replacement> {
     let new_home = moves.get(file).unwrap_or(file);
@@ -432,9 +433,11 @@ pub fn replacements_for(
         let now = match respecify(
             &import.specifier,
             new_home,
+            target,
             new_target,
             moved_target.is_some(),
             workspace,
+            aliases,
         ) {
             Rewrite::Unchanged => continue,
             Rewrite::To(now) => now,
@@ -571,12 +574,16 @@ pub fn plan(
                 }
             };
 
+        // Per importer, because the nearest `tsconfig.json` is what governs a
+        // file and a monorepo gives packages their own.
+        let aliases = archwarden_resolver::tsconfig::PathAliases::governing(root, &path);
         let replacements = replacements_for(
             &source,
             &path,
             &facts,
             &moves,
             &workspace,
+            &aliases,
             &mut plan.refusals,
         );
         if !replacements.is_empty() {
@@ -586,36 +593,7 @@ pub fn plan(
 
     plan.edits.sort_by(|a, b| a.path.cmp(&b.path));
 
-    // The invariant, checked rather than trusted: every file the dry run named
-    // as an importer must have come out of the loop above with an edit.
-    //
-    // Nothing above is supposed to be able to break it — a specifier that
-    // cannot be recomputed already pushes a refusal. But "supposed to" is what
-    // this module cannot afford: the failure it would hide is a repository
-    // that compiles nowhere, reported as success with exit 0, and found by
-    // whoever runs `tsc` next. The check costs one set difference against a
-    // list that is already in hand.
-    let edited: std::collections::BTreeSet<&RepoRelPath> =
-        plan.edits.iter().map(|edit| &edit.path).collect();
-    let moving: std::collections::BTreeSet<&RepoRelPath> =
-        plan.moves.iter().map(|entry| &entry.from).collect();
-
-    for (target, importers) in &found {
-        for importer in &importers.direct {
-            // A moving file needs no edit of its own unless it has relative
-            // imports, and an importer that is itself the target's spec moves
-            // with it. Both are already handled; what must never happen is a
-            // file that stays put, imports something that moved, and was not
-            // rewritten.
-            if edited.contains(&importer.path) || moving.contains(&importer.path) {
-                continue;
-            }
-            plan.refusals.push(Refusal::ImporterNotRewritten {
-                importer: importer.path.clone(),
-                target: target.clone(),
-            });
-        }
-    }
+    every_importer_was_rewritten(&mut plan, &found);
 
     plan
 }
@@ -778,6 +756,59 @@ pub fn carry_out(root: &Utf8Path, plan: &Plan) -> Result<(), String> {
 
     prune_emptied(root, &plan.moves);
     Ok(())
+}
+
+/// The invariant, checked rather than trusted: every file the dry run named as
+/// an importer must have come out of the rewrite loop with an edit.
+///
+/// Nothing there is supposed to be able to break it — a specifier that cannot
+/// be recomputed already pushes a refusal. But "supposed to" is what this
+/// module cannot afford: the failure it would hide is a repository that
+/// compiles nowhere, reported as success with exit 0, and found by whoever
+/// runs `tsc` next. The check costs one set difference against a list that is
+/// already in hand.
+fn every_importer_was_rewritten(
+    plan: &mut Plan,
+    found: &std::collections::BTreeMap<RepoRelPath, archwarden_engine::importers::Importers>,
+) {
+    let edited: std::collections::BTreeSet<&RepoRelPath> =
+        plan.edits.iter().map(|edit| &edit.path).collect();
+    let moving: std::collections::BTreeSet<&RepoRelPath> =
+        plan.moves.iter().map(|entry| &entry.from).collect();
+    // A file whose specifier already refused is explained, and this guard is
+    // for the *unexplained*. Reporting both told the reader that a refusal
+    // they had just been given the reason for was a bug in archwarden --
+    // twice, in the same message, about the same import. Issue #36.
+    let explained: std::collections::BTreeSet<RepoRelPath> = plan
+        .refusals
+        .iter()
+        .filter_map(|refusal| match refusal {
+            Refusal::UnreadableSpecifier { importer, .. }
+            | Refusal::SpecifierNotFound { importer, .. }
+            | Refusal::UnresolvedLocalImport { importer, .. } => Some(importer.clone()),
+            _ => None,
+        })
+        .collect();
+
+    for (target, importers) in found {
+        for importer in &importers.direct {
+            // A moving file needs no edit of its own unless it has relative
+            // imports, and an importer that is itself the target's spec moves
+            // with it. Both are already handled; what must never happen is a
+            // file that stays put, imports something that moved, and was not
+            // rewritten.
+            if edited.contains(&importer.path)
+                || moving.contains(&importer.path)
+                || explained.contains(&importer.path)
+            {
+                continue;
+            }
+            plan.refusals.push(Refusal::ImporterNotRewritten {
+                importer: importer.path.clone(),
+                target: target.clone(),
+            });
+        }
+    }
 }
 
 /// Removes source directories the move left empty.
@@ -1442,6 +1473,7 @@ mod tests {
             &facts,
             &moves,
             &workspace,
+            &archwarden_resolver::tsconfig::PathAliases::default(),
             &mut refusals,
         );
         drop(dir);
@@ -1472,6 +1504,7 @@ mod tests {
             &facts,
             &Moves::new(),
             &workspace,
+            &archwarden_resolver::tsconfig::PathAliases::default(),
             &mut refusals,
         );
         drop(dir);
@@ -1511,6 +1544,7 @@ mod tests {
             &facts,
             &moves,
             &workspace,
+            &archwarden_resolver::tsconfig::PathAliases::default(),
             &mut refusals,
         );
         drop(dir);
@@ -1554,6 +1588,7 @@ mod tests {
             &facts,
             &moves,
             &workspace,
+            &archwarden_resolver::tsconfig::PathAliases::default(),
             &mut refusals,
         );
         drop(dir);

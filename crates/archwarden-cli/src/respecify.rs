@@ -25,7 +25,7 @@
 //! `exports` case and was told to check its `tsconfig`.
 
 use archwarden_core::path::RepoRelPath;
-use archwarden_resolver::workspace::{Package, Workspace};
+use archwarden_resolver::{tsconfig::PathAliases, workspace::Package, workspace::Workspace};
 
 /// What should replace a specifier, or why nothing can.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,10 +58,16 @@ pub enum Unknown {
     /// something in every case seen so far — and archwarden does read it, which
     /// is how this variant is reached at all.
     ///
-    /// What it cannot do is invert the map. Given a destination, which alias to
-    /// write is not a question `paths` answers: several patterns may reach the
-    /// same file, and none may reach the new location. Guessing produces an
-    /// import that does not compile.
+    /// What it cannot do is invert the map in general. Given a destination,
+    /// which alias to write is not a question `paths` answers: several
+    /// patterns may reach the same file, and none may reach the new location.
+    ///
+    /// One case does have an answer and is no longer refused (issue #36): the
+    /// entry that reaches the file being moved is the entry that produced this
+    /// specifier, so re-running *that* pattern against the destination
+    /// computes rather than chooses. This variant is what is left — the
+    /// destination has left what the alias covers, the entry names one file
+    /// rather than a subtree, or the aliases could not be read at all.
     PathAlias,
     /// The importing file is at the repository root, so a relative specifier
     /// has no directory to be measured from.
@@ -96,8 +102,9 @@ impl Unknown {
     pub fn explain(self) -> &'static str {
         match self {
             Self::PathAlias => {
-                "it resolves through a `tsconfig` path alias, and which alias\n  \
-                 to write for the new location is not something that map says"
+                "it resolves through a `tsconfig` path alias that does not\n  \
+                 reach the destination, and which other alias to write is not\n  \
+                 something that map says"
             }
             Self::NoImporterDirectory => {
                 "the importing file is at the repository root, so a relative\n  \
@@ -140,13 +147,20 @@ impl Unknown {
 /// whole move: leaving such a specifier alone would silently point it at a file
 /// that is no longer there. The [`Unknown`] it carries says which of the four
 /// reasons it is, and each one names a different thing to go and fix.
+///
+/// `old_target` is where the imported file is *now*, and it is what makes the
+/// alias case answerable: the entry that reaches it is the entry that produced
+/// this specifier, so re-running that one against `new_target` computes rather
+/// than guesses.
 #[must_use]
 pub fn respecify(
     specifier: &str,
     new_home: &RepoRelPath,
+    old_target: &RepoRelPath,
     new_target: &RepoRelPath,
     target_moved: bool,
     workspace: &Workspace,
+    aliases: &PathAliases,
 ) -> Rewrite {
     if specifier.starts_with('.') {
         return relative(specifier, new_home, new_target);
@@ -161,7 +175,15 @@ pub fn respecify(
     }
     match workspace.package_for(specifier) {
         Some(package) => by_package(specifier, package, new_target),
-        None => Rewrite::Unknown(Unknown::PathAlias),
+        // A `tsconfig` path alias. Refused in general, because `paths` is not
+        // invertible -- but the case that dominates a rename is the alias the
+        // importer already writes still covering the destination, and that one
+        // is computed rather than chosen. Issue #36.
+        None => aliases
+            .rewrite(specifier, old_target, new_target)
+            .map_or(Rewrite::Unknown(Unknown::PathAlias), |rewritten| {
+                settle(specifier, rewritten)
+            }),
     }
 }
 
@@ -366,8 +388,20 @@ mod tests {
 
     /// An import that resolves to the moved file, read from an importer that
     /// itself stayed put.
-    fn rewrite(specifier: &str, importer: &str, to: &str) -> Rewrite {
-        respecify(specifier, &path(importer), &path(to), true, &domain())
+    ///
+    /// `was` is where the file is now. Only the alias half consults it, and
+    /// these helpers carry no aliases -- that half has its own tests, with a
+    /// real `PathAliases`.
+    fn rewrite(specifier: &str, importer: &str, was: &str, to: &str) -> Rewrite {
+        respecify(
+            specifier,
+            &path(importer),
+            &path(was),
+            &path(to),
+            true,
+            &domain(),
+            &PathAliases::default(),
+        )
     }
 
     /// A package that declares no `exports` at all, which means every file in
@@ -388,13 +422,15 @@ mod tests {
         workspace
     }
 
-    fn in_open_package(specifier: &str, to: &str) -> Rewrite {
+    fn in_open_package(specifier: &str, was: &str, to: &str) -> Rewrite {
         respecify(
             specifier,
             &path("packages/app/use.ts"),
+            &path(was),
             &path(to),
             true,
             &open_package(),
+            &PathAliases::default(),
         )
     }
 
@@ -410,12 +446,20 @@ mod tests {
     #[test]
     fn a_package_with_no_exports_still_gets_a_new_specifier() {
         assert_eq!(
-            in_open_package("@x/lib/thing", "packages/lib/things/index.ts"),
+            in_open_package(
+                "@x/lib/thing",
+                "packages/lib/thing/index.ts",
+                "packages/lib/things/index.ts"
+            ),
             Rewrite::To("@x/lib/things".to_owned()),
             "the directory-index form the author wrote"
         );
         assert_eq!(
-            in_open_package("@x/lib/other", "packages/lib/moved/other.ts"),
+            in_open_package(
+                "@x/lib/other",
+                "packages/lib/other.ts",
+                "packages/lib/moved/other.ts"
+            ),
             Rewrite::To("@x/lib/moved/other".to_owned()),
             "and a plain file"
         );
@@ -428,11 +472,19 @@ mod tests {
     #[test]
     fn the_written_form_of_a_subpath_survives_the_rewrite() {
         assert_eq!(
-            in_open_package("@x/lib/thing/index.ts", "packages/lib/things/index.ts"),
+            in_open_package(
+                "@x/lib/thing/index.ts",
+                "packages/lib/thing/index.ts",
+                "packages/lib/things/index.ts"
+            ),
             Rewrite::To("@x/lib/things/index.ts".to_owned()),
         );
         assert_eq!(
-            in_open_package("@x/lib/thing/index", "packages/lib/things/index.ts"),
+            in_open_package(
+                "@x/lib/thing/index",
+                "packages/lib/thing/index.ts",
+                "packages/lib/things/index.ts"
+            ),
             Rewrite::To("@x/lib/things/index".to_owned()),
         );
     }
@@ -442,7 +494,11 @@ mod tests {
     #[test]
     fn a_move_out_of_an_open_package_is_still_refused() {
         assert_eq!(
-            in_open_package("@x/lib/thing", "packages/other/thing/index.ts"),
+            in_open_package(
+                "@x/lib/thing",
+                "packages/lib/thing/index.ts",
+                "packages/other/thing/index.ts"
+            ),
             Rewrite::Unknown(Unknown::LeavesThePackage),
         );
     }
@@ -450,7 +506,15 @@ mod tests {
     /// One of the moved file's own imports: the importer moved, the target
     /// did not.
     fn from_moved(specifier: &str, new_home: &str, target: &str) -> Rewrite {
-        respecify(specifier, &path(new_home), &path(target), false, &domain())
+        respecify(
+            specifier,
+            &path(new_home),
+            &path(target),
+            &path(target),
+            false,
+            &domain(),
+            &PathAliases::default(),
+        )
     }
 
     /// Case 1, and the majority of a real monorepo's imports: written by
@@ -462,6 +526,7 @@ mod tests {
             rewrite(
                 "@flowmaatik/domain/email/shared/is-email-invalid-shared",
                 "apps/app/src/admin/use-new-admin-user-page.ts",
+                "packages/domain/src/email/shared/is-email-invalid-shared.ts",
                 "packages/domain/src/email/calcs/is-email-invalid.ts",
             ),
             Rewrite::To("@flowmaatik/domain/email/calcs/is-email-invalid".to_owned())
@@ -475,6 +540,7 @@ mod tests {
             rewrite(
                 "../shared/types/feature-shared",
                 "packages/domain/src/feature/types/feature.ts",
+                "packages/domain/src/feature/shared/types/feature-shared.ts",
                 "packages/domain/src/feature/types/feature-shared.ts",
             ),
             Rewrite::To("./feature-shared".to_owned())
@@ -505,7 +571,12 @@ mod tests {
     #[test]
     fn a_sibling_keeps_its_leading_dot_slash() {
         assert_eq!(
-            rewrite("../calcs/thing", "src/a/b/importer.ts", "src/a/b/thing.ts"),
+            rewrite(
+                "../calcs/thing",
+                "src/a/b/importer.ts",
+                "src/a/b/calcs/thing.ts",
+                "src/a/b/thing.ts"
+            ),
             Rewrite::To("./thing".to_owned())
         );
     }
@@ -516,7 +587,12 @@ mod tests {
     #[test]
     fn an_explicit_extension_survives_the_rewrite() {
         assert_eq!(
-            rewrite("../shared/thing.js", "src/a/importer.ts", "src/b/thing.ts"),
+            rewrite(
+                "../shared/thing.js",
+                "src/a/importer.ts",
+                "src/shared/thing.ts",
+                "src/b/thing.ts"
+            ),
             Rewrite::To("../b/thing.js".to_owned())
         );
     }
@@ -526,7 +602,12 @@ mod tests {
     #[test]
     fn a_specifier_that_already_points_at_the_destination_is_unchanged() {
         assert_eq!(
-            rewrite("./thing", "src/a/importer.ts", "src/a/thing.ts"),
+            rewrite(
+                "./thing",
+                "src/a/importer.ts",
+                "src/a/thing.ts",
+                "src/a/thing.ts"
+            ),
             Rewrite::Unchanged
         );
     }
@@ -556,7 +637,7 @@ mod tests {
     fn an_alias_that_resolved_into_the_repository_is_refused_rather_than_guessed() {
         for specifier in ["@Components/button", "~/components/button", "#internal/x"] {
             assert_eq!(
-                rewrite(specifier, "src/a.ts", "src/b/thing.ts"),
+                rewrite(specifier, "src/a.ts", "src/a/thing.ts", "src/b/thing.ts"),
                 Rewrite::Unknown(Unknown::PathAlias),
                 "{specifier}"
             );
@@ -571,6 +652,7 @@ mod tests {
             rewrite(
                 "@flowmaatik/domain/email/shared/x",
                 "apps/app/src/main.ts",
+                "packages/domain/src/email/shared/x.ts",
                 "packages/domain/src/internal/x.ts",
             ),
             Rewrite::Unknown(Unknown::NotExported),
@@ -587,6 +669,7 @@ mod tests {
             rewrite(
                 "@flowmaatik/domain/email/shared/x",
                 "apps/app/src/main.ts",
+                "packages/domain/src/email/shared/x.ts",
                 "packages/system/src/x.ts",
             ),
             Rewrite::Unknown(Unknown::LeavesThePackage)
@@ -602,6 +685,7 @@ mod tests {
             rewrite(
                 "@flowmaatik/domain/id/shared/is-id-invalid-shared",
                 "packages/domain/src/user/calcs/is-user-create-data-invalid.ts",
+                "packages/domain/src/id/shared/is-id-invalid-shared.ts",
                 "packages/domain/src/id/calcs/is-id-invalid.ts",
             ),
             Rewrite::To("@flowmaatik/domain/id/calcs/is-id-invalid".to_owned())
@@ -615,6 +699,7 @@ mod tests {
             rewrite(
                 "./old",
                 "packages/domain/src/a/x.ts",
+                "packages/domain/src/a/old.ts",
                 "packages/domain/src/b/c/old.ts"
             ),
             Rewrite::To("../b/c/old".to_owned())
