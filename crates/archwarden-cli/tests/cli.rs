@@ -1157,3 +1157,49 @@ fn a_move_out_of_an_alias_refuses_once() {
     let importer = std::fs::read_to_string(dir.path().join("src/app/via-alias.ts")).expect("read");
     assert!(importer.contains("\"@Lib/thing\""), "{importer}");
 }
+
+/// The reopening of #36: an aliased import that reaches its file through a
+/// directory `index.ts`, with the tsconfig in a subdirectory rather than at
+/// the archwarden root. Both halves of the layout every monorepo has.
+#[test]
+fn an_aliased_directory_index_import_is_rewritten() {
+    let dir = git_repo(&[
+        ("arch.config.json", MINIMAL),
+        (
+            "apps/api/tsconfig.json",
+            r#"{"compilerOptions":{"baseUrl":".","paths":{"@Infra/*":["./src/Infra/*"]}}}"#,
+        ),
+        (
+            "apps/api/src/Infra/Ent/Card/types/index.ts",
+            "export type Card = { id: string };\n",
+        ),
+        (
+            "apps/api/src/Seeds/data.ts",
+            "import type { Card } from \"@Infra/Ent/Card/types\";\nexport type X = Card;\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "impact",
+            "apps/api/src/Infra/Ent/Card",
+            "--to",
+            "../CardProbe",
+            "--apply",
+        ])
+        .assert()
+        .success();
+
+    let importer =
+        std::fs::read_to_string(dir.path().join("apps/api/src/Seeds/data.ts")).expect("read");
+    assert!(
+        importer.contains("\"@Infra/Ent/CardProbe/types\""),
+        "the form the author wrote, pointing at the new place: {importer}"
+    );
+    assert!(
+        dir.path()
+            .join("apps/api/src/Infra/Ent/CardProbe/types/index.ts")
+            .is_file()
+    );
+}

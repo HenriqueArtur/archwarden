@@ -138,8 +138,22 @@ tag created no run at all — nine re-pushes over half an hour, none of which
 fired. A dispatch goes through the API rather than webhook delivery, and it
 started immediately.
 
-Reach for it when a tag push produces no run. Stop any retry loop first, so
-two runs cannot publish the same version.
+**Reach for it only when the tag push produced no run.** Push the tag, wait a
+minute, and look:
+
+```bash
+gh run list --workflow=release.yml --limit 1
+```
+
+A run for the tag means the ordinary path worked and there is nothing to do.
+Dispatching *as well* gets you two runs publishing one version: the first
+wins, the second fails on npm's duplicate-version rejection, and the red run
+stays in the history for whoever looks at it next to worry about. That
+happened to 0.9.1, on a day when Actions had already recovered and the
+dispatch was not needed at all.
+
+Stop any retry loop before dispatching, so two runs cannot publish the same
+version.
 
 Stopping the loop is not enough on its own, and 0.8.0 showed why: a throttled
 webhook is *delayed*, not dropped. Three of the nine re-pushed tags arrived
