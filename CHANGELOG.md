@@ -17,6 +17,32 @@ saying so.
 
 ## [Unreleased]
 
+## [0.9.2] — 2026-08-07
+
+### Fixed
+
+- **An aliased import that reaches its file through a directory `index.ts` is
+  rewritten.** ([#36](https://github.com/HenriqueArtur/archwarden/issues/36),
+  reopened)
+
+  0.9.1 compared the specifier against the path with its extension and without
+  it, and `@Infra/Ent/Card/types` reaching `Ent/Card/types/index.ts` is neither:
+  the `*` captured from the specifier was one component shorter than the one
+  captured from the path, so it never matched and every directory-index import
+  refused. A repository that writes `Entities/Card/types/index.ts` has those
+  everywhere.
+
+  Three spellings reach one file — `types`, `types/index` and
+  `types/index.ts` — and all three are now recognised, with the destination
+  written in whichever form the author used.
+
+  The reopened report blamed the tsconfig's *location*, since the working
+  fixture had it at the repository root and the failing one did not. That was
+  not it: a tsconfig in a subdirectory works, and 0.9.1 shipped a test for it.
+  What the two runs actually differed by was the directory `index.ts` — which
+  the report's own evidence pointed at, by quoting two different refusal
+  messages.
+
 ## [0.9.1] — 2026-08-07
 
 ### Fixed
@@ -501,7 +527,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/HenriqueArtur/archwarden/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.8.0...v0.8.1
