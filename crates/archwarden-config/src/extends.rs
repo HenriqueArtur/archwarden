@@ -118,6 +118,7 @@ pub fn merge(entry: LoadedConfig, resolver: &PresetResolver) -> Result<MergedCon
     // preset cannot know whether the project including it has any `.astro` at
     // all -- the same reasoning that stops a preset setting `root`.
     merged.languages = config.languages;
+    merged.language = config.language;
 
     check_disable_targets(&merged, &origins)?;
 

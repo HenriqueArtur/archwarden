@@ -369,6 +369,61 @@ fn only_the_page_is_translated() {
     );
 }
 
+/// A repository decides its language once, in the config. Nobody should have
+/// to remember a flag to read their own report.
+#[test]
+fn the_config_can_choose_the_language() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"language":"pt-br","rules":[
+                {"type":"structure","id":"shape","level":"error",
+                 "roots":"src","allowed_subfolders":[]}]}"#,
+        ),
+        ("src/nope/x.ts", "export const x = 1;\n"),
+    ]);
+    let page = dir.path().join("relatorio.html");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        .code(1);
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.contains(r#"<html lang="pt-BR">"#), "{html}");
+}
+
+/// And the flag wins over it, for the one run that wants the other.
+#[test]
+fn the_flag_overrides_the_configs_language() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"language":"pt-br","rules":[
+                {"type":"structure","id":"shape","level":"error",
+                 "roots":"src","allowed_subfolders":[]}]}"#,
+        ),
+        ("src/nope/x.ts", "export const x = 1;\n"),
+    ]);
+    let page = dir.path().join("report.html");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "check",
+            "--lang",
+            "en",
+            "--html",
+            page.to_str().expect("utf-8"),
+        ])
+        .assert()
+        .code(1);
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.contains(r#"<html lang="en">"#), "{html}");
+}
+
 /// The digest keeps its language too: markdown is a CLI output and JSON is a
 /// contract, so `--lang` reaches neither.
 #[test]

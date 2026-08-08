@@ -108,6 +108,8 @@ would refuse to complete.
 - `ignore` — extra ignore globs on top of `.gitignore` (which is always
   honoured). Ignore always wins over a rule's scope, however specific that
   scope is.
+- `language` — the language the HTML pages are written in: `en` (default) or
+  `pt-br`. Only the pages.
 - `languages` — which languages archwarden reads. Defaults to `["ts"]`, which
   is JavaScript and TypeScript together. `["ts", "astro"]` adds the TypeScript
   module inside an `.astro` file's `---` fence.
@@ -125,7 +127,14 @@ archwarden agent-guide --format html --lang pt-br > arquitetura.html
 archwarden check --html relatorio.html --lang pt-br
 ```
 
-`--lang` reaches **the page and nothing else**. The terminal, the JSON and the
+A repository decides this once, in the config, so nobody has to remember a
+flag to read their own report:
+
+```json
+{ "version": 0, "language": "pt-br" }
+```
+
+`--lang` overrides it for one run. Neither reaches **anything but the page**. The terminal, the JSON and the
 markdown digest stay in English whatever it says — a CI log is pasted into an
 issue, searched for and read by an agent, and one whose language depends on who
 ran it is worse than one somebody has to translate. The JSON was never in

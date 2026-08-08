@@ -53,8 +53,8 @@ saying so.
   Existing configs are unaffected: a rule that names no annotation ignores them
   exactly as before.
 
-- **The pages speak English or Brazilian Portuguese.** `--lang pt-br` on
-  `check --html` and on `agent-guide --format html`.
+- **The pages speak English or Brazilian Portuguese.** `"language": "pt-br"` in
+  the config, or `--lang pt-br` for one run.
 
   The page and nothing else. The terminal, the JSON and the digest stay in
   English whatever it says: a CI log is pasted into an issue, searched for and

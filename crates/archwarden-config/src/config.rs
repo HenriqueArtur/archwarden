@@ -42,6 +42,19 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub ignore: OneOrMany<String>,
 
+    /// The language the HTML pages are written in.
+    ///
+    /// A repository decides this once, the way it decides its rules — the
+    /// people reading a report of *this* project read it in one language, and
+    /// putting that in the config means nobody has to remember a flag.
+    /// `--lang` still wins, for the one run that wants the other.
+    ///
+    /// Reaches the pages and nothing else: the terminal, the JSON and the
+    /// markdown digest are English whatever this says. See
+    /// `crate::config::PageLanguage`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<PageLanguage>,
+
     /// Which languages this repository asks archwarden to read.
     ///
     /// Defaults to `["ts"]`, which is JavaScript and TypeScript together —
@@ -98,6 +111,21 @@ pub struct Module {
     /// The rules in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<Rule>,
+}
+
+/// A language the HTML pages can be written in.
+///
+/// Separate from [`Language`], which is about *source* archwarden reads. These
+/// two would be a confusing single field: one says what the tool can parse and
+/// the other says what a person wants to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum PageLanguage {
+    /// English.
+    En,
+    /// Brazilian Portuguese.
+    PtBr,
 }
 
 /// A language archwarden has a front-end for.

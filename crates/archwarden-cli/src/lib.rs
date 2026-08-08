@@ -156,12 +156,13 @@ pub enum Command {
 
         /// The language the page is written in.
         ///
-        /// Only the page. The terminal, the JSON and the digest stay in
-        /// English whatever this says — a CI log is pasted into an issue,
+        /// Defaults to the config's `language`, and to English when it says
+        /// nothing. Only the page: the terminal, the JSON and the digest stay
+        /// in English whatever this says — a CI log is pasted into an issue,
         /// searched for and read by an agent, and one whose language depends
         /// on who ran it is worse than one somebody has to translate.
-        #[arg(long, value_enum, default_value_t = crate::phrases::Language::En)]
-        lang: crate::phrases::Language,
+        #[arg(long, value_enum)]
+        lang: Option<crate::phrases::Language>,
 
         /// Also write a page for a human, at this path.
         ///
@@ -295,8 +296,8 @@ pub enum Command {
         format: crate::guide::GuideFormat,
 
         /// The language, for `--format html` only. See `check --lang`.
-        #[arg(long, value_enum, default_value_t = crate::phrases::Language::En)]
-        lang: crate::phrases::Language,
+        #[arg(long, value_enum)]
+        lang: Option<crate::phrases::Language>,
 
         /// Restrict the digest to rules that can fire under this directory.
         #[arg(long, value_name = "PATH")]
@@ -1476,7 +1477,7 @@ fn agent_guide(
     location: Location<'_>,
     working_directory: &Utf8Path,
     format: crate::guide::GuideFormat,
-    language: crate::phrases::Language,
+    language: Option<crate::phrases::Language>,
     scope: Option<&str>,
     kinds: &[String],
     output: &mut Output<'_>,
@@ -1503,6 +1504,9 @@ fn agent_guide(
     };
 
     let guide = crate::guide::guide(&compiled, scope.as_ref(), kinds);
+    // The flag wins over the config; the config over English. A repository
+    // decides this once, and one run may want the other.
+    let language = language.unwrap_or_else(|| crate::phrases::Language::of(merged.config.language));
     crate::guide::render(&guide, format, language, output.out);
     Exit::Clean
 }
@@ -1525,7 +1529,7 @@ const CACHE_FILE: &str = "cache.redb";
 struct CheckOptions<'a> {
     format: Format,
     html: Option<&'a str>,
-    language: crate::phrases::Language,
+    language: Option<crate::phrases::Language>,
     no_cache: bool,
     summary: bool,
     rules: &'a [String],
@@ -1670,7 +1674,9 @@ fn check(
             &outcome,
             &unaccepted,
             baseline.as_ref(),
-            options.language,
+            options
+                .language
+                .unwrap_or_else(|| crate::phrases::Language::of(merged.config.language)),
         );
         match std::fs::write(destination, page) {
             Ok(()) => {

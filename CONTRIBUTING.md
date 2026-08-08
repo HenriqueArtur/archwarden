@@ -26,6 +26,24 @@ cargo build
 compiler on first build and every contributor compiles with the same one.
 There is no separate MSRV job because there is no second version in play.
 
+### Looking at the HTML reports
+
+```bash
+cargo xtask preview
+```
+
+Writes both pages, in both languages, into `target/preview/`, by building a
+fixture repository and running the real binary against it. Open them.
+
+A page is for a human and a human has to *look* at it: judging one by reading
+its source is judging a drawing by reading its coordinates. Nothing there
+builds a fake report — a preview assembled from hand-made data drifts from what
+the tool emits, and a design signed off against a page the product does not
+produce is worth less than nothing.
+
+Re-run it after any change to a renderer, to the stylesheet, or to
+`phrases.rs`.
+
 `cargo xtask hooks` is not optional in spirit. It installs two hooks:
 
 | Hook | Runs | Costs |

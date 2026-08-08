@@ -43,6 +43,18 @@ pub enum Language {
 }
 
 impl Language {
+    /// The language a configuration asked for, if it asked.
+    ///
+    /// The flag wins where both are present: a config is what a repository
+    /// decided and a flag is what this one run wants.
+    #[must_use]
+    pub fn of(config: Option<archwarden_config::config::PageLanguage>) -> Self {
+        match config {
+            Some(archwarden_config::config::PageLanguage::PtBr) => Self::PtBr,
+            _ => Self::En,
+        }
+    }
+
     /// The phrases this language says.
     #[must_use]
     pub fn phrases(self) -> &'static dyn Phrases {
