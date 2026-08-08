@@ -232,6 +232,7 @@ mod tests {
             Expectation::RequiredExport {
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
                 name: self.name.clone(),
+                annotation: Vec::new(),
                 signature_hint: None,
             }
         }
@@ -315,6 +316,7 @@ mod tests {
             is_default: false,
             reexport_from: None,
             forwards: None,
+            annotations: Vec::new(),
             span: crate::facts::Span::new(0, 10),
         });
 

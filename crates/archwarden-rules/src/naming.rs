@@ -7,7 +7,7 @@
 
 use archwarden_core::{
     compiled::{CompiledRule, CompiledRuleKind},
-    facts::{ExportFact, ExportKind, KindFilter},
+    facts::{ExportFact, ExportKind, KindFilter, Span},
     finding::{Expectation, Finding, Observed},
     ids::{ModuleId, RuleId},
     level::Level,
@@ -29,6 +29,7 @@ pub struct NamingEngine {
     dir_pattern: Option<Pattern>,
     name_template: String,
     kind: KindFilter,
+    annotation: Vec<String>,
     signature_hint: Option<String>,
 }
 
@@ -43,6 +44,7 @@ impl NamingEngine {
             dir_pattern,
             name_template,
             kind,
+            annotation,
             signature_hint,
         } = &rule.kind
         else {
@@ -55,6 +57,7 @@ impl NamingEngine {
             dir_pattern.as_ref(),
             name_template,
             kind,
+            annotation,
             signature_hint.as_deref(),
         ))
     }
@@ -72,6 +75,7 @@ impl NamingEngine {
         dir_pattern: Option<&Pattern>,
         name_template: &str,
         kind: &KindFilter,
+        annotation: &[String],
         signature_hint: Option<&str>,
     ) -> Self {
         Self {
@@ -83,6 +87,7 @@ impl NamingEngine {
             dir_pattern: dir_pattern.cloned(),
             name_template: name_template.to_owned(),
             kind: kind.clone(),
+            annotation: annotation.to_vec(),
             signature_hint: signature_hint.map(str::to_owned),
         }
     }
@@ -164,6 +169,7 @@ impl NamingEngine {
         Some(Expectation::RequiredExport {
             kind: self.kind.clone(),
             name: self.required_name(path)?,
+            annotation: self.required_annotations(path),
             signature_hint: self
                 .signature_hint
                 .as_ref()
@@ -171,42 +177,109 @@ impl NamingEngine {
         })
     }
 
-    fn finding(&self, path: &RepoRelPath, observed: Observed, expected: Expectation) -> Finding {
+    /// The annotations that would satisfy this rule here, rendered.
+    ///
+    /// Rendered for the same reason the name and the hint are: these reach
+    /// `scaffold` and a finding, and showing a user `{{pascal(tool)}}` is
+    /// showing them our internals.
+    fn required_annotations(&self, path: &RepoRelPath) -> Vec<String> {
+        self.annotation
+            .iter()
+            .filter_map(|template| self.render(template, path))
+            .collect()
+    }
+
+    fn finding(
+        &self,
+        path: &RepoRelPath,
+        span: Option<Span>,
+        observed: Observed,
+        expected: Expectation,
+    ) -> Finding {
         Finding {
             rule_id: self.id.clone(),
             module_id: self.module.clone(),
             level: self.level,
             path: path.clone(),
-            span: None,
+            span,
             observed,
             expected,
         }
     }
 
     /// What is wrong with the export the file does carry, if anything.
-    fn fault(&self, required: &str, export: &ExportFact) -> Option<Observed> {
-        if self.kind.accepts(export.tags) {
-            return None;
-        }
+    ///
+    /// Kind before annotation, and only one of the two: an export declared the
+    /// wrong way has to be redeclared, and a second finding about the type that
+    /// declaration does not carry is noise on a line that is being rewritten
+    /// anyway.
+    fn fault(&self, path: &RepoRelPath, required: &str, export: &ExportFact) -> Option<Observed> {
+        if !self.kind.accepts(export.tags) {
+            // A re-export's declaration form lives in another file. Saying so
+            // is more useful than reporting the wrong kind, which would send
+            // the reader looking for a declaration that is not there.
+            if export.tags.contains(ExportKind::Reexport) {
+                return Some(Observed::ReexportOfUnknownKind {
+                    name: required.to_owned(),
+                    from: export
+                        .reexport_from
+                        .clone()
+                        .unwrap_or_else(|| "another module".to_owned()),
+                });
+            }
 
-        // A re-export's declaration form lives in another file. Saying so is
-        // more useful than reporting the wrong kind, which would send the
-        // reader looking for a declaration that is not there.
-        if export.tags.contains(ExportKind::Reexport) {
-            return Some(Observed::ReexportOfUnknownKind {
+            return Some(Observed::ExportWrongKind {
                 name: required.to_owned(),
-                from: export
-                    .reexport_from
-                    .clone()
-                    .unwrap_or_else(|| "another module".to_owned()),
+                found: export.tags,
             });
         }
 
-        Some(Observed::ExportWrongKind {
+        self.annotation_fault(path, required, export)
+    }
+
+    /// Whether the declaration writes down a type the rule accepts.
+    ///
+    /// Compared with whitespace removed on both sides. A type broken over three
+    /// lines by a formatter is the same type, and a rule that disagreed with
+    /// prettier is a rule nobody keeps. Beyond that the comparison is exact:
+    /// this is a lexical assertion that the declaration is *submitted to*
+    /// `tsc`'s judgement, not an attempt to make it.
+    fn annotation_fault(
+        &self,
+        path: &RepoRelPath,
+        required: &str,
+        export: &ExportFact,
+    ) -> Option<Observed> {
+        let accepted = self.required_annotations(path);
+        if accepted.is_empty() {
+            return None;
+        }
+
+        if export.annotations.is_empty() {
+            return Some(Observed::ExportMissingAnnotation {
+                name: required.to_owned(),
+            });
+        }
+
+        let wanted: Vec<String> = accepted.iter().map(|a| squeezed(a)).collect();
+        if export
+            .annotations
+            .iter()
+            .any(|written| wanted.contains(&squeezed(written)))
+        {
+            return None;
+        }
+
+        Some(Observed::ExportWrongAnnotation {
             name: required.to_owned(),
-            found: export.tags,
+            found: export.annotations.clone(),
         })
     }
+}
+
+/// A type with every space taken out, for comparing two spellings of one.
+fn squeezed(annotation: &str) -> String {
+    annotation.split_whitespace().collect()
 }
 
 impl RuleEngine for NamingEngine {
@@ -256,11 +329,13 @@ impl RuleEngine for NamingEngine {
             } else {
                 Observed::ExportMissing { name: required }
             };
-            return vec![self.finding(ctx.path, observed, expected)];
+            return vec![self.finding(ctx.path, None, observed, expected)];
         };
 
-        self.fault(&required, export)
-            .map(|observed| self.finding(ctx.path, observed, expected))
+        // The declaration was found, so the finding has a position: the span
+        // is what turns it into a `path:line:column` an editor opens.
+        self.fault(ctx.path, &required, export)
+            .map(|observed| self.finding(ctx.path, Some(export.span), observed, expected))
             .into_iter()
             .collect()
     }
@@ -299,6 +374,7 @@ mod tests {
                 dir_pattern: None,
                 name_template: name_template.to_owned(),
                 kind,
+                annotation: Vec::new(),
                 signature_hint: signature_hint.map(ToOwned::to_owned),
             },
         };
@@ -335,6 +411,7 @@ mod tests {
                 ),
                 name_template: "{{pascal(entity)}}{{pascal(action)}}Repository".to_owned(),
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
+                annotation: Vec::new(),
                 signature_hint: None,
             },
         };
@@ -355,6 +432,7 @@ mod tests {
             is_default: false,
             reexport_from: None,
             forwards: None,
+            annotations: Vec::new(),
             span: Span::new(0, 1),
         }
     }
@@ -604,6 +682,7 @@ mod tests {
             [Expectation::RequiredExport {
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
                 name: "NeverWritten".to_owned(),
+                annotation: Vec::new(),
                 signature_hint: Some("(deps: NeverWrittenDeps)".to_owned()),
             }]
         );
@@ -629,6 +708,7 @@ mod tests {
             Expectation::RequiredExport {
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
                 name: "CreateClient".to_owned(),
+                annotation: Vec::new(),
                 signature_hint: Some("(deps: CreateClientDeps)".to_owned()),
             }
         );
@@ -673,6 +753,220 @@ mod tests {
         );
 
         assert!(check(&engine(), &facts).is_empty());
+    }
+
+    /// The rule from issue #39: thirteen tool modules found by `readdir` and
+    /// `import()`, each of which must be annotated because moving off a typed
+    /// static registry took `tsc`'s guarantee away.
+    fn annotated_engine(annotation: &[&str]) -> NamingEngine {
+        let rule = CompiledRule {
+            id: RuleId::new("agent-tools-export-contract").expect("valid id"),
+            module: None,
+            level: Level::Error,
+            scope: Scope::compile(["src/agent-tools/tools"]).expect("valid scope"),
+            kind: CompiledRuleKind::Naming {
+                file_pattern: Pattern::compile(r"^(?<tool>[a-z0-9-]+)\.tool\.ts$")
+                    .expect("valid pattern"),
+                dir_pattern: None,
+                name_template: "AGENT_TOOL".to_owned(),
+                kind: KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
+                annotation: annotation.iter().map(|a| (*a).to_owned()).collect(),
+                signature_hint: None,
+            },
+        };
+
+        NamingEngine::from_rule(&rule).expect("is a naming rule")
+    }
+
+    const TOOL: &str = "src/agent-tools/tools/lookup-cep.tool.ts";
+
+    fn annotated(name: &str, annotations: &[&str]) -> ExportFact {
+        ExportFact {
+            annotations: annotations.iter().map(|a| (*a).to_owned()).collect(),
+            span: Span::new(120, 160),
+            ..export(name, ExportTags::only(ExportKind::Const))
+        }
+    }
+
+    #[test]
+    fn an_export_carrying_the_required_annotation_passes() {
+        let facts = facts_with(TOOL, vec![annotated("AGENT_TOOL", &["AgentToolModule"])]);
+
+        assert!(check(&annotated_engine(&["AgentToolModule"]), &facts).is_empty());
+    }
+
+    /// The case the issue is filed about. `kind` is satisfied, the name is
+    /// exact, `tsc` is green, and the worker dies at boot -- because nothing
+    /// ever submitted the object to a type. The finding points at the
+    /// declaration, since this is a rule that found something at a position.
+    #[test]
+    fn an_export_with_no_annotation_is_reported_as_missing_one() {
+        let facts = facts_with(TOOL, vec![annotated("AGENT_TOOL", &[])]);
+
+        let findings = check(&annotated_engine(&["AgentToolModule"]), &facts);
+        assert_eq!(findings.len(), 1);
+        let finding = findings.first().expect("one");
+        assert_eq!(
+            finding.observed,
+            Observed::ExportMissingAnnotation {
+                name: "AGENT_TOOL".to_owned()
+            }
+        );
+        assert_eq!(finding.span, Some(Span::new(120, 160)));
+    }
+
+    /// Annotated, but against another contract. A different sentence and a
+    /// different fix from having no annotation at all, so a different variant
+    /// -- the same reason `ExportWrongKind` is not `ExportMissing`.
+    #[test]
+    fn an_export_annotated_with_something_else_is_reported_as_wrong() {
+        let facts = facts_with(TOOL, vec![annotated("AGENT_TOOL", &["LegacyToolModule"])]);
+
+        let findings = check(&annotated_engine(&["AgentToolModule"]), &facts);
+        assert_eq!(
+            findings.first().expect("one").observed,
+            Observed::ExportWrongAnnotation {
+                name: "AGENT_TOOL".to_owned(),
+                found: vec!["LegacyToolModule".to_owned()],
+            }
+        );
+    }
+
+    /// A list is "any of", the same way `kind: ["function", "arrow"]` is.
+    #[test]
+    fn any_of_several_accepted_annotations_satisfies_the_rule() {
+        let engine = annotated_engine(&["AgentToolModule", "LegacyToolModule"]);
+
+        for written in ["AgentToolModule", "LegacyToolModule"] {
+            let facts = facts_with(TOOL, vec![annotated("AGENT_TOOL", &[written])]);
+            assert!(check(&engine, &facts).is_empty(), "{written}");
+        }
+    }
+
+    /// A class names its contract in `implements`, and one that claims two
+    /// satisfies a rule asking for either.
+    #[test]
+    fn a_class_implementing_the_required_contract_among_others_passes() {
+        let facts = facts_with(
+            TOOL,
+            vec![ExportFact {
+                annotations: vec!["Disposable".to_owned(), "AgentToolModule".to_owned()],
+                ..export("AGENT_TOOL", ExportTags::only(ExportKind::Class))
+            }],
+        );
+        let rule = CompiledRule {
+            id: RuleId::new("tools-are-classes").expect("valid id"),
+            module: None,
+            level: Level::Error,
+            scope: Scope::compile(["src/agent-tools/tools"]).expect("valid scope"),
+            kind: CompiledRuleKind::Naming {
+                file_pattern: Pattern::compile(r"^(?<tool>[a-z0-9-]+)\.tool\.ts$").expect("valid"),
+                dir_pattern: None,
+                name_template: "AGENT_TOOL".to_owned(),
+                kind: KindFilter::OneOf(ExportTags::only(ExportKind::Class)),
+                annotation: vec!["AgentToolModule".to_owned()],
+                signature_hint: None,
+            },
+        };
+
+        assert!(
+            check(
+                &NamingEngine::from_rule(&rule).expect("is a naming rule"),
+                &facts
+            )
+            .is_empty()
+        );
+    }
+
+    /// Whitespace is the formatter's business, on both sides. A rule that
+    /// disagreed with prettier is a rule nobody keeps.
+    #[test]
+    fn spacing_in_an_annotation_is_not_significant_on_either_side() {
+        let engine = annotated_engine(&["AgentToolModule<Input,Output>"]);
+        let facts = facts_with(
+            TOOL,
+            vec![annotated(
+                "AGENT_TOOL",
+                &["AgentToolModule< Input, Output >"],
+            )],
+        );
+
+        assert!(check(&engine, &facts).is_empty());
+    }
+
+    /// The rule that shipped before this field keeps ignoring annotations
+    /// entirely. `signature_hint` is documented as never verified and code
+    /// depends on that; a rule that never asked for an annotation must not
+    /// start demanding one.
+    #[test]
+    fn a_rule_that_asks_for_no_annotation_ignores_them() {
+        let engine = annotated_engine(&[]);
+
+        for annotations in [&[][..], &["Anything"][..]] {
+            let facts = facts_with(TOOL, vec![annotated("AGENT_TOOL", annotations)]);
+            assert!(check(&engine, &facts).is_empty(), "{annotations:?}");
+        }
+    }
+
+    /// The annotation is a template over the same capture groups the name is,
+    /// so a per-file contract -- `LookupCepTool` -- is expressible.
+    #[test]
+    fn the_annotation_is_rendered_from_the_capture_groups() {
+        let engine = annotated_engine(&["{{pascal(tool)}}Module"]);
+
+        let ok = facts_with(TOOL, vec![annotated("AGENT_TOOL", &["LookupCepModule"])]);
+        assert!(check(&engine, &ok).is_empty());
+
+        let wrong = facts_with(TOOL, vec![annotated("AGENT_TOOL", &["LookupCep"])]);
+        assert_eq!(
+            check(&engine, &wrong).first().expect("one").observed,
+            Observed::ExportWrongAnnotation {
+                name: "AGENT_TOOL".to_owned(),
+                found: vec!["LookupCep".to_owned()],
+            }
+        );
+    }
+
+    /// Decision 9: what `check` demands, `scaffold` advertises -- rendered,
+    /// because showing a user `{{pascal(tool)}}` is showing them our internals.
+    #[test]
+    fn the_required_annotation_is_advertised_before_the_file_exists() {
+        let expectations =
+            annotated_engine(&["{{pascal(tool)}}Module"]).describe_expectation(&path(TOOL));
+
+        assert_eq!(
+            expectations,
+            [Expectation::RequiredExport {
+                kind: KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
+                name: "AGENT_TOOL".to_owned(),
+                annotation: vec!["LookupCepModule".to_owned()],
+                signature_hint: None,
+            }]
+        );
+    }
+
+    /// An export declared the wrong way makes the annotation question moot:
+    /// the fix is to redeclare it, and a second finding about the type it
+    /// does not have would be noise.
+    #[test]
+    fn a_wrong_kind_is_reported_instead_of_a_missing_annotation() {
+        let facts = facts_with(
+            TOOL,
+            vec![ExportFact {
+                annotations: Vec::new(),
+                ..export("AGENT_TOOL", ExportTags::only(ExportKind::Function))
+            }],
+        );
+
+        let findings = check(&annotated_engine(&["AgentToolModule"]), &facts);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings.first().expect("one").observed,
+            Observed::ExportWrongKind {
+                name: "AGENT_TOOL".to_owned(),
+                found: ExportTags::only(ExportKind::Function),
+            }
+        );
     }
 
     #[test]
@@ -790,6 +1084,7 @@ mod tests {
                 dir_pattern: Some(Pattern::compile(r"^[A-Z][A-Za-z0-9]*$").expect("valid")),
                 name_template: "{{pascal(action)}}".to_owned(),
                 kind: KindFilter::Any,
+                annotation: Vec::new(),
                 signature_hint: None,
             },
         };
@@ -821,6 +1116,7 @@ mod tests {
                 dir_pattern: Some(Pattern::compile(r"^(?<entity>[A-Za-z]+)$").expect("valid")),
                 name_template: "{{pascal(entity)}}{{pascal(action)}}".to_owned(),
                 kind: KindFilter::Any,
+                annotation: Vec::new(),
                 signature_hint: None,
             },
         };
@@ -845,6 +1141,7 @@ mod tests {
                 dir_pattern: Some(Pattern::compile(r"^(?<entity>[A-Za-z]+)$").expect("valid")),
                 name_template: "{{pascal(entity)}}{{pascal(action)}}".to_owned(),
                 kind: KindFilter::Any,
+                annotation: Vec::new(),
                 signature_hint: Some(
                     "function {{pascal(entity)}}{{pascal(action)}}(input: {{pascal(entity)}}): void"
                         .to_owned(),

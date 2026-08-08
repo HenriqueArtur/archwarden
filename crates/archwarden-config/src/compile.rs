@@ -80,6 +80,24 @@ pub enum CompileError {
         available: String,
     },
 
+    /// `must_export` asks for an annotation on a form that cannot carry one.
+    ///
+    /// A rule with no satisfying input, which is worse than a wrong rule: it
+    /// looks exactly like a repository nobody has migrated yet, and every file
+    /// under it is reported forever.
+    #[error(
+        "rule `{rule}`: `annotation` cannot be satisfied by an export declared \
+         as {kinds}. Only a binding (`const`, `let`, `var`) or a `class`, \
+         through its `implements` clause, writes a type down beside its name; \
+         a function declares a *return* type, which is a different claim."
+    )]
+    UnannotatableKind {
+        /// The rule.
+        rule: RuleId,
+        /// The forms the rule accepts, none of which can be annotated.
+        kinds: String,
+    },
+
     /// A `spec-pair` marker is not a single filename component.
     #[error(
         "rule `{rule}`: `{marker}` is not a spec marker. A marker is one \
@@ -212,9 +230,13 @@ fn compile_rule(
                 .transpose()?;
             check_template(&id, &file_pattern, dir_pattern.as_ref(), &r.must_export)?;
 
+            let kind = export_kind(&id, &r.must_export)?;
+            let annotation = annotation(&id, &kind, &r.must_export)?;
+
             CompiledRuleKind::Naming {
-                kind: export_kind(&id, &r.must_export)?,
+                kind,
                 name_template: r.must_export.name.clone(),
+                annotation,
                 signature_hint: r.must_export.signature_hint.clone(),
                 file_pattern,
                 dir_pattern,
@@ -327,6 +349,51 @@ fn export_kind(rule: &RuleId, must_export: &MustExport) -> Result<KindFilter, Co
     Ok(KindFilter::OneOf(tags))
 }
 
+/// The forms that have somewhere to write a type down beside the name.
+///
+/// A binding takes an annotation after the colon; a class names its contracts
+/// in `implements`. A function has a *return* type, an interface and a type
+/// alias *are* the type, an enum declares one, and a re-export's declaration is
+/// in another file — none of those is a place this rule could read.
+const ANNOTATABLE: [ExportKind; 5] = [
+    ExportKind::Const,
+    ExportKind::Let,
+    ExportKind::Var,
+    ExportKind::Arrow,
+    ExportKind::Class,
+];
+
+/// The required annotations, refusing a rule no file could satisfy.
+///
+/// `kind: "any"` passes: it accepts the annotatable forms among everything
+/// else, so a file that satisfies the rule exists.
+fn annotation(
+    rule: &RuleId,
+    kind: &KindFilter,
+    must_export: &MustExport,
+) -> Result<Vec<String>, CompileError> {
+    let Some(annotation) = must_export.annotation.as_ref() else {
+        return Ok(Vec::new());
+    };
+
+    if !ANNOTATABLE
+        .iter()
+        .any(|form| kind.accepts(ExportTags::only(*form)))
+    {
+        return Err(CompileError::UnannotatableKind {
+            rule: rule.clone(),
+            kinds: must_export
+                .kind
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        });
+    }
+
+    Ok(annotation.iter().cloned().collect())
+}
+
 /// Renders the export-name template against both patterns' capture groups.
 ///
 /// A rule whose template names a group no pattern defines is a config bug that
@@ -362,9 +429,15 @@ fn check_template(
             .then(|| "placeholder".to_owned())
     };
 
+    let annotations = must_export
+        .annotation
+        .iter()
+        .flat_map(|patterns| patterns.iter());
+
     for text in [Some(&must_export.name), must_export.signature_hint.as_ref()]
         .into_iter()
         .flatten()
+        .chain(annotations)
     {
         template::render(text, lookup).map_err(|source| CompileError::Template {
             rule: rule.clone(),
@@ -414,6 +487,90 @@ mod tests {
         match &compiled.rules().next()?.kind {
             CompiledRuleKind::Naming { kind, .. } => Some(kind),
             _ => None,
+        }
+    }
+
+    /// The compiled annotations of the config's single naming rule.
+    fn only_naming_annotation(compiled: &CompiledConfig) -> Option<&[String]> {
+        match &compiled.rules().next()?.kind {
+            CompiledRuleKind::Naming { annotation, .. } => Some(annotation),
+            _ => None,
+        }
+    }
+
+    fn tool_rule(must_export: &str) -> String {
+        format!(
+            r#"{{"version":0,"rules":[{{"type":"naming","id":"tools","level":"error",
+               "roots":"src/tools","file_pattern":"^(?<tool>[a-z-]+)\\.tool\\.ts$",
+               "must_export":{must_export}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn an_annotation_reaches_the_compiled_rule() {
+        let compiled = compile_json(&tool_rule(
+            r#"{"kind":["const"],"name":"AGENT_TOOL","annotation":"{{pascal(tool)}}Module"}"#,
+        ))
+        .expect("compiles");
+
+        assert_eq!(
+            only_naming_annotation(&compiled).expect("is a naming rule"),
+            ["{{pascal(tool)}}Module"]
+        );
+    }
+
+    #[test]
+    fn a_rule_without_an_annotation_compiles_to_an_empty_list() {
+        let compiled = compile_json(&tool_rule(r#"{"kind":["const"],"name":"AGENT_TOOL"}"#))
+            .expect("compiles");
+
+        assert!(
+            only_naming_annotation(&compiled)
+                .expect("is a naming rule")
+                .is_empty()
+        );
+    }
+
+    /// The annotation is a template over the same groups the name is, so a
+    /// group no pattern defines is the same config bug there -- and one that
+    /// would otherwise surface only when a file happened to match.
+    #[test]
+    fn an_annotation_naming_an_unknown_group_is_refused() {
+        let error = compile_json(&tool_rule(
+            r#"{"kind":["const"],"name":"AGENT_TOOL","annotation":"{{pascal(entity)}}Module"}"#,
+        ))
+        .expect_err("refused");
+
+        assert!(matches!(error, CompileError::Template { .. }), "{error:?}");
+    }
+
+    /// A function declares a return type, not an annotation, so a rule asking
+    /// for both can never be satisfied by any file. Refused at compile time
+    /// rather than left to `doctor`: `doctor` exits 0 and gives advice, and
+    /// this is not advice -- it is a rule with no satisfying input, which looks
+    /// exactly like a repository nobody has migrated yet.
+    #[test]
+    fn an_annotation_on_a_form_that_cannot_carry_one_is_refused() {
+        let error = compile_json(&tool_rule(
+            r#"{"kind":["function"],"name":"AGENT_TOOL","annotation":"AgentToolModule"}"#,
+        ))
+        .expect_err("refused");
+
+        assert!(
+            matches!(error, CompileError::UnannotatableKind { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// The forms that do have an annotation position, each accepted. `arrow`
+    /// is one: it only ever occurs with `const`, which is annotatable.
+    #[test]
+    fn every_annotatable_form_is_accepted_beside_an_annotation() {
+        for kind in ["const", "let", "var", "arrow", "class", "any"] {
+            let json = tool_rule(&format!(
+                r#"{{"kind":["{kind}"],"name":"AGENT_TOOL","annotation":"AgentToolModule"}}"#
+            ));
+            assert!(compile_json(&json).is_ok(), "{kind}");
         }
     }
 

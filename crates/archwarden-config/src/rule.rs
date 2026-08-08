@@ -184,6 +184,24 @@ pub struct MustExport {
     pub kind: Patterns,
     /// The required name, as a template over `file_pattern`'s capture groups.
     pub name: String,
+    /// The type the export must be annotated with, as a template over the same
+    /// groups. One value, or several meaning "any of".
+    ///
+    /// **Checked**, and the one field here that is — which is why it is not
+    /// spelled into `signature_hint`. That field is documented as a suggestion
+    /// `scaffold` renders and `check` ignores, and code depends on that; a
+    /// separate field keeps the promise of each legible.
+    ///
+    /// Still not type checking. Nothing is resolved and nothing is inferred:
+    /// the annotation is a token in the same declaration whose `kind` this rule
+    /// already reads, and comparing it is the same class of work as comparing
+    /// the name. A file annotating `AgentToolModule` over an object that is not
+    /// one is `tsc`'s problem and stays that way. What this buys is that the
+    /// declaration is *submitted to* `tsc`'s judgement at all — the guarantee a
+    /// registry loses when it moves from a typed array to `readdir` and
+    /// `import()`. Issue #39.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<Patterns>,
     /// A signature shown by `scaffold`. **Never verified** — constraining the
     /// type of an export is type checking, which is `tsc`'s job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -524,6 +542,73 @@ mod tests {
         };
         assert_eq!(naming.must_export.kind.as_slice(), ["function", "arrow"]);
         assert_eq!(naming.must_export.signature_hint, None);
+    }
+
+    /// The field issue #39 asks for, in the shape the issue writes it.
+    #[test]
+    fn an_annotation_parses_as_one_value_or_a_list() {
+        let one = parse(
+            r#"{
+              "type": "naming", "id": "n", "level": "error", "roots": "src/*",
+              "file_pattern": "^(?<tool>.+)\\.tool\\.ts$",
+              "must_export": {
+                "kind": ["const"], "name": "AGENT_TOOL",
+                "annotation": "AgentToolModule"
+              }
+            }"#,
+        );
+        let Rule::Naming(naming) = &one else {
+            panic!("expected a naming rule");
+        };
+        assert_eq!(
+            naming
+                .must_export
+                .annotation
+                .as_ref()
+                .expect("an annotation")
+                .as_slice(),
+            ["AgentToolModule"]
+        );
+
+        let many = parse(
+            r#"{
+              "type": "naming", "id": "n", "level": "error", "roots": "src/*",
+              "file_pattern": "^(?<tool>.+)\\.tool\\.ts$",
+              "must_export": {
+                "kind": ["const"], "name": "AGENT_TOOL",
+                "annotation": ["AgentToolModule", "LegacyToolModule"]
+              }
+            }"#,
+        );
+        let Rule::Naming(naming) = &many else {
+            panic!("expected a naming rule");
+        };
+        assert_eq!(
+            naming
+                .must_export
+                .annotation
+                .as_ref()
+                .expect("an annotation")
+                .as_slice(),
+            ["AgentToolModule", "LegacyToolModule"]
+        );
+    }
+
+    /// Every rule written before the field existed asks for no annotation, and
+    /// keeps meaning exactly what it meant.
+    #[test]
+    fn a_rule_that_omits_the_annotation_asks_for_none() {
+        let rule = parse(
+            r#"{
+              "type": "naming", "id": "n", "level": "error", "roots": "src/*",
+              "file_pattern": "^(?<name>.+)\\.ts$",
+              "must_export": { "kind": "any", "name": "{{pascal(name)}}" }
+            }"#,
+        );
+        let Rule::Naming(naming) = &rule else {
+            panic!("expected a naming rule");
+        };
+        assert_eq!(naming.must_export.annotation, None);
     }
 
     #[test]

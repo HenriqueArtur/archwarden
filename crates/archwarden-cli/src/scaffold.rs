@@ -50,6 +50,14 @@ pub struct RequiredExport {
     /// The declaration forms that satisfy the rule, best first. Empty means
     /// any form will do.
     pub kinds: Vec<&'static str>,
+    /// The type annotations that satisfy the rule, any one of them. Absent
+    /// when the rule asks for none.
+    ///
+    /// Beside `signature_hint` rather than instead of it: this one is checked
+    /// and that one is not, and collapsing them would make the weaker promise
+    /// look like the stronger one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub annotation: Vec<String>,
     /// The signature the config author wrote. Never verified.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature_hint: Option<String>,
@@ -115,10 +123,12 @@ fn absorb(shape: &mut Scaffold, expectation: Expectation) {
         Expectation::RequiredExport {
             kind,
             name,
+            annotation,
             signature_hint,
         } => shape.required_exports.push(RequiredExport {
             name,
             kinds: kinds_of(&kind),
+            annotation,
             signature_hint,
         }),
         Expectation::RequiredSibling {
@@ -322,17 +332,28 @@ fn is_empty(shape: &Scaffold) -> bool {
 
 /// The declaration line an agent can paste.
 ///
-/// The keyword is the rule's first accepted form, and the signature is the
-/// author's `signature_hint` verbatim. Both are best-effort by design: this
-/// emits requirements, and a hint archwarden never verifies cannot be promised
-/// to compile.
+/// The keyword is the rule's first accepted form. An `annotation` outranks a
+/// `signature_hint` in the same position, because it is the one of the two the
+/// checker will hold the file to: a line built from it is a line that passes,
+/// which is a promise a hint archwarden never verifies cannot make.
 fn declaration(export: &RequiredExport) -> String {
     let keyword = export.kinds.first().copied().unwrap_or("const");
     let name = &export.name;
 
+    if let Some(annotation) = export.annotation.first() {
+        // A class names its contract in `implements`; every other form writes
+        // it after a colon.
+        return if keyword == "class" {
+            format!("export class {name} implements {annotation} {{ ... }}")
+        } else {
+            format!("export {keyword} {name}: {annotation} = /* ... */;")
+        };
+    }
+
     match export.signature_hint.as_deref() {
         Some(hint) => format!("export {keyword} {name}{hint}"),
         None if keyword == "function" => format!("export function {name}(/* ... */) {{ ... }}"),
+        None if keyword == "class" => format!("export class {name} {{ ... }}"),
         None => format!("export {keyword} {name} = /* ... */;"),
     }
 }
@@ -398,6 +419,7 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind,
+            annotation: Vec::new(),
             signature_hint: hint.map(str::to_owned),
         }
     }
@@ -581,6 +603,103 @@ mod tests {
             text.contains("export function CreateClient(deps: Deps): UseCase<In, Out>"),
             "{text}"
         );
+    }
+
+    /// A naming rule that fixes both the name and the annotation, which is the
+    /// shape a discovery-based registry needs (issue #39).
+    fn annotated_naming(annotation: &[&str], kind: KindFilter) -> CompiledRuleKind {
+        CompiledRuleKind::Naming {
+            file_pattern: Pattern::compile(r"^(?<name>[a-z0-9-]+)\.use-case\.ts$")
+                .expect("valid pattern"),
+            dir_pattern: None,
+            name_template: "{{pascal(name)}}".to_owned(),
+            kind,
+            annotation: annotation.iter().map(|a| (*a).to_owned()).collect(),
+            signature_hint: None,
+        }
+    }
+
+    /// The payoff of `annotation` being *checked* rather than suggested: the
+    /// line `scaffold` hands over compiles into a file that passes. A
+    /// `signature_hint` could never promise that.
+    #[test]
+    fn the_declaration_carries_the_required_annotation() {
+        let text = rendered(
+            vec![rule(
+                "contract",
+                &["src/*"],
+                annotated_naming(
+                    &["UseCaseModule"],
+                    KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
+                ),
+            )],
+            crate::report::Format::Text,
+        );
+
+        assert!(
+            text.contains("export const CreateClient: UseCaseModule = /* ... */;"),
+            "{text}"
+        );
+    }
+
+    /// A class writes the same contract in `implements`, and the skeleton has
+    /// to be the shape that satisfies the rule, not a `const` with a class
+    /// keyword in front of it.
+    #[test]
+    fn an_annotated_class_is_rendered_with_its_implements_clause() {
+        let text = rendered(
+            vec![rule(
+                "contract",
+                &["src/*"],
+                annotated_naming(
+                    &["UseCaseModule"],
+                    KindFilter::OneOf(ExportTags::only(ExportKind::Class)),
+                ),
+            )],
+            crate::report::Format::Text,
+        );
+
+        assert!(
+            text.contains("export class CreateClient implements UseCaseModule { ... }"),
+            "{text}"
+        );
+    }
+
+    /// An agent reads the JSON, so the requirement has to be in it -- and
+    /// beside `signature_hint`, not instead of it, because the two make
+    /// different promises.
+    #[test]
+    fn the_required_annotation_reaches_the_json() {
+        let text = rendered(
+            vec![rule(
+                "contract",
+                &["src/*"],
+                annotated_naming(
+                    &["UseCaseModule", "LegacyUseCase"],
+                    KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
+                ),
+            )],
+            crate::report::Format::Json,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        assert_eq!(
+            parsed["required_exports"][0]["annotation"],
+            serde_json::json!(["UseCaseModule", "LegacyUseCase"])
+        );
+    }
+
+    /// A rule that asks for no annotation must not grow an empty field in the
+    /// output an agent parses.
+    #[test]
+    fn a_rule_without_an_annotation_says_nothing_about_one() {
+        let text = rendered(
+            vec![rule("name", &["src/*"], naming(None, function_kind()))],
+            crate::report::Format::Json,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        assert!(parsed["required_exports"][0].get("annotation").is_none());
     }
 
     /// Without a hint there is still something to write, and it says which

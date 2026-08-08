@@ -139,6 +139,12 @@ npx archwarden scaffold packages/app/src/use-cases/refund-order/refund-order.use
 `signature_hint` is a suggestion — archwarden never verifies it. Follow it
 anyway; it is the project's own house style.
 
+`annotation` is not a suggestion. When it is present, the export must carry
+that type as written — `export const AGENT_TOOL: AgentToolModule = {...}`,
+never `export const AGENT_TOOL = {...}` — and `check` fails on a file that
+leaves it off. Several entries mean any one of them will do. Write the
+declaration line `scaffold` gives you and it passes.
+
 Pass a **directory** to ask what may exist inside it. `allowed_subfolders` is
 `null` when nothing constrains the directory, and otherwise names both lists:
 

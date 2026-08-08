@@ -24,7 +24,12 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 /// A mismatch wipes the cache rather than trying to read the old shape. A
 /// cache is a rebuildable artefact, and migration code for one is a liability
 /// nobody is paid back for. See decision 3.
-pub const FORMAT_VERSION: u32 = 3;
+///
+/// 3 → 4: `ExportFact::annotations`. A field with a serde default is the
+/// dangerous kind of shape change — an entry written by the previous build
+/// deserialises cleanly and claims every export annotates nothing, which is a
+/// finding against a file whose annotation is right there in the source.
+pub const FORMAT_VERSION: u32 = 4;
 
 const META: TableDefinition<'_, &str, u32> = TableDefinition::new("meta");
 const FACTS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("facts");
@@ -283,6 +288,7 @@ mod tests {
             is_default: false,
             reexport_from: None,
             forwards: None,
+            annotations: vec!["Entity".to_owned()],
             span: Span::new(0, 20),
         });
         facts.calls.push(CallFact {

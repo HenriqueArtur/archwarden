@@ -204,6 +204,7 @@ mod tests {
                 expected: Expectation::RequiredExport {
                     kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
                     name: "CreateClient".to_owned(),
+                    annotation: Vec::new(),
                     signature_hint: None,
                 },
             }],
@@ -251,6 +252,7 @@ mod tests {
                 expected: Expectation::RequiredExport {
                     kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
                     name: "CreateClient".to_owned(),
+                    annotation: Vec::new(),
                     signature_hint: None,
                 },
             }],

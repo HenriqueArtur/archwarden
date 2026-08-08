@@ -733,6 +733,7 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind,
+            annotation: Vec::new(),
             signature_hint: hint.map(str::to_owned),
         }
     }
@@ -745,6 +746,7 @@ mod tests {
             dir_pattern: Some(Pattern::compile(dir_pattern).expect("valid")),
             name_template: "{{pascal(entity)}}{{pascal(action)}}".to_owned(),
             kind: KindFilter::Any,
+            annotation: Vec::new(),
             signature_hint: None,
         }
     }

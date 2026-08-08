@@ -158,6 +158,9 @@ derivable from the filename by a case transform.
 - `must_export` — describes the required export:
   - `kind` — one tag or a list of tags (see table below).
   - `name` — templated from the capture groups.
+  - `annotation` — optional. The type the export must be **annotated with**,
+    templated from the same groups, as one value or a list meaning "any of".
+    **Verified.** See below.
   - `signature_hint` — optional free-form string. **Never verified.** It exists
     so `scaffold` can show a realistic skeleton
     (`export function Foo(deps: FooDeps): UseCase<FooInput, FooOutput>`)
@@ -266,9 +269,68 @@ a file-local rule cross-file, which is not what this rule is.
 one, they are ignored. The rule enforces presence and correctness of the
 required export, not exclusivity.
 
-**Cannot express**: constraints on the *type* of the export (e.g.,
-"function returning `UseCase<X>`"). That is type checking, not
-architecture linting. Use `tsc` for that.
+### When the export must write its type down
+
+A registry built by discovery has no compile-time gate. Every
+`tools/*.tool.ts` exports one symbol under a fixed name, a loader does
+`readdir` plus `import()`, and nothing imports those files statically any
+more. The name and the declaration form are already expressible; the shape is
+not, and this is what it costs:
+
+```ts
+export const AGENT_TOOL = { spec: { name: "lookup_cep" } };   // ✓ archwarden ✓ tsc ✗ boot
+```
+
+`kind` is satisfied, the name is exact, `check` is green — and the worker dies
+when the loader finds no `build`. The static registry that this replaced typed
+its array, so the compiler rejected a malformed module. `readdir` plus
+`import()` **removes that guarantee**, and the annotation on the export is the
+only thing that restores it.
+
+```json
+{
+  "type": "naming",
+  "id": "agent-tools-export-contract",
+  "level": "error",
+  "roots": ["apps/worker/src/agent-tools/tools"],
+  "file_pattern": "^(?<tool>[a-z0-9-]+)\\.tool\\.ts$",
+  "must_export": {
+    "kind": ["const"],
+    "name": "AGENT_TOOL",
+    "annotation": "AgentToolModule"
+  }
+}
+```
+
+`export const AGENT_TOOL: AgentToolModule = {...}` passes;
+`export const AGENT_TOOL = {...}` does not.
+
+Four things about it:
+
+- **This is not type checking.** Nothing is resolved and nothing is inferred.
+  The annotation is a token in the same declaration whose `kind` the rule
+  already reads, and comparing it is the same class of work as comparing the
+  name. A file annotating `AgentToolModule` over an object that is not one is
+  `tsc`'s problem and stays that way. What the rule buys is that the
+  declaration is *submitted to* `tsc`'s judgement at all — today a missing
+  annotation means there is nothing for `tsc` to check against.
+- **Where an annotation can live.** A binding writes it after the colon; a
+  class writes it in `implements`, and one that implements several contracts
+  satisfies a rule asking for any of them. A function declares a *return*
+  type, which is a different claim — so `annotation` beside
+  `kind: ["function"]` is a rule no file could satisfy, and the config is
+  refused rather than left to flag every file forever.
+- **Whitespace is not significant**, on either side. A type a formatter broke
+  over three lines is the same type. Beyond that the comparison is exact:
+  `AgentToolModule` does not match `AgentToolModule<In, Out>`, and a rule that
+  accepts both says so with a list.
+- **`scaffold` gets better, not just stricter.** The declaration it hands over
+  becomes `export const AGENT_TOOL: AgentToolModule = /* ... */;` — a line that
+  passes the rule, which is a promise `signature_hint` could never make.
+
+**Cannot express**: whether the annotated value really is of that type, and
+anything about the type itself ("a function returning `UseCase<X>`"). That is
+type checking. Use `tsc` for that.
 
 ---
 

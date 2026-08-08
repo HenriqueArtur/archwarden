@@ -85,6 +85,7 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     dir_pattern,
                     name_template,
                     kind,
+                    annotation,
                     signature_hint,
                 } => Box::new(naming::NamingEngine::build(
                     rule,
@@ -92,6 +93,7 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     dir_pattern.as_ref(),
                     name_template,
                     kind,
+                    annotation,
                     signature_hint.as_deref(),
                 )),
                 CompiledRuleKind::ImportBoundary {
@@ -182,6 +184,7 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: archwarden_core::facts::KindFilter::Any,
+            annotation: Vec::new(),
             signature_hint: None,
         }
     }

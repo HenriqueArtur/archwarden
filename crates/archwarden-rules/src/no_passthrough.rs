@@ -322,6 +322,7 @@ mod tests {
             is_default: false,
             reexport_from: None,
             forwards: forwards.map(ToOwned::to_owned),
+            annotations: Vec::new(),
             span: Span::new(0, 0),
         }
     }

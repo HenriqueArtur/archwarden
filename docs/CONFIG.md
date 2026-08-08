@@ -233,6 +233,25 @@ Note the scope: `use-cases/*` selects each use-case *directory*, and
 `file_pattern` then matches files directly inside it. `signature_hint` is
 never verified — it only makes `scaffold` output realistic.
 
+`must_export.annotation` is the one field here that **is** verified. It names
+the type the export must be annotated with, as a template over the same capture
+groups:
+
+```json
+"must_export": {
+  "kind": ["const"],
+  "name": "AGENT_TOOL",
+  "annotation": "AgentToolModule"
+}
+```
+
+`export const AGENT_TOOL: AgentToolModule = {...}` passes;
+`export const AGENT_TOOL = {...}` does not. It is still not type checking —
+nothing is resolved and nothing is inferred, and whether the annotated value
+really is of that type stays `tsc`'s question. What it gates is whether the
+declaration is submitted to `tsc` at all, which is what a registry loses when
+it moves from a typed array to `readdir` and `import()`. See `docs/RULES.md`.
+
 `{{pascal(name)}}` is a small templating helper: the named capture group
 `name` from `file_pattern` gets fed to a case transformer. Supported:
 `pascal`, `camel`, `kebab`, `snake`, `upper`, `lower`, `raw`.

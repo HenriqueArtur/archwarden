@@ -13,6 +13,7 @@
 #![allow(clippy::expect_used)]
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt as _;
 use predicates::str::contains;
 
 /// Builds a temporary repository and returns it. The guard must be held:
@@ -204,6 +205,70 @@ fn scaffold_answers_through_the_binary() {
             "export function CreateClient(deps: Deps): UseCase",
         ))
         .stdout(contains("src/user/create-client.use-case.spec.ts"));
+}
+
+/// Issue #39, end to end: thirteen tool modules found by `readdir` and
+/// `import()`, one of which forgot its annotation. Every layer is real here —
+/// the parser reads the annotation off the declaration, the rule compares it,
+/// and the report names the file and the position. `tsc` is green on both
+/// files; the difference is that only one of them submitted itself to `tsc`.
+#[test]
+fn a_discovered_module_missing_its_annotation_fails_the_check() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"naming","id":"agent-tools-export-contract","level":"error",
+                 "roots":"src/tools",
+                 "file_pattern":"^(?<tool>[a-z0-9-]+)\\.tool\\.ts$",
+                 "must_export":{"kind":["const"],"name":"AGENT_TOOL",
+                                "annotation":"AgentToolModule"}}]}"#,
+        ),
+        (
+            "src/tools/lookup-cep.tool.ts",
+            "export const AGENT_TOOL = { spec: { name: 'lookup_cep' } };\n",
+        ),
+        (
+            "src/tools/send-email.tool.ts",
+            "import type { AgentToolModule } from '../types';\n\
+             export const AGENT_TOOL: AgentToolModule = { spec: {}, build: () => {} };\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("lookup-cep.tool.ts"))
+        .stdout(contains("`AGENT_TOOL` declares no type of its own"))
+        .stdout(contains("annotated `AgentToolModule`"))
+        // The one that wrote the type down is not mentioned at all.
+        .stdout(contains("send-email.tool.ts").not());
+}
+
+/// The other half of decision 9: the shape is answerable before the file
+/// exists, and the line it hands over is the line that passes the rule above.
+#[test]
+fn scaffold_hands_over_the_annotated_declaration() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"naming","id":"agent-tools-export-contract","level":"error",
+             "roots":"src/tools",
+             "file_pattern":"^(?<tool>[a-z0-9-]+)\\.tool\\.ts$",
+             "must_export":{"kind":["const"],"name":"AGENT_TOOL",
+                            "annotation":"AgentToolModule"}}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["scaffold", "src/tools/lookup-cep.tool.ts"])
+        .assert()
+        .success()
+        .stdout(contains(
+            "export const AGENT_TOOL: AgentToolModule = /* ... */;",
+        ));
 }
 
 /// Layer 4 through the real process, on the write a hook most needs to stop:

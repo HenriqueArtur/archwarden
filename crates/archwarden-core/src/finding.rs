@@ -54,6 +54,15 @@ pub enum Expectation {
         kind: KindFilter,
         /// The required name, already rendered from the filename.
         name: String,
+        /// The type annotations that satisfy the rule, any one of them, already
+        /// rendered. Empty when the rule does not ask for one.
+        ///
+        /// Distinct from `signature_hint` on purpose. That field is a
+        /// suggestion `scaffold` renders and `check` ignores, and code depends
+        /// on that; this one is checked. Keeping the promise of each legible is
+        /// worth the second field.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        annotation: Vec<String>,
         /// A free-form signature shown by `scaffold`. Never verified.
         signature_hint: Option<String>,
     },
@@ -149,6 +158,27 @@ pub enum Observed {
         name: String,
         /// How it was actually declared.
         found: ExportTags,
+    },
+    /// An export by the right name and kind, declaring no type at all.
+    ///
+    /// The state issue #39 is about: a declaration nothing submits to `tsc`,
+    /// so nothing rejects it until the module is loaded.
+    ExportMissingAnnotation {
+        /// The name that was found.
+        name: String,
+    },
+    /// An export annotated, but against another contract.
+    ///
+    /// Separate from [`Observed::ExportMissingAnnotation`] because the two are
+    /// different sentences and different fixes — one is "write the type down",
+    /// the other is "you wrote a different one" — the same reason
+    /// [`Observed::ExportWrongKind`] is not [`Observed::ExportMissing`].
+    ExportWrongAnnotation {
+        /// The name that was found.
+        name: String,
+        /// The types the declaration does claim, as written. More than one for
+        /// a class, which names a contract per `implements` clause.
+        found: Vec<String>,
     },
     /// The only export is a default, whose name does not bind importers.
     OnlyDefaultExport,
@@ -277,6 +307,7 @@ mod tests {
             expected: Expectation::RequiredExport {
                 kind: KindFilter::Any,
                 name: "Foo".to_owned(),
+                annotation: Vec::new(),
                 signature_hint: None,
             },
         }
@@ -377,6 +408,7 @@ mod tests {
             expected: Expectation::RequiredExport {
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
                 name: "Foo".to_owned(),
+                annotation: Vec::new(),
                 signature_hint: Some("(deps: FooDeps) => UseCase".to_owned()),
             },
         };

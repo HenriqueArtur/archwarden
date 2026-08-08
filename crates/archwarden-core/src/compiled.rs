@@ -99,6 +99,10 @@ pub enum CompiledRuleKind {
         name_template: String,
         /// Which declaration forms satisfy the rule.
         kind: KindFilter,
+        /// The type annotations that satisfy the rule, any one of them, as
+        /// templates over the same groups. Empty when the rule asks for none,
+        /// which is every rule written before the field existed.
+        annotation: Vec<String>,
         /// A signature shown by `scaffold`. Never verified.
         signature_hint: Option<String>,
     },
@@ -364,6 +368,7 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
+            annotation: Vec::new(),
             signature_hint: None,
         }
     }

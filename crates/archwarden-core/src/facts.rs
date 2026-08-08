@@ -246,6 +246,24 @@ pub struct ExportFact {
     /// export fact does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forwards: Option<String>,
+    /// The types this declaration writes down about itself, as written.
+    ///
+    /// One entry for a binding's annotation — `export const X: Foo = {}` gives
+    /// `["Foo"]` — and one per clause for a class, since
+    /// `export class X implements A, B` claims two contracts and satisfying
+    /// either is satisfying one of them. Empty when the declaration annotates
+    /// nothing, and empty for the forms that have no annotation position: a
+    /// function declares a *return* type, which is a different claim.
+    ///
+    /// Text, not a type. Whitespace is collapsed to single spaces so a finding
+    /// can print it back, and nothing else is done — no resolution, no
+    /// inference, no assignability. What this supports is a rule asking whether
+    /// a declaration *submits itself* to `tsc`'s judgement at all, which is the
+    /// guarantee a discovery-based registry loses when the typed static
+    /// registry it replaced goes away. Whether the annotated value really is
+    /// of that type stays `tsc`'s question.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<String>,
     /// Where it appears in the source.
     pub span: Span,
 }
@@ -341,6 +359,7 @@ mod tests {
             is_default: false,
             reexport_from: None,
             forwards: None,
+            annotations: Vec::new(),
             span: Span::new(0, 1),
         }
     }

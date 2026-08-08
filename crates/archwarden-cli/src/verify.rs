@@ -231,6 +231,7 @@ fn a_file_with_no_spec(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &Repo
         is_default: false,
         reexport_from: None,
         forwards: None,
+        annotations: Vec::new(),
         span: Span::new(0, 1),
     });
 
@@ -686,6 +687,7 @@ mod tests {
                     dir_pattern: None,
                     name_template: "{{pascal(name)}}".to_owned(),
                     kind: archwarden_core::facts::KindFilter::Any,
+                    annotation: Vec::new(),
                     signature_hint: None,
                 },
             )],

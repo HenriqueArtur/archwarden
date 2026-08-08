@@ -453,6 +453,7 @@ mod tests {
                     archwarden_core::facts::ExportKind::Function,
                 ),
             ),
+            annotation: Vec::new(),
             signature_hint: None,
         }
     }

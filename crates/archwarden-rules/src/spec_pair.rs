@@ -502,6 +502,7 @@ mod tests {
                     is_default: false,
                     reexport_from: None,
                     forwards: None,
+                    annotations: Vec::new(),
                     span: Span::new(0, 0),
                 })
                 .collect(),

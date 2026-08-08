@@ -17,6 +17,50 @@ saying so.
 
 ## [Unreleased]
 
+### Added
+
+- **`must_export.annotation`: a `naming` rule can require the export to write
+  its type down.** ([#39](https://github.com/HenriqueArtur/archwarden/issues/39))
+
+  ```json
+  "must_export": { "kind": ["const"], "name": "AGENT_TOOL", "annotation": "AgentToolModule" }
+  ```
+
+  `export const AGENT_TOOL: AgentToolModule = {...}` passes;
+  `export const AGENT_TOOL = {...}` does not. A registry that moves from a
+  typed static array to `readdir` plus `import()` loses its compile-time gate:
+  the name and the declaration form are still expressible, the shape is not,
+  and a module missing `build` is green in `check` and `tsc` and dies at boot.
+
+  Not type checking. Nothing is resolved and nothing is inferred — the
+  annotation is a token in the declaration whose `kind` the rule already reads.
+  Whether the annotated value really is of that type stays `tsc`'s question;
+  what this gates is whether the declaration is submitted to `tsc` at all.
+
+  A binding writes the type after the colon and a class writes it in
+  `implements`, so both are read; a class implementing several contracts
+  satisfies a rule asking for any of them. Whitespace is not significant on
+  either side. A list means "any of". `annotation` beside `kind: ["function"]`
+  is a rule no file could satisfy — a function declares a *return* type, which
+  is a different claim — so the config is refused rather than left to flag
+  every file forever.
+
+  `scaffold` renders the annotated declaration
+  (`export const AGENT_TOOL: AgentToolModule = /* ... */;`), which is a line
+  that passes — a promise `signature_hint` never made. `signature_hint` is
+  unchanged and still never verified.
+
+  Existing configs are unaffected: a rule that names no annotation ignores them
+  exactly as before.
+
+### Changed
+
+- **A `naming` finding about an export that exists now carries a span**, so it
+  prints as `path:line:column` and opens in an editor. Findings about an export
+  that is *missing* still have none — there is no position to name.
+- The facts cache format is at version 4. The first run after upgrading
+  re-parses; nothing else changes.
+
 ## [0.9.2] — 2026-08-07
 
 ### Fixed

@@ -8,6 +8,8 @@
 //! `Expectation` values the JSON carries, so the two can never describe a
 //! finding differently.
 
+use std::fmt::Write as _;
+
 use archwarden_core::{
     facts::ExportKind,
     finding::{Expectation, Finding, Observed},
@@ -916,6 +918,16 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
             let kinds: Vec<_> = found.iter().map(ExportKind::as_str).collect();
             format!("`{name}` is declared as {}", join_or(&kinds, "nothing"))
         }
+        // "declares no type of its own" rather than "has no annotation": the
+        // reader's next action is to write one, and the sentence that names
+        // the absence names the fix.
+        Observed::ExportMissingAnnotation { name } => {
+            format!("`{name}` declares no type of its own")
+        }
+        Observed::ExportWrongAnnotation { name, found } => {
+            let written: Vec<&str> = found.iter().map(String::as_str).collect();
+            format!("`{name}` is declared as {}", join_or(&written, "nothing"))
+        }
         Observed::OnlyDefaultExport => {
             "the only export is a default, whose name does not bind importers".to_owned()
         }
@@ -998,12 +1010,26 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
         }
         Expectation::RequiredExport {
             name,
+            annotation,
             signature_hint,
             ..
-        } => signature_hint.as_ref().map_or_else(
-            || format!("an export named `{name}`"),
-            |hint| format!("an export named `{name}`, shaped like `{hint}`"),
-        ),
+        } => {
+            let mut sentence = format!("an export named `{name}`");
+            // The checked clause first, and the suggestion after it. A reader
+            // acting on one of the two should reach the enforced one first.
+            if !annotation.is_empty() {
+                let accepted: Vec<&str> = annotation.iter().map(String::as_str).collect();
+                let _ = write!(
+                    sentence,
+                    ", annotated {}",
+                    join_or(&accepted, "no type at all")
+                );
+            }
+            if let Some(hint) = signature_hint {
+                let _ = write!(sentence, ", shaped like `{hint}`");
+            }
+            sentence
+        }
         Expectation::NoPassthrough { forms } => {
             format!(
                 "a file must add something of its own, not only {}",
@@ -1080,7 +1106,7 @@ fn join_or(items: &[impl AsRef<str>], empty: &str) -> String {
 mod tests {
     use super::*;
     use archwarden_core::{
-        facts::ExportTags,
+        facts::{ExportTags, KindFilter},
         ids::{ModuleId, RuleId},
         level::Level,
         path::RepoRelPath,
@@ -2007,6 +2033,52 @@ mod tests {
                 "{observed:?} rendered as {sentence}"
             );
         }
+    }
+
+    /// The two annotation faults are different sentences because they are
+    /// different fixes. Both would otherwise fall through to the
+    /// `non_exhaustive` arm and reach a user as a Rust `Debug` dump, which is
+    /// the failure mode that arm exists to soften and not one to ship.
+    #[test]
+    fn an_annotation_fault_reads_as_a_sentence() {
+        let missing = describe_observed(&Observed::ExportMissingAnnotation {
+            name: "AGENT_TOOL".to_owned(),
+        });
+        assert_eq!(missing, "`AGENT_TOOL` declares no type of its own");
+
+        let wrong = describe_observed(&Observed::ExportWrongAnnotation {
+            name: "AGENT_TOOL".to_owned(),
+            found: vec!["LegacyToolModule".to_owned()],
+        });
+        assert_eq!(wrong, "`AGENT_TOOL` is declared as `LegacyToolModule`");
+
+        // A class names one contract per `implements` clause, and a sentence
+        // that showed only the first would be describing a file that is not
+        // there.
+        let several = describe_observed(&Observed::ExportWrongAnnotation {
+            name: "Tool".to_owned(),
+            found: vec!["Disposable".to_owned(), "Serializable".to_owned()],
+        });
+        assert_eq!(
+            several,
+            "`Tool` is declared as `Disposable` or `Serializable`"
+        );
+    }
+
+    /// What the rule wants, worded for someone who has not read the config.
+    #[test]
+    fn a_required_annotation_reads_as_a_sentence() {
+        let expected = describe_expectation(&Expectation::RequiredExport {
+            kind: KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
+            name: "AGENT_TOOL".to_owned(),
+            annotation: vec!["AgentToolModule".to_owned()],
+            signature_hint: None,
+        });
+
+        assert_eq!(
+            expected,
+            "an export named `AGENT_TOOL`, annotated `AgentToolModule`"
+        );
     }
 
     /// A deep import names a package the specifier does not spell, so the

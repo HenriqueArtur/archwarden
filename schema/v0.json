@@ -497,6 +497,17 @@
           "description": "The required name, as a template over `file_pattern`'s capture groups.",
           "type": "string"
         },
+        "annotation": {
+          "description": "The type the export must be annotated with, as a template over the same\ngroups. One value, or several meaning \"any of\".\n\n**Checked**, and the one field here that is — which is why it is not\nspelled into `signature_hint`. That field is documented as a suggestion\n`scaffold` renders and `check` ignores, and code depends on that; a\nseparate field keeps the promise of each legible.\n\nStill not type checking. Nothing is resolved and nothing is inferred:\nthe annotation is a token in the same declaration whose `kind` this rule\nalready reads, and comparing it is the same class of work as comparing\nthe name. A file annotating `AgentToolModule` over an object that is not\none is `tsc`'s problem and stays that way. What this buys is that the\ndeclaration is *submitted to* `tsc`'s judgement at all — the guarantee a\nregistry loses when it moves from a typed array to `readdir` and\n`import()`. Issue #39.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "signature_hint": {
           "description": "A signature shown by `scaffold`. **Never verified** — constraining the\ntype of an export is type checking, which is `tsc`'s job.",
           "type": [

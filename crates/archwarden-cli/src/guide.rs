@@ -208,6 +208,7 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             dir_pattern,
             name_template,
             kind,
+            annotation,
             signature_hint,
         } => {
             // The directory half belongs in the same sentence, not in a note
@@ -215,13 +216,19 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             // must export `{{pascal(entity)}}{{pascal(action)}}`" without being
             // told where `entity` comes from cannot produce the name, and this
             // digest is what it has instead of the config.
+            //
+            // The annotation belongs in that sentence too, and not in a note
+            // under it beside the hint: one of those two is enforced and the
+            // other is advice, and a digest that lists them together teaches an
+            // agent to treat both as optional.
             let mut lines = vec![format!(
-                "files matching `{}`{} must export `{name_template}`{}",
+                "files matching `{}`{} must export `{name_template}`{}{}",
                 file_pattern.as_str(),
                 dir_pattern.as_ref().map_or_else(String::new, |pattern| {
                     format!(", in a directory matching `{}`", pattern.as_str())
                 }),
                 declared_as(kind),
+                annotated_as(annotation),
             )];
             if let Some(hint) = signature_hint {
                 lines.push(format!("suggested signature: `{hint}`"));
@@ -311,6 +318,20 @@ fn declared_as(kind: &KindFilter) -> String {
         // there.
         _ => String::new(),
     }
+}
+
+/// The clause naming the type the export must write down, if the rule asks.
+///
+/// Empty for a rule that asks for none, which keeps the sentence of every rule
+/// written before this field existed byte-identical -- `agent-guide` is
+/// documented as deterministic and safe to commit, so an unrelated rule
+/// growing a clause would show up as a diff in a repository nobody touched.
+fn annotated_as(annotation: &[String]) -> String {
+    if annotation.is_empty() {
+        return String::new();
+    }
+
+    format!(", annotated {}", join(annotation))
 }
 
 fn join(items: &[String]) -> String {
@@ -447,6 +468,7 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
+            annotation: Vec::new(),
             signature_hint: Some("(deps: Deps): UseCase".to_owned()),
         }
     }
@@ -527,6 +549,30 @@ mod tests {
         let markdown = rendered(&everywhere, None, GuideFormat::Markdown);
         assert!(markdown.contains("(nor anything under it)"), "{markdown}");
         assert!(!markdown.contains("only "), "{markdown}");
+    }
+
+    /// The digest is what an agent has *instead of* the config, so a
+    /// requirement missing from it is a requirement the agent will break and
+    /// then be told about. The annotation is checked, so it belongs in the
+    /// sentence rather than under it as a suggestion.
+    #[test]
+    fn a_required_annotation_is_part_of_the_sentence() {
+        let annotated = CompiledRuleKind::Naming {
+            file_pattern: Pattern::compile(r"^(?<tool>[a-z0-9-]+)\.tool\.ts$").expect("valid"),
+            dir_pattern: None,
+            name_template: "AGENT_TOOL".to_owned(),
+            kind: KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
+            annotation: vec!["AgentToolModule".to_owned()],
+            signature_hint: None,
+        };
+        let config = config(vec![rule("tools", None, &["src/*"], annotated)]);
+
+        let markdown = rendered(&config, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains("annotated `AgentToolModule`"),
+            "{markdown}"
+        );
     }
 
     fn mixed() -> CompiledConfig {
@@ -995,6 +1041,7 @@ mod tests {
                     dir_pattern: None,
                     name_template: "{{pascal(name)}}".to_owned(),
                     kind: KindFilter::Any,
+                    annotation: Vec::new(),
                     signature_hint: None,
                 },
             )]),
