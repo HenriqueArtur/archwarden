@@ -98,6 +98,19 @@ pub enum CompileError {
         kinds: String,
     },
 
+    /// A `pair.must_exist` is absolute, or empty.
+    #[error(
+        "rule `{rule}`: `must_exist` is relative to the file that needs the \
+         companion, and `{path}` is not a relative path. Write `notas.md`, or \
+         `../projeto.md` to reach out of the directory."
+    )]
+    CompanionNotRelative {
+        /// The rule.
+        rule: RuleId,
+        /// The path as written.
+        path: String,
+    },
+
     /// A `presence.require` entry names a path rather than a file.
     #[error(
         "rule `{rule}`: `require` takes filenames, and `{entry}` is a path. \
@@ -308,6 +321,11 @@ fn compile_rule(
                 .collect::<Result<_, _>>()?,
         },
 
+        Rule::Pair(r) => CompiledRuleKind::Pair {
+            file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
+            must_exist: companion(&id, &r.must_exist)?,
+        },
+
         Rule::CallObligation(r) => CompiledRuleKind::CallObligation {
             file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
             symbol: r.must_call.symbol.clone(),
@@ -324,6 +342,23 @@ fn compile_rule(
         scope,
         kind,
     })
+}
+
+/// A `must_exist` path, refused if it is absolute or empty.
+///
+/// Relative, always: the file the rule is about is the anchor, and an absolute
+/// path would make the rule say the same thing from every directory it covers
+/// -- which is a `presence` rule scoped there, written the confusing way.
+fn companion(rule: &RuleId, path: &str) -> Result<String, CompileError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed.starts_with('/') || trimmed.starts_with('\\') {
+        return Err(CompileError::CompanionNotRelative {
+            rule: rule.clone(),
+            path: path.to_owned(),
+        });
+    }
+
+    Ok(trimmed.to_owned())
 }
 
 /// A `require` entry, refused if it is a path rather than a name.

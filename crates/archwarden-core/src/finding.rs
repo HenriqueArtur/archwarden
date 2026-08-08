@@ -78,6 +78,16 @@ pub enum Expectation {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         patterns: Vec<String>,
     },
+    /// A companion file must exist, named relative to this one.
+    ///
+    /// Distinct from [`RequiredSibling`](Self::RequiredSibling), which carries
+    /// `spec-pair`'s `non_empty_spec` and means a derived `<stem>.<marker>`
+    /// name. This one is literal and may sit outside the directory, and a
+    /// consumer branching on the tag should be able to tell them apart.
+    RequiredCompanion {
+        /// Where it goes, resolved.
+        path: RepoRelPath,
+    },
     /// A sibling file must exist.
     RequiredSibling {
         /// The sibling's path.
@@ -219,6 +229,11 @@ pub enum Observed {
     NoFileMatching {
         /// The pattern that found nothing, as written in the config.
         pattern: String,
+    },
+    /// The companion this file needs is not there.
+    CompanionMissing {
+        /// The path that was looked for, resolved.
+        path: RepoRelPath,
     },
     /// The required sibling is not there.
     SiblingMissing {

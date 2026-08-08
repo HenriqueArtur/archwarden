@@ -205,6 +205,8 @@ impl RuleEngine for CallObligationEngine {
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::traits::Exists;
+
     use super::*;
     use archwarden_core::{
         facts::{CallFact, ImportFact, Span},
@@ -268,6 +270,7 @@ mod tests {
             path: &facts.path,
             facts: Some(facts),
             siblings: &[],
+            exists: Exists::none(),
         })
     }
 
@@ -470,6 +473,7 @@ mod tests {
             path: &path("apps/app/src/app/api/clients/route.post.ts"),
             facts: None,
             siblings: &[],
+            exists: Exists::none(),
         });
 
         assert!(findings.is_empty());

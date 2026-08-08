@@ -319,6 +319,85 @@ fn a_rule_that_never_mentions_subfolders_still_allows_them() {
         .success();
 }
 
+/// Issue #45, end to end. The separation exists so a lesson can be rewritten
+/// without destroying what was written while doing it, and it only works if the
+/// notes file is *there* — a directory with no `notas.md` is one a regeneration
+/// writes over, and the failure looks exactly like "I hadn't taken notes yet".
+#[test]
+fn a_file_whose_companion_is_missing_fails_the_check() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"pair","id":"licao-tem-notas","level":"error",
+                 "roots":["projetos/*"],
+                 "file_pattern":"^projeto\\.md$","must_exist":"notas.md"}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        ("projetos/01-blink/notas.md", "# notas\n"),
+        ("projetos/03-semaforo/projeto.md", "# semaforo\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("projetos/03-semaforo/notas.md` does not exist"))
+        .stdout(contains("01-blink").not());
+}
+
+/// One direction, always. An orphan companion is a note taken before the
+/// lesson was written, which is fine.
+#[test]
+fn an_orphan_companion_is_not_a_finding() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"pair","id":"licao-tem-notas","level":"error",
+                 "roots":["projetos/*"],
+                 "file_pattern":"^projeto\\.md$","must_exist":"notas.md"}]}"#,
+        ),
+        ("projetos/09-adiantada/notas.md", "# ideias\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success();
+}
+
+/// The half no directory-scoped rule can reach: the sketch needs the lesson
+/// one level up, and the sketch may be called anything.
+#[test]
+fn a_companion_outside_the_directory_is_found() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"pair","id":"sketch-tem-licao","level":"error",
+                 "roots":["projetos/*/sketch"],
+                 "file_pattern":"\\.ino$","must_exist":"../projeto.md"}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        ("projetos/01-blink/sketch/blink.ino", "void setup() {}\n"),
+        (
+            "projetos/03-semaforo/sketch/semaforo.ino",
+            "void setup() {}\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("projetos/03-semaforo/projeto.md` does not exist"))
+        .stdout(contains("01-blink").not());
+}
+
 /// Issue #42, end to end. A lesson missing `exercicios.md` still renders,
 /// still commits, still shows up in the index — and is found weeks later by
 /// the person who reaches the end of it. There is no build here at all, so

@@ -67,11 +67,12 @@ struct GuideRule<'a> {
 /// Listed here rather than derived, because `CompiledRuleKind::type_name` maps
 /// one way only. A test walks the enum through this list, so the two cannot
 /// drift.
-pub const KINDS: [&str; 6] = [
+pub const KINDS: [&str; 7] = [
     "structure",
     "naming",
     "spec-pair",
     "presence",
+    "pair",
     "import-boundary",
     "call-obligation",
 ];
@@ -316,6 +317,13 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             }
             lines
         }
+        CompiledRuleKind::Pair {
+            file_pattern,
+            must_exist,
+        } => vec![format!(
+            "files matching `{}` need `{must_exist}` beside them",
+            file_pattern.as_str()
+        )],
         CompiledRuleKind::Presence {
             require,
             require_any,
@@ -613,6 +621,29 @@ mod tests {
     /// requirement missing from it is a requirement the agent will break and
     /// then be told about. The annotation is checked, so it belongs in the
     /// sentence rather than under it as a suggestion.
+    /// Issue #45. The digest has to say which of the two files needs the
+    /// other, because the rule is one-directional and an agent that got it
+    /// backwards would create the wrong file.
+    #[test]
+    fn a_pair_rule_says_which_file_needs_which() {
+        let config = config(vec![rule(
+            "licao-tem-notas",
+            None,
+            &["projetos/*"],
+            CompiledRuleKind::Pair {
+                file_pattern: Pattern::compile(r"^projeto\.md$").expect("valid"),
+                must_exist: "notas.md".to_owned(),
+            },
+        )]);
+
+        let markdown = rendered(&config, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains(r"files matching `^projeto\.md$` need `notas.md` beside them"),
+            "{markdown}"
+        );
+    }
+
     /// Issue #42. The digest teaches the rules before a question is asked, and
     /// "a lesson directory has these four files" is the one an agent most needs
     /// before creating one.

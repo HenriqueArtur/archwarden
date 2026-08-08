@@ -40,6 +40,8 @@ pub enum Rule {
     NoPassthrough(NoPassthroughRule),
     /// These files must exist in each governed directory.
     Presence(PresenceRule),
+    /// A file of one kind must have a companion of another.
+    Pair(PairRule),
 }
 
 impl Rule {
@@ -54,6 +56,7 @@ impl Rule {
             Self::CallObligation(r) => &r.id,
             Self::NoPassthrough(r) => &r.id,
             Self::Presence(r) => &r.id,
+            Self::Pair(r) => &r.id,
         }
     }
 
@@ -68,6 +71,7 @@ impl Rule {
             Self::CallObligation(r) => r.level,
             Self::NoPassthrough(r) => r.level,
             Self::Presence(r) => r.level,
+            Self::Pair(r) => r.level,
         }
     }
 
@@ -82,6 +86,7 @@ impl Rule {
             Self::CallObligation(r) => r.why.as_deref(),
             Self::NoPassthrough(r) => r.why.as_deref(),
             Self::Presence(r) => r.why.as_deref(),
+            Self::Pair(r) => r.why.as_deref(),
         }
     }
 
@@ -100,6 +105,7 @@ impl Rule {
             Self::CallObligation(r) => &r.roots,
             Self::NoPassthrough(r) => &r.roots,
             Self::Presence(r) => &r.roots,
+            Self::Pair(r) => &r.roots,
         }
     }
 
@@ -114,6 +120,7 @@ impl Rule {
             Self::CallObligation(_) => "call-obligation",
             Self::NoPassthrough(_) => "no-passthrough",
             Self::Presence(_) => "presence",
+            Self::Pair(_) => "pair",
         }
     }
 }
@@ -237,6 +244,46 @@ pub struct PresenceRule {
     /// one for each.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub require_any: Patterns,
+}
+
+/// A file of one kind must have a companion of another.
+///
+/// `spec-pair` is this rule for one specific pair, and cannot be bent to any
+/// other: its default ignores exclude anything that is not a JS/TS source file,
+/// and its companion is *derived* — `<stem>.<marker>.<ext>` — which is a good
+/// convention for tests and generalises to nothing. Two fixed names in one
+/// directory is the common case everywhere else. Issue #45.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PairRule {
+    /// Stable identifier.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Directory globs this rule applies to.
+    pub roots: Patterns,
+    /// Regex over the filename of the file that *needs* a companion.
+    pub file_pattern: String,
+    /// The companion, as a path relative to the directory the file sits in.
+    ///
+    /// **Literal, never derived.** `<stem>.<marker>.<ext>` is `spec-pair`'s
+    /// idea and does not generalise; two fixed names in one directory is what
+    /// the rest of the world has.
+    ///
+    /// **May leave the directory.** `../projeto.md` is the case this rule
+    /// exists for alongside the flat one — a sketch needs the lesson one level
+    /// up, and no directory-scoped rule can say that. `presence` refuses paths
+    /// for exactly the opposite reason: it answers for a directory, and this
+    /// one answers for a file, which is what gives it an anchor to be relative
+    /// to.
+    ///
+    /// **One direction, always.** This rule says the file matching
+    /// `file_pattern` needs the companion, and never the reverse — an orphan
+    /// `notas.md` is a note taken before the lesson was written, which is fine.
+    pub must_exist: String,
 }
 
 /// The filename dictates the exported symbol's name.
@@ -709,6 +756,45 @@ mod tests {
         };
         assert_eq!(naming.must_export.kind.as_slice(), ["function", "arrow"]);
         assert_eq!(naming.must_export.signature_hint, None);
+    }
+
+    /// Issue #45. `spec-pair` is the rule for this and its baked-in ignores
+    /// exclude every file involved by construction; and `projeto.md` →
+    /// `notas.md` is not a `<stem>.<marker>.<ext>` relationship at all, so
+    /// nothing about that rule would have helped.
+    #[test]
+    fn a_pair_rule_names_its_companion_literally() {
+        let rule = parse(
+            r#"{"type":"pair","id":"licao-tem-notas","level":"error",
+                "roots":["projetos/*"],
+                "file_pattern":"^projeto\\.md$",
+                "must_exist":"notas.md"}"#,
+        );
+
+        let Rule::Pair(pair) = &rule else {
+            panic!("expected a pair rule, got {}", rule.type_name());
+        };
+        assert_eq!(pair.file_pattern, r"^projeto\.md$");
+        assert_eq!(pair.must_exist, "notas.md");
+        assert_eq!(rule.type_name(), "pair");
+    }
+
+    /// The other half of the issue: the companion may sit outside the
+    /// directory. `sketch/semaforo.ino` needs the `projeto.md` one level up,
+    /// and there is no directory-scoped rule that can say that.
+    #[test]
+    fn a_companion_may_leave_the_directory() {
+        let rule = parse(
+            r#"{"type":"pair","id":"sketch-tem-licao","level":"error",
+                "roots":["projetos/*/sketch"],
+                "file_pattern":"\\.ino$",
+                "must_exist":"../projeto.md"}"#,
+        );
+
+        let Rule::Pair(pair) = &rule else {
+            panic!("expected a pair rule");
+        };
+        assert_eq!(pair.must_exist, "../projeto.md");
     }
 
     /// Issue #42. A unit of work is incomplete until its companion files are

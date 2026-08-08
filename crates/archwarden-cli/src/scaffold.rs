@@ -209,6 +209,13 @@ fn absorb(shape: &mut Scaffold, expectation: Expectation) {
             imported_from,
         }),
         Expectation::FilenamePattern { patterns } => shape.filename_patterns.extend(patterns),
+        // Into the same list as a spec sibling: for someone about to write the
+        // file the two are one instruction, "create this too", and the reason
+        // one of them is derived and the other literal is not their problem.
+        Expectation::RequiredCompanion { path } => shape.required_siblings.push(RequiredSibling {
+            path,
+            constraints: Vec::new(),
+        }),
         Expectation::RequiredFiles { names, patterns } => {
             shape.required_files.names.extend(names);
             shape.required_files.patterns.extend(patterns);
@@ -652,6 +659,33 @@ mod tests {
         assert!(
             text.contains("export function CreateClient(deps: Deps): UseCase<In, Out>"),
             "{text}"
+        );
+    }
+
+    /// Issue #45. `scaffold projetos/17-nova/projeto.md` naming `notas.md` is
+    /// what stops the pair being half-written in the first place -- the whole
+    /// failure is that nobody notices the missing half.
+    #[test]
+    fn a_pair_rule_lists_the_companion_to_create() {
+        let shape = scaffold(
+            &config(vec![rule(
+                "licao-tem-notas",
+                &["projetos/*"],
+                CompiledRuleKind::Pair {
+                    file_pattern: Pattern::compile(r"^projeto\.md$").expect("valid"),
+                    must_exist: "notas.md".to_owned(),
+                },
+            )]),
+            &path("projetos/17-nova/projeto.md"),
+        );
+
+        assert_eq!(
+            shape
+                .required_siblings
+                .iter()
+                .map(|sibling| sibling.path.as_str())
+                .collect::<Vec<_>>(),
+            ["projetos/17-nova/notas.md"]
         );
     }
 

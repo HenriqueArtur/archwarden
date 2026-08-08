@@ -174,6 +174,14 @@ pub enum CompiledRuleKind {
         /// Regexes at least one file must match, one file per entry.
         require_any: Vec<Pattern>,
     },
+    /// A file of one kind must have a companion of another.
+    Pair {
+        /// Regex over the filename of the file that needs a companion.
+        file_pattern: Pattern,
+        /// The companion, relative to the directory the file sits in. May
+        /// start with `../`.
+        must_exist: String,
+    },
     /// Files matching a pattern must call a symbol.
     CallObligation {
         /// Regex over the filename.
@@ -196,6 +204,7 @@ impl CompiledRuleKind {
             Self::NoPassthrough { .. } => "no-passthrough",
             Self::ImportBoundary { .. } => "import-boundary",
             Self::Presence { .. } => "presence",
+            Self::Pair { .. } => "pair",
             Self::CallObligation { .. } => "call-obligation",
         }
     }
@@ -208,7 +217,8 @@ impl CompiledRuleKind {
     pub fn needs_parse(&self) -> bool {
         match self {
             // Both ask only whether a name is on disk.
-            Self::Structure { .. } | Self::Presence { .. } => false,
+            // All three ask only whether a name is on disk.
+            Self::Structure { .. } | Self::Presence { .. } | Self::Pair { .. } => false,
             Self::SpecPair {
                 require_non_empty_spec,
                 skip_type_only,

@@ -418,6 +418,8 @@ impl RuleEngine for SpecPairEngine {
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::traits::Exists;
+
     use super::*;
     use archwarden_core::facts::FileFacts;
 
@@ -482,6 +484,7 @@ mod tests {
                     path: &file,
                     facts: known,
                     siblings: &siblings,
+                    exists: Exists::none(),
                 })
             })
             .collect()
@@ -1006,6 +1009,7 @@ mod tests {
                 path: &spec,
                 facts: Some(&facts),
                 siblings: &[],
+                exists: Exists::none(),
             })
         };
 

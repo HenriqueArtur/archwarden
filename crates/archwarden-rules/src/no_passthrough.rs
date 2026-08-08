@@ -267,6 +267,8 @@ fn is_entry_point(path: &RepoRelPath) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::traits::Exists;
+
     use super::*;
     use archwarden_core::facts::{ExportFact, ExportTags, ImportFact, Span};
 
@@ -334,6 +336,7 @@ mod tests {
             path: &facts.path,
             facts: Some(facts),
             siblings: &[],
+            exists: Exists::none(),
         })
     }
 

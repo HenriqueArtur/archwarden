@@ -17,7 +17,7 @@ use archwarden_core::{
     hash::ContentHash,
     level::Level,
     path::{FileClass, RepoRelPath},
-    traits::{FileContext, Parser as _},
+    traits::{Exists, FileContext, Parser as _},
 };
 use camino::Utf8Path;
 
@@ -264,6 +264,10 @@ pub fn check(run: Run<'_>) -> Report {
                     path: &file.path,
                     facts: facts.as_ref(),
                     siblings: &file_names,
+                    // The walk already knows the whole repository, so a rule
+                    // asking about a path outside this directory costs a map
+                    // lookup and no disk.
+                    exists: Exists::new(&|candidate| tree.contains_file(candidate)),
                 }));
             }
         }

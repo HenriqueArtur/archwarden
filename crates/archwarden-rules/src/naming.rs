@@ -347,6 +347,8 @@ impl RuleEngine for NamingEngine {
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::traits::Exists;
+
     use super::*;
     use archwarden_core::{
         facts::{ExportTags, FileFacts, Span},
@@ -446,6 +448,7 @@ mod tests {
             path: &facts.path,
             facts: Some(facts),
             siblings: &[],
+            exists: Exists::none(),
         })
     }
 
@@ -642,6 +645,7 @@ mod tests {
             path: &path,
             facts: None,
             siblings: &[],
+            exists: Exists::none(),
         });
 
         assert!(findings.is_empty());

@@ -1066,7 +1066,9 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
         // directory, and what the reader has to do is create the file *in it*.
         Observed::RequiredFileMissing { name } => format!("`{name}` is not here"),
         Observed::NoFileMatching { pattern } => format!("no file here matches `{pattern}`"),
-        Observed::SiblingMissing { path } => format!("`{path}` does not exist"),
+        Observed::CompanionMissing { path } | Observed::SiblingMissing { path } => {
+            format!("`{path}` does not exist")
+        }
         Observed::SpecIsEmpty { path } => format!("`{path}` contains no test cases"),
         Observed::ForbiddenImport {
             specifier,
@@ -1169,6 +1171,7 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
             patterns,
         } => describe_subfolders(allowed, warn, patterns),
         Expectation::RequiredFiles { names, patterns } => describe_required_files(names, patterns),
+        Expectation::RequiredCompanion { path } => format!("`{path}` beside it"),
         Expectation::FilenamePattern { patterns } => {
             format!("a name matching {}", join_or(patterns, "no pattern"))
         }
@@ -2217,6 +2220,24 @@ mod tests {
                 "{observed:?} rendered as {sentence}"
             );
         }
+    }
+
+    /// Issue #45. The finding is on the file that needs the companion, so the
+    /// sentence has to name the companion rather than repeat the file.
+    #[test]
+    fn a_missing_companion_reads_as_a_sentence() {
+        assert_eq!(
+            describe_observed(&Observed::CompanionMissing {
+                path: path("projetos/03-semaforo/notas.md")
+            }),
+            "`projetos/03-semaforo/notas.md` does not exist"
+        );
+        assert_eq!(
+            describe_expectation(&Expectation::RequiredCompanion {
+                path: path("projetos/03-semaforo/notas.md")
+            }),
+            "`projetos/03-semaforo/notas.md` beside it"
+        );
     }
 
     /// Issue #42. The first observation about a path that is *not* there, so

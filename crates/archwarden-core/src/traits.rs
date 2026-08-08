@@ -77,6 +77,54 @@ pub struct FileContext<'a> {
     /// the walk so a rule never touches the filesystem itself -- which is what
     /// keeps rules deterministic and cheap to test.
     pub siblings: &'a [String],
+    /// Whether a path anywhere in the repository exists.
+    ///
+    /// `siblings` answers for the directory the file is in, and a rule whose
+    /// companion may sit outside it -- `../projeto.md` -- has nothing to ask.
+    /// Supplied by the caller for the same reason `siblings` is: `check`
+    /// answers from the walk it already has, `check --file` answers from disk
+    /// because it has no walk, and a rule still never touches the filesystem
+    /// itself.
+    pub exists: Exists<'a>,
+}
+
+/// Whether a path exists, asked of whoever is driving the check.
+///
+/// A closure rather than a listing, because the two callers know it two
+/// different ways and neither can hand over the other's.
+#[derive(Clone, Copy)]
+pub struct Exists<'a>(&'a dyn Fn(&RepoRelPath) -> bool);
+
+impl<'a> Exists<'a> {
+    /// Wraps a predicate.
+    #[must_use]
+    pub fn new(predicate: &'a dyn Fn(&RepoRelPath) -> bool) -> Self {
+        Self(predicate)
+    }
+
+    /// Whether `path` is in the repository.
+    #[must_use]
+    pub fn at(&self, path: &RepoRelPath) -> bool {
+        (self.0)(path)
+    }
+}
+
+impl Exists<'static> {
+    /// A repository holding nothing, for a caller with no answer to give.
+    ///
+    /// Used by tests and by any driver that cannot see beyond the file it was
+    /// handed. A rule asking about a path it gets `false` for reports the path
+    /// as missing, which is the honest reading of "I cannot see it".
+    #[must_use]
+    pub fn none() -> Self {
+        Self(&|_| false)
+    }
+}
+
+impl std::fmt::Debug for Exists<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Exists(..)")
+    }
 }
 
 /// Everything a directory-local rule needs to reach a verdict.
@@ -292,6 +340,7 @@ mod tests {
             path: &facts.path,
             facts: Some(&facts),
             siblings: &[],
+            exists: Exists::none(),
         });
 
         let demanded = &findings
@@ -326,7 +375,8 @@ mod tests {
                 .check_file(FileContext {
                     path: &facts.path,
                     facts: Some(&facts),
-                    siblings: &[]
+                    siblings: &[],
+                    exists: Exists::none()
                 })
                 .is_empty()
         );
@@ -418,6 +468,7 @@ mod tests {
                     path: &facts.path,
                     facts: Some(&facts),
                     siblings: &[],
+                    exists: Exists::none(),
                 })
                 .is_empty()
         );
@@ -459,7 +510,8 @@ mod tests {
                 .check_file(FileContext {
                     path: &facts.path,
                     facts: Some(&facts),
-                    siblings: &[]
+                    siblings: &[],
+                    exists: Exists::none()
                 })
                 .is_empty()
         );
@@ -479,6 +531,7 @@ mod tests {
             path: &facts.path,
             facts: Some(&facts),
             siblings: &siblings,
+            exists: Exists::none(),
         };
 
         assert_eq!(ctx.siblings.len(), 2);

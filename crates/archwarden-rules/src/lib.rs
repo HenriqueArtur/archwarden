@@ -17,6 +17,7 @@ pub mod call_obligation;
 pub mod import_boundary;
 pub mod naming;
 pub mod no_passthrough;
+pub mod pair;
 pub mod presence;
 pub mod spec_pair;
 pub mod structure;
@@ -37,6 +38,12 @@ use archwarden_core::{
 /// Declaration order is preserved, which is what makes a report's ordering
 /// follow the config rather than the order engines happen to be tried in.
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per rule kind; splitting it would put the arms somewhere \
+              the exhaustive match no longer names them, which is the property \
+              that makes a kind added without an engine fail to build"
+)]
 pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
     config
         .rules()
@@ -115,6 +122,10 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     except_from,
                     *include_type_only,
                 )),
+                CompiledRuleKind::Pair {
+                    file_pattern,
+                    must_exist,
+                } => Box::new(pair::PairEngine::build(rule, file_pattern, must_exist)),
                 CompiledRuleKind::Presence {
                     require,
                     require_any,

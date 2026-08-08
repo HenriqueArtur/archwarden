@@ -315,6 +315,8 @@ impl RuleEngine for ImportBoundaryEngine {
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::traits::Exists;
+
     use super::*;
     use archwarden_core::{
         facts::{FileFacts, Span},
@@ -386,6 +388,7 @@ mod tests {
             path: &facts.path,
             facts: Some(facts),
             siblings: &[],
+            exists: Exists::none(),
         })
     }
 
@@ -702,6 +705,7 @@ mod tests {
             path: &path("packages/ui/a.ts"),
             facts: None,
             siblings: &[],
+            exists: Exists::none(),
         });
 
         assert!(findings.is_empty());

@@ -566,6 +566,52 @@
             "level",
             "roots"
           ]
+        },
+        {
+          "description": "A file of one kind must have a companion of another.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "file_pattern": {
+              "description": "Regex over the filename of the file that *needs* a companion.",
+              "type": "string"
+            },
+            "must_exist": {
+              "description": "The companion, as a path relative to the directory the file sits in.\n\n**Literal, never derived.** `<stem>.<marker>.<ext>` is `spec-pair`'s\nidea and does not generalise; two fixed names in one directory is what\nthe rest of the world has.\n\n**May leave the directory.** `../projeto.md` is the case this rule\nexists for alongside the flat one — a sketch needs the lesson one level\nup, and no directory-scoped rule can say that. `presence` refuses paths\nfor exactly the opposite reason: it answers for a directory, and this\none answers for a file, which is what gives it an anchor to be relative\nto.\n\n**One direction, always.** This rule says the file matching\n`file_pattern` needs the companion, and never the reverse — an orphan\n`notas.md` is a note taken before the lesson was written, which is fine.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "pair"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots",
+            "file_pattern",
+            "must_exist"
+          ]
         }
       ]
     },

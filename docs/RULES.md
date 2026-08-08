@@ -1,6 +1,6 @@
 # Rule categories
 
-archwarden ships seven rule categories in v0. Each has narrow, well-defined
+archwarden ships eight rule categories in v0. Each has narrow, well-defined
 semantics. This document is the reference for what each rule can and cannot
 express. Config syntax lives in [`CONFIG.md`](CONFIG.md).
 
@@ -22,6 +22,7 @@ directory:
 | `naming` | `file_pattern` | the direct child files, by basename |
 | `naming` | `dir_pattern` | the selected directory itself, by its own basename |
 | `presence` | `require`, `require_any` | the direct child files, by name and by shape |
+| `pair` | `file_pattern` | the direct child files, by basename; the companion may sit outside |
 | `spec-pair` | `subfolders` | the listed subdirectories **and everything below them** (`"."` = the directory itself, its own files only), then files in them |
 | `call-obligation` | `file_pattern` | the direct child files, by basename |
 | `import-boundary` | *(scope only)* | every file in the directory is a candidate importer |
@@ -445,9 +446,62 @@ so a brand-new empty directory earns four findings for four absent files.
 relative to the first rather than to the directory. That is a pairing question
 rather than a presence one; see issue #45.
 
+**Cannot express**: "this file needs *that* file", where the second is named
+relative to the first rather than to the directory. That is `pair`, next.
+
 ---
 
-## 4. Spec pairing (TDD gate)
+## 4. Pairing
+
+**What it enforces**: a file of one kind must have a companion of another.
+
+**Scope**: file-local. No parse; a path against the walk.
+
+**Shape**:
+
+- `file_pattern` — regex over the filename of the file that *needs* a companion.
+- `must_exist` — the companion, as a path relative to that file's directory.
+
+```json
+{
+  "type": "pair",
+  "id": "licao-tem-notas",
+  "level": "error",
+  "roots": ["projetos/*"],
+  "file_pattern": "^projeto\\.md$",
+  "must_exist": "notas.md"
+}
+```
+
+**The difference from `presence` is the anchor.** `presence` asks about a
+*directory* — these files must be here, whatever else is. `pair` asks about a
+*file* — because this one exists, that one must too. So an empty directory is a
+`presence` finding and not a `pair` one, and that is the whole of it: a lesson
+that exists must have notes; a folder nobody has started owes nothing.
+
+**The companion may leave the directory.** `../projeto.md` is the case this
+rule exists for alongside the flat one — a sketch needs the lesson one level up,
+the sketch may be called anything, and no directory-scoped rule can say that.
+A path that would climb above the repository root puts the file outside the
+rule rather than producing a finding nobody could act on.
+
+**Literal, never derived.** `<stem>.<marker>.<ext>` is `spec-pair`'s idea; it
+is a good convention for tests and generalises to nothing. Two fixed names in
+one directory is what the rest of the world has.
+
+**One direction, always.** The file matching `file_pattern` needs the
+companion, never the reverse. An orphan `notas.md` is a note taken before the
+lesson was written, which is fine and is not a finding. Write the second rule
+if you mean both.
+
+**Why not widen `spec-pair`.** Its default ignores exclude anything that is not
+a JS/TS source file, by construction and for a good reason — a PNG needs no
+test — and widening a rule until its name stops describing it is how a rule
+stops being consultable. Issue #45.
+
+---
+
+## 5. Spec pairing (TDD gate)
 
 **What it enforces**: every unit file under configured subfolders must
 have a `.spec.<ext>` sibling.
@@ -551,7 +605,7 @@ noisy and unreliable. `require_non_empty_spec` is the practical proxy.
 
 ---
 
-## 5. Import boundaries
+## 6. Import boundaries
 
 **What it enforces**: layer A may not import from layer B; or, layer C
 must import from layer D.
@@ -654,7 +708,7 @@ above, declined the same way.
 
 ---
 
-## 6. Call obligations
+## 7. Call obligations
 
 **What it enforces**: files matching a pattern must contain at least one
 call to a specific imported symbol.
@@ -693,7 +747,7 @@ into program analysis territory and are out of scope.
 
 ---
 
-## 7. No passthrough
+## 8. No passthrough
 
 **What it enforces**: a file must add something of its own. A file whose whole
 content is forwarding another module is an indirection wearing the name of a

@@ -30,7 +30,7 @@ use archwarden_core::{
     compiled::CompiledConfig,
     finding::Finding,
     path::{FileClass, RepoRelPath},
-    traits::{DirectoryContext, FileContext, RuleEngine},
+    traits::{DirectoryContext, Exists, FileContext, RuleEngine},
 };
 use camino::Utf8Path;
 
@@ -188,6 +188,11 @@ pub fn check_file(root: &Utf8Path, config: &CompiledConfig, path: &RepoRelPath) 
             path,
             facts: facts.as_ref(),
             siblings: &siblings,
+            // No walk here -- this command exists to answer about one file
+            // without one -- so the question goes to disk. `is_file` and not
+            // `exists`: a rule looking for `notas.md` and finding a directory
+            // of that name has not found its companion.
+            exists: Exists::new(&|candidate| root.join(candidate.as_str()).is_file()),
         }));
     }
 

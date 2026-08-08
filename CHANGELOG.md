@@ -53,6 +53,36 @@ saying so.
   Existing configs are unaffected: a rule that names no annotation ignores them
   exactly as before.
 
+- **A `pair` rule: a file of one kind must have a companion of another.**
+  ([#45](https://github.com/HenriqueArtur/archwarden/issues/45))
+
+  ```json
+  { "type": "pair", "id": "licao-tem-notas", "level": "error",
+    "roots": ["projetos/*"],
+    "file_pattern": "^projeto\\.md$", "must_exist": "notas.md" }
+  ```
+
+  `spec-pair` is this rule for one specific pair and cannot be bent to any
+  other: its default ignores exclude anything that is not a JS/TS source file,
+  and its companion is *derived* — `<stem>.<marker>.<ext>` — which generalises
+  to nothing. Two fixed names in one directory is what the rest of the world
+  has.
+
+  **The difference from `presence` is the anchor.** `presence` asks about a
+  directory: these files must be here. `pair` asks about a file: because this
+  one exists, that one must too. An empty directory is a `presence` finding and
+  not a `pair` one.
+
+  The companion may leave the directory — `../projeto.md`, for a sketch that
+  needs the lesson one level up and may be called anything, which no
+  directory-scoped rule can reach. One direction, always: an orphan companion is
+  a note taken before the lesson was written, and is not a finding.
+
+  `FileContext` gained an existence predicate for it, supplied by the caller the
+  way `siblings` already is — `check` answers from the walk it has, `check
+  --file` answers from disk because it has none, and a rule still never touches
+  the filesystem itself.
+
 - **A `presence` rule: these files must exist in each governed directory.**
   ([#42](https://github.com/HenriqueArtur/archwarden/issues/42))
 

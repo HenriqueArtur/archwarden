@@ -52,7 +52,7 @@ use archwarden_core::{
     facts::{ExportFact, ExportKind, ExportTags, FileFacts, ImportFact, Span},
     hash::ContentHash,
     path::{FileClass, RepoRelPath},
-    traits::{DirectoryContext, FileContext, RuleEngine},
+    traits::{DirectoryContext, Exists, FileContext, RuleEngine},
 };
 use archwarden_engine::walk::RepoTree;
 
@@ -129,6 +129,7 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
         CompiledRuleKind::Structure { .. } => forbidden_subfolder(rule, engine, tree),
         CompiledRuleKind::SpecPair { .. } => a_file_with_no_spec(rule, engine, tree),
         CompiledRuleKind::Presence { .. } => a_directory_holding_nothing(rule, engine, tree),
+        CompiledRuleKind::Pair { .. } => a_file_with_no_companion(rule, engine, tree),
         CompiledRuleKind::ImportBoundary {
             forbid,
             forbid_packages,
@@ -159,6 +160,47 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
                   of one shape would tick for a rule about another"
                 .to_owned(),
         },
+    }
+}
+
+/// A file this rule covers, in a repository holding nothing else.
+///
+/// The probe is a real file -- one the rule says it applies to -- asked about
+/// against an empty repository. Nothing has to be invented, unlike `naming`,
+/// where a violating input is a filename and producing one means running a
+/// regex backwards; here the violating input is the *absence* of the
+/// companion, and absence is easy to synthesise.
+fn a_file_with_no_companion(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+) -> Verdict {
+    let Some(covered) = tree
+        .directories()
+        .flat_map(|(_, directory)| directory.files.iter())
+        .map(|file| &file.path)
+        .find(|path| engine.applies_to(path))
+    else {
+        return Verdict::Unverified {
+            why: format!(
+                "no file in this repository is one `{}` asks for a companion of",
+                rule.id
+            ),
+        };
+    };
+
+    let findings = engine.check_file(FileContext {
+        path: covered,
+        facts: None,
+        siblings: &[],
+        exists: Exists::none(),
+    });
+
+    let on = format!("`{covered}` with its companion missing");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
     }
 }
 
@@ -274,6 +316,7 @@ fn a_file_with_no_spec(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &Repo
         path: &lonely,
         facts: Some(&facts),
         siblings: std::slice::from_ref(&name),
+        exists: Exists::none(),
     });
 
     let on = format!("`{lonely}` with no spec beside it");
@@ -341,6 +384,7 @@ fn crossed_boundary(
         path: importer,
         facts: Some(&facts),
         siblings: &[],
+        exists: Exists::none(),
     });
 
     if findings.is_empty() {
