@@ -8,4 +8,5 @@
 //! same fact types. No rule engine changes.
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod document;
 pub mod oxc;
