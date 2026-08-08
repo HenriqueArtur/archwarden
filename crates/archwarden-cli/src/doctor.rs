@@ -53,6 +53,8 @@ pub fn examine(config: &CompiledConfig) -> Vec<Concern> {
 
     walk_scope_with_boundaries(config, &mut concerns);
 
+    reasons_left_unsaid(config, &mut concerns);
+
     for rule in config.rules() {
         unreachable_scope(config, rule, &mut concerns);
         constrains_nothing(rule, &mut concerns);
@@ -61,6 +63,41 @@ pub fn examine(config: &CompiledConfig) -> Vec<Concern> {
     }
 
     concerns
+}
+
+/// Rules that do not say why they exist, counted rather than listed.
+///
+/// One line, not one per rule: a config with forty rules and no `why` anywhere
+/// would otherwise bury every other concern this command has, and burying them
+/// is the same as not reporting them.
+///
+/// And only once at least one rule *does* say why. A project that has never
+/// used the field has not adopted the practice, and nagging it about a
+/// convention it never chose is how a command that gives advice becomes one
+/// people stop running. Once one rule carries a reason, the ones that do not
+/// are an inconsistency worth naming. Issue #46.
+fn reasons_left_unsaid(config: &CompiledConfig, concerns: &mut Vec<Concern>) {
+    let (with, without): (Vec<_>, Vec<_>) = config.rules().partition(|rule| rule.why.is_some());
+
+    if with.is_empty() || without.is_empty() {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "rules-without-a-reason",
+        rule_id: None,
+        path: None,
+        message: format!(
+            "{} of {} rules say why they exist; {} {} not",
+            with.len(),
+            with.len() + without.len(),
+            without.len(),
+            if without.len() == 1 { "does" } else { "do" },
+        ),
+        fix: "add `why` to them, or accept the gap -- a rule whose reason is \
+              nowhere is one a reader can only obey"
+            .to_owned(),
+    });
 }
 
 /// A rule that has nothing to enforce, whatever its scope reaches.
@@ -730,6 +767,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -1060,6 +1099,68 @@ mod tests {
                 filenames.len()
             );
         }
+    }
+
+    /// Counted, not listed: a config with forty rules and no `why` anywhere
+    /// would bury every other concern, and burying them is the same as not
+    /// reporting them.
+    #[test]
+    fn rules_without_a_reason_are_counted_once() {
+        let mut reasoned = rule("shape", &["src/*"], structure(&["types"], &[]));
+        reasoned.why = Some("entities are the only thing published".to_owned());
+        let mixed = config(vec![
+            reasoned,
+            rule("second", &["src/*"], structure(&["types"], &[])),
+            rule("third", &["src/*"], structure(&["types"], &[])),
+        ]);
+
+        let concerns = examine(&mixed);
+        let counted: Vec<&Concern> = concerns
+            .iter()
+            .filter(|c| c.code == "rules-without-a-reason")
+            .collect();
+
+        assert_eq!(counted.len(), 1, "{concerns:?}");
+        assert!(counted[0].message.contains("1 of 3"), "{:?}", counted[0]);
+        assert!(counted[0].message.contains("2 do not"), "{:?}", counted[0]);
+    }
+
+    /// A project that has never used the field has not adopted the practice,
+    /// and nagging it about a convention it never chose is how a command that
+    /// gives advice becomes one people stop running.
+    #[test]
+    fn a_config_that_never_says_why_is_not_nagged() {
+        let silent = config(vec![
+            rule("shape", &["src/*"], structure(&["types"], &[])),
+            rule("second", &["src/*"], structure(&["types"], &[])),
+        ]);
+
+        assert!(
+            examine(&silent)
+                .iter()
+                .all(|c| c.code != "rules-without-a-reason"),
+            "{:?}",
+            examine(&silent)
+        );
+    }
+
+    /// And a config where every rule says why has nothing to be told either.
+    #[test]
+    fn a_config_that_always_says_why_is_not_nagged() {
+        let mut first = rule("shape", &["src/*"], structure(&["types"], &[]));
+        first.why = Some("a".to_owned());
+        let mut second = rule("second", &["src/*"], structure(&["types"], &[]));
+        second.why = Some("b".to_owned());
+
+        let complete = config(vec![first, second]);
+
+        assert!(
+            examine(&complete)
+                .iter()
+                .all(|c| c.code != "rules-without-a-reason"),
+            "{:?}",
+            examine(&complete)
+        );
     }
 
     /// A rule that constrains subfolder names by shape has plenty to enforce,

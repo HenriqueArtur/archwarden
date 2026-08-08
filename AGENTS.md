@@ -643,6 +643,12 @@ location. In the text output a finding with a span is printed as
 `path:line:column`, which an editor and most terminals turn into a link. The
 JSON keeps the byte range, which is what a tool wants.
 
+`why` is the reason the rule exists, when the project wrote one down. It is
+**not** part of the diagnosis — `observed` and `expected` are — and it is not
+an argument to negotiate with. It is there so that a constraint which looks
+arbitrary is not: read it before deciding the rule is wrong. In text output it
+appears once per rule, under that rule's first finding.
+
 `module_id` is `null` for a rule declared in the top-level `rules` array rather
 than inside a module — import boundaries usually are. In text output that rule
 prints as `[*]`.

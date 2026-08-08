@@ -327,6 +327,8 @@ mod tests {
         CompiledRule {
             id: archwarden_core::ids::RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile([from]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {
@@ -344,6 +346,8 @@ mod tests {
         CompiledRule {
             id: archwarden_core::ids::RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile([roots]).expect("valid scope"),
             kind: CompiledRuleKind::Structure {

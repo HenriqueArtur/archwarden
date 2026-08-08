@@ -53,6 +53,39 @@ saying so.
   Existing configs are unaffected: a rule that names no annotation ignores them
   exactly as before.
 
+- **`why`: a rule, or a module, can say why it exists.**
+  ([#46](https://github.com/HenriqueArtur/archwarden/issues/46))
+
+  ```json
+  { "type": "import-boundary", "id": "domain-forbids-app", "level": "error",
+    "why": "domain is published as its own package and the app is not",
+    "from": ["packages/domain/**"], "forbid_import_from": ["packages/app/**"] }
+  ```
+
+  A finding said what the rule wanted and what the file did, and never why the
+  rule exists. An agent reading one could comply, and that is all it could do —
+  which is the failure mode `AGENTS.md` already had three bare prohibitions
+  against ("do not edit `arch.config.json` to make a check pass", "a missing
+  spec file means write the test", "exit 2 is not your problem to route
+  around"). Each of those is a rule broken because the constraint looked
+  arbitrary, and a reason is what makes a constraint non-arbitrary.
+
+  There was nowhere to write one. The config is JSON, so it has no comments,
+  and the reason lived in a commit message or a wiki — neither in front of
+  anybody at the moment a rule fires.
+
+  It surfaces in the pre-write hook's denial, in `describe` and `scaffold`, in
+  `agent-guide`, in `config explain`, and beside a finding. In text a rule's
+  reason prints **once per run, at its first finding**; in JSON every finding
+  carries it. It is not part of a finding's identity, so rewording one never
+  touches `.archwarden/baseline.json`.
+
+  A module takes one too, as a separate answer rather than a fallback.
+
+  `config doctor` reports `rules-without-a-reason` as a count, and only once at
+  least one rule has a `why` — a project that never used the field has not
+  adopted the practice.
+
 - **`structure.subfolder_patterns`: a regex over directory names.**
   ([#43](https://github.com/HenriqueArtur/archwarden/issues/43))
 

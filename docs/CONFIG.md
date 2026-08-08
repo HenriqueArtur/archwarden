@@ -129,6 +129,50 @@ Every rule has:
 Every glob field accepts a single string or an array of strings:
 `"roots": "src/**"` and `"roots": ["src/**"]` are the same.
 
+### `why` — the reason, which nothing else records
+
+Optional on every rule, and on every module. Free text.
+
+```json
+{
+  "type": "import-boundary",
+  "id": "domain-forbids-app",
+  "level": "error",
+  "why": "domain is published as its own package and the app is not; an import here makes the published artefact unbuildable outside this repo",
+  "from": ["packages/domain/**"],
+  "forbid_import_from": ["packages/app/**"]
+}
+```
+
+The config already says *what* a rule does, in a form that cannot drift from
+what it enforces; a prose restatement of that is a second source of truth that
+goes stale. The reason cannot drift, because nothing else records it — the
+format is JSON, so there are no comments, and a commit message is not in front
+of anybody at the moment a rule fires.
+
+It shows up where the rule is met: in the pre-write hook's denial, in
+`describe` and `scaffold`, in `agent-guide`, in `config explain`, and beside a
+finding. In text output a rule's reason is printed **once per run, at its first
+finding** — a repository with two hundred findings over six rules would
+otherwise print two hundred paragraphs. In JSON every finding carries it.
+
+Two things it is not:
+
+- **Not a message override.** `observed` and `expected` remain the whole
+  diagnosis. A `why` that restates them has duplicated the finding and will
+  contradict it the day the rule changes.
+- **Not part of a finding's identity.** Rewording one never touches
+  `.archwarden/baseline.json`.
+
+A module takes one too, and it is a separate answer rather than a fallback:
+"why is `domain` sealed" explains eight rules at once and is not an answer to
+"why this one".
+
+`config doctor` reports `rules-without-a-reason` as a count, and only once at
+least one rule in the config has a `why` — a project that never used the field
+has not adopted the practice, and being nagged about a convention you did not
+choose is how a command that gives advice becomes one nobody runs.
+
 ### A note on regexes
 
 Regex fields (`file_pattern`, `filename_patterns`) are matched with Rust's

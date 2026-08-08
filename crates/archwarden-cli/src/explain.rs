@@ -183,6 +183,16 @@ fn render_text(explanation: &Explanation<'_>, out: &mut dyn std::io::Write) {
         rule.scope.patterns().join(", "),
     );
 
+    // Under the header, before anything about coverage: a user reading this
+    // has a rule that surprised them, and "why does this exist" is the
+    // question underneath the one they typed. Issue #46.
+    if let Some(why) = &rule.why {
+        let _ = writeln!(out, "  why: {why}");
+    }
+    if let Some(why) = &rule.module_why {
+        let _ = writeln!(out, "  module: {why}");
+    }
+
     // Said out loud rather than shown as an empty list. A rule covering
     // nothing is the thing a user runs this command to find out -- and which
     // of the two ways it can happen is the answer, so the two get different
@@ -265,6 +275,8 @@ mod tests {
         CompiledRule {
             id: id(name),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -459,6 +471,34 @@ mod tests {
         assert!(
             text.contains("config doctor"),
             "it points at the why: {text}"
+        );
+    }
+
+    /// Issue #46. `explain` answers "what is this rule doing", and a reason is
+    /// half of that answer -- it is the command a user reaches for when a rule
+    /// surprises them, which is exactly when "why does this exist" is the
+    /// question.
+    #[test]
+    fn a_rules_reason_is_printed_with_it() {
+        let mut reasoned = rule("shape", &["src/*"], naming());
+        reasoned.why = Some("the loader finds these by readdir".to_owned());
+        reasoned.module_why = Some("domain is published on its own".to_owned());
+
+        let text = rendered(
+            &FILES,
+            &config(vec![reasoned]),
+            "shape",
+            crate::report::Format::Text,
+        )
+        .expect("explains");
+
+        assert!(
+            text.contains("why: the loader finds these by readdir"),
+            "{text}"
+        );
+        assert!(
+            text.contains("module: domain is published on its own"),
+            "{text}"
         );
     }
 

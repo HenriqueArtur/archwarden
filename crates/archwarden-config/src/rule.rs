@@ -67,6 +67,19 @@ impl Rule {
         }
     }
 
+    /// Why this rule exists, when its author said.
+    #[must_use]
+    pub fn why(&self) -> Option<&str> {
+        match self {
+            Self::Structure(r) => r.why.as_deref(),
+            Self::Naming(r) => r.why.as_deref(),
+            Self::SpecPair(r) => r.why.as_deref(),
+            Self::ImportBoundary(r) => r.why.as_deref(),
+            Self::CallObligation(r) => r.why.as_deref(),
+            Self::NoPassthrough(r) => r.why.as_deref(),
+        }
+    }
+
     /// The rule's scope patterns.
     ///
     /// Named `roots` on four of the five and `from` on `import-boundary`,
@@ -106,6 +119,21 @@ pub struct StructureRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Subdirectory names that are permitted.
@@ -173,6 +201,21 @@ pub struct NamingRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Regex over the filename, with a named capture group.
@@ -240,6 +283,21 @@ pub struct SpecPairRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Subdirectories subject to the rule, each covering everything below it.
@@ -307,6 +365,21 @@ pub struct ImportBoundaryRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs selecting the importer. Same semantics as `roots`.
     pub from: Patterns,
     /// Globs matched against the *resolved* import path. Matching means the
@@ -364,6 +437,21 @@ pub struct CallObligationRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Regex over the filename.
@@ -575,6 +663,48 @@ mod tests {
         };
         assert_eq!(naming.must_export.kind.as_slice(), ["function", "arrow"]);
         assert_eq!(naming.must_export.signature_hint, None);
+    }
+
+    /// Issue #46. Decision 5 chose JSON over YAML and JSON5, so a config has
+    /// no comments and the reason a rule exists has nowhere to live. It ends
+    /// up in a commit message or a wiki, neither of which is in front of
+    /// anybody at the moment the rule fires.
+    #[test]
+    fn a_rule_may_say_why_it_exists() {
+        let rule = parse(
+            r#"{"type":"import-boundary","id":"domain-forbids-app","level":"error",
+                "why":"domain is published as its own package and the app is not",
+                "from":["packages/domain/**"],
+                "forbid_import_from":["packages/app/**"]}"#,
+        );
+
+        assert_eq!(
+            rule.why(),
+            Some("domain is published as its own package and the app is not")
+        );
+    }
+
+    /// Every kind, because a reason is not a property of one of them. A rule
+    /// that could not say why would be the one nobody could argue with.
+    #[test]
+    fn every_rule_kind_can_say_why() {
+        let cases = [
+            r#"{"type":"structure","id":"r","level":"error","roots":"src","why":"w",
+                "allowed_subfolders":[]}"#,
+            r#"{"type":"naming","id":"r","level":"error","roots":"src","why":"w",
+                "file_pattern":"^(?<n>.+)$","must_export":{"kind":"any","name":"{{pascal(n)}}"}}"#,
+            r#"{"type":"spec-pair","id":"r","level":"error","roots":"src","why":"w",
+                "subfolders":"."}"#,
+            r#"{"type":"import-boundary","id":"r","level":"error","from":"src","why":"w",
+                "forbid_import_from":["x/**"]}"#,
+            r#"{"type":"call-obligation","id":"r","level":"error","roots":"src","why":"w",
+                "file_pattern":"^x$","must_call":{"symbol":"s","imported_from":"m"}}"#,
+            r#"{"type":"no-passthrough","id":"r","level":"error","roots":"src","why":"w"}"#,
+        ];
+
+        for json in cases {
+            assert_eq!(parse(json).why(), Some("w"), "{json}");
+        }
     }
 
     /// Issue #43. The regex-over-a-directory-name capability existed on
@@ -897,6 +1027,21 @@ pub struct NoPassthroughRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Which shapes count. Defaults to all three.

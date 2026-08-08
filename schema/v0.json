@@ -137,6 +137,13 @@
           "description": "The label.",
           "$ref": "#/$defs/ModuleId"
         },
+        "why": {
+          "description": "Why this module exists, in the author's words.\n\nA module is a bigger decision than any rule inside it — one sentence\nexplaining why `domain` is sealed explains every rule under it — so it\ngets its own, and a rule's `why` never substitutes for it. Issue #46.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "rules": {
           "description": "The rules in it.",
           "type": "array",
@@ -168,6 +175,13 @@
             "level": {
               "description": "Severity.",
               "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "roots": {
               "description": "Directory globs this rule applies to.",
@@ -236,6 +250,13 @@
               "description": "Severity.",
               "$ref": "#/$defs/Level"
             },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "roots": {
               "description": "Directory globs this rule applies to.",
               "$ref": "#/$defs/OneOrMany"
@@ -281,6 +302,13 @@
             "level": {
               "description": "Severity.",
               "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "roots": {
               "description": "Directory globs this rule applies to.",
@@ -338,6 +366,13 @@
               "description": "Severity.",
               "$ref": "#/$defs/Level"
             },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "from": {
               "description": "Directory globs selecting the importer. Same semantics as `roots`.",
               "$ref": "#/$defs/OneOrMany"
@@ -392,6 +427,13 @@
               "description": "Severity.",
               "$ref": "#/$defs/Level"
             },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "roots": {
               "description": "Directory globs this rule applies to.",
               "$ref": "#/$defs/OneOrMany"
@@ -430,6 +472,13 @@
             "level": {
               "description": "Severity.",
               "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "roots": {
               "description": "Directory globs this rule applies to.",

@@ -72,6 +72,13 @@ pub struct Config {
 pub struct Module {
     /// The label.
     pub id: ModuleId,
+    /// Why this module exists, in the author's words.
+    ///
+    /// A module is a bigger decision than any rule inside it — one sentence
+    /// explaining why `domain` is sealed explains every rule under it — so it
+    /// gets its own, and a rule's `why` never substitutes for it. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// The rules in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<Rule>,
@@ -127,16 +134,17 @@ impl Config {
     ///
     /// Top-level rules yield `None`. Rules named in `disable` are skipped, so
     /// no caller has to remember to apply it.
-    pub fn rules(&self) -> impl Iterator<Item = (Option<&ModuleId>, &Rule)> {
-        let from_modules = self
-            .modules
-            .iter()
-            .flat_map(|m| m.rules.iter().map(move |r| (Some(&m.id), r)));
-        let top_level = self.rules.iter().map(|r| (None, r));
+    pub fn rules(&self) -> impl Iterator<Item = (Option<&ModuleId>, Option<&str>, &Rule)> {
+        let from_modules = self.modules.iter().flat_map(|m| {
+            m.rules
+                .iter()
+                .map(move |r| (Some(&m.id), m.why.as_deref(), r))
+        });
+        let top_level = self.rules.iter().map(|r| (None, None, r));
 
         from_modules
             .chain(top_level)
-            .filter(|(_, rule)| !self.disable.contains(rule.id()))
+            .filter(|(_, _, rule)| !self.disable.contains(rule.id()))
     }
 
     /// Whether this config's `version` is one this build understands.
@@ -228,7 +236,7 @@ mod tests {
 
         let rules: Vec<_> = config.rules().collect();
         assert_eq!(rules.len(), 1);
-        let (module, rule) = &rules[0];
+        let (module, _, rule) = &rules[0];
         assert_eq!(module.map(ModuleId::as_str), Some("src"));
         assert_eq!(rule.id().as_str(), "src-needs-spec");
     }
@@ -253,7 +261,7 @@ mod tests {
 
         let collected: Vec<_> = config
             .rules()
-            .map(|(m, r)| (m.map(ModuleId::as_str), r.id().as_str()))
+            .map(|(m, _, r)| (m.map(ModuleId::as_str), r.id().as_str()))
             .collect();
 
         assert_eq!(
@@ -277,7 +285,7 @@ mod tests {
             }"#,
         );
 
-        let ids: Vec<_> = config.rules().map(|(_, r)| r.id().as_str()).collect();
+        let ids: Vec<_> = config.rules().map(|(_, _, r)| r.id().as_str()).collect();
         assert_eq!(ids, ["kept"]);
     }
 
@@ -355,7 +363,7 @@ mod tests {
         assert!(!json.contains("disable"), "{json}");
         assert!(!json.contains("$schema"), "{json}");
 
-        let (module, rule) = original.rules().next().expect("one rule");
+        let (module, _, rule) = original.rules().next().expect("one rule");
         assert_eq!(module, None);
         assert_eq!(rule.level(), Level::Warning);
     }

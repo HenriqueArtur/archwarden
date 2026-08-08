@@ -34,6 +34,51 @@ use serde::Serialize;
 /// reads the report exactly as before.
 pub const REPORT_VERSION: u32 = 0;
 
+/// The standing reason behind each rule, by rule id.
+///
+/// Looked up when a report is rendered rather than carried on a [`Finding`],
+/// deliberately. A `why` is prose about a *rule*; a finding is about a file,
+/// and copying the prose onto every one of them would put it in the baseline's
+/// path -- `.archwarden/baseline.json` must not churn because somebody
+/// reworded a sentence -- and would make every rule engine take a field it
+/// never reads. Issue #46.
+#[derive(Debug, Default)]
+pub struct Reasons(std::collections::BTreeMap<String, String>);
+
+impl Reasons {
+    /// Reads the reasons a compiled configuration carries.
+    #[must_use]
+    pub fn of(config: &archwarden_core::compiled::CompiledConfig) -> Self {
+        Self(
+            config
+                .rules()
+                .filter_map(|rule| {
+                    rule.why
+                        .as_ref()
+                        .map(|why| (rule.id.as_str().to_owned(), why.clone()))
+                })
+                .collect(),
+        )
+    }
+
+    /// Why this rule exists, when its author said.
+    #[must_use]
+    pub fn of_rule(&self, rule: &archwarden_core::ids::RuleId) -> Option<&str> {
+        self.0.get(rule.as_str()).map(String::as_str)
+    }
+}
+
+impl<const N: usize> From<[(&str, &str); N]> for Reasons {
+    fn from(pairs: [(&str, &str); N]) -> Self {
+        Self(
+            pairs
+                .into_iter()
+                .map(|(rule, why)| (rule.to_owned(), why.to_owned()))
+                .collect(),
+        )
+    }
+}
+
 /// How to render a report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum Format {
@@ -274,9 +319,32 @@ struct JsonReport<'a> {
     /// benefit at all. Absence is opt-in — a consumer that never passes the
     /// flag sees the field it always saw.
     #[serde(skip_serializing_if = "Option::is_none")]
-    findings: Option<&'a [&'a Finding]>,
+    findings: Option<Vec<JsonFinding<'a>>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     unreadable_files: Vec<UnreadableFile<'a>>,
+}
+
+/// A finding, plus the standing reason its rule exists.
+///
+/// `why` is flattened in beside the finding's own fields rather than nested,
+/// because a consumer reading a finding is reading one object. It is absent
+/// when the rule's author said nothing, which is every rule in every config
+/// written before the field existed.
+#[derive(Debug, Serialize)]
+struct JsonFinding<'a> {
+    #[serde(flatten)]
+    finding: &'a Finding,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    why: Option<&'a str>,
+}
+
+impl<'a> JsonFinding<'a> {
+    fn new(finding: &'a Finding, reasons: &'a Reasons) -> Self {
+        Self {
+            finding,
+            why: reasons.of_rule(&finding.rule_id),
+        }
+    }
 }
 
 /// One check nobody could make.
@@ -429,6 +497,8 @@ pub struct Rendered<'a> {
     pub report: &'a Report,
     /// What of it to show.
     pub view: &'a View<'a>,
+    /// Why each rule exists, for the line under its first finding.
+    pub reasons: &'a Reasons,
     /// How long the whole run took -- config load, walk, check and cache
     /// flush. Passed in rather than measured here because wall-clock belongs
     /// to the invocation, and a test that could not fix it could not assert on
@@ -524,13 +594,19 @@ fn render_json(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
     let Rendered {
         report,
         view,
+        reasons,
         elapsed,
         ..
     } = *rendered;
     let envelope = JsonReport {
         version: REPORT_VERSION,
         summary: Summary::of(report, view, elapsed),
-        findings: view.breakdown.is_none().then_some(view.findings.as_slice()),
+        findings: view.breakdown.is_none().then(|| {
+            view.findings
+                .iter()
+                .map(|finding| JsonFinding::new(finding, reasons))
+                .collect()
+        }),
         unreadable_files: report
             .unreadable_files
             .iter()
@@ -558,7 +634,7 @@ fn render_json(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
 ///
 /// Shared by the full report and the single-file check, so a hook and a
 /// commit-time run word the same finding identically.
-fn render_finding(finding: &Finding, at: &str, out: &mut dyn std::io::Write) {
+fn render_finding(finding: &Finding, at: &str, why: Option<&str>, out: &mut dyn std::io::Write) {
     let module = finding
         .module_id
         .as_ref()
@@ -578,6 +654,11 @@ fn render_finding(finding: &Finding, at: &str, out: &mut dyn std::io::Write) {
         "        expected: {}",
         describe_expectation(&finding.expected)
     );
+    // Wrapped and indented under the finding rather than beside it: this is a
+    // paragraph, and the two lines above are a diagnosis.
+    if let Some(why) = why {
+        let _ = writeln!(out, "        why: {why}");
+    }
     let _ = writeln!(out);
 }
 
@@ -638,6 +719,7 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         root,
         report,
         view,
+        reasons,
         elapsed,
     } = *rendered;
 
@@ -645,9 +727,16 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         render_breakdown(breakdown, out);
     } else {
         let mut positions = Positions::default();
+        // A repository with two hundred findings over six rules must not print
+        // two hundred paragraphs. Six, at the point each rule first comes up,
+        // is where a reader is already looking. Issue #46.
+        let mut explained = std::collections::BTreeSet::new();
         for finding in &view.findings {
             let at = positions.label(root, finding);
-            render_finding(finding, &at, out);
+            let why = reasons
+                .of_rule(&finding.rule_id)
+                .filter(|_| explained.insert(finding.rule_id.as_str()));
+            render_finding(finding, &at, why, out);
         }
     }
 
@@ -805,7 +894,7 @@ fn render_unresolved_imports(unresolved: &[(RepoRelPath, String)], out: &mut dyn
 struct JsonSingle<'a> {
     version: u32,
     path: &'a archwarden_core::path::RepoRelPath,
-    findings: &'a [Finding],
+    findings: Vec<JsonFinding<'a>>,
     /// Always present, even when empty. A caller needs to see that the list is
     /// empty rather than infer it from absence -- that is the whole point of
     /// reporting skips (correction C6).
@@ -828,20 +917,29 @@ struct JsonSkipped<'a> {
 /// Writes a single-file check in the requested format.
 pub fn render_single(
     single: &archwarden_engine::single::Single,
+    reasons: &Reasons,
     format: Format,
     out: &mut dyn std::io::Write,
 ) {
     match format {
-        Format::Text => render_single_text(single, out),
-        Format::Json => render_single_json(single, out),
+        Format::Text => render_single_text(single, reasons, out),
+        Format::Json => render_single_json(single, reasons, out),
     }
 }
 
-fn render_single_json(single: &archwarden_engine::single::Single, out: &mut dyn std::io::Write) {
+fn render_single_json(
+    single: &archwarden_engine::single::Single,
+    reasons: &Reasons,
+    out: &mut dyn std::io::Write,
+) {
     let envelope = JsonSingle {
         version: REPORT_VERSION,
         path: &single.path,
-        findings: &single.findings,
+        findings: single
+            .findings
+            .iter()
+            .map(|finding| JsonFinding::new(finding, reasons))
+            .collect(),
         skipped: single
             .skipped
             .iter()
@@ -863,9 +961,17 @@ fn render_single_json(single: &archwarden_engine::single::Single, out: &mut dyn 
     }
 }
 
-fn render_single_text(single: &archwarden_engine::single::Single, out: &mut dyn std::io::Write) {
+fn render_single_text(
+    single: &archwarden_engine::single::Single,
+    reasons: &Reasons,
+    out: &mut dyn std::io::Write,
+) {
+    let mut explained = std::collections::BTreeSet::new();
     for finding in &single.findings {
-        render_finding(finding, finding.path.as_str(), out);
+        let why = reasons
+            .of_rule(&finding.rule_id)
+            .filter(|_| explained.insert(finding.rule_id.as_str()));
+        render_finding(finding, finding.path.as_str(), why, out);
     }
 
     for skipped in &single.skipped {
@@ -1212,6 +1318,23 @@ mod tests {
         rendered_after(report, format, TOOK)
     }
 
+    /// Rendered with the standing reasons a configuration carries.
+    fn rendered_with(report: &Report, reasons: &Reasons, format: Format) -> String {
+        let mut out = Vec::new();
+        render(
+            &Rendered {
+                root: Utf8Path::new("."),
+                report,
+                view: &View::everything(report),
+                reasons,
+                elapsed: TOOK,
+            },
+            format,
+            &mut out,
+        );
+        String::from_utf8(out).expect("output is UTF-8")
+    }
+
     /// Rendered against a real tree, for the cases that need one on disk.
     fn rendered_at(root: &Utf8Path, report: &Report, format: Format) -> String {
         let mut out = Vec::new();
@@ -1220,6 +1343,7 @@ mod tests {
                 root,
                 report,
                 view: &View::everything(report),
+                reasons: &Reasons::default(),
                 elapsed: TOOK,
             },
             format,
@@ -1246,6 +1370,7 @@ mod tests {
                 root: Utf8Path::new("/nonexistent"),
                 report,
                 view,
+                reasons: &Reasons::default(),
                 elapsed,
             },
             format,
@@ -2059,6 +2184,62 @@ mod tests {
                 "{observed:?} rendered as {sentence}"
             );
         }
+    }
+
+    /// Issue #46. A finding says what the rule wanted and what the file did,
+    /// and never why the rule exists. An agent reading one can comply and that
+    /// is all it can do -- which is how a config gets edited to make a check
+    /// pass.
+    ///
+    /// Once per rule, at its first occurrence. A repository with two hundred
+    /// findings over six rules must not print two hundred paragraphs; six, in
+    /// the place a reader is already looking, is the whole design constraint.
+    #[test]
+    fn a_rules_reason_is_printed_once_at_its_first_finding() {
+        let report = report(vec![
+            finding(Level::Error, None),
+            finding(Level::Error, None),
+        ]);
+        let reasons = Reasons::from([(
+            "domain-entity-shape",
+            "domain is published as its own package and the app is not",
+        )]);
+
+        let text = rendered_with(&report, &reasons, Format::Text);
+
+        assert_eq!(
+            text.matches("why: domain is published").count(),
+            1,
+            "one paragraph per rule, not per finding: {text}"
+        );
+    }
+
+    /// A rule whose author said nothing prints nothing extra, which is every
+    /// rule in every config written before the field existed.
+    #[test]
+    fn a_rule_with_no_reason_adds_no_line() {
+        let report = report(vec![finding(Level::Error, None)]);
+
+        let text = rendered_with(&report, &Reasons::default(), Format::Text);
+
+        assert!(!text.contains("why:"), "{text}");
+    }
+
+    /// A consumer renders it itself, so every finding carries it -- the
+    /// once-per-rule economy is a property of the text output, not of the data.
+    #[test]
+    fn every_finding_carries_the_reason_in_json() {
+        let report = report(vec![
+            finding(Level::Error, None),
+            finding(Level::Error, None),
+        ]);
+        let reasons = Reasons::from([("domain-entity-shape", "it is published")]);
+
+        let text = rendered_with(&report, &reasons, Format::Json);
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        assert_eq!(parsed["findings"][0]["why"], "it is published");
+        assert_eq!(parsed["findings"][1]["why"], "it is published");
     }
 
     /// Issue #43: a rule whose subfolder names are a *shape* rather than a

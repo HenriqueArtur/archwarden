@@ -230,6 +230,19 @@ pub struct CompiledRule {
     pub id: RuleId,
     /// The module it was declared under, if any.
     pub module: Option<ModuleId>,
+    /// Why this rule exists, as its author wrote it.
+    ///
+    /// Prose, carried rather than interpreted. It is shown wherever a user or
+    /// an agent meets the rule — the pre-write hook's denial, `describe`,
+    /// `scaffold`, `agent-guide`, `config explain`, and beside a finding — and
+    /// it never changes what the rule decides. Issue #46.
+    pub why: Option<String>,
+    /// Why the *module* this rule was declared under exists.
+    ///
+    /// A separate field, not a fallback: "why is `domain` sealed" explains
+    /// eight rules at once and is not an answer to "why this one". Both are
+    /// shown; neither stands in for the other.
+    pub module_why: Option<String>,
     /// Severity of its findings.
     pub level: Level,
     /// The directories it applies to.
@@ -353,6 +366,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind,

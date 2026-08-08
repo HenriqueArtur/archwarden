@@ -108,6 +108,8 @@ fn config() -> CompiledConfig {
     let rule = CompiledRule {
         id: RuleId::new("usecase-name").expect("valid id"),
         module: None,
+        why: None,
+        module_why: None,
         level: Level::Error,
         scope: Scope::compile(["src/*"]).expect("valid scope"),
         kind: CompiledRuleKind::Naming {

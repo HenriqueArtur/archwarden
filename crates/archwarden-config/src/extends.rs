@@ -294,7 +294,7 @@ mod tests {
         let ids: Vec<_> = merged
             .config
             .rules()
-            .map(|(_, r)| r.id().as_str())
+            .map(|(_, _, r)| r.id().as_str())
             .collect();
 
         assert_eq!(ids, ["from-preset", "local"], "presets come first");
@@ -336,7 +336,7 @@ mod tests {
         let ids: Vec<_> = merged
             .config
             .rules()
-            .map(|(_, r)| r.id().as_str())
+            .map(|(_, _, r)| r.id().as_str())
             .collect();
         assert_eq!(ids, ["deep", "mid", "local"]);
     }
@@ -478,7 +478,7 @@ mod tests {
         let ids: Vec<_> = merged
             .config
             .rules()
-            .map(|(_, r)| r.id().as_str())
+            .map(|(_, _, r)| r.id().as_str())
             .collect();
         assert_eq!(ids, ["keep"]);
     }
@@ -543,7 +543,7 @@ mod tests {
         ]);
 
         let merged = merge_at(&root).expect("merges");
-        let (module, rule) = merged.config.rules().next().expect("one rule");
+        let (module, _, rule) = merged.config.rules().next().expect("one rule");
         assert_eq!(module.map(ModuleId::as_str), Some("domain"));
         assert_eq!(rule.id().as_str(), "preset-rule");
     }
@@ -571,7 +571,7 @@ mod tests {
         let ids: Vec<_> = merged
             .config
             .rules()
-            .map(|(_, r)| r.id().as_str())
+            .map(|(_, _, r)| r.id().as_str())
             .collect();
         assert_eq!(ids, ["from-npm"]);
         assert!(

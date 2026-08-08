@@ -221,6 +221,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new("non-get-routes-must-audit").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["apps/app/src/app/api/**"]).expect("valid scope"),
             kind: CompiledRuleKind::CallObligation {

@@ -338,6 +338,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new("ui-forbids-domain").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["packages/ui/**"]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {
@@ -752,6 +754,8 @@ mod tests {
         let structure = CompiledRule {
             id: RuleId::new("shape").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["packages/ui/**"]).expect("valid scope"),
             kind: CompiledRuleKind::Structure {
@@ -772,6 +776,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("three-is-quarantined").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {

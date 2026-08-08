@@ -526,6 +526,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,

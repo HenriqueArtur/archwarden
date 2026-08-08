@@ -319,6 +319,80 @@ fn a_rule_that_never_mentions_subfolders_still_allows_them() {
         .success();
 }
 
+/// Issue #46, through the real process. A finding says what the rule wanted
+/// and what the file did, and used to never say why the rule exists — so an
+/// agent reading one could comply and nothing else, which is how a config gets
+/// edited to make a check pass.
+///
+/// Once per rule, at its first occurrence: two findings, one paragraph.
+#[test]
+fn a_rules_reason_is_printed_once_beside_its_findings() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"referencia-sem-subpasta","level":"error",
+                 "why":"the generated index reads this folder flat; a nested one is invisible to it",
+                 "roots":["referencia"],"allowed_subfolders":[]}]}"#,
+        ),
+        ("referencia/uma/x.md", "# x\n"),
+        ("referencia/outra/y.md", "# y\n"),
+    ]);
+
+    let output = archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).expect("output is UTF-8");
+
+    assert_eq!(
+        text.matches("why: the generated index reads this folder flat")
+            .count(),
+        1,
+        "one paragraph per rule, not per finding: {text}"
+    );
+}
+
+/// And it reaches the commands an agent asks *before* writing, which is where
+/// a reason is worth most — a constraint that looks arbitrary is the one that
+/// gets worked around.
+#[test]
+fn a_rules_reason_reaches_describe_and_the_guide() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"modules":[{
+                 "id":"referencia",
+                 "why":"it is the only part of this repository another project consumes",
+                 "rules":[{"type":"structure","id":"referencia-sem-subpasta","level":"error",
+                           "why":"the generated index reads this folder flat",
+                           "roots":["referencia"],"allowed_subfolders":[]}]}]}"#,
+        ),
+        ("referencia/x.md", "# x\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["describe", "referencia", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(contains("the generated index reads this folder flat"))
+        .stdout(contains("another project consumes"));
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("agent-guide")
+        .assert()
+        .success()
+        .stdout(contains(
+            "**Why**: the generated index reads this folder flat",
+        ));
+}
+
 /// Issue #43. Lesson folders are `NN-slug` and the two digits are the sort key
 /// for a generated index, so `semaforo` and `03_semaforo` break it silently.
 /// The regex-over-a-directory-name matcher existed on `naming.dir_pattern` and

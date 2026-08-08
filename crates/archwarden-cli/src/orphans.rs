@@ -516,6 +516,8 @@ mod tests {
         let rule = archwarden_core::compiled::CompiledRule {
             id: archwarden_core::ids::RuleId::new("shape").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: archwarden_core::level::Level::Error,
             scope: Scope::compile(["packages/domain/src/*"]).expect("valid scope"),
             kind: archwarden_core::compiled::CompiledRuleKind::Structure {

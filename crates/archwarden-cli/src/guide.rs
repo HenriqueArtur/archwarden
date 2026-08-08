@@ -52,6 +52,13 @@ struct GuideRule<'a> {
     applies_to: &'a [String],
     /// One sentence per requirement, the same prose `describe` prints.
     requires: Vec<String>,
+    /// Why the rule exists, when its author said. A digest without them is a
+    /// list of prohibitions, which is what an agent works around. Issue #46.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    why: Option<&'a str>,
+    /// Why the module it belongs to exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    module_why: Option<&'a str>,
 }
 
 /// Every rule kind archwarden has, as written in a config and on the command
@@ -116,6 +123,8 @@ pub fn guide<'a>(
                     .map(archwarden_core::ids::ModuleId::as_str),
                 applies_to: rule.scope.patterns(),
                 requires: requirements(&rule.kind),
+                why: rule.why.as_deref(),
+                module_why: rule.module_why.as_deref(),
             })
             .collect(),
     }
@@ -418,6 +427,15 @@ fn render_markdown(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
         for requirement in &rule.requires {
             let _ = writeln!(out, "- {requirement}");
         }
+        // Last, and on its own line: the requirements are what to do, this is
+        // why. A digest of prohibitions with no reasons is what an agent works
+        // around. Issue #46.
+        if let Some(why) = rule.why {
+            let _ = writeln!(out, "- **Why**: {why}");
+        }
+        if let Some(why) = rule.module_why {
+            let _ = writeln!(out, "- **Why this module**: {why}");
+        }
         let _ = writeln!(out);
     }
 
@@ -455,6 +473,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -568,6 +588,22 @@ mod tests {
     /// requirement missing from it is a requirement the agent will break and
     /// then be told about. The annotation is checked, so it belongs in the
     /// sentence rather than under it as a suggestion.
+    /// Issue #46. The digest is a list of prohibitions without them, and a
+    /// list of prohibitions is what an agent works around.
+    #[test]
+    fn a_rules_reason_is_part_of_the_digest() {
+        let mut reasoned = rule("usecase-name", None, &["src/*"], naming());
+        reasoned.why = Some("the loader finds these by readdir".to_owned());
+        let config = config(vec![reasoned]);
+
+        let markdown = rendered(&config, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains("**Why**: the loader finds these by readdir"),
+            "{markdown}"
+        );
+    }
+
     /// A digest is what an agent has instead of the config, and "the folder
     /// name has to look like this" is exactly what it needs before creating
     /// one.

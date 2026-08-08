@@ -367,6 +367,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("usecase-factory-name").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -401,6 +403,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("repository-action-export-name").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/Repositories/Entities/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -762,6 +766,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("agent-tools-export-contract").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/agent-tools/tools"]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -857,6 +863,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("tools-are-classes").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/agent-tools/tools"]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -974,6 +982,8 @@ mod tests {
         let structure = CompiledRule {
             id: RuleId::new("shape").expect("valid"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::Structure {
@@ -1078,6 +1088,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("entities-only").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/Entities/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -1110,6 +1122,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("root-level").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["."]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -1135,6 +1149,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("hinted").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/Entities/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {

@@ -1203,13 +1203,14 @@ fn hook(
     // where `node_modules` sits in a monorepo, and where the harness will be
     // when it runs what this message suggests.
     let invocation = crate::hooks::invocation(&merged.root);
+    let reasons = crate::report::Reasons::of(&compiled);
     let decision = if single.fails_build() {
-        crate::hook::Decision::Deny(crate::hook::explain(&single, &invocation))
+        crate::hook::Decision::Deny(crate::hook::explain(&single, &reasons, &invocation))
     } else if single.findings.is_empty() {
         crate::hook::Decision::Allow
     } else {
         // Decision 1: warnings are visible and do not gate.
-        crate::hook::Decision::Note(crate::hook::explain(&single, &invocation))
+        crate::hook::Decision::Note(crate::hook::explain(&single, &reasons, &invocation))
     };
 
     let _ = write!(output.out, "{}", crate::hook::respond(&decision));
@@ -1341,7 +1342,12 @@ fn check_one(
             return Exit::ConfigProblem;
         }
     }
-    crate::report::render_single(&single, format, output.out);
+    crate::report::render_single(
+        &single,
+        &crate::report::Reasons::of(&compiled),
+        format,
+        output.out,
+    );
 
     if single.fails_build() {
         Exit::Errors
@@ -1609,6 +1615,7 @@ fn check(
             root: &merged.root,
             report: &outcome,
             view: &view,
+            reasons: &crate::report::Reasons::of(&compiled),
             elapsed: started.elapsed(),
         },
         options.format,

@@ -162,8 +162,12 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
     let config = &merged.config;
 
     let mut rules = Vec::new();
-    for (module, rule) in config.rules() {
-        rules.push(compile_rule(rule, module.cloned())?);
+    for (module, module_why, rule) in config.rules() {
+        rules.push(compile_rule(
+            rule,
+            module.cloned(),
+            module_why.map(ToOwned::to_owned),
+        )?);
     }
 
     let ignore =
@@ -201,6 +205,7 @@ fn rules_hash(config: &Config) -> ContentHash {
 fn compile_rule(
     rule: &Rule,
     module: Option<archwarden_core::ids::ModuleId>,
+    module_why: Option<String>,
 ) -> Result<CompiledRule, CompileError> {
     let id = rule.id().clone();
 
@@ -286,6 +291,8 @@ fn compile_rule(
     Ok(CompiledRule {
         id,
         module,
+        why: rule.why().map(ToOwned::to_owned),
+        module_why,
         level: rule.level(),
         scope,
         kind,
@@ -493,6 +500,48 @@ mod tests {
             CompiledRuleKind::Naming { kind, .. } => Some(kind),
             _ => None,
         }
+    }
+
+    /// Issue #46. A module is a bigger decision than any rule inside it —
+    /// "why does `domain` exist and why is it sealed" is one sentence that
+    /// explains eight rules — so both are carried, and neither stands in for
+    /// the other.
+    #[test]
+    fn a_rules_reason_and_its_modules_both_reach_the_compiled_rule() {
+        let compiled = compile_json(
+            r#"{"version":0,"modules":[{
+                 "id":"domain",
+                 "why":"extracted so billing could depend on it without the API",
+                 "rules":[{"type":"structure","id":"shape","level":"error",
+                           "why":"entities are the only thing published",
+                           "roots":"packages/domain/src/*",
+                           "allowed_subfolders":["types"]}]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = compiled.rules().next().expect("one rule");
+        assert_eq!(
+            rule.why.as_deref(),
+            Some("entities are the only thing published")
+        );
+        assert_eq!(
+            rule.module_why.as_deref(),
+            Some("extracted so billing could depend on it without the API")
+        );
+    }
+
+    /// A rule outside a module, and one whose author said nothing.
+    #[test]
+    fn a_rule_with_no_reason_carries_none() {
+        let compiled = compile_json(
+            r#"{"version":0,"rules":[{"type":"structure","id":"shape","level":"error",
+                 "roots":"src/*","allowed_subfolders":["types"]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = compiled.rules().next().expect("one rule");
+        assert_eq!(rule.why, None);
+        assert_eq!(rule.module_why, None);
     }
 
     /// The compiled annotations of the config's single naming rule.

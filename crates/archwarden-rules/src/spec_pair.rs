@@ -433,6 +433,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("needs-spec").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind: CompiledRuleKind::SpecPair {
@@ -779,6 +781,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("needs-test").expect("valid"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Warning,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -872,6 +876,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("tdd-gate").expect("valid"),
             module: Some(ModuleId::new("domain").expect("valid")),
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -909,6 +915,8 @@ mod tests {
         let structure = CompiledRule {
             id: RuleId::new("shape").expect("valid"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::Structure {
@@ -939,6 +947,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("tdd-gate").expect("valid"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -967,6 +977,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("tdd-gate").expect("valid"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -1016,6 +1028,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("needs-spec").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind: CompiledRuleKind::SpecPair {

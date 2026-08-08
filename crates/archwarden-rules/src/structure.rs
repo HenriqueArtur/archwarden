@@ -355,6 +355,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new("shape").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind,

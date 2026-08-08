@@ -398,6 +398,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind,

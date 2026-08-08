@@ -278,6 +278,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("no-indirection").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Warning,
             scope: Scope::compile(["packages/domain/src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::NoPassthrough {
@@ -520,6 +522,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("no-barrels").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["packages/domain/src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::NoPassthrough {
