@@ -26,6 +26,30 @@ cargo build
 compiler on first build and every contributor compiles with the same one.
 There is no separate MSRV job because there is no second version in play.
 
+### When the disk fills up
+
+```bash
+cargo xtask clean          # the caches that cost a rebuild nothing
+cargo xtask clean --deps   # plus the compiled dependencies; next build is cold
+cargo xtask clean --all    # what `cargo clean` does
+```
+
+`cargo clean` is all or nothing, and all is usually wrong: it takes the
+compiled dependencies for the sake of space that was not the problem. The space
+that *is* the problem is incremental compilation state, which grows without
+bound and buys a few seconds per rebuild. Measured here once, `target` was
+**59 GB** — 27 of it `debug/incremental` and 28 `debug/deps`. The default tier
+takes the 27.
+
+It also sweeps `cargo-mutants` build trees left in the temporary directory.
+The pre-push hook builds one every push and removes it when it finishes; when
+it is *killed* it does not, and each orphan is a whole build tree. One killed
+run here was holding 62 GB.
+
+`target/criterion` is never taken by any tier. Benchmark history is data, not
+cache, and a benchmark that cannot be compared against its own past is a number
+with nothing to say.
+
 ### Looking at the HTML reports
 
 ```bash
