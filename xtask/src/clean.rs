@@ -100,7 +100,7 @@ impl Depth {
 ///
 /// A number, because "freed some space" is the kind of report this repository
 /// refuses everywhere else.
-pub(crate) fn run(root: &Path, depth: Depth) -> Result<(), String> {
+pub(crate) fn run(root: &Path, temp: &Path, depth: Depth) -> Result<(), String> {
     let mut freed = 0;
 
     for relative in depth.targets() {
@@ -116,7 +116,7 @@ pub(crate) fn run(root: &Path, depth: Depth) -> Result<(), String> {
         freed += size;
     }
 
-    for orphan in mutant_orphans() {
+    for orphan in mutant_orphans(temp) {
         let size = size_of(&orphan);
         // Reported by its own name: an orphan is somebody's killed run, and a
         // reader should be able to tell it from a directory this repository
@@ -145,8 +145,15 @@ pub(crate) fn run(root: &Path, depth: Depth) -> Result<(), String> {
 /// Matched by the prefix the tool itself uses. Nothing else is touched in the
 /// temporary directory, and a directory that is not ours is not our business
 /// even when it is large.
-fn mutant_orphans() -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+///
+/// The directory is a parameter rather than `std::env::temp_dir()`, and that
+/// is not a style choice. Reading the real one here made every caller a
+/// caller that deletes from `/tmp` — including a test with a throwaway root,
+/// which looked contained and was not. `cargo-mutants` runs this suite inside
+/// its own copy under `/tmp/cargo-mutants-*`, so the tests swept away the tree
+/// they were running in.
+fn mutant_orphans(temp: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(temp) else {
         return Vec::new();
     };
 
@@ -246,6 +253,7 @@ mod tests {
     #[test]
     fn only_the_named_directories_go() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let scratch = tempfile::tempdir().expect("scratch");
         let root = dir.path();
 
         for relative in ["target/debug/incremental", "target/debug/deps", "src"] {
@@ -253,7 +261,7 @@ mod tests {
             std::fs::write(root.join(relative).join("x"), b"0123456789").expect("write");
         }
 
-        run(root, Depth::Caches).expect("cleans");
+        run(root, scratch.path(), Depth::Caches).expect("cleans");
 
         assert!(!root.join("target/debug/incremental").exists());
         assert!(root.join("target/debug/deps").exists(), "deps was kept");
@@ -265,9 +273,58 @@ mod tests {
     #[test]
     fn cleaning_twice_is_not_an_error() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let scratch = tempfile::tempdir().expect("scratch");
 
-        run(dir.path(), Depth::Caches).expect("first");
-        run(dir.path(), Depth::Caches).expect("second");
+        run(dir.path(), scratch.path(), Depth::Caches).expect("first");
+        run(dir.path(), scratch.path(), Depth::Caches).expect("second");
+    }
+
+    /// The sweep takes orphans out of the directory it is handed, and there is
+    /// no other directory it can reach.
+    ///
+    /// This is the whole reason the directory is a parameter. It used to read
+    /// `std::env::temp_dir()` itself, so the two tests above — running with a
+    /// throwaway root, apparently harmlessly — swept the *real* temporary
+    /// directory. `cargo-mutants` runs this suite inside a copy of the tree it
+    /// keeps under `/tmp/cargo-mutants-*`, so the tests deleted the tree they
+    /// were running in: the copy lost most of its files partway through, and
+    /// the failures that followed pointed at rustdoc, at doctests, at the
+    /// filesystem, at everything except a test with a `tempdir` root that was
+    /// never as contained as it looked.
+    #[test]
+    fn the_sweep_reaches_only_the_directory_it_is_given() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let ours = tempfile::tempdir().expect("ours");
+        let theirs = tempfile::tempdir().expect("theirs");
+
+        let orphan = ours.path().join("cargo-mutants-archwarden-abc123.tmp");
+        let elsewhere = theirs.path().join("cargo-mutants-archwarden-def456.tmp");
+        for dir in [&orphan, &elsewhere] {
+            std::fs::create_dir(dir).expect("create");
+            std::fs::write(dir.join("lib.rs"), b"fn main() {}").expect("write");
+        }
+
+        run(root.path(), ours.path(), Depth::Caches).expect("cleans");
+
+        assert!(!orphan.exists(), "the orphan it was pointed at survived");
+        assert!(
+            elsewhere.exists(),
+            "it reached a directory it was never given"
+        );
+    }
+
+    /// A directory in the sweep's path that is not one of ours stays.
+    #[test]
+    fn somebody_elses_temporary_directory_is_not_ours_to_take() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let scratch = tempfile::tempdir().expect("scratch");
+
+        let theirs = scratch.path().join("cargo-something-else");
+        std::fs::create_dir(&theirs).expect("create");
+
+        run(root.path(), scratch.path(), Depth::Caches).expect("cleans");
+
+        assert!(theirs.exists(), "a directory that is not ours was removed");
     }
 
     #[test]

@@ -35,7 +35,10 @@ fn main() -> ExitCode {
         }
         Some("clean") => {
             let rest: Vec<String> = std::env::args().skip(2).collect();
-            run(clean::Depth::parse(&rest).and_then(|depth| clean::run(&repository_root(), depth)))
+            // The real temporary directory is named here and nowhere else:
+            // every other caller, tests included, passes one of its own.
+            run(clean::Depth::parse(&rest)
+                .and_then(|depth| clean::run(&repository_root(), &std::env::temp_dir(), depth)))
         }
         other => {
             if let Some(unknown) = other {
