@@ -38,14 +38,15 @@ use std::fmt::Write as _;
 const STYLE: &str = include_str!("html/report.css");
 
 /// Opens the document: title, style, and the sheet the sections sit on.
-pub(crate) fn open(title: &str, out: &mut dyn std::io::Write) {
+pub(crate) fn open(title: &str, language: crate::phrases::Language, out: &mut dyn std::io::Write) {
     let _ = write!(
         out,
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n\
+        "<!doctype html>\n<html lang=\"{}\">\n<head>\n\
          <meta charset=\"utf-8\">\n\
          <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
          <title>{}</title>\n<style>\n{STYLE}</style>\n</head>\n<body>\n\
          <div class=\"sheet\">\n",
+        language.tag(),
         escape(title)
     );
 }
@@ -148,6 +149,7 @@ pub(crate) fn code(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::phrases::Language;
 
     fn rendered(f: impl Fn(&mut dyn std::io::Write)) -> String {
         let mut out = Vec::new();
@@ -211,7 +213,7 @@ mod tests {
     #[test]
     fn the_document_declares_itself_and_carries_its_own_style() {
         let html = rendered(|out| {
-            open("archwarden", out);
+            open("archwarden", Language::En, out);
             close(out);
         });
 
@@ -226,7 +228,7 @@ mod tests {
     /// The title reaches the tab, escaped like everything else.
     #[test]
     fn the_title_is_escaped_too() {
-        let html = rendered(|out| open("a <b> repo", out));
+        let html = rendered(|out| open("a <b> repo", Language::En, out));
 
         assert!(html.contains("<title>a &lt;b&gt; repo</title>"), "{html}");
     }

@@ -53,6 +53,23 @@ saying so.
   Existing configs are unaffected: a rule that names no annotation ignores them
   exactly as before.
 
+- **The pages speak English or Brazilian Portuguese.** `--lang pt-br` on
+  `check --html` and on `agent-guide --format html`.
+
+  The page and nothing else. The terminal, the JSON and the digest stay in
+  English whatever it says: a CI log is pasted into an issue, searched for and
+  read by an agent, and one whose language depends on who ran it is worse than
+  one somebody has to translate.
+
+  A trait with one implementation per language, so a page cannot grow a heading
+  that exists in one of them only — the compiler refuses an implementation with
+  a method missing, which is the same property the exhaustive rule-kind match
+  gives. Adding a language is one file and the compiler lists what it needs.
+
+  Never detected from the environment: a report whose language depends on the
+  machine that produced it cannot be diffed. The sentences a *rule* produces are
+  still English on both pages, and the module docs say so.
+
 - **Two HTML pages, for the human the JSON was never for.**
 
   ```bash

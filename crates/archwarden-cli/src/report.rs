@@ -1152,6 +1152,7 @@ pub fn html_page(
     report: &Report,
     shown: &[&Finding],
     baseline: Option<&crate::baseline::Baseline>,
+    language: crate::phrases::Language,
 ) -> String {
     use std::io::Write as _;
 
@@ -1162,7 +1163,8 @@ pub fn html_page(
     let accepted = baseline.map_or(0, |baseline| baseline.entries().count());
 
     let mut out: Vec<u8> = Vec::new();
-    open("archwarden — the architecture as it stands", &mut out);
+    let say = language.phrases();
+    open(say.report_title(), language, &mut out);
 
     let crossed = matrix
         .rows
@@ -1180,49 +1182,57 @@ pub fn html_page(
     let _ = write!(
         out,
         "<header class=\"masthead\">\n\
-         <div class=\"stamp\">archwarden · the architecture as it stands</div>\n\
-         <h1>{} modules, {walls} walls, {crossed} of them being crossed</h1>\n\
+         <div class=\"stamp\">{}</div>\n\
+         <h1>{}</h1>\n\
          <div class=\"tallies\">\n\
-         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">files</span></div>\n\
-         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">rules</span></div>\n\
-         <div class=\"tally{}\"><span class=\"n\">{}</span><span class=\"k\">errors now</span></div>\n\
-         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">warnings</span></div>\n\
-         <div class=\"tally{}\"><span class=\"n\">{accepted}</span><span class=\"k\">accepted debt</span></div>\n\
-         <div class=\"tally{}\"><span class=\"n\">{}</span><span class=\"k\">not decided</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{accepted}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
          </div>\n</header>\n",
-        matrix.modules.len(),
+        escape(say.report_stamp()),
+        escape(&say.report_heading(matrix.modules.len(), walls, crossed)),
         report.files_scanned,
+        escape(say.tally_files()),
         config.rule_count(),
+        escape(say.tally_rules()),
         if report.error_count() > 0 {
             " is-crossed"
         } else {
             ""
         },
         shown.iter().filter(|f| f.level.fails_build()).count(),
+        escape(say.tally_errors()),
         shown.iter().filter(|f| !f.level.fails_build()).count(),
+        escape(say.tally_warnings()),
         if accepted > 0 { " is-accepted" } else { "" },
+        escape(say.tally_accepted()),
         if report.checks_skipped > 0 {
             " is-accepted"
         } else {
             ""
         },
         report.checks_skipped,
+        escape(say.tally_undecided()),
     );
 
-    html_map(&matrix, &mut out);
-    html_matrix(&matrix, &mut out);
-    html_pressure(&matrix, &mut out);
-    html_blindspots(report, accepted, &mut out);
+    html_map(&matrix, say, &mut out);
+    html_matrix(&matrix, say, &mut out);
+    html_pressure(&matrix, say, &mut out);
+    html_blindspots(report, accepted, say, &mut out);
 
     let _ = write!(
         out,
         "<footer><span>archwarden {}</span>\n\
-         <span>{} files · {} directories</span>\n\
-         <span>read-only · regenerate with <code>archwarden check --html</code></span>\n\
+         <span>{}</span>\n\
+         <span>{} · {} <code>archwarden check --html</code></span>\n\
          </footer>\n",
         escape(env!("CARGO_PKG_VERSION")),
-        report.files_scanned,
-        report.directories_scanned,
+        escape(&say.scanned(report.files_scanned, report.directories_scanned)),
+        escape(say.read_only()),
+        escape(say.regenerate_with()),
     );
 
     close(&mut out);
@@ -1230,7 +1240,7 @@ pub fn html_page(
 }
 
 /// The modules, with what the config says they are for.
-fn html_map(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
+fn html_map(matrix: &crate::matrix::Matrix, say: &dyn crate::phrases::Phrases, out: &mut Vec<u8>) {
     use std::io::Write as _;
 
     use crate::html::{code, escape, section};
@@ -1238,32 +1248,22 @@ fn html_map(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
     let _ = writeln!(
         out,
         "{}<div class=\"modules\">",
-        section(
-            "the map",
-            "What the config governs",
-            "Every module the rules select, with the reason it exists and what \
-             it is currently reporting.",
-        )
+        section(say.map_eyebrow(), say.map_heading(), say.map_lede())
     );
 
     for module in &matrix.modules {
         let counts = if module.errors == 0 && module.warnings == 0 {
-            "clean".to_owned()
+            say.clean().to_owned()
         } else {
             let mut parts = Vec::new();
             if module.errors > 0 {
                 parts.push(format!(
-                    "<span class=\"hot\">{} {}</span>",
-                    module.errors,
-                    plural(module.errors, "error", "errors")
+                    "<span class=\"hot\">{}</span>",
+                    escape(&say.errors(module.errors))
                 ));
             }
             if module.warnings > 0 {
-                parts.push(format!(
-                    "{} {}",
-                    module.warnings,
-                    plural(module.warnings, "warning", "warnings")
-                ));
+                parts.push(escape(&say.warnings(module.warnings)));
             }
             parts.join(" · ")
         };
@@ -1271,10 +1271,10 @@ fn html_map(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
         let _ = write!(
             out,
             "<div class=\"module\">\n<span class=\"name\">{}</span>\n\
-             <span class=\"counts\">{} files · {counts}</span>\n\
+             <span class=\"counts\">{} · {counts}</span>\n\
              <span class=\"scope\">{}</span>\n",
             escape(&module.id),
-            module.files,
+            escape(&say.files(module.files)),
             module
                 .scopes
                 .iter()
@@ -1289,7 +1289,8 @@ fn html_map(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
             None => {
                 let _ = writeln!(
                     out,
-                    "<p class=\"why is-absent\">No reason recorded for this module.</p>"
+                    "<p class=\"why is-absent\">{}</p>",
+                    escape(say.no_reason_recorded())
                 );
             }
         }
@@ -1303,7 +1304,11 @@ fn html_map(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
 /// keeps it readable past ten modules -- a name in every column header costs
 /// about a hundred pixels each and a repository with twenty of them would
 /// scroll sideways before the first cell.
-fn html_matrix(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
+fn html_matrix(
+    matrix: &crate::matrix::Matrix,
+    say: &dyn crate::phrases::Phrases,
+    out: &mut Vec<u8>,
+) {
     use std::io::Write as _;
 
     use crate::html::{escape, section};
@@ -1313,13 +1318,7 @@ fn html_matrix(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
         out,
         "{}<div class=\"plate\">\n<table class=\"matrix\">\n<thead>\n<tr>\n\
          <th class=\"corner\"></th>",
-        section(
-            "the walls",
-            "Who may import whom",
-            "Rows import, columns are imported. Hatching is a wall — that is the \
-             design working, not a problem. A number is a wall being crossed \
-             right now.",
-        )
+        section(say.walls_eyebrow(), say.walls_heading(), say.walls_lede())
     );
 
     for (index, _) in matrix.modules.iter().enumerate() {
@@ -1353,15 +1352,22 @@ fn html_matrix(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
         out,
         "</tbody>\n</table>\n</div>\n\
          <div class=\"legend\">\n\
-         <span><i class=\"swatch\"></i> allowed</span>\n\
-         <span><i class=\"swatch forbidden\"></i> a wall — no rule permits this</span>\n\
-         <span><i class=\"swatch crossed\"></i> crossed now, with how many imports</span>\n\
-         </div>\n</section>"
+         <span><i class=\"swatch\"></i> {}</span>\n\
+         <span><i class=\"swatch forbidden\"></i> {}</span>\n\
+         <span><i class=\"swatch crossed\"></i> {}</span>\n\
+         </div>\n</section>",
+        escape(say.legend_allowed()),
+        escape(say.legend_forbidden()),
+        escape(say.legend_crossed()),
     );
 }
 
 /// The walls, worst first, each with what is going through it.
-fn html_pressure(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
+fn html_pressure(
+    matrix: &crate::matrix::Matrix,
+    say: &dyn crate::phrases::Phrases,
+    out: &mut Vec<u8>,
+) {
     use std::io::Write as _;
 
     use crate::html::{code, escape, section};
@@ -1374,10 +1380,9 @@ fn html_pressure(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
         out,
         "{}<div class=\"walls\">",
         section(
-            "where reality pushes back",
-            "The walls under pressure",
-            "Grouped by wall rather than by file, because a wall crossed eleven \
-             times is a question about the wall.",
+            say.pressure_eyebrow(),
+            say.pressure_heading(),
+            say.pressure_lede()
         )
     );
 
@@ -1393,11 +1398,16 @@ fn html_pressure(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
             escape(&wall.rule_id),
         );
         let _ = if crossings == 0 {
-            write!(out, "<span class=\"pill quiet\">holding</span>")
+            write!(
+                out,
+                "<span class=\"pill quiet\">{}</span>",
+                escape(say.holding())
+            )
         } else {
             write!(
                 out,
-                "<span class=\"pill now\">{crossings} crossing now</span>"
+                "<span class=\"pill now\">{}</span>",
+                escape(&say.crossing_now(crossings))
             )
         };
         let _ = writeln!(out, "</span>\n</header>");
@@ -1409,7 +1419,8 @@ fn html_pressure(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
         if crossings == 0 {
             let _ = write!(
                 out,
-                "<ul class=\"crossings\"><li>Nothing crosses this today.</li></ul>\n</article>"
+                "<ul class=\"crossings\"><li>{}</li></ul>\n</article>",
+                escape(say.nothing_crosses())
             );
             continue;
         }
@@ -1420,7 +1431,11 @@ fn html_pressure(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
         // the reader opens it.
         let folded = crossings > 5;
         if folded {
-            let _ = writeln!(out, "<details><summary>{crossings} imports</summary>");
+            let _ = writeln!(
+                out,
+                "<details><summary>{}</summary>",
+                escape(&say.imports(crossings))
+            );
         }
         let _ = writeln!(out, "<ul class=\"crossings\">");
         for (importer, specifier) in &wall.crossings {
@@ -1446,10 +1461,15 @@ fn html_pressure(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
 /// Bordered and coloured rather than tucked into a footer, on purpose. A page
 /// that hid these would be worse than the JSON: it would look more trustworthy
 /// while knowing less.
-fn html_blindspots(report: &Report, accepted: usize, out: &mut Vec<u8>) {
+fn html_blindspots(
+    report: &Report,
+    accepted: usize,
+    say: &dyn crate::phrases::Phrases,
+    out: &mut Vec<u8>,
+) {
     use std::io::Write as _;
 
-    use crate::html::{code, prose};
+    use crate::html::{code, escape, prose};
 
     let mut notes: Vec<String> = Vec::new();
 
@@ -1458,13 +1478,16 @@ fn html_blindspots(report: &Report, accepted: usize, out: &mut Vec<u8>) {
         // in backticks, so the path is not repeated -- `prose` turns those into
         // elements, and printing both left the same path twice, once as an
         // element and once as punctuation.
-        notes.push(format!("<strong>Not read.</strong> {}", prose(reason)));
+        notes.push(format!(
+            "<strong>{}</strong> {}",
+            escape(say.not_read()),
+            prose(reason)
+        ));
     }
     if report.checks_skipped > 0 {
         notes.push(format!(
-            "<strong>{} {} nobody could make.</strong> {}",
-            report.checks_skipped,
-            plural(report.checks_skipped, "check", "checks"),
+            "<strong>{}</strong> {}",
+            escape(&say.checks_nobody_could_make(report.checks_skipped)),
             report
                 .skipped_checks
                 .iter()
@@ -1475,15 +1498,14 @@ fn html_blindspots(report: &Report, accepted: usize, out: &mut Vec<u8>) {
     }
     if report.imports.unresolved > 0 {
         notes.push(format!(
-            "<strong>{} {} could not be resolved</strong>, so no boundary rule saw them.",
-            report.imports.unresolved,
-            plural(report.imports.unresolved, "import", "imports"),
+            "<strong>{}</strong>",
+            escape(&say.unresolved_imports(report.imports.unresolved)),
         ));
     }
     if accepted > 0 {
         notes.push(format!(
-            "<strong>{accepted} {} accepted in the baseline</strong> and not counted above.",
-            plural(accepted, "finding is", "findings are"),
+            "<strong>{}</strong>",
+            escape(&say.accepted_in_baseline(accepted)),
         ));
     }
 
@@ -1494,9 +1516,10 @@ fn html_blindspots(report: &Report, accepted: usize, out: &mut Vec<u8>) {
     let _ = write!(
         out,
         "<section>\n<div class=\"blindspots\">\n\
-         <h2>What this run did not decide</h2>\n\
-         <p class=\"lede\">A page that hid these would be worse than the JSON, \
-         because it would look more trustworthy while knowing less.</p>\n<ul>\n"
+         <h2>{}</h2>\n\
+         <p class=\"lede\">{}</p>\n<ul>\n",
+        escape(say.blindspots_heading()),
+        escape(say.blindspots_lede()),
     );
     for note in notes {
         let _ = writeln!(out, "<li>{note}</li>");

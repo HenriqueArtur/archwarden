@@ -41,17 +41,36 @@ pub(crate) fn run(root: &Path) -> Result<(), String> {
     let guide = preview.join("guide.html");
     let report = preview.join("check.html");
 
+    // Both languages, every time. A translation nobody looks at is one that
+    // rots, and the page generated only on request is the one whose heading
+    // overflows in the other language.
+    let guide_pt = preview.join("guide.pt-br.html");
+    let report_pt = preview.join("check.pt-br.html");
+
     archwarden(
         root,
         &repo,
         &["agent-guide", "--format", "html"],
         Some(&guide),
     )?;
+    archwarden(
+        root,
+        &repo,
+        &["agent-guide", "--format", "html", "--lang", "pt-br"],
+        Some(&guide_pt),
+    )?;
     archwarden(root, &repo, &["check", "--html", path_of(&report)?], None)?;
+    archwarden(
+        root,
+        &repo,
+        &["check", "--html", path_of(&report_pt)?, "--lang", "pt-br"],
+        None,
+    )?;
 
     println!("preview written:");
-    println!("  {}", path_of(&guide)?);
-    println!("  {}", path_of(&report)?);
+    for page in [&guide, &guide_pt, &report, &report_pt] {
+        println!("  {}", path_of(page)?);
+    }
     println!("\nopen them in a browser; re-run this after any change to the renderer.");
     Ok(())
 }

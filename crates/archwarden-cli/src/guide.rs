@@ -441,11 +441,18 @@ pub enum GuideFormat {
 }
 
 /// Writes the guide.
-pub fn render(guide: &Guide<'_>, format: GuideFormat, out: &mut dyn std::io::Write) {
+pub fn render(
+    guide: &Guide<'_>,
+    format: GuideFormat,
+    language: crate::phrases::Language,
+    out: &mut dyn std::io::Write,
+) {
     match format {
+        // Markdown and JSON stay English whatever the language is. One is a
+        // digest an agent reads and the other is a contract; see `phrases`.
         GuideFormat::Markdown => render_markdown(guide, out),
         GuideFormat::Json => render_json(guide, out),
-        GuideFormat::Html => render_html(guide, out),
+        GuideFormat::Html => render_html(guide, language, out),
     }
 }
 
@@ -461,10 +468,15 @@ pub fn render(guide: &Guide<'_>, format: GuideFormat, out: &mut dyn std::io::Wri
               section would put the shape of the document behind four \
               signatures, and the shape is the thing under review"
 )]
-fn render_html(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
+fn render_html(
+    guide: &Guide<'_>,
+    language: crate::phrases::Language,
+    out: &mut dyn std::io::Write,
+) {
     use crate::html::{close, code, escape, open, prose, section};
 
-    open("archwarden — the architecture as declared", out);
+    let say = language.phrases();
+    open(say.guide_title(), language, out);
 
     let modules = grouped_by_module(guide);
     let unattached = guide
@@ -479,30 +491,33 @@ fn render_html(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
     let _ = write!(
         out,
         "<header class=\"masthead\">\n\
-         <div class=\"stamp\">archwarden · the architecture as declared</div>\n\
-         <h1>{} across {}</h1>\n\
+         <div class=\"stamp\">{}</div>\n\
+         <h1>{}</h1>\n\
          <div class=\"tallies\">\n\
-         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">rules</span></div>\n\
-         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">modules</span></div>\n\
-         <div class=\"tally\"><span class=\"n\">{unattached}</span><span class=\"k\">cross-module</span></div>\n\
-         <div class=\"tally{}\"><span class=\"n\">{unexplained}</span><span class=\"k\">say no why</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{unattached}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{unexplained}</span><span class=\"k\">{}</span></div>\n\
          </div>\n</header>\n",
-        count(guide.rules.len(), "rule"),
-        count(modules.len(), "module"),
+        escape(say.guide_stamp()),
+        escape(&say.guide_heading(guide.rules.len(), modules.len())),
         guide.rules.len(),
+        escape(say.tally_rules()),
         modules.len(),
+        escape(say.tally_modules()),
+        escape(say.tally_cross_module()),
+        // The class comes before the label because the format string puts it
+        // there: `<div class="tally{}">…<span class="k">{}</span>`. Getting
+        // this pair the wrong way round printed `is-accepted` as a label,
+        // which is a bug a reader sees and a test does not.
         if unexplained > 0 { " is-accepted" } else { "" },
+        escape(say.tally_no_reason()),
     );
 
     let _ = write!(
         out,
         "{}",
-        section(
-            "the map",
-            "What the config governs",
-            "Every module the rules select, with the reason it exists. A module \
-             with no reason recorded is one nobody can argue with.",
-        )
+        section(say.map_eyebrow(), say.map_heading(), say.map_lede())
     );
 
     let _ = writeln!(out, "<div class=\"modules\">\n");
@@ -513,14 +528,15 @@ fn render_html(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
             "<div class=\"module\">\n<span class=\"name\">{}</span>\n\
              <span class=\"counts\">{}</span>",
             escape(module),
-            escape(&count(rules.len(), "rule")),
+            escape(&say.rules(rules.len())),
         );
         if let Some(why) = module_why {
             let _ = writeln!(out, "<p class=\"why\">{}</p>", escape(why));
         } else {
             let _ = writeln!(
                 out,
-                "<p class=\"why is-absent\">No reason recorded for this module.</p>"
+                "<p class=\"why is-absent\">{}</p>",
+                escape(say.no_reason_recorded())
             );
         }
         let _ = writeln!(out, "</div>\n");
@@ -530,12 +546,7 @@ fn render_html(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
     let _ = write!(
         out,
         "{}",
-        section(
-            "the walls",
-            "Every rule, and what it is for",
-            "The requirements are what to do; the reason is why. A rule whose \
-             reason is nowhere is one a reader can only obey.",
-        )
+        section(say.rules_eyebrow(), say.rules_heading(), say.rules_lede())
     );
 
     let _ = writeln!(out, "<div class=\"walls\">\n");
@@ -552,12 +563,15 @@ fn render_html(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
         );
         let _ = write!(
             out,
-            "<ul>\n<li>applies to {}</li>",
-            rule.applies_to
-                .iter()
-                .map(|glob| code(glob))
-                .collect::<Vec<_>>()
-                .join(", ")
+            "<ul>\n<li>{}</li>",
+            say.applies_to(
+                &rule
+                    .applies_to
+                    .iter()
+                    .map(|glob| code(glob))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         );
         for requirement in &rule.requires {
             let _ = writeln!(out, "<li>{}</li>", prose(requirement));
@@ -573,10 +587,11 @@ fn render_html(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
     let _ = write!(
         out,
         "<footer><span>archwarden {}</span>\n\
-         <span>the architecture as declared · what it currently is needs \
-         <code>archwarden check --html</code></span>\n\
-         <span>read-only</span></footer>",
+         <span>{} <code>archwarden check --html</code></span>\n\
+         <span>{}</span></footer>",
         escape(env!("CARGO_PKG_VERSION")),
+        escape(say.guide_footer()),
+        escape(say.read_only()),
     );
 
     close(out);
@@ -597,19 +612,6 @@ fn grouped_by_module<'a>(guide: &'a Guide<'a>) -> Vec<(&'a str, Vec<&'a GuideRul
     }
 
     by_module.into_iter().collect()
-}
-
-/// `1 rule` / `3 rules`.
-fn count(n: usize, noun: &str) -> String {
-    format!("{n} {}", plural(n, noun))
-}
-
-fn plural(n: usize, noun: &str) -> String {
-    if n == 1 {
-        noun.to_owned()
-    } else {
-        format!("{noun}s")
-    }
 }
 
 fn render_json(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
@@ -751,7 +753,12 @@ mod tests {
     ) -> String {
         let owned: Vec<String> = kinds.iter().map(|k| (*k).to_owned()).collect();
         let mut out = Vec::new();
-        render(&guide(config, scope, &owned), format, &mut out);
+        render(
+            &guide(config, scope, &owned),
+            format,
+            crate::phrases::Language::En,
+            &mut out,
+        );
         String::from_utf8(out).expect("output is UTF-8")
     }
 
@@ -811,6 +818,30 @@ mod tests {
         let markdown = rendered(&everywhere, None, GuideFormat::Markdown);
         assert!(markdown.contains("(nor anything under it)"), "{markdown}");
         assert!(!markdown.contains("only "), "{markdown}");
+    }
+
+    /// Every label on the page is a label, and not a CSS class that landed in
+    /// the wrong hole.
+    ///
+    /// The masthead interleaves counts, classes and labels in one format
+    /// string, and one pair the wrong way round printed `is-accepted` where a
+    /// reader expected a word. It compiled, and nothing else noticed.
+    #[test]
+    fn no_tally_label_is_a_class_name() {
+        let html = rendered(
+            &config(vec![rule("usecase-name", None, &["src/*"], naming())]),
+            None,
+            GuideFormat::Html,
+        );
+
+        for label in html.split("class=\"k\">").skip(1) {
+            let label = label.split('<').next().unwrap_or_default();
+            assert!(
+                !label.contains("is-"),
+                "`{label}` is a class, not a label: {html}"
+            );
+            assert!(!label.trim().is_empty(), "an empty label: {html}");
+        }
     }
 
     /// The digest is what an agent has *instead of* the config, so a

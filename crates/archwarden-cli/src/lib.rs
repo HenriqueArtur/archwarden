@@ -21,6 +21,7 @@ pub mod impact;
 pub mod locate;
 pub mod matrix;
 pub mod orphans;
+pub mod phrases;
 pub mod report;
 pub mod respecify;
 pub mod scaffold;
@@ -153,6 +154,15 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
 
+        /// The language the page is written in.
+        ///
+        /// Only the page. The terminal, the JSON and the digest stay in
+        /// English whatever this says — a CI log is pasted into an issue,
+        /// searched for and read by an agent, and one whose language depends
+        /// on who ran it is worse than one somebody has to translate.
+        #[arg(long, value_enum, default_value_t = crate::phrases::Language::En)]
+        lang: crate::phrases::Language,
+
         /// Also write a page for a human, at this path.
         ///
         /// A side artefact rather than a `--format`, because a browser cannot
@@ -283,6 +293,10 @@ pub enum Command {
         /// How to render the digest.
         #[arg(long, value_enum, default_value_t = crate::guide::GuideFormat::Markdown)]
         format: crate::guide::GuideFormat,
+
+        /// The language, for `--format html` only. See `check --lang`.
+        #[arg(long, value_enum, default_value_t = crate::phrases::Language::En)]
+        lang: crate::phrases::Language,
 
         /// Restrict the digest to rules that can fire under this directory.
         #[arg(long, value_name = "PATH")]
@@ -528,6 +542,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
         Command::Check {
             format,
             html,
+            lang,
             no_cache,
             summary,
             rules,
@@ -543,6 +558,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             &CheckOptions {
                 format: *format,
                 html: html.as_deref(),
+                language: *lang,
                 no_cache: *no_cache,
                 summary: *summary,
                 rules,
@@ -562,12 +578,14 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
         }
         Command::AgentGuide {
             format,
+            lang,
             scope,
             kind,
         } => agent_guide(
             cli.location(),
             working_directory,
             *format,
+            *lang,
             scope.as_deref(),
             kind,
             output,
@@ -1458,6 +1476,7 @@ fn agent_guide(
     location: Location<'_>,
     working_directory: &Utf8Path,
     format: crate::guide::GuideFormat,
+    language: crate::phrases::Language,
     scope: Option<&str>,
     kinds: &[String],
     output: &mut Output<'_>,
@@ -1484,7 +1503,7 @@ fn agent_guide(
     };
 
     let guide = crate::guide::guide(&compiled, scope.as_ref(), kinds);
-    crate::guide::render(&guide, format, output.out);
+    crate::guide::render(&guide, format, language, output.out);
     Exit::Clean
 }
 
@@ -1506,6 +1525,7 @@ const CACHE_FILE: &str = "cache.redb";
 struct CheckOptions<'a> {
     format: Format,
     html: Option<&'a str>,
+    language: crate::phrases::Language,
     no_cache: bool,
     summary: bool,
     rules: &'a [String],
@@ -1644,8 +1664,14 @@ fn check(
     );
 
     if let Some(destination) = options.html {
-        let page =
-            crate::report::html_page(&compiled, &tree, &outcome, &unaccepted, baseline.as_ref());
+        let page = crate::report::html_page(
+            &compiled,
+            &tree,
+            &outcome,
+            &unaccepted,
+            baseline.as_ref(),
+            options.language,
+        );
         match std::fs::write(destination, page) {
             Ok(()) => {
                 let _ = writeln!(output.out, "page written to {destination}");

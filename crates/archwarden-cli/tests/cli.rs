@@ -319,6 +319,75 @@ fn a_rule_that_never_mentions_subfolders_still_allows_them() {
         .success();
 }
 
+/// The page speaks the language it was asked for; the terminal does not.
+///
+/// A CI log is pasted into an issue, searched for and read by an agent —
+/// `AGENTS.md` teaches one to read that output — so a log whose language
+/// depends on who ran it is worse than one somebody has to translate.
+#[test]
+fn only_the_page_is_translated() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"modules":[{"id":"domain",
+                "rules":[{"type":"structure","id":"domain-shape","level":"error",
+                 "roots":"packages/domain/src/*","allowed_subfolders":["calcs"]}]}]}"#,
+        ),
+        (
+            "packages/domain/src/order/nope/x.ts",
+            "export const x = 1;\n",
+        ),
+    ]);
+    let page = dir.path().join("relatorio.html");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "check",
+            "--lang",
+            "pt-br",
+            "--html",
+            page.to_str().expect("utf-8"),
+        ])
+        .assert()
+        .code(1)
+        // The terminal is English whatever the page is. Asserted on the
+        // summary line rather than on the absence of "1 erro", which is a
+        // substring of "1 error" and passes for the wrong reason.
+        .stdout(contains("1 error, 0 warnings"))
+        .stdout(contains("erros agora").not());
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.contains(r#"<html lang="pt-BR">"#), "{html}");
+    assert!(html.contains("O que a config governa"), "{html}");
+    // The grid always renders; the pressure section only exists where a
+    // boundary rule does, and this fixture has none.
+    assert!(html.contains("Quem pode importar quem"), "{html}");
+    assert!(
+        !html.contains("What the config governs"),
+        "no English left over: {html}"
+    );
+}
+
+/// The digest keeps its language too: markdown is a CLI output and JSON is a
+/// contract, so `--lang` reaches neither.
+#[test]
+fn the_markdown_digest_is_english_whatever_the_language_is() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[{"type":"structure","id":"shape","level":"error",
+            "roots":"src","allowed_subfolders":[]}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["agent-guide", "--lang", "pt-br"])
+        .assert()
+        .success()
+        .stdout(contains("Architecture rules"))
+        .stdout(contains("Regras de arquitetura").not());
+}
+
 /// The page is a side artefact, not a rendering: the terminal keeps its summary
 /// and its exit code, and the file is written beside them. A browser cannot
 /// read a pipe, so a `--format` that had to be redirected would be the wrong

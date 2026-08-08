@@ -118,6 +118,27 @@ would refuse to complete.
 - `rules` — rules that belong to no particular module, typically import
   boundaries (which are cross-module by nature). They report as `[*]`.
 
+### The HTML pages, and their language
+
+```bash
+archwarden agent-guide --format html --lang pt-br > arquitetura.html
+archwarden check --html relatorio.html --lang pt-br
+```
+
+`--lang` reaches **the page and nothing else**. The terminal, the JSON and the
+markdown digest stay in English whatever it says — a CI log is pasted into an
+issue, searched for and read by an agent, and one whose language depends on who
+ran it is worse than one somebody has to translate. The JSON was never in
+question: its `type` slugs are stable identifiers.
+
+`en` and `pt-br` today. The language is never detected from the environment: a
+report whose language depends on the machine that produced it cannot be diffed,
+and the guide page is meant to be committable.
+
+The sentences a *rule* produces are still English on both pages. Those are
+written once and shown in three places, so translating them is a change to the
+terminal too — which is the line above.
+
 ### `languages` — what archwarden reads
 
 ```json
