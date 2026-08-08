@@ -95,19 +95,3 @@ pub struct Heading {
     /// Where it appears in the source.
     pub span: Span,
 }
-
-impl DocFacts {
-    /// The keys the block carries, or none when there is no usable block.
-    ///
-    /// A rule asking "is `id` present" gets `false` for a document with no
-    /// block *and* for one whose block is not YAML — but it should not report
-    /// the same thing about them, which is why the state is still reachable
-    /// through [`DocFacts::frontmatter`].
-    #[must_use]
-    pub fn keys(&self) -> Option<&BTreeMap<String, DocValue>> {
-        match &self.frontmatter {
-            Frontmatter::Present(keys) => Some(keys),
-            _ => None,
-        }
-    }
-}

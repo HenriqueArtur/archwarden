@@ -7,6 +7,11 @@ extend-exclude = [
     # about eventually bringing it in line with the rest of docs/, which are
     # all English.
     "docs/PLAN-V0.md",
+    # The pages are written in more than one language, and each language is one
+    # file so that exactly the non-English ones can be skipped here. `erro` is
+    # offered as `error` and `regenere` as `regenerate`; the English half of the
+    # same feature stays checked, which is the point of the split.
+    "crates/archwarden-cli/src/phrases/pt_br.rs",
 ]
 
 [default]

@@ -473,6 +473,32 @@ mod tests {
         )
     }
 
+    /// Which languages a configuration asked for travels with it, and a
+    /// configuration that asked for nothing still means TypeScript.
+    ///
+    /// A builder step rather than a fifth constructor parameter, so every test
+    /// of a rule keeps the constructor it had — which is why it needs a test of
+    /// its own here.
+    #[test]
+    fn the_languages_a_config_asked_for_travel_with_it() {
+        let bare = CompiledConfig::new(
+            Vec::new(),
+            PathSet::default(),
+            SkipDirs::default(),
+            ContentHash::of(b""),
+        );
+        assert!(!bare.languages().astro, "nobody asked for Astro");
+
+        let asked = CompiledConfig::new(
+            Vec::new(),
+            PathSet::default(),
+            SkipDirs::default(),
+            ContentHash::of(b""),
+        )
+        .with_languages(Languages { astro: true });
+        assert!(asked.languages().astro);
+    }
+
     #[test]
     fn a_rule_applies_to_files_inside_its_scope() {
         let rule = rule("r", &["packages/domain/src/*"], structure());

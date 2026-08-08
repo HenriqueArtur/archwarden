@@ -351,11 +351,14 @@ fn only_the_page_is_translated() {
         ])
         .assert()
         .code(1)
-        // The terminal is English whatever the page is. Asserted on the
-        // summary line rather than on the absence of "1 erro", which is a
-        // substring of "1 error" and passes for the wrong reason.
-        .stdout(contains("1 error, 0 warnings"))
-        .stdout(contains("erros agora").not());
+        // The terminal is English whatever the page is.
+        //
+        // Asserted on the English summary line rather than on the absence of a
+        // translated one. The obvious negative assertion is a trap twice over:
+        // the Portuguese word for an error is a substring of the English one,
+        // so it passes for the wrong reason — and writing it here would put
+        // Portuguese in a file the spell checker reads.
+        .stdout(contains("1 error, 0 warnings"));
 
     let html = std::fs::read_to_string(&page).expect("the page was written");
     assert!(html.contains(r#"<html lang="pt-BR">"#), "{html}");

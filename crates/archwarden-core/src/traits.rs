@@ -389,6 +389,41 @@ mod tests {
         assert_eq!(advertised.first(), Some(demanded));
     }
 
+    /// The predicate a caller supplies, asked and answered.
+    ///
+    /// Covered here rather than left to the crates that use it: this crate's
+    /// gate is 100% of functions, and a seam whose own crate never exercises it
+    /// is one whose contract nobody stated.
+    #[test]
+    fn an_existence_predicate_answers_for_the_path_it_is_given() {
+        let there = RepoRelPath::new("packages/domain/src/user.ts").expect("valid");
+        let predicate = |candidate: &RepoRelPath| candidate == &there;
+        let exists = Exists::new(&predicate);
+
+        assert!(exists.at(&there));
+        assert!(!exists.at(&RepoRelPath::new("packages/domain/src/order.ts").expect("valid")));
+    }
+
+    /// A repository holding nothing, for a caller with no answer to give. A
+    /// rule asking about a path it gets `false` for reports the path as
+    /// missing, which is the honest reading of "I cannot see it".
+    #[test]
+    fn a_caller_with_no_answer_says_nothing_is_there() {
+        assert!(!Exists::none().at(&RepoRelPath::new("anything.ts").expect("valid")));
+    }
+
+    /// It is `Copy` and it is `Debug`, because it rides inside a context that
+    /// is both, and a manual `Debug` that panicked or printed a pointer would
+    /// be found by whoever debugged a rule at three in the morning.
+    #[test]
+    fn the_predicate_can_be_copied_and_printed() {
+        let exists = Exists::none();
+        let copy = exists;
+
+        assert!(!copy.at(&RepoRelPath::new("anything.ts").expect("valid")));
+        assert_eq!(format!("{exists:?}"), "Exists(..)");
+    }
+
     /// The path every file in a clean repository takes: the rule applies, the
     /// file satisfies it, and nothing is reported.
     #[test]
