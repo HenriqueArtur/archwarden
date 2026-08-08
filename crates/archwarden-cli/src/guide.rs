@@ -430,6 +430,14 @@ pub enum GuideFormat {
     Markdown,
     /// The same content, as a versioned object.
     Json,
+    /// The same content, as a page for somebody about to change the
+    /// architecture rather than to satisfy it.
+    ///
+    /// Config-only, like the other two: this renders what the rules *declare*,
+    /// so it stays byte-stable and safe to commit. What the architecture
+    /// currently *is* — which walls are being crossed, and how often — needs
+    /// the repository, and lives in `check --html`.
+    Html,
 }
 
 /// Writes the guide.
@@ -437,6 +445,170 @@ pub fn render(guide: &Guide<'_>, format: GuideFormat, out: &mut dyn std::io::Wri
     match format {
         GuideFormat::Markdown => render_markdown(guide, out),
         GuideFormat::Json => render_json(guide, out),
+        GuideFormat::Html => render_html(guide, out),
+    }
+}
+
+/// The digest as a page: the map, the walls, and the reasons.
+///
+/// Grouped by module rather than listed by rule, because the reader is holding
+/// a mental map of the repository and not a list of ids. Rules that belong to
+/// no module come last, under their own heading — import boundaries usually
+/// are, and they are the walls between the modules above.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one page, written in the order it is read. Splitting it by \
+              section would put the shape of the document behind four \
+              signatures, and the shape is the thing under review"
+)]
+fn render_html(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
+    use crate::html::{close, code, escape, open, prose, section};
+
+    open("archwarden — the architecture as declared", out);
+
+    let modules = grouped_by_module(guide);
+    let unattached = guide
+        .rules
+        .iter()
+        .filter(|rule| rule.module.is_none())
+        .count();
+    let unexplained = guide.rules.iter().filter(|rule| rule.why.is_none()).count();
+
+    // Masthead. The counts are the ones the digest already carries; nothing is
+    // derived that `agent-guide --format json` does not also say.
+    let _ = write!(
+        out,
+        "<header class=\"masthead\">\n\
+         <div class=\"stamp\">archwarden · the architecture as declared</div>\n\
+         <h1>{} across {}</h1>\n\
+         <div class=\"tallies\">\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">rules</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">modules</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{unattached}</span><span class=\"k\">cross-module</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{unexplained}</span><span class=\"k\">say no why</span></div>\n\
+         </div>\n</header>\n",
+        count(guide.rules.len(), "rule"),
+        count(modules.len(), "module"),
+        guide.rules.len(),
+        modules.len(),
+        if unexplained > 0 { " is-accepted" } else { "" },
+    );
+
+    let _ = write!(
+        out,
+        "{}",
+        section(
+            "the map",
+            "What the config governs",
+            "Every module the rules select, with the reason it exists. A module \
+             with no reason recorded is one nobody can argue with.",
+        )
+    );
+
+    let _ = writeln!(out, "<div class=\"modules\">\n");
+    for (module, rules) in &modules {
+        let module_why = rules.iter().find_map(|rule| rule.module_why);
+        let _ = write!(
+            out,
+            "<div class=\"module\">\n<span class=\"name\">{}</span>\n\
+             <span class=\"counts\">{}</span>",
+            escape(module),
+            escape(&count(rules.len(), "rule")),
+        );
+        if let Some(why) = module_why {
+            let _ = writeln!(out, "<p class=\"why\">{}</p>", escape(why));
+        } else {
+            let _ = writeln!(
+                out,
+                "<p class=\"why is-absent\">No reason recorded for this module.</p>"
+            );
+        }
+        let _ = writeln!(out, "</div>\n");
+    }
+    let _ = writeln!(out, "</div>\n</section>");
+
+    let _ = write!(
+        out,
+        "{}",
+        section(
+            "the walls",
+            "Every rule, and what it is for",
+            "The requirements are what to do; the reason is why. A rule whose \
+             reason is nowhere is one a reader can only obey.",
+        )
+    );
+
+    let _ = writeln!(out, "<div class=\"walls\">\n");
+    for rule in &guide.rules {
+        let _ = write!(
+            out,
+            "<article class=\"rule\">\n\
+             <span class=\"id\">{}</span>\n\
+             <span class=\"severity {2}\">{2}</span>\n\
+             <span class=\"kind\">{}</span>",
+            escape(rule.id),
+            escape(rule.kind),
+            escape(rule.level),
+        );
+        let _ = write!(
+            out,
+            "<ul>\n<li>applies to {}</li>",
+            rule.applies_to
+                .iter()
+                .map(|glob| code(glob))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        for requirement in &rule.requires {
+            let _ = writeln!(out, "<li>{}</li>", prose(requirement));
+        }
+        let _ = writeln!(out, "</ul>");
+        if let Some(why) = rule.why {
+            let _ = writeln!(out, "<p class=\"why\">{}</p>", escape(why));
+        }
+        let _ = writeln!(out, "</article>\n");
+    }
+    let _ = writeln!(out, "</div>\n</section>");
+
+    let _ = write!(
+        out,
+        "<footer><span>archwarden {}</span>\n\
+         <span>the architecture as declared · what it currently is needs \
+         <code>archwarden check --html</code></span>\n\
+         <span>read-only</span></footer>",
+        escape(env!("CARGO_PKG_VERSION")),
+    );
+
+    close(out);
+}
+
+/// The rules of each module, in configuration order, modules in name order.
+fn grouped_by_module<'a>(guide: &'a Guide<'a>) -> Vec<(&'a str, Vec<&'a GuideRule<'a>>)> {
+    let mut by_module: std::collections::BTreeMap<&str, Vec<&GuideRule<'_>>> =
+        std::collections::BTreeMap::new();
+
+    for rule in &guide.rules {
+        // A rule declared at the top level belongs to no module and reports as
+        // `[*]` everywhere else, so it is grouped under the same name here.
+        by_module
+            .entry(rule.module.unwrap_or("*"))
+            .or_default()
+            .push(rule);
+    }
+
+    by_module.into_iter().collect()
+}
+
+/// `1 rule` / `3 rules`.
+fn count(n: usize, noun: &str) -> String {
+    format!("{n} {}", plural(n, noun))
+}
+
+fn plural(n: usize, noun: &str) -> String {
+    if n == 1 {
+        noun.to_owned()
+    } else {
+        format!("{noun}s")
     }
 }
 
@@ -645,6 +817,62 @@ mod tests {
     /// requirement missing from it is a requirement the agent will break and
     /// then be told about. The annotation is checked, so it belongs in the
     /// sentence rather than under it as a suggestion.
+    /// The human rendering of the same digest. `describe` and the JSON are for
+    /// an agent; this is for somebody about to change the architecture, who
+    /// wants the walls and the reasons in one place.
+    #[test]
+    fn the_html_page_carries_the_modules_the_walls_and_the_reasons() {
+        let mut boundary_rule = rule(
+            "domain-forbids-app",
+            Some("domain"),
+            &["packages/domain/**"],
+            boundary(),
+        );
+        boundary_rule.why =
+            Some("domain is published as its own package and the app is not".to_owned());
+        boundary_rule.module_why = Some("extracted so billing could depend on it".to_owned());
+
+        let html = rendered(&config(vec![boundary_rule]), None, GuideFormat::Html);
+
+        assert!(html.starts_with("<!doctype html>"), "{html}");
+        assert!(html.contains("domain-forbids-app"), "the rule id");
+        assert!(html.contains("packages/domain/**"), "the scope it governs");
+        assert!(
+            html.contains("domain is published as its own package"),
+            "the reason, which is the whole point"
+        );
+        assert!(
+            html.contains("extracted so billing could depend on it"),
+            "the module's own reason"
+        );
+    }
+
+    /// The page is a rendering of the digest, and the digest is documented as
+    /// byte-stable and safe to commit. The page has to be too, or a repository
+    /// that keeps one gets a diff every run.
+    #[test]
+    fn the_html_page_is_byte_stable() {
+        let config = config(vec![rule("usecase-name", None, &["src/*"], naming())]);
+
+        assert_eq!(
+            rendered(&config, None, GuideFormat::Html),
+            rendered(&config, None, GuideFormat::Html)
+        );
+    }
+
+    /// A reason is prose somebody wrote, and the likeliest string in the whole
+    /// config to contain a character that would close the element it sits in.
+    #[test]
+    fn a_reason_that_looks_like_markup_does_not_break_the_page() {
+        let mut reasoned = rule("layout-rule", None, &["src/*"], naming());
+        reasoned.why = Some("every page renders inside <Layout />".to_owned());
+
+        let html = rendered(&config(vec![reasoned]), None, GuideFormat::Html);
+
+        assert!(html.contains("&lt;Layout /&gt;"), "{html}");
+        assert!(!html.contains("<Layout />"), "it got out of its element");
+    }
+
     /// Issue #44. The digest is what an agent has before it writes a document,
     /// and the frontmatter is the half a human never reads.
     #[test]

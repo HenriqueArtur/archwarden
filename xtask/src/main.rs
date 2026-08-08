@@ -5,6 +5,8 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod preview;
+
 use std::{path::PathBuf, process::ExitCode};
 
 /// Where the published schema lives, relative to the repository root.
@@ -24,15 +26,19 @@ fn main() -> ExitCode {
         Some("gen-schema") => run(gen_schema(Mode::Write)),
         Some("check-schema") => run(gen_schema(Mode::Check)),
         Some("hooks") => run(install_hooks()),
+        Some("preview") => run(preview::run(&repository_root())),
         other => {
             if let Some(unknown) = other {
                 eprintln!("unknown task `{unknown}`");
             }
-            eprintln!("usage: cargo xtask <gen-schema|check-schema|hooks>");
+            eprintln!("usage: cargo xtask <gen-schema|check-schema|hooks|preview>");
             eprintln!();
             eprintln!("  gen-schema    write {SCHEMA_PATH} from the config types");
             eprintln!("  check-schema  fail if {SCHEMA_PATH} is out of date");
             eprintln!("  hooks         point git at {HOOKS_PATH}");
+            eprintln!(
+                "  preview       write the HTML reports for a fixture repository, to look at"
+            );
             ExitCode::FAILURE
         }
     }

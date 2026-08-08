@@ -16,8 +16,10 @@ pub mod filter;
 pub mod guide;
 pub mod hook;
 pub mod hooks;
+pub mod html;
 pub mod impact;
 pub mod locate;
+pub mod matrix;
 pub mod orphans;
 pub mod report;
 pub mod respecify;
@@ -150,6 +152,15 @@ pub enum Command {
         /// How to render the report.
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
+
+        /// Also write a page for a human, at this path.
+        ///
+        /// A side artefact rather than a `--format`, because a browser cannot
+        /// read a pipe: the terminal keeps its summary and its exit code, and
+        /// the page is written beside them. Read-only, self-contained, and it
+        /// fetches nothing — it renders from a CI artefact years later.
+        #[arg(long, value_name = "PATH")]
+        html: Option<String>,
 
         /// Parse every file from source, reading and writing nothing.
         ///
@@ -516,6 +527,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
         } => check_one(cli.location(), working_directory, file, *format, output),
         Command::Check {
             format,
+            html,
             no_cache,
             summary,
             rules,
@@ -530,6 +542,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             working_directory,
             &CheckOptions {
                 format: *format,
+                html: html.as_deref(),
                 no_cache: *no_cache,
                 summary: *summary,
                 rules,
@@ -1492,6 +1505,7 @@ const CACHE_FILE: &str = "cache.redb";
 /// arguments go to hide.
 struct CheckOptions<'a> {
     format: Format,
+    html: Option<&'a str>,
     no_cache: bool,
     summary: bool,
     rules: &'a [String],
@@ -1502,6 +1516,13 @@ struct CheckOptions<'a> {
     by: Option<crate::report::Axis>,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one command, in the order it happens: load, walk, run, filter \
+              against the baseline, render, write the page, decide the exit \
+              code. Splitting it would hide that the exit code is taken from \
+              what the baseline did not accept and never from what was shown"
+)]
 fn check(
     location: Location<'_>,
     working_directory: &Utf8Path,
@@ -1621,6 +1642,22 @@ fn check(
         options.format,
         output.out,
     );
+
+    if let Some(destination) = options.html {
+        let page =
+            crate::report::html_page(&compiled, &tree, &outcome, &unaccepted, baseline.as_ref());
+        match std::fs::write(destination, page) {
+            Ok(()) => {
+                let _ = writeln!(output.out, "page written to {destination}");
+            }
+            // Reported and not fatal: the gate already ran, and refusing its
+            // exit code because a side artefact could not be written would let
+            // a full disk turn a failing build green.
+            Err(error) => {
+                let _ = writeln!(output.err, "note: cannot write {destination}: {error}");
+            }
+        }
+    }
 
     if let Some(baseline) = &baseline {
         report_standing(baseline, &outcome.findings, output);

@@ -410,6 +410,20 @@ the filter removed. And an unknown rule id is **exit 2**, never an empty
 report: a filter matching nothing would otherwise look exactly like a clean
 repository.
 
+### The HTML pages are for a human, not for you
+
+```bash
+npx archwarden agent-guide --format html > architecture.html   # the rules, as declared
+npx archwarden check --html report.html                        # and where they stand
+```
+
+Read-only, self-contained, no script. **They are not a contract** — `--format
+json` is. Never parse one, and never regenerate one to make a check pass; the
+page shows what `check` decided and cannot change it.
+
+Mention them when a human asks to *see* the architecture. For anything you have
+to act on, use `describe`, `scaffold` or `--format json`.
+
 ### `agent-guide` — every rule, as context
 
 ```bash

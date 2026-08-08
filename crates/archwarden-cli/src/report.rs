@@ -1134,6 +1134,376 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
 /// Shared with `describe`, which renders the same expectations for a file that
 /// does not exist yet. One renderer, so the gate and the informant can never
 /// word the same requirement differently -- decision 9.
+/// The run as a page: the map, the walls, the pressure on them, and the
+/// blind spots.
+///
+/// Ordered for somebody about to *change* the architecture rather than to
+/// satisfy it. That reader is not asking "is it clean" -- they are asking where
+/// reality is pushing against the design, so the pressure is grouped by **wall**
+/// and not by file. A wall crossed eleven times is a question about the wall.
+///
+/// Accepted debt is given the same weight as a current error, and that is
+/// deliberate: it is where somebody already decided the design was losing, and
+/// today it is buried in `.archwarden/baseline.json` where nobody reads it.
+#[must_use]
+pub fn html_page(
+    config: &archwarden_core::compiled::CompiledConfig,
+    tree: &archwarden_engine::walk::RepoTree,
+    report: &Report,
+    shown: &[&Finding],
+    baseline: Option<&crate::baseline::Baseline>,
+) -> String {
+    use std::io::Write as _;
+
+    use crate::html::{close, escape, open};
+    use crate::matrix::{Cell, Matrix};
+
+    let matrix = Matrix::of(config, tree, &report.findings);
+    let accepted = baseline.map_or(0, |baseline| baseline.entries().count());
+
+    let mut out: Vec<u8> = Vec::new();
+    open("archwarden — the architecture as it stands", &mut out);
+
+    let crossed = matrix
+        .rows
+        .iter()
+        .flatten()
+        .filter(|cell| matches!(cell, Cell::Crossed(_)))
+        .count();
+    let walls = matrix
+        .rows
+        .iter()
+        .flatten()
+        .filter(|cell| matches!(cell, Cell::Forbidden | Cell::Crossed(_)))
+        .count();
+
+    let _ = write!(
+        out,
+        "<header class=\"masthead\">\n\
+         <div class=\"stamp\">archwarden · the architecture as it stands</div>\n\
+         <h1>{} modules, {walls} walls, {crossed} of them being crossed</h1>\n\
+         <div class=\"tallies\">\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">files</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">rules</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{}</span><span class=\"k\">errors now</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">warnings</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{accepted}</span><span class=\"k\">accepted debt</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{}</span><span class=\"k\">not decided</span></div>\n\
+         </div>\n</header>\n",
+        matrix.modules.len(),
+        report.files_scanned,
+        config.rule_count(),
+        if report.error_count() > 0 {
+            " is-crossed"
+        } else {
+            ""
+        },
+        shown.iter().filter(|f| f.level.fails_build()).count(),
+        shown.iter().filter(|f| !f.level.fails_build()).count(),
+        if accepted > 0 { " is-accepted" } else { "" },
+        if report.checks_skipped > 0 {
+            " is-accepted"
+        } else {
+            ""
+        },
+        report.checks_skipped,
+    );
+
+    html_map(&matrix, &mut out);
+    html_matrix(&matrix, &mut out);
+    html_pressure(&matrix, &mut out);
+    html_blindspots(report, accepted, &mut out);
+
+    let _ = write!(
+        out,
+        "<footer><span>archwarden {}</span>\n\
+         <span>{} files · {} directories</span>\n\
+         <span>read-only · regenerate with <code>archwarden check --html</code></span>\n\
+         </footer>\n",
+        escape(env!("CARGO_PKG_VERSION")),
+        report.files_scanned,
+        report.directories_scanned,
+    );
+
+    close(&mut out);
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// The modules, with what the config says they are for.
+fn html_map(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
+    use std::io::Write as _;
+
+    use crate::html::{code, escape, section};
+
+    let _ = writeln!(
+        out,
+        "{}<div class=\"modules\">",
+        section(
+            "the map",
+            "What the config governs",
+            "Every module the rules select, with the reason it exists and what \
+             it is currently reporting.",
+        )
+    );
+
+    for module in &matrix.modules {
+        let counts = if module.errors == 0 && module.warnings == 0 {
+            "clean".to_owned()
+        } else {
+            let mut parts = Vec::new();
+            if module.errors > 0 {
+                parts.push(format!(
+                    "<span class=\"hot\">{} {}</span>",
+                    module.errors,
+                    plural(module.errors, "error", "errors")
+                ));
+            }
+            if module.warnings > 0 {
+                parts.push(format!(
+                    "{} {}",
+                    module.warnings,
+                    plural(module.warnings, "warning", "warnings")
+                ));
+            }
+            parts.join(" · ")
+        };
+
+        let _ = write!(
+            out,
+            "<div class=\"module\">\n<span class=\"name\">{}</span>\n\
+             <span class=\"counts\">{} files · {counts}</span>\n\
+             <span class=\"scope\">{}</span>\n",
+            escape(&module.id),
+            module.files,
+            module
+                .scopes
+                .iter()
+                .map(|glob| code(glob))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        match &module.why {
+            Some(why) => {
+                let _ = writeln!(out, "<p class=\"why\">{}</p>", escape(why));
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "<p class=\"why is-absent\">No reason recorded for this module.</p>"
+                );
+            }
+        }
+        let _ = writeln!(out, "</div>\n");
+    }
+
+    let _ = writeln!(out, "</div>\n</section>");
+}
+
+/// The grid. Rows are numbered and columns carry only the number, which is what
+/// keeps it readable past ten modules -- a name in every column header costs
+/// about a hundred pixels each and a repository with twenty of them would
+/// scroll sideways before the first cell.
+fn html_matrix(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
+    use std::io::Write as _;
+
+    use crate::html::{escape, section};
+    use crate::matrix::Cell;
+
+    let _ = write!(
+        out,
+        "{}<div class=\"plate\">\n<table class=\"matrix\">\n<thead>\n<tr>\n\
+         <th class=\"corner\"></th>",
+        section(
+            "the walls",
+            "Who may import whom",
+            "Rows import, columns are imported. Hatching is a wall — that is the \
+             design working, not a problem. A number is a wall being crossed \
+             right now.",
+        )
+    );
+
+    for (index, _) in matrix.modules.iter().enumerate() {
+        let _ = writeln!(out, "<th scope=\"col\">{}</th>\n", index + 1);
+    }
+    let _ = writeln!(out, "</tr>\n</thead>\n<tbody>");
+
+    for (index, (module, row)) in matrix.modules.iter().zip(&matrix.rows).enumerate() {
+        let _ = write!(
+            out,
+            "<tr>\n<th scope=\"row\"><span class=\"n\">{}</span> {}</th>",
+            index + 1,
+            escape(&module.id)
+        );
+        for cell in row {
+            let _ = match cell {
+                Cell::Self_ => writeln!(out, "<td><span class=\"cell self\">—</span></td>"),
+                Cell::Allowed => writeln!(out, "<td><span class=\"cell\"></span></td>"),
+                Cell::Forbidden => {
+                    writeln!(out, "<td><span class=\"cell forbidden\"></span></td>")
+                }
+                Cell::Crossed(n) => {
+                    writeln!(out, "<td><span class=\"cell crossed\">{n}</span></td>")
+                }
+            };
+        }
+        let _ = writeln!(out, "</tr>\n");
+    }
+
+    let _ = write!(
+        out,
+        "</tbody>\n</table>\n</div>\n\
+         <div class=\"legend\">\n\
+         <span><i class=\"swatch\"></i> allowed</span>\n\
+         <span><i class=\"swatch forbidden\"></i> a wall — no rule permits this</span>\n\
+         <span><i class=\"swatch crossed\"></i> crossed now, with how many imports</span>\n\
+         </div>\n</section>"
+    );
+}
+
+/// The walls, worst first, each with what is going through it.
+fn html_pressure(matrix: &crate::matrix::Matrix, out: &mut Vec<u8>) {
+    use std::io::Write as _;
+
+    use crate::html::{code, escape, section};
+
+    if matrix.walls.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(
+        out,
+        "{}<div class=\"walls\">",
+        section(
+            "where reality pushes back",
+            "The walls under pressure",
+            "Grouped by wall rather than by file, because a wall crossed eleven \
+             times is a question about the wall.",
+        )
+    );
+
+    for wall in &matrix.walls {
+        let crossings = wall.crossings.len();
+        let _ = write!(
+            out,
+            "<article class=\"wall\">\n<header>\n\
+             <span class=\"edge\">{} ↛ {}</span>\n\
+             <span class=\"rule-id\">{}</span>\n<span class=\"pills\">",
+            escape(&wall.from),
+            escape(&wall.to),
+            escape(&wall.rule_id),
+        );
+        let _ = if crossings == 0 {
+            write!(out, "<span class=\"pill quiet\">holding</span>")
+        } else {
+            write!(
+                out,
+                "<span class=\"pill now\">{crossings} crossing now</span>"
+            )
+        };
+        let _ = writeln!(out, "</span>\n</header>");
+
+        if let Some(why) = &wall.why {
+            let _ = writeln!(out, "<p class=\"why\">{}</p>\n", escape(why));
+        }
+
+        if crossings == 0 {
+            let _ = write!(
+                out,
+                "<ul class=\"crossings\"><li>Nothing crosses this today.</li></ul>\n</article>"
+            );
+            continue;
+        }
+
+        // Folded past five, and folded by `<details>` rather than truncated:
+        // the count stays on the summary line, so nothing is hidden and the
+        // page does not become a wall of text. No script, and it prints open if
+        // the reader opens it.
+        let folded = crossings > 5;
+        if folded {
+            let _ = writeln!(out, "<details><summary>{crossings} imports</summary>");
+        }
+        let _ = writeln!(out, "<ul class=\"crossings\">");
+        for (importer, specifier) in &wall.crossings {
+            let _ = writeln!(
+                out,
+                "<li><span class=\"file\">{}</span> → {}</li>",
+                escape(importer.as_str()),
+                code(specifier)
+            );
+        }
+        let _ = writeln!(out, "</ul>");
+        if folded {
+            let _ = writeln!(out, "</details>");
+        }
+        let _ = writeln!(out, "</article>");
+    }
+
+    let _ = writeln!(out, "</div>\n</section>");
+}
+
+/// What the run could not decide.
+///
+/// Bordered and coloured rather than tucked into a footer, on purpose. A page
+/// that hid these would be worse than the JSON: it would look more trustworthy
+/// while knowing less.
+fn html_blindspots(report: &Report, accepted: usize, out: &mut Vec<u8>) {
+    use std::io::Write as _;
+
+    use crate::html::{code, prose};
+
+    let mut notes: Vec<String> = Vec::new();
+
+    for (_, reason) in &report.unreadable_files {
+        // The reason is the parser's own sentence and already names the file
+        // in backticks, so the path is not repeated -- `prose` turns those into
+        // elements, and printing both left the same path twice, once as an
+        // element and once as punctuation.
+        notes.push(format!("<strong>Not read.</strong> {}", prose(reason)));
+    }
+    if report.checks_skipped > 0 {
+        notes.push(format!(
+            "<strong>{} {} nobody could make.</strong> {}",
+            report.checks_skipped,
+            plural(report.checks_skipped, "check", "checks"),
+            report
+                .skipped_checks
+                .iter()
+                .map(|(rule, path)| format!("{} on {}", code(rule), code(path.as_str())))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if report.imports.unresolved > 0 {
+        notes.push(format!(
+            "<strong>{} {} could not be resolved</strong>, so no boundary rule saw them.",
+            report.imports.unresolved,
+            plural(report.imports.unresolved, "import", "imports"),
+        ));
+    }
+    if accepted > 0 {
+        notes.push(format!(
+            "<strong>{accepted} {} accepted in the baseline</strong> and not counted above.",
+            plural(accepted, "finding is", "findings are"),
+        ));
+    }
+
+    if notes.is_empty() {
+        return;
+    }
+
+    let _ = write!(
+        out,
+        "<section>\n<div class=\"blindspots\">\n\
+         <h2>What this run did not decide</h2>\n\
+         <p class=\"lede\">A page that hid these would be worse than the JSON, \
+         because it would look more trustworthy while knowing less.</p>\n<ul>\n"
+    );
+    for note in notes {
+        let _ = writeln!(out, "<li>{note}</li>");
+    }
+    let _ = writeln!(out, "</ul>\n</div>\n</section>");
+}
+
 /// Skips on files the unreadable-file notes above do not account for.
 ///
 /// The other half of the same number. A skip on a file that *is* named above is

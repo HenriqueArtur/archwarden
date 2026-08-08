@@ -319,6 +319,69 @@ fn a_rule_that_never_mentions_subfolders_still_allows_them() {
         .success();
 }
 
+/// The page is a side artefact, not a rendering: the terminal keeps its summary
+/// and its exit code, and the file is written beside them. A browser cannot
+/// read a pipe, so a `--format` that had to be redirected would be the wrong
+/// shape for this.
+#[test]
+fn check_writes_a_page_without_changing_what_the_terminal_says() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"modules":[{"id":"domain","why":"published on its own",
+                "rules":[{"type":"structure","id":"domain-shape","level":"error",
+                 "roots":"packages/domain/src/*","allowed_subfolders":["calcs"]}]}]}"#,
+        ),
+        (
+            "packages/domain/src/order/nope/x.ts",
+            "export const x = 1;
+",
+        ),
+    ]);
+    let page = dir.path().join("report.html");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        // The gate is untouched: a side artefact never decides an exit code.
+        .code(1)
+        .stdout(contains("1 error"))
+        .stdout(contains("page written to"));
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.starts_with("<!doctype html>"), "{html}");
+    assert!(html.contains("published on its own"), "the reason travels");
+    assert!(!html.contains("<script"), "read-only");
+    assert!(!html.contains("https://"), "nothing is fetched");
+}
+
+/// A page that could not be written is reported and does not fail the run.
+/// Letting a full disk turn a failing build green would be the worst possible
+/// trade for a side artefact.
+#[test]
+fn a_page_that_cannot_be_written_does_not_change_the_exit_code() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{"type":"structure","id":"shape","level":"error",
+                "roots":"src","allowed_subfolders":[]}]}"#,
+        ),
+        (
+            "src/nope/x.ts",
+            "export const x = 1;
+",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--html", "no/such/directory/report.html"])
+        .assert()
+        .code(1)
+        .stderr(contains("cannot write"));
+}
+
 /// Issue #13, the half that is a bug on its own. An Astro repository with a
 /// boundary rule got exit 0 while every page imported the domain directly, and
 /// nothing in the output said the rule had not been evaluated for those files.

@@ -53,6 +53,48 @@ saying so.
   Existing configs are unaffected: a rule that names no annotation ignores them
   exactly as before.
 
+- **Two HTML pages, for the human the JSON was never for.**
+
+  ```bash
+  archwarden agent-guide --format html > architecture.html   # as declared
+  archwarden check --html .archwarden/report.html            # as it stands
+  ```
+
+  The JSON is a contract with agents and the text output is a gate. Neither is
+  what somebody about to *change* an architecture reads: that person is asking
+  where reality is pushing against the design, and gets there today by running
+  four commands and holding the results in their head.
+
+  So the pages are ordered for them. The centrepiece is a **module grid** —
+  rows import, columns are imported — and the one decision that carries it is
+  that **a forbidden edge is drawn, not alarmed**: a wall is the design working,
+  so it is hatched and colourless, and colour is spent only on a wall being
+  crossed. Hatching also means the two states differ by texture and not only by
+  hue.
+
+  Rows are numbered and columns carry only the number, which is what keeps the
+  grid readable past ten modules. Pressure is grouped **by wall rather than by
+  file**, because a wall crossed eleven times is a question about the wall; and
+  accepted debt is given the same weight as a current error, since it is where
+  somebody already decided the design was losing.
+
+  A cell is decided by asking the **same matchers the engines use** against the
+  directories the walk found. Nothing on a page is computed for the page.
+
+  Read-only, self-contained, no script and no network — a page that fetched
+  something would stop rendering from a CI artefact in two years. The section
+  naming what the run could not decide is bordered rather than tucked away: a
+  page that hid it would be worse than the JSON, because it would look more
+  trustworthy while knowing less.
+
+  `--html` on `check` is a side artefact rather than a `--format`: a browser
+  cannot read a pipe, so the terminal keeps its summary and its exit code and
+  the file is written beside them. A page that cannot be written is reported and
+  never changes the exit code.
+
+  `cargo xtask preview` writes both against a fixture repository, by running the
+  real binary — contributors judge the pages by looking at them.
+
 - **Astro support: the module inside the `---` fence is read.**
   ([#13](https://github.com/HenriqueArtur/archwarden/issues/13))
 
