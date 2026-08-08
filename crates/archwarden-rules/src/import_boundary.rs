@@ -20,7 +20,7 @@ use archwarden_core::{
     level::Level,
     path::RepoRelPath,
     scope::Scope,
-    traits::{FileContext, RuleEngine},
+    traits::{FactsNeeded, FileContext, RuleEngine},
 };
 
 /// A compiled `import-boundary` rule.
@@ -199,8 +199,8 @@ impl RuleEngine for ImportBoundaryEngine {
         self.scope.contains_file(path.as_path())
     }
 
-    fn needs_facts(&self) -> bool {
-        true
+    fn needs_facts(&self) -> FactsNeeded {
+        FactsNeeded::Code
     }
 
     fn needs_resolution(&self) -> bool {
@@ -717,7 +717,7 @@ mod tests {
     fn the_rule_declares_both_costs() {
         let engine = engine(&["packages/domain/**"], &[], &[], true);
 
-        assert!(engine.needs_facts());
+        assert_eq!(engine.needs_facts(), FactsNeeded::Code);
         assert!(engine.needs_resolution());
         assert_eq!(engine.id().as_str(), "ui-forbids-domain");
         assert_eq!(engine.module(), None);

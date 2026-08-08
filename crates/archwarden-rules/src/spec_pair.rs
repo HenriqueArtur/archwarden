@@ -15,7 +15,7 @@ use archwarden_core::{
     level::Level,
     path::{FileClass, RepoRelPath},
     scope::Scope,
-    traits::{FileContext, RuleEngine},
+    traits::{FactsNeeded, FileContext, RuleEngine},
 };
 
 /// Barrel files, which re-export and hold no behaviour of their own.
@@ -341,8 +341,12 @@ impl RuleEngine for SpecPairEngine {
         !self.is_exempt(path, name)
     }
 
-    fn needs_facts(&self) -> bool {
-        self.require_non_empty_spec || self.skip_type_only
+    fn needs_facts(&self) -> FactsNeeded {
+        if self.require_non_empty_spec || self.skip_type_only {
+            FactsNeeded::Code
+        } else {
+            FactsNeeded::Nothing
+        }
     }
 
     /// Reports a spec that exists but contains no test cases.
@@ -965,7 +969,7 @@ mod tests {
         let strict = SpecPairEngine::from_rule(&rule).expect("is a spec-pair rule");
 
         assert!(strict.applies_to(&path("src/user/thing.spec.ts")));
-        assert!(strict.needs_facts());
+        assert_eq!(strict.needs_facts(), FactsNeeded::Code);
     }
 
     /// The flag's whole purpose: a spec with a `describe` and no test cases
@@ -1149,8 +1153,14 @@ mod tests {
     /// is still the cheap one that only looks at names.
     #[test]
     fn the_flag_is_what_opens_the_file() {
-        assert!(type_only_engine(&["src/*"], &["."]).needs_facts());
-        assert!(!engine(&["src/*"], &["."], &[]).needs_facts());
+        assert_eq!(
+            type_only_engine(&["src/*"], &["."]).needs_facts(),
+            FactsNeeded::Code
+        );
+        assert_eq!(
+            engine(&["src/*"], &["."], &[]).needs_facts(),
+            FactsNeeded::Nothing
+        );
     }
 
     #[test]

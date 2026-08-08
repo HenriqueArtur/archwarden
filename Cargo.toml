@@ -74,20 +74,28 @@ oxc_span = "=0.141.0"
 oxc_syntax = "=0.141.0"
 oxc_resolver = "11.24.2"
 
+# --- document front-end -----------------------------------------------------
+# `saphyr` is the successor and was the first candidate; it is at 0.0.11, and
+# this workspace pins oxc exactly *because* 0.x crates break often. `yaml-rust2`
+# is the same lineage at 0.11 with a settled API.
+#
+# `default-features = false` drops `encoding_rs`, which is the WHATWG encoding
+# standard and would be the largest dependency in the tree. archwarden hands
+# the parser a `&str` it has already read as UTF-8, so there is nothing to
+# detect.
+yaml-rust2 = { version = "0.11.0", default-features = false }
+
 # --- walk, parallelism, cache ----------------------------------------------
 ignore = "0.4.31"
-rayon = "1.12.0"
 blake3 = "1.8.5"
 redb = "4.1.0"
 
 # --- cli --------------------------------------------------------------------
 clap = { version = "4.6.4", features = ["derive"] }
-anstream = "1.0.0"
 
 # --- dev --------------------------------------------------------------------
 assert_cmd = "2.2.2"
 criterion = "0.8.2"
-insta = { version = "1.48.0", features = ["json"] }
 predicates = "3.1.4"
 proptest = "1.11.0"
 tempfile = "3.27.0"

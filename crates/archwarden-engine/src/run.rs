@@ -17,7 +17,7 @@ use archwarden_core::{
     hash::ContentHash,
     level::Level,
     path::{FileClass, RepoRelPath},
-    traits::{Exists, FileContext, Parser as _},
+    traits::{Exists, FactsNeeded, FileContext, Parser as _},
 };
 use camino::Utf8Path;
 
@@ -131,7 +131,7 @@ pub struct Run<'a> {
 pub fn reads_files(config: &CompiledConfig) -> bool {
     archwarden_rules::engines_for(config)
         .iter()
-        .any(|engine| engine.needs_facts())
+        .any(|engine| engine.needs_facts() != FactsNeeded::Nothing)
 }
 
 /// Whether any rule in this configuration asks where an import lands.
@@ -200,15 +200,14 @@ pub fn check(run: Run<'_>) -> Report {
                 continue;
             }
 
-            // Bound once, because two decisions below depend on it and they
-            // must not drift: whether to read the file, and whether failing to
-            // have facts for it was a check nobody could make.
-            let is_source = file.class == FileClass::Source;
-
             // Read the file only if a rule that applies to it actually looks
             // inside. Deciding this per file rather than per run is what keeps
             // a mostly-structural configuration off the disk.
-            let mut facts = if is_source && wanted_by.iter().any(|engine| engine.needs_facts()) {
+            let mut facts = if file.class == FileClass::Source
+                && wanted_by
+                    .iter()
+                    .any(|engine| engine.needs_facts() == FactsNeeded::Code)
+            {
                 match facts_for(root, &file.path, cache.as_deref_mut()) {
                     Ok((facts, Source::Cache)) => {
                         facts_reused += 1;
@@ -256,7 +255,11 @@ pub fn check(run: Run<'_>) -> Report {
                 //
                 // The skip a file with no parser deserves is a different
                 // reason, not this one, and it is issue #13's to add.
-                if engine.needs_facts() && facts.is_none() && is_source {
+                // The pair decides, not the class alone: a boundary rule
+                // pointed at a `.md` wanted code facts from a file that could
+                // never have them and lost nothing, while the same rule pointed
+                // at a `.py` lost everything and used to say so nowhere.
+                if facts.is_none() && file.class.yields(engine.needs_facts()) {
                     checks_skipped += 1;
                     skipped_checks.push((engine.id().to_string(), file.path.clone()));
                 }
@@ -1209,6 +1212,52 @@ mod tests {
     /// wrong with the file. `AGENTS.md` says a run with skips must not be
     /// reported as clean, so such a count teaches a reader to ignore the one
     /// number it tells them to watch. Issue #15.
+    /// Issue #44's other half. A `.py` under a boundary rule used to be
+    /// `Other` — the class that exists so a PNG does not inflate the count — so
+    /// the rule saw no imports, reported nothing, and counted nothing. A rule
+    /// enforcing nothing looks exactly like a repository that satisfies it,
+    /// which `CONFIG.md` calls the worst failure a linter has.
+    ///
+    /// Nothing here becomes readable. It becomes *countable*.
+    #[test]
+    fn source_this_build_cannot_read_is_a_check_nobody_could_make() {
+        let (guard, root) = tree_at(&[
+            ("src/domain/order.ts", "export const order = 1;\n"),
+            (
+                "src/domain/handler.py",
+                "from src.infrastructure import db\n",
+            ),
+        ]);
+        let config = config(vec![rule(
+            "domain-forbids-infrastructure",
+            None,
+            &["src/*"],
+            boundary(&["src/infrastructure/**"], &[], &[]),
+        )]);
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let report = check(Run {
+            root: &root,
+            config: &config,
+            tree: &tree,
+            cache: None,
+        });
+        drop(guard);
+
+        assert_eq!(
+            report.checks_skipped, 1,
+            "the Python file has imports this build cannot read"
+        );
+        assert_eq!(
+            report
+                .skipped_checks
+                .iter()
+                .map(|(_, path)| path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/domain/handler.py"],
+            "and the run names it, so nobody has to guess"
+        );
+    }
+
     #[test]
     fn a_file_that_is_not_source_is_not_a_check_nobody_could_make() {
         let (guard, root) = tree_at(&[

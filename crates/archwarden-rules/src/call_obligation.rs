@@ -21,7 +21,7 @@ use archwarden_core::{
     path::RepoRelPath,
     pattern::Pattern,
     scope::Scope,
-    traits::{FileContext, RuleEngine},
+    traits::{FactsNeeded, FileContext, RuleEngine},
 };
 
 /// A compiled `call-obligation` rule.
@@ -155,8 +155,8 @@ impl RuleEngine for CallObligationEngine {
                 .is_some_and(|name| self.file_pattern.is_match(name))
     }
 
-    fn needs_facts(&self) -> bool {
-        true
+    fn needs_facts(&self) -> FactsNeeded {
+        FactsNeeded::Code
     }
 
     fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {
@@ -498,7 +498,7 @@ mod tests {
     fn the_rule_reads_facts_but_needs_no_resolution() {
         let engine = engine();
 
-        assert!(engine.needs_facts());
+        assert_eq!(engine.needs_facts(), FactsNeeded::Code);
         assert!(!engine.needs_resolution());
         assert_eq!(engine.id().as_str(), "non-get-routes-must-audit");
         assert_eq!(engine.module(), None);

@@ -15,7 +15,7 @@ use archwarden_core::{
     pattern::Pattern,
     scope::Scope,
     template,
-    traits::{FileContext, RuleEngine},
+    traits::{FactsNeeded, FileContext, RuleEngine},
 };
 
 /// A compiled `naming` rule.
@@ -299,8 +299,8 @@ impl RuleEngine for NamingEngine {
         self.required_name(path).is_some()
     }
 
-    fn needs_facts(&self) -> bool {
-        true
+    fn needs_facts(&self) -> FactsNeeded {
+        FactsNeeded::Code
     }
 
     fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {

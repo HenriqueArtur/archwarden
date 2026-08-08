@@ -45,7 +45,7 @@ use archwarden_core::{
     level::Level,
     path::RepoRelPath,
     scope::Scope,
-    traits::{FileContext, RuleEngine},
+    traits::{FactsNeeded, FileContext, RuleEngine},
 };
 
 /// A compiled `no-passthrough` rule.
@@ -180,8 +180,8 @@ impl RuleEngine for NoPassthroughEngine {
         !(self.allow_package_entrypoints && is_entry_point(path))
     }
 
-    fn needs_facts(&self) -> bool {
-        true
+    fn needs_facts(&self) -> FactsNeeded {
+        FactsNeeded::Code
     }
 
     fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {

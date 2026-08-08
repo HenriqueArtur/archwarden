@@ -445,7 +445,7 @@ mod tests {
         assert_eq!(
             classes,
             [
-                ("DOC.md", FileClass::Other),
+                ("DOC.md", FileClass::Document),
                 ("Makefile", FileClass::Other),
                 ("component.tsx", FileClass::Source),
                 ("data.json", FileClass::Other),

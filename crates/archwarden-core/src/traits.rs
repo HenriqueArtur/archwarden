@@ -88,6 +88,25 @@ pub struct FileContext<'a> {
     pub exists: Exists<'a>,
 }
 
+/// Which facts a rule needs read out of a file, if any.
+///
+/// `bool` was enough while one front-end existed. With two, "needs facts" is
+/// ambiguous in the one place it matters: whether an absent fact is an answer
+/// somebody lost. A boundary rule pointed at a `.md` wanted *code* facts from a
+/// file that could never have them, and counting that as a missed check would
+/// pin `checks_skipped` above zero in every repository that keeps documentation
+/// beside its code. See [`FileClass::yields`](crate::path::FileClass::yields).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FactsNeeded {
+    /// Nothing is read; the rule reasons about names and paths.
+    Nothing,
+    /// Imports, exports and calls — what a JS/TS front-end produces.
+    Code,
+    /// Frontmatter and headings — what a document front-end produces.
+    Document,
+}
+
 /// Whether a path exists, asked of whoever is driving the check.
 ///
 /// A closure rather than a listing, because the two callers know it two
@@ -170,14 +189,18 @@ pub trait RuleEngine: Send + Sync {
     /// files that do not exist yet.
     fn applies_to(&self, path: &RepoRelPath) -> bool;
 
-    /// Whether this rule reads inside a file.
+    /// Which facts this rule reads out of a file, if any.
     ///
     /// The runner uses this to decide what to parse. A structure-only
     /// configuration should never open a source file, and on a large
     /// repository that is the difference between a walk and thirty thousand
     /// reads.
-    fn needs_facts(&self) -> bool {
-        false
+    ///
+    /// It also decides whether a missing fact was an answer somebody lost:
+    /// paired with the file's class, "wanted code facts from a `.py`" is a
+    /// counted skip and "wanted code facts from a `.md`" is not.
+    fn needs_facts(&self) -> FactsNeeded {
+        FactsNeeded::Nothing
     }
 
     /// Whether this rule reads *where a file's imports land*.
@@ -239,8 +262,8 @@ mod tests {
             path.as_str().ends_with(".use-case.ts")
         }
 
-        fn needs_facts(&self) -> bool {
-            true
+        fn needs_facts(&self) -> FactsNeeded {
+            FactsNeeded::Code
         }
 
         fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {
@@ -309,7 +332,11 @@ mod tests {
         assert_eq!(engines[0].id().as_str(), "usecase-factory-name");
         assert_eq!(engines[0].level(), Level::Error);
         assert_eq!(engines[0].module(), None);
-        assert!(engines[0].needs_facts(), "it reads exports");
+        assert_eq!(
+            engines[0].needs_facts(),
+            FactsNeeded::Code,
+            "it reads exports"
+        );
         assert!(
             !engines[0].needs_resolution(),
             "but it never asks where an import goes"
@@ -493,8 +520,9 @@ mod tests {
         assert_eq!(directory_rule.level(), Level::Error);
         assert!(directory_rule.applies_to(&path));
         assert_eq!(directory_rule.describe_expectation(&path).len(), 1);
-        assert!(
-            !directory_rule.needs_facts(),
+        assert_eq!(
+            directory_rule.needs_facts(),
+            FactsNeeded::Nothing,
             "a directory rule reads names, not contents"
         );
         assert!(!directory_rule.needs_resolution());
