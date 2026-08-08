@@ -20,10 +20,15 @@
 //!
 //! # Why the list cannot drift
 //!
-//! [`tests::every_step_the_workflow_runs_is_accounted_for`] reads
+//! `tests::every_step_the_workflow_runs_is_accounted_for` reads
 //! `.github/workflows/ci.yml` and fails if a command there is missing from
 //! [`STEPS`], or if a command here is no longer in the workflow. Adding a job
 //! to CI without adding it here breaks the build that adds it.
+//!
+//! `tests::the_environment_ci_sets_is_the_environment_here` does the same for
+//! the workflow's `env:` block, which is the gap that let a broken doc link
+//! through: the command matched and the environment did not, and `-D warnings`
+//! is the difference between a warning and a failed build.
 //!
 //! A step CI runs that this task does not is written down as
 //! [`Role::NotAGate`] with its reason, so the list stays complete even where it
@@ -226,6 +231,38 @@ pub(crate) const STEPS: &[Step] = &[
     },
 ];
 
+/// The workflow's `env:` block, which every job on CI runs under.
+///
+/// Copying the command and not the environment is a gate that runs something
+/// *like* what CI runs. It let a broken intra-doc link through: `cargo doc`
+/// merely warns about one, and `RUSTFLAGS: -D warnings` is what turns it into
+/// the failed build CI reported. The command had matched character for
+/// character.
+///
+/// Kept in the same shape as [`STEPS`] and checked against the workflow by the
+/// same kind of test, for the same reason.
+/// `RUSTDOCFLAGS` is the subtle one, and it is not in the `env:` block.
+/// `actions-rust-lang/setup-rust-toolchain` takes a `rustflags` input that
+/// defaults to `-D warnings` and exports it as **both** `RUSTFLAGS` and
+/// `RUSTDOCFLAGS`. `RUSTFLAGS` alone never reaches rustdoc, so a run carrying
+/// only the `env:` block reproduces CI's compiler and not CI's documentation
+/// build — which is exactly how a broken intra-doc link was a warning here and
+/// a failed job there. The advisory job's own `rustflags: ""` is the visible
+/// evidence that the input exists.
+const WORKFLOW_ENV: &[(&str, &str)] = &[
+    ("CARGO_TERM_COLOR", "always"),
+    ("RUSTFLAGS", "-D warnings"),
+    ("RUSTDOCFLAGS", "-D warnings"),
+];
+
+/// The action that exports `RUSTDOCFLAGS`, named so the assumption is checked.
+///
+/// If the workflow moves to a different toolchain action, the one entry in
+/// [`WORKFLOW_ENV`] that no `env:` block accounts for stops being justified —
+/// and a test says so, rather than leaving it to be found on a pull request.
+#[cfg(test)]
+const TOOLCHAIN_ACTION: &str = "actions-rust-lang/setup-rust-toolchain";
+
 /// What cargo tells a program about the package it is running, and what a gate
 /// must not inherit.
 ///
@@ -420,6 +457,9 @@ impl Step {
         for variable in CARGO_INJECTED {
             command.env_remove(variable);
         }
+        for (name, value) in WORKFLOW_ENV {
+            command.env(name, value);
+        }
 
         Some(command)
     }
@@ -559,6 +599,118 @@ mod tests {
                 "STEPS lists `{command}` and ci.yml no longer runs it"
             );
         }
+    }
+
+    /// The workflow's top-level `env:` block, as `KEY = value` pairs.
+    ///
+    /// Top-level only: a `env:` nested under a step belongs to that step, and
+    /// the two in this workflow are the differential job's repository
+    /// variables, which no local run has.
+    fn workflow_env(yaml: &str) -> Vec<(String, String)> {
+        let mut found = Vec::new();
+        let mut inside = false;
+
+        for line in yaml.lines() {
+            if line.starts_with("env:") {
+                inside = true;
+                continue;
+            }
+            if !inside {
+                continue;
+            }
+            let Some(pair) = line.strip_prefix("  ") else {
+                break;
+            };
+            let Some((key, value)) = pair.split_once(':') else {
+                break;
+            };
+            found.push((key.trim().to_owned(), value.trim().to_owned()));
+        }
+
+        found
+    }
+
+    /// A gate that runs CI's command in a different environment is running
+    /// something *like* what CI runs. `RUSTFLAGS: -D warnings` is the whole
+    /// difference between `cargo doc` warning about a broken intra-doc link
+    /// and CI failing on it, and that is exactly how one reached GitHub with
+    /// all 13 gates green here.
+    #[test]
+    fn the_environment_ci_sets_is_the_environment_here() {
+        let yaml = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(".github/workflows/ci.yml"),
+        )
+        .expect("the workflow is in the repository");
+
+        let workflow = workflow_env(&yaml);
+        assert!(
+            !workflow.is_empty(),
+            "the env block was not found; the parser has stopped working"
+        );
+
+        for (key, value) in &workflow {
+            assert!(
+                WORKFLOW_ENV.contains(&(key.as_str(), value.as_str())),
+                "ci.yml sets {key}={value} and the gates here do not"
+            );
+        }
+        for (key, value) in WORKFLOW_ENV {
+            // RUSTDOCFLAGS is the one entry the `env:` block does not account
+            // for: the toolchain action exports it. The test below is what
+            // keeps that justified.
+            if *key == "RUSTDOCFLAGS" {
+                continue;
+            }
+            assert!(
+                workflow.iter().any(|(k, v)| k == key && v == value),
+                "the gates set {key}={value} and ci.yml no longer does"
+            );
+        }
+    }
+
+    /// `RUSTDOCFLAGS` is in the table because a specific action puts it in the
+    /// environment. If the workflow stops using that action, the entry is an
+    /// assumption nobody is checking — so this checks it.
+    #[test]
+    fn the_action_that_exports_rustdocflags_is_still_the_one_in_use() {
+        let yaml = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join(".github/workflows/ci.yml"),
+        )
+        .expect("the workflow is in the repository");
+
+        assert!(
+            yaml.contains(TOOLCHAIN_ACTION),
+            "the gates assume {TOOLCHAIN_ACTION} exports RUSTDOCFLAGS, and the \
+             workflow no longer uses it"
+        );
+        assert!(
+            WORKFLOW_ENV.contains(&("RUSTDOCFLAGS", "-D warnings")),
+            "without this rustdoc only warns, and CI fails on what it warned about"
+        );
+    }
+
+    /// And it reaches the child, not just the table.
+    #[test]
+    fn a_gate_runs_with_the_workflows_flags() {
+        let step = STEPS
+            .iter()
+            .find(|step| step.command.starts_with("cargo doc"))
+            .expect("doc is a gate");
+
+        let command = step.spawned(Path::new("/repo")).expect("a command");
+        let set: Vec<(&str, &str)> = command
+            .get_envs()
+            .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+            .collect();
+
+        assert!(
+            set.contains(&("RUSTFLAGS", "-D warnings")),
+            "the flag that turns a warning into a failed build was not passed"
+        );
     }
 
     /// The parser earns its own test: it is the thing the drift test trusts,
