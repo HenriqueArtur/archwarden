@@ -17,6 +17,8 @@ saying so.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-08
+
 ### Added
 
 - **`must_export.annotation`: a `naming` rule can require the export to write
@@ -365,8 +367,12 @@ saying so.
 - **A `naming` finding about an export that exists now carries a span**, so it
   prints as `path:line:column` and opens in an editor. Findings about an export
   that is *missing* still have none — there is no position to name.
-- The facts cache format is at version 4. The first run after upgrading
-  re-parses; nothing else changes.
+- **The cache format is at version 5**, from 3. `ExportFact` gained its
+  annotations, `FileClass` gained two answers, and documents got a table of
+  their own — an entry written by 0.9.2 would deserialise cleanly and be wrong
+  about all three. A cache from an older format is discarded rather than
+  misread, so the first run after upgrading is a cold one and nothing else
+  changes.
 
 ## [0.9.2] — 2026-08-07
 
