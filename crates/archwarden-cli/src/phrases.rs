@@ -376,9 +376,21 @@ impl Phrases for En {
 
 /// Brazilian Portuguese.
 ///
-/// "Parede" for a boundary throughout, and not "fronteira": the page's whole
-/// argument is that a forbidden edge is a *thing that was built*, not a line on
-/// a map, and "parede" carries that where "fronteira" does not.
+/// # A term of art is not translated
+///
+/// `boundary`, `check`, `import`, `finding`, `baseline` and `config` stay as
+/// they are, because that is how the people reading this page talk. The first
+/// draft said "parede" for a boundary — a metaphor that is *the page's own*, in
+/// English, and reads as a literal wall in Portuguese. It also sat next to
+/// `import-boundary`, the rule kind, printed in the same card: the reader had
+/// to bridge two names for one thing.
+///
+/// The metaphor stays where it belongs, in the English copy. What crosses the
+/// language is the concept, under the name the field already uses for it.
+///
+/// Ordinary words are still translated. `módulo`, `arquivo`, `erro`, `aviso`,
+/// `regra` are not jargon in either language, and leaving them in English would
+/// be a different affectation.
 pub struct PtBr;
 
 impl Phrases for PtBr {
@@ -408,7 +420,7 @@ impl Phrases for PtBr {
         "sem motivo"
     }
     fn rules_eyebrow(&self) -> &'static str {
-        "as paredes"
+        "as boundaries"
     }
     fn rules_heading(&self) -> &'static str {
         "Cada regra, e para que ela serve"
@@ -434,7 +446,7 @@ impl Phrases for PtBr {
         format!(
             "{modules} {}, {walls} {}, {crossed} sendo {}",
             plural(modules, "módulo", "módulos"),
-            plural(walls, "parede", "paredes"),
+            plural(walls, "boundary", "boundaries"),
             plural(crossed, "atravessada", "atravessadas")
         )
     }
@@ -484,21 +496,21 @@ impl Phrases for PtBr {
     }
 
     fn walls_eyebrow(&self) -> &'static str {
-        "as paredes"
+        "as boundaries"
     }
     fn walls_heading(&self) -> &'static str {
         "Quem pode importar quem"
     }
     fn walls_lede(&self) -> &'static str {
-        "As linhas importam, as colunas são importadas. Hachura é uma parede — \
-         isso é o desenho funcionando, não um problema. Um número é uma parede \
-         sendo atravessada agora."
+        "As linhas importam, as colunas são importadas. Hachura é uma boundary \
+         — isso é o desenho funcionando, não um problema. Um número é uma \
+         boundary sendo atravessada agora."
     }
     fn legend_allowed(&self) -> &'static str {
         "permitido"
     }
     fn legend_forbidden(&self) -> &'static str {
-        "uma parede — nenhuma regra permite isto"
+        "uma boundary — nenhuma regra permite isto"
     }
     fn legend_crossed(&self) -> &'static str {
         "atravessada agora, com quantos imports"
@@ -508,20 +520,20 @@ impl Phrases for PtBr {
         "onde a realidade empurra"
     }
     fn pressure_heading(&self) -> &'static str {
-        "As paredes sob pressão"
+        "As boundaries sob pressão"
     }
     fn pressure_lede(&self) -> &'static str {
-        "Agrupado por parede e não por arquivo, porque uma parede atravessada \
-         onze vezes é uma pergunta sobre a parede."
+        "Agrupado por boundary e não por arquivo, porque uma boundary \
+         atravessada onze vezes é uma pergunta sobre a boundary."
     }
     fn holding(&self) -> &'static str {
         "segurando"
     }
     fn crossing_now(&self, n: usize) -> String {
-        format!("{n} {} agora", plural(n, "travessia", "travessias"))
+        format!("{n} atravessando agora")
     }
     fn nothing_crosses(&self) -> &'static str {
-        "Nada atravessa esta parede hoje."
+        "Nada atravessa esta boundary hoje."
     }
     fn imports(&self, n: usize) -> String {
         format!("{n} imports")
@@ -540,11 +552,11 @@ impl Phrases for PtBr {
     fn checks_nobody_could_make(&self, n: usize) -> String {
         format!(
             "{n} {} que ninguém pôde fazer.",
-            plural(n, "checagem", "checagens")
+            plural(n, "check", "checks")
         )
     }
     fn unresolved_imports(&self, n: usize) -> String {
-        format!("{n} imports não resolveram, então nenhuma regra de fronteira os viu.")
+        format!("{n} imports não resolveram, então nenhuma regra de boundary os viu.")
     }
     fn accepted_in_baseline(&self, n: usize) -> String {
         format!(
@@ -609,6 +621,41 @@ mod tests {
         assert_eq!(Language::En.phrases().errors(3), "3 errors");
         assert_eq!(Language::PtBr.phrases().errors(1), "1 erro");
         assert_eq!(Language::PtBr.phrases().errors(3), "3 erros");
+    }
+
+    /// A term of art is not translated.
+    ///
+    /// The first draft said "parede" for a boundary — the page's own English
+    /// metaphor, carried into a language where it reads as a literal wall, and
+    /// printed beside `import-boundary` so the reader had two names for one
+    /// thing. `fronteira` and `checagem` were the same mistake under other
+    /// words.
+    #[test]
+    fn the_fields_own_words_survive_translation() {
+        let say = Language::PtBr.phrases();
+        let page = [
+            say.walls_heading().to_owned(),
+            say.walls_lede().to_owned(),
+            say.pressure_heading().to_owned(),
+            say.pressure_lede().to_owned(),
+            say.legend_forbidden().to_owned(),
+            say.nothing_crosses().to_owned(),
+            say.unresolved_imports(4),
+            say.checks_nobody_could_make(2),
+            say.report_heading(5, 9, 4),
+        ]
+        .join(" ");
+
+        for translated in ["parede", "fronteira", "checagem", "achado"] {
+            assert!(
+                !page.contains(translated),
+                "`{translated}` is a term the field keeps in English: {page}"
+            );
+        }
+        assert!(
+            page.contains("boundary"),
+            "and the word it does use: {page}"
+        );
     }
 
     /// English is the default, and stays it whatever the machine's locale says.
