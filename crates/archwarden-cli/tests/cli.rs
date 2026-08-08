@@ -319,6 +319,95 @@ fn a_rule_that_never_mentions_subfolders_still_allows_them() {
         .success();
 }
 
+/// Issue #13, the half that is a bug on its own. An Astro repository with a
+/// boundary rule got exit 0 while every page imported the domain directly, and
+/// nothing in the output said the rule had not been evaluated for those files.
+///
+/// It is loud now even without opting in — which is the point: a user who never
+/// read about the feature still finds out.
+#[test]
+fn astro_files_are_a_named_skip_until_the_config_asks_for_them() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"import-boundary","id":"pages-forbid-domain","level":"error",
+                 "from":["src/**"],"forbid_import_from":["src/domain/**"]}]}"#,
+        ),
+        ("src/domain/post.ts", "export const post = 1;\n"),
+        (
+            "src/pages/blog.astro",
+            "---\nimport { post } from '../domain/post';\n---\n\n<div />\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success()
+        .stdout(contains("skipped"))
+        .stdout(contains("src/pages/blog.astro"));
+}
+
+/// And with the opt-in, the boundary is actually held. The import lives in the
+/// `---` fence, which is where essentially every import in an Astro page is.
+#[test]
+fn an_astro_page_crossing_a_boundary_is_reported_once_astro_is_enabled() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"languages":["ts","astro"],"rules":[
+                {"type":"import-boundary","id":"pages-forbid-domain","level":"error",
+                 "from":["src/**"],"forbid_import_from":["src/domain/**"]}]}"#,
+        ),
+        ("src/domain/post.ts", "export const post = 1;\n"),
+        (
+            "src/pages/blog.astro",
+            "---\nimport { post } from '../domain/post';\n---\n\n<div />\n",
+        ),
+        ("src/pages/sobre.astro", "<h1>Sobre</h1>\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("src/pages/blog.astro"))
+        // A markup-only page has no imports, and is not a skip either.
+        .stdout(contains("sobre.astro").not())
+        .stdout(contains("skipped").not());
+}
+
+/// The rule issue #13 says earns its keep, and it falls out of reading the
+/// fence: an Astro page has no named component export, but it does export
+/// `getStaticPaths`.
+#[test]
+fn a_naming_rule_can_ask_an_astro_page_for_get_static_paths() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"languages":["ts","astro"],"rules":[
+                {"type":"naming","id":"pages-are-static","level":"error",
+                 "roots":["src/pages/blog"],
+                 "file_pattern":"^\\[.+\\]\\.astro$",
+                 "must_export":{"kind":["function"],"name":"getStaticPaths"}}]}"#,
+        ),
+        (
+            "src/pages/blog/[slug].astro",
+            "---\nconst x = 1;\n---\n<div />\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("no export named `getStaticPaths`"));
+}
+
 /// Issue #44, end to end and through every layer that is new: the walk
 /// classifies a `.md` as a document, the document front-end finds the fence and
 /// parses the block, the cache stores it in its own table, and the rule asks it

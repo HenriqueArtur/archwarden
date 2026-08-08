@@ -63,6 +63,27 @@ impl ParserTrait for OxcParser {
         let source_type = SourceType::from_path(path.as_path())
             .map_err(|_| ParseError::UnsupportedExtension { path: path.clone() })?;
 
+        Self::parse_as(path, source, source_type, content_hash)
+    }
+}
+
+impl OxcParser {
+    /// Extracts facts from source whose kind the caller decides.
+    ///
+    /// `SourceType::from_path` answers for a file archwarden reads whole. A
+    /// front-end for a format that *embeds* a module -- an `.astro` fence -- has
+    /// a path the extension list rejects and a slice it already knows is
+    /// TypeScript, so the decision moves to a parameter rather than being taken
+    /// from a name that cannot answer. Issue #13.
+    ///
+    /// # Errors
+    /// When the slice does not parse.
+    pub fn parse_as(
+        path: &RepoRelPath,
+        source: &str,
+        source_type: SourceType,
+        content_hash: ContentHash,
+    ) -> Result<FileFacts, ParseError> {
         let allocator = Allocator::default();
         let parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
 

@@ -210,12 +210,13 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
         },
     };
 
-    Ok(CompiledConfig::new(
-        rules,
-        ignore,
-        skip_dirs,
-        rules_hash(config),
-    ))
+    Ok(
+        CompiledConfig::new(rules, ignore, skip_dirs, rules_hash(config)).with_languages(
+            archwarden_core::compiled::Languages {
+                astro: config.languages.contains(&config::Language::Astro),
+            },
+        ),
+    )
 }
 
 /// Hashes the effective rule set, for the `findings` cache key.

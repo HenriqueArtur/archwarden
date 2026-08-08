@@ -32,6 +32,16 @@
       "description": "Extra ignore globs, on top of `.gitignore`, which is always honoured.\n\nIgnore always wins over a rule's scope, however specific that scope is:\na kill-switch that can be overridden by accident is not one.",
       "$ref": "#/$defs/OneOrMany"
     },
+    "languages": {
+      "description": "Which languages this repository asks archwarden to read.\n\nDefaults to `[\"ts\"]`, which is JavaScript and TypeScript together —\nevery config written before this field meant exactly that, and still\ndoes.\n\n**Opt-in on purpose, and not because of cost.** A repository with no\n`.astro` file pays nothing for an Astro front-end either way. What the\nfield buys is that widening what archwarden governs is a decision\nwritten in the config, rather than one that arrives with a dependency\nupgrade — and the un-opted state is loud rather than silent: a file in a\nlanguage this config did not ask for is a *counted, named* skip, so a\nuser who never read about the feature still finds out. Issue #13.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Language"
+      },
+      "default": [
+        "ts"
+      ]
+    },
     "skip_dirs": {
       "description": "The `_`-prefix escape hatch.",
       "$ref": "#/$defs/SkipDirs",
@@ -82,6 +92,21 @@
           "items": {
             "type": "string"
           }
+        }
+      ]
+    },
+    "Language": {
+      "description": "A language archwarden has a front-end for.\n\nMarkdown is absent on purpose: a `frontmatter` rule names the documents it\nis about, so asking for it in two places would let them disagree. This list\nis for languages whose files would otherwise be read as *code* by a rule\nthat never named them.",
+      "oneOf": [
+        {
+          "description": "JavaScript and TypeScript, which are one front-end.",
+          "type": "string",
+          "const": "ts"
+        },
+        {
+          "description": "Astro components: the TypeScript module inside the `---` fence.",
+          "type": "string",
+          "const": "astro"
         }
       ]
     },

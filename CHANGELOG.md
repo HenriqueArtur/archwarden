@@ -53,6 +53,44 @@ saying so.
   Existing configs are unaffected: a rule that names no annotation ignores them
   exactly as before.
 
+- **Astro support: the module inside the `---` fence is read.**
+  ([#13](https://github.com/HenriqueArtur/archwarden/issues/13))
+
+  ```json
+  { "version": 0, "languages": ["ts", "astro"] }
+  ```
+
+  `.astro` files were invisible to every fact-based rule, and silently so. An
+  Astro repository with `from: "src/**"` and `forbid_import_from:
+  ["src/domain/**"]` got exit 0 while every page imported the domain directly.
+
+  Stage 1 of the issue's own design: the `---` fence is a plain TypeScript
+  module and is where essentially every import in an Astro page lives, so the
+  front-end finds the fence and hands the slice to `oxc`. It owns no parser.
+  Spans are shifted back into the file, because a wrong `path:line:column` is
+  worse than none — it is one a reader opens.
+
+  The template and inline `<script>` are **not** read. That is stated rather
+  than discovered, and it is stage 2.
+
+  Opt-in through `languages`, and not because of cost: widening what archwarden
+  governs should be a decision written in the config rather than one that
+  arrives with a dependency upgrade. **The un-opted state is loud** — an
+  `.astro` file under a rule that needs facts is a counted, named skip.
+
+  `.astro` is its own file class rather than plain source, which is what keeps
+  `spec-pair` from demanding `Card.spec.astro` — the spec for an Astro
+  component is `Card.spec.ts`, and that override is issue #45's shape, not this
+  one's. `.vue` and `.svelte` land in the same class when they arrive.
+
+  The resolver learned `.astro`, so `import Layout from './Base.astro'` lands on
+  a path rather than resolving to nothing.
+
+- **`config explain` and `check` now name a skipped check nobody attempted.**
+  The text output said `1 skipped` and nothing else, which is
+  indistinguishable from a skip on a file that could not be read — and the two
+  are opposite decisions. Only the JSON carried the path.
+
 - **A `frontmatter` rule: a document's YAML block must carry these keys.**
   ([#44](https://github.com/HenriqueArtur/archwarden/issues/44))
 

@@ -232,7 +232,7 @@ pub fn check(run: Run<'_>) -> Report {
                 None
             };
 
-            let mut facts = if file.class == FileClass::Source
+            let mut facts = if reads_as_code(file.class, config.languages())
                 && wanted_by
                     .iter()
                     .any(|engine| engine.needs_facts() == FactsNeeded::Code)
@@ -413,6 +413,19 @@ fn read_docs(
     }
 }
 
+/// Whether this run may read a file of this class as code.
+///
+/// JS/TS always. Astro only when the configuration asked for it -- and when it
+/// did not, the file produces no facts, which `yields` then turns into a
+/// counted, named skip rather than a silent pass. Issue #13.
+fn reads_as_code(class: FileClass, languages: archwarden_core::compiled::Languages) -> bool {
+    match class {
+        FileClass::Source => true,
+        FileClass::Embedded => languages.astro,
+        _ => false,
+    }
+}
+
 /// Document facts for one file, from the cache when they are there.
 ///
 /// The same shape as [`facts_for`], deliberately: the second front-end earns no
@@ -461,10 +474,19 @@ pub fn facts_of(root: &Utf8Path, path: &RepoRelPath) -> Result<FileFacts, String
     parse(path, &source, content)
 }
 
+/// Reads one file as code, through whichever front-end its class names.
+///
+/// The dispatch is by class rather than by extension: `FileClass` already
+/// answers "what kind of file is this" from the name alone, and asking a second
+/// time here is where the two would drift.
 fn parse(path: &RepoRelPath, source: &str, content: ContentHash) -> Result<FileFacts, String> {
-    archwarden_parser::oxc::OxcParser
-        .parse(path, source, content)
-        .map_err(|error| error.to_string())
+    let class = path.file_name().map_or(FileClass::Other, FileClass::of);
+
+    match class {
+        FileClass::Embedded => archwarden_parser::astro::parse(path, source, content),
+        _ => archwarden_parser::oxc::OxcParser.parse(path, source, content),
+    }
+    .map_err(|error| error.to_string())
 }
 
 /// The level a report should be summarised at, for a caller choosing an exit

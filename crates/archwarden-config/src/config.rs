@@ -42,6 +42,22 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub ignore: OneOrMany<String>,
 
+    /// Which languages this repository asks archwarden to read.
+    ///
+    /// Defaults to `["ts"]`, which is JavaScript and TypeScript together —
+    /// every config written before this field meant exactly that, and still
+    /// does.
+    ///
+    /// **Opt-in on purpose, and not because of cost.** A repository with no
+    /// `.astro` file pays nothing for an Astro front-end either way. What the
+    /// field buys is that widening what archwarden governs is a decision
+    /// written in the config, rather than one that arrives with a dependency
+    /// upgrade — and the un-opted state is loud rather than silent: a file in a
+    /// language this config did not ask for is a *counted, named* skip, so a
+    /// user who never read about the feature still finds out. Issue #13.
+    #[serde(default = "default_languages", skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<Language>,
+
     /// The `_`-prefix escape hatch.
     #[serde(default)]
     pub skip_dirs: SkipDirs,
@@ -82,6 +98,26 @@ pub struct Module {
     /// The rules in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<Rule>,
+}
+
+/// A language archwarden has a front-end for.
+///
+/// Markdown is absent on purpose: a `frontmatter` rule names the documents it
+/// is about, so asking for it in two places would let them disagree. This list
+/// is for languages whose files would otherwise be read as *code* by a rule
+/// that never named them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum Language {
+    /// JavaScript and TypeScript, which are one front-end.
+    Ts,
+    /// Astro components: the TypeScript module inside the `---` fence.
+    Astro,
+}
+
+fn default_languages() -> Vec<Language> {
+    vec![Language::Ts]
 }
 
 /// Which directories are exempt, and from what.

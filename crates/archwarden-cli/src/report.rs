@@ -772,6 +772,13 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         }
     }
 
+    // The other half of the same number. A skip on a file that *is* named above
+    // is a bug to investigate; a skip on one that is not was never attempted --
+    // a language this configuration did not ask archwarden to read, most often.
+    // `1 skipped` could not tell those apart, and they are opposite decisions.
+    // Issue #13.
+    render_unattempted_skips(report, out);
+
     // Without this, `0 errors` beside exit 1 is a contradiction the reader
     // cannot resolve: the gate counts what was evaluated, and the line above
     // counts what was asked for.
@@ -1127,6 +1134,38 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
 /// Shared with `describe`, which renders the same expectations for a file that
 /// does not exist yet. One renderer, so the gate and the informant can never
 /// word the same requirement differently -- decision 9.
+/// Skips on files the unreadable-file notes above do not account for.
+///
+/// The other half of the same number. A skip on a file that *is* named above is
+/// a bug to investigate; a skip on one that is not was never attempted -- a
+/// language this configuration did not ask archwarden to read, most often.
+/// `1 skipped` could not tell those apart, and they are opposite decisions.
+/// Issue #13.
+fn render_unattempted_skips(report: &Report, out: &mut dyn std::io::Write) {
+    let mut by_path: std::collections::BTreeMap<&RepoRelPath, Vec<&str>> =
+        std::collections::BTreeMap::new();
+
+    for (rule, path) in &report.skipped_checks {
+        let named_above = report
+            .unreadable_files
+            .iter()
+            .any(|(unreadable, _)| unreadable == path);
+        if !named_above {
+            by_path.entry(path).or_default().push(rule.as_str());
+        }
+    }
+
+    for (path, rules) in by_path {
+        let _ = writeln!(
+            out,
+            "note: `{path}` was not read, so {} {} skipped there: {}",
+            rules.len(),
+            plural(rules.len(), "check was", "checks were"),
+            rules.join(", "),
+        );
+    }
+}
+
 /// What a document's frontmatter must carry.
 ///
 /// Three clauses, in the order the rule reads them: the keys, then the closed
@@ -2284,6 +2323,43 @@ mod tests {
                 "{observed:?} rendered as {sentence}"
             );
         }
+    }
+
+    /// Issue #13's reporting half. `1 skipped` is indistinguishable from a
+    /// skip on an unreadable file and one on a rule nobody could evaluate, and
+    /// the two mean opposite things: one is a bug to investigate, the other is
+    /// a decision the project has not made — a language the config never asked
+    /// archwarden to read.
+    ///
+    /// The unreadable case already names its file. This is the other one, which
+    /// named nothing.
+    #[test]
+    fn a_skip_with_no_unreadable_file_still_names_what_and_where() {
+        let mut report = report(Vec::new());
+        report.checks_skipped = 1;
+        report.skipped_checks = vec![(
+            "pages-forbid-domain".to_owned(),
+            path("src/pages/blog.astro"),
+        )];
+
+        let text = rendered(&report, Format::Text);
+
+        assert!(text.contains("src/pages/blog.astro"), "{text}");
+        assert!(text.contains("pages-forbid-domain"), "{text}");
+    }
+
+    /// And a skip the unreadable-file note already accounts for is not printed
+    /// twice.
+    #[test]
+    fn a_skip_under_an_unreadable_file_is_named_once() {
+        let mut report = report(Vec::new());
+        report.unreadable_files = vec![(path("src/broken.ts"), "unexpected token".to_owned())];
+        report.checks_skipped = 1;
+        report.skipped_checks = vec![("usecase-name".to_owned(), path("src/broken.ts"))];
+
+        let text = rendered(&report, Format::Text);
+
+        assert_eq!(text.matches("src/broken.ts").count(), 1, "{text}");
     }
 
     /// Issue #44. Six ways a frontmatter block can disappoint a rule, and six

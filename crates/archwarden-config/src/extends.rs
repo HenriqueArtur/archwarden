@@ -113,6 +113,11 @@ pub fn merge(entry: LoadedConfig, resolver: &PresetResolver) -> Result<MergedCon
     merged.root = config.root;
     merged.schema = config.schema;
     merged.skip_dirs = config.skip_dirs;
+    // The entry config's, not a preset's. Which languages a repository asks
+    // archwarden to read is a decision about *this* repository, and a shared
+    // preset cannot know whether the project including it has any `.astro` at
+    // all -- the same reasoning that stops a preset setting `root`.
+    merged.languages = config.languages;
 
     check_disable_targets(&merged, &origins)?;
 

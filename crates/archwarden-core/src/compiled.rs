@@ -19,6 +19,17 @@ use crate::{
     scope::Scope,
 };
 
+/// Which languages the configuration asked archwarden to read.
+///
+/// Carried rather than assumed, because a file in a language nobody asked for
+/// is a *counted, named* skip and not a silent pass. See issue #13.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Languages {
+    /// Astro components. JS/TS is always read and needs no flag: a
+    /// configuration that asked for nothing still means TypeScript.
+    pub astro: bool,
+}
+
 /// How far a `skip_dirs` exemption reaches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -313,9 +324,28 @@ pub struct CompiledConfig {
     ignore: PathSet,
     skip_dirs: SkipDirs,
     rules_hash: ContentHash,
+    languages: Languages,
 }
 
 impl CompiledConfig {
+    /// Records which languages the configuration asked for.
+    ///
+    /// A builder step rather than a fifth parameter to `new`: every caller that
+    /// does not care -- which is every test of a rule -- keeps the constructor
+    /// it had, and the one that does says so in a line that names what it is
+    /// setting.
+    #[must_use]
+    pub fn with_languages(mut self, languages: Languages) -> Self {
+        self.languages = languages;
+        self
+    }
+
+    /// Which languages this configuration asked archwarden to read.
+    #[must_use]
+    pub fn languages(&self) -> Languages {
+        self.languages
+    }
+
     /// Builds a compiled config.
     #[must_use]
     pub fn new(
@@ -329,6 +359,7 @@ impl CompiledConfig {
             ignore,
             skip_dirs,
             rules_hash,
+            languages: Languages::default(),
         }
     }
 

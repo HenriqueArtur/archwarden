@@ -108,12 +108,46 @@ would refuse to complete.
 - `ignore` — extra ignore globs on top of `.gitignore` (which is always
   honoured). Ignore always wins over a rule's scope, however specific that
   scope is.
+- `languages` — which languages archwarden reads. Defaults to `["ts"]`, which
+  is JavaScript and TypeScript together. `["ts", "astro"]` adds the TypeScript
+  module inside an `.astro` file's `---` fence.
 - `skip_dirs` — the `_`-prefix escape hatch, see [`RULES.md`](RULES.md).
 - `modules` — logical groupings of rules. A "module" is just a name that
   scopes a set of rules to a set of paths. Naming things helps error
   reporting: findings show `[domain] packages/domain/src/user/wrong-folder/`.
 - `rules` — rules that belong to no particular module, typically import
   boundaries (which are cross-module by nature). They report as `[*]`.
+
+### `languages` — what archwarden reads
+
+```json
+{ "version": 0, "languages": ["ts", "astro"] }
+```
+
+Opt-in, and **not because of cost** — a repository with no `.astro` file pays
+nothing either way. What the field buys is that widening what archwarden
+governs is a decision written in the config, rather than one that arrives with
+a dependency upgrade.
+
+**The un-opted state is loud, not silent.** A file in a language this config did
+not ask for still produces a *counted, named* skip, so a user who never read
+about the feature finds out:
+
+```
+note: `src/pages/blog.astro` was not read, so 1 check was skipped there: pages-forbid-domain
+0 errors, 0 warnings, 1 skipped · 3 files, 4 directories · 9ms
+```
+
+That distinction matters: a skip on a file archwarden *could not read* is a bug
+to investigate, and a skip on one it was never asked to read is a decision the
+project has not made. `1 skipped` could not tell them apart.
+
+A preset may not set `languages`, for the same reason it may not set `root`: it
+cannot know whether the repository including it has any `.astro` at all.
+
+Markdown is deliberately absent from the list. A `frontmatter` rule names the
+documents it is about, and asking for the same thing in two places would let
+them disagree.
 
 ## Rule categories
 

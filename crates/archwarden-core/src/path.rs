@@ -154,6 +154,15 @@ pub enum FileClass {
     /// front-end that reads it is a different one. Not `Other`, because a rule
     /// that wanted to look inside one and could not has lost an answer.
     Document,
+    /// Source whose code is embedded in another file format.
+    ///
+    /// An `.astro` file is a TypeScript module inside a `---` fence with a
+    /// template around it. It yields the same facts a `.ts` file does and is
+    /// not the same *kind of thing*: `spec-pair` reads `Source` as "a unit that
+    /// needs a test", and the spec for `Card.astro` is `Card.spec.ts`, never
+    /// `Card.spec.astro`. `.vue` and `.svelte` are the same shape when they
+    /// arrive.
+    Embedded,
     /// Source in a language this build has no front-end for.
     ///
     /// The class that closes a hole rather than opening a door. A `.py` under
@@ -176,6 +185,9 @@ impl FileClass {
     /// Extensions the document front-end can read.
     const DOCUMENT: [&'static str; 2] = ["md", "markdown"];
 
+    /// Extensions whose code lives inside another format.
+    const EMBEDDED: [&'static str; 1] = ["astro"];
+
     /// Extensions that are somebody's source and nobody's here.
     ///
     /// A heuristic, and deliberately a short one. Its only job is to turn
@@ -196,6 +208,8 @@ impl FileClass {
 
         if Self::SOURCE.contains(&extension) {
             Self::Source
+        } else if Self::EMBEDDED.contains(&extension) {
+            Self::Embedded
         } else if Self::DOCUMENT.contains(&extension) {
             Self::Document
         } else if Self::UNREADABLE_SOURCE.contains(&extension) {
@@ -221,7 +235,7 @@ impl FileClass {
         match (self, needed) {
             // Source this build cannot read still *has* imports and exports.
             // That is the whole point of the class.
-            (Self::Source | Self::UnreadableSource, FactsNeeded::Code)
+            (Self::Source | Self::Embedded | Self::UnreadableSource, FactsNeeded::Code)
             | (Self::Document, FactsNeeded::Document) => true,
             _ => false,
         }
@@ -447,6 +461,31 @@ mod tests {
         for name in ["README.md", "DOC.md", "projeto.md", "notes.markdown"] {
             assert_eq!(FileClass::of(name), FileClass::Document, "{name}");
         }
+    }
+
+    /// Issue #13. An `.astro` file is source, and its code is not the whole
+    /// file — the module lives inside a `---` fence, with a template around it.
+    ///
+    /// A class of its own rather than `Source`, and the reason is `spec-pair`:
+    /// that rule reads `FileClass::of(name) == Source` as "this is a unit that
+    /// needs a test", and the spec for `Card.astro` is `Card.spec.ts`, never
+    /// `Card.spec.astro`. Calling it `Source` would demand a file nobody
+    /// writes.
+    #[test]
+    fn source_embedded_in_another_format_is_its_own_class() {
+        for name in ["index.astro", "Card.astro"] {
+            assert_eq!(FileClass::of(name), FileClass::Embedded, "{name}");
+        }
+    }
+
+    /// It still yields code facts: the fence is a TypeScript module, and it is
+    /// where every import in an Astro page lives.
+    #[test]
+    fn an_embedded_source_file_yields_code_facts() {
+        use crate::traits::FactsNeeded;
+
+        assert!(FileClass::Embedded.yields(FactsNeeded::Code));
+        assert!(!FileClass::Embedded.yields(FactsNeeded::Document));
     }
 
     /// The gap this closes: a `.py` under a rule that needs facts used to be
