@@ -271,6 +271,87 @@ fn scaffold_hands_over_the_annotated_declaration() {
         ));
 }
 
+/// Issue #40, the reporter's repository reduced: a directory that is a leaf by
+/// design, said the only way the config can say it. This used to be valid at
+/// `config validate`, silent at `config doctor` and skipped at `check` — three
+/// commands agreeing that a rule was fine while it enforced nothing.
+#[test]
+fn an_empty_allowed_subfolders_forbids_every_subfolder() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"referencia-sem-subpasta","level":"error",
+                 "roots":["referencia"],"allowed_subfolders":[]}]}"#,
+        ),
+        ("referencia/nota.md", "# nota\n"),
+        ("referencia/subpasta-que-nao-deveria-existir/x.md", "# x\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("subpasta-que-nao-deveria-existir"));
+}
+
+/// The other half of the same distinction, and the one that must not change:
+/// a rule that constrains filenames and never mentions subfolders is unchanged
+/// by all of it.
+#[test]
+fn a_rule_that_never_mentions_subfolders_still_allows_them() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"referencia-so-md","level":"error",
+                 "roots":["referencia"],"filename_patterns":["^[a-z-]+\\.md$"]}]}"#,
+        ),
+        ("referencia/nota.md", "# nota\n"),
+        ("referencia/qualquer-subpasta/x.md", "# x\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success();
+}
+
+/// Issue #41. `explain` used to end a "covers nothing" report by referring to
+/// `config doctor`, which then said nothing about that rule — a dead end at
+/// exactly the moment a user had been told the tool knew the answer.
+#[test]
+fn explain_says_why_a_rule_constrains_nothing_instead_of_referring_on() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"toothless","level":"error",
+                 "roots":["referencia"]}]}"#,
+        ),
+        ("referencia/nota.md", "# nota\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "explain", "toothless"])
+        .assert()
+        .success()
+        .stdout(contains("constrains nothing"))
+        .stdout(contains("config doctor").not());
+
+    // And the command that audits configurations does have it, so the class is
+    // visible from there too.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "doctor"])
+        .assert()
+        .success()
+        .stdout(contains("rule-constrains-nothing"));
+}
+
 /// Layer 4 through the real process, on the write a hook most needs to stop:
 /// the file does not exist yet, and neither does the folder it would create.
 #[test]

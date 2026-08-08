@@ -152,8 +152,9 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             ..
         } => {
             let mut lines = Vec::new();
-            if !allowed_subfolders.is_empty() || !warn_subfolders.is_empty() {
-                let mut line = format!("subfolders: {}", join(allowed_subfolders));
+            if allowed_subfolders.is_some() || !warn_subfolders.is_empty() {
+                let allowed = allowed_subfolders.as_deref().unwrap_or_default();
+                let mut line = format!("subfolders: {}", join(allowed));
                 if !warn_subfolders.is_empty() {
                     let _ = write!(line, "; allowed with a warning: {}", join(warn_subfolders));
                 }
@@ -816,7 +817,7 @@ mod tests {
                 None,
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: Vec::new(),
+                    allowed_subfolders: Some(Vec::new()),
                     warn_subfolders: vec!["shared".to_owned()],
                     recurse_into: Vec::new(),
                     filename_patterns: Vec::new(),
@@ -837,7 +838,10 @@ mod tests {
                 None,
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: Vec::new(),
+                    // Absent, not empty: after issue #40 an empty list is a
+                    // constraint -- "no subfolder may exist here" -- and the
+                    // digest has to say so.
+                    allowed_subfolders: None,
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
                     filename_patterns: vec![Pattern::compile("^[a-z-]+\\.ts$").expect("valid")],
@@ -863,7 +867,7 @@ mod tests {
                 None,
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec!["types".to_owned()],
+                    allowed_subfolders: Some(vec!["types".to_owned()]),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
                     filename_patterns: Vec::new(),
@@ -939,7 +943,7 @@ mod tests {
                 None,
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec!["types".to_owned()],
+                    allowed_subfolders: Some(vec!["types".to_owned()]),
                     warn_subfolders: vec!["shared".to_owned()],
                     recurse_into: Vec::new(),
                     filename_patterns: vec![Pattern::compile("^[a-z-]+\\.ts$").expect("valid")],

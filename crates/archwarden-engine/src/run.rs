@@ -419,7 +419,7 @@ mod tests {
 
     fn structure(allowed: &[&str]) -> CompiledRuleKind {
         CompiledRuleKind::Structure {
-            allowed_subfolders: allowed.iter().map(|s| (*s).to_owned()).collect(),
+            allowed_subfolders: Some(allowed.iter().map(|s| (*s).to_owned()).collect()),
             warn_subfolders: Vec::new(),
             recurse_into: Vec::new(),
             filename_patterns: Vec::new(),

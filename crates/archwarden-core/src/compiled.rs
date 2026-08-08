@@ -77,7 +77,10 @@ pub enum CompiledRuleKind {
     /// Which subdirectories may exist, and which filenames.
     Structure {
         /// Subdirectory names that are permitted.
-        allowed_subfolders: Vec<String>,
+        ///
+        /// `None` when the rule says nothing about subfolders; `Some([])` when
+        /// it permits none of them. See `StructureRule::allowed_subfolders`.
+        allowed_subfolders: Option<Vec<String>>,
         /// Names permitted but reported as warnings, whatever the rule's level.
         warn_subfolders: Vec<String>,
         /// Subdirectories carrying the same contract, recursively.
@@ -355,7 +358,7 @@ mod tests {
 
     fn structure() -> CompiledRuleKind {
         CompiledRuleKind::Structure {
-            allowed_subfolders: vec!["types".to_owned()],
+            allowed_subfolders: Some(vec!["types".to_owned()]),
             warn_subfolders: Vec::new(),
             recurse_into: Vec::new(),
             filename_patterns: Vec::new(),

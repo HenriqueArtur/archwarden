@@ -280,7 +280,7 @@ mod tests {
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Structure {
-                allowed_subfolders: Vec::new(),
+                allowed_subfolders: Some(Vec::new()),
                 warn_subfolders: Vec::new(),
                 recurse_into: Vec::new(),
                 filename_patterns: Vec::new(),

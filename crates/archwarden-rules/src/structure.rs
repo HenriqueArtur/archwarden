@@ -28,7 +28,7 @@ pub struct StructureEngine {
     module: Option<ModuleId>,
     level: Level,
     scope: Scope,
-    allowed_subfolders: Vec<String>,
+    allowed_subfolders: Option<Vec<String>>,
     warn_subfolders: Vec<String>,
     recurse_into: Vec<String>,
     filename_patterns: Vec<Pattern>,
@@ -59,7 +59,7 @@ impl StructureEngine {
 
         Some(Self::build(
             rule,
-            allowed_subfolders,
+            allowed_subfolders.as_ref(),
             warn_subfolders,
             recurse_into,
             filename_patterns,
@@ -76,7 +76,7 @@ impl StructureEngine {
     /// report as unimplemented.
     pub(crate) fn build(
         rule: &CompiledRule,
-        allowed_subfolders: &[String],
+        allowed_subfolders: Option<&Vec<String>>,
         warn_subfolders: &[String],
         recurse_into: &[String],
         filename_patterns: &[Pattern],
@@ -87,7 +87,7 @@ impl StructureEngine {
             module: rule.module.clone(),
             level: rule.level,
             scope: rule.scope.clone(),
-            allowed_subfolders: allowed_subfolders.to_vec(),
+            allowed_subfolders: allowed_subfolders.cloned(),
             warn_subfolders: warn_subfolders.to_vec(),
             recurse_into: recurse_into.to_vec(),
             filename_patterns: filename_patterns.to_vec(),
@@ -165,7 +165,7 @@ impl StructureEngine {
     /// The two cases also carry different observations, because "not allowed
     /// here" printed beside `warning` reads as a contradiction.
     fn verdict_for(&self, name: &str) -> Option<(Level, Observed)> {
-        if self.allowed_subfolders.iter().any(|a| a == name) {
+        if self.allowed_subfolders.iter().flatten().any(|a| a == name) {
             return None;
         }
         if self.warn_subfolders.iter().any(|w| w == name) {
@@ -196,9 +196,22 @@ impl StructureEngine {
         }
     }
 
+    /// Whether this rule says anything at all about the directories inside.
+    ///
+    /// Naming the list is what constrains, not filling it. `[]` permits no
+    /// subfolder, which is the only way to say "this directory is a leaf";
+    /// omitting the field says nothing, which is what every rule that
+    /// constrains filenames only has always meant. Before issue #40 those two
+    /// arrived here identical and both did nothing, so the first was
+    /// unsayable — valid at `validate`, silent at `doctor`, skipped at
+    /// `check`.
+    fn constrains_subfolders(&self) -> bool {
+        self.allowed_subfolders.is_some() || !self.warn_subfolders.is_empty()
+    }
+
     fn subfolder_expectation(&self) -> Expectation {
         Expectation::AllowedSubfolders {
-            allowed: self.allowed_subfolders.clone(),
+            allowed: self.allowed_subfolders.clone().unwrap_or_default(),
             warn: self.warn_subfolders.clone(),
         }
     }
@@ -240,7 +253,7 @@ impl RuleEngine for StructureEngine {
 
         let mut findings = Vec::new();
 
-        if !self.allowed_subfolders.is_empty() || !self.warn_subfolders.is_empty() {
+        if self.constrains_subfolders() {
             for name in ctx.subdirectories {
                 let Ok(subdirectory) = ctx.path.join(name) else {
                     continue;
@@ -286,9 +299,7 @@ impl RuleEngine for StructureEngine {
         let mut expectations = Vec::new();
 
         // Asked about a directory: what may live inside it.
-        if self.governs(path)
-            && (!self.allowed_subfolders.is_empty() || !self.warn_subfolders.is_empty())
-        {
+        if self.governs(path) && self.constrains_subfolders() {
             expectations.push(self.subfolder_expectation());
         }
 
@@ -340,7 +351,7 @@ mod tests {
         let rule = rule(
             scope,
             CompiledRuleKind::Structure {
-                allowed_subfolders: owned(allowed),
+                allowed_subfolders: Some(owned(allowed)),
                 warn_subfolders: owned(warn),
                 recurse_into: owned(recurse),
                 filename_patterns: patterns(filenames),
@@ -356,6 +367,101 @@ mod tests {
             },
         )
         .expect("is a structure rule")
+    }
+
+    /// An engine whose `allowed_subfolders` is written as absent rather than
+    /// as an empty list, which after issue #40 are two different rules.
+    fn engine_allowing_any_subfolder(scope: &[&str], warn: &[&str]) -> StructureEngine {
+        let rule = rule(
+            scope,
+            CompiledRuleKind::Structure {
+                allowed_subfolders: None,
+                warn_subfolders: owned(warn),
+                recurse_into: Vec::new(),
+                filename_patterns: Vec::new(),
+            },
+        );
+
+        StructureEngine::from_rule(&rule, SkipDirs::default()).expect("is a structure rule")
+    }
+
+    /// Issue #40. The literal reading: a list of what may exist, holding
+    /// nothing, permits nothing. "This directory is a leaf" is expressible by
+    /// no other means, and the previous behaviour -- valid at `validate`,
+    /// silent at `doctor`, skipped at `check` -- was the failure `CONFIG.md`
+    /// calls the worst a linter has.
+    #[test]
+    fn an_empty_allowed_list_forbids_every_subfolder() {
+        let engine = engine(&["referencia"], &[], &[], &[], &[]);
+
+        let findings = engine.check_directory(DirectoryContext {
+            path: &path("referencia"),
+            subdirectories: &["subpasta".to_owned()],
+            files: &[],
+        });
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(
+            findings.first().expect("one").observed,
+            Observed::UnexpectedSubfolder {
+                name: "subpasta".to_owned()
+            }
+        );
+    }
+
+    /// The other half of the same distinction, and the reason the field became
+    /// an option rather than gaining a meaning: a rule that never mentions
+    /// subfolders is unchanged by all of this. Every config in the wild that
+    /// constrains filenames only is in this branch.
+    #[test]
+    fn an_absent_allowed_list_constrains_no_subfolder() {
+        let engine = engine_allowing_any_subfolder(&["referencia"], &[]);
+
+        let findings = engine.check_directory(DirectoryContext {
+            path: &path("referencia"),
+            subdirectories: &["anything".to_owned()],
+            files: &[],
+        });
+
+        assert!(findings.is_empty());
+    }
+
+    /// `warn_subfolders` alone already drove the loop, and still does: naming
+    /// a folder as discouraged says the others are not expected.
+    #[test]
+    fn a_warn_list_alone_still_constrains_the_rest() {
+        let engine = engine_allowing_any_subfolder(&["referencia"], &["legacy"]);
+
+        let findings = engine.check_directory(DirectoryContext {
+            path: &path("referencia"),
+            subdirectories: &["legacy".to_owned(), "other".to_owned()],
+            files: &[],
+        });
+
+        assert_eq!(findings.len(), 2);
+        assert_eq!(findings[0].level, Level::Warning);
+        assert_eq!(findings[1].level, Level::Error);
+    }
+
+    /// `scaffold` has to be able to say "nothing may go in here", which is a
+    /// different answer from "nothing constrains this directory" and the one
+    /// an agent about to create a folder needs.
+    #[test]
+    fn an_empty_allowed_list_is_advertised_as_permitting_nothing() {
+        let engine = engine(&["referencia"], &[], &[], &[], &[]);
+
+        assert_eq!(
+            engine.describe_expectation(&path("referencia")),
+            [Expectation::AllowedSubfolders {
+                allowed: Vec::new(),
+                warn: Vec::new(),
+            }]
+        );
+        assert!(
+            engine_allowing_any_subfolder(&["referencia"], &[])
+                .describe_expectation(&path("referencia"))
+                .is_empty()
+        );
     }
 
     /// The runner offers every rule to every engine constructor and keeps what
@@ -697,12 +803,16 @@ mod tests {
         );
     }
 
-    /// A rule with neither list reports nothing rather than rejecting
-    /// everything. An empty `allowed_subfolders` means "not checking folders",
-    /// not "no folders allowed".
+    /// A rule that names nothing at all reports nothing rather than rejecting
+    /// everything.
+    ///
+    /// This used to be written with an empty `allowed_subfolders` and the
+    /// comment "an empty list means not checking folders, not no folders
+    /// allowed". Issue #40 is the argument against that: the empty list is now
+    /// the constraint, and *absence* is what says nothing.
     #[test]
-    fn an_empty_rule_reports_nothing() {
-        let engine = engine(&["src/*"], &[], &[], &[], &[]);
+    fn a_rule_that_names_nothing_reports_nothing() {
+        let engine = engine_allowing_any_subfolder(&["src/*"], &[]);
         assert!(check(&engine, "src/user", &["anything"], &["anything.ts"]).is_empty());
     }
 

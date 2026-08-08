@@ -28,6 +28,14 @@ pub struct Explanation<'a> {
     pub rule: &'a CompiledRule,
     /// Every path it has a requirement about, in walk order.
     pub covers: Vec<RepoRelPath>,
+    /// How many paths its **scope** selects, requirement or not.
+    ///
+    /// The difference between the two numbers is the whole diagnosis when
+    /// `covers` is empty: a glob that matched nothing and a rule that matched
+    /// directories and has nothing to say about them are different faults with
+    /// different fixes, and one sentence for both sent users to `config
+    /// doctor` for an answer only one of the two has. Issue #41.
+    pub scope_reaches: usize,
     /// Every finding it is currently producing.
     pub flags: Vec<Finding>,
 }
@@ -68,7 +76,11 @@ pub fn explain<'a>(
     // about is not covering it, and listing it here would tell a user their
     // rule reaches further than it does.
     let mut covers = Vec::new();
+    let mut scope_reaches = 0;
     for (path, directory) in tree.directories() {
+        if !config.is_ignored(path) && rule.scope.matches_dir(path.as_path()) {
+            scope_reaches += 1;
+        }
         if !config.is_ignored(path) && !engine.describe_expectation(path).is_empty() {
             covers.push(path.clone());
         }
@@ -98,6 +110,7 @@ pub fn explain<'a>(
     Ok(Explanation {
         rule,
         covers,
+        scope_reaches,
         flags,
     })
 }
@@ -171,14 +184,29 @@ fn render_text(explanation: &Explanation<'_>, out: &mut dyn std::io::Write) {
     );
 
     // Said out loud rather than shown as an empty list. A rule covering
-    // nothing is the thing a user runs this command to find out, and `config
-    // doctor` is where the reason lives.
+    // nothing is the thing a user runs this command to find out -- and which
+    // of the two ways it can happen is the answer, so the two get different
+    // sentences and only one of them refers anybody anywhere. Issue #41.
     if explanation.covers.is_empty() {
-        let _ = writeln!(
-            out,
-            "\n  It covers nothing in this repository.\n  \
-             Try `archwarden config doctor` for why."
-        );
+        let _ = if explanation.scope_reaches == 0 {
+            writeln!(
+                out,
+                "\n  Its scope matches no path in this repository.\n  \
+                 Try `archwarden config doctor` for why."
+            )
+        } else {
+            let paths = if explanation.scope_reaches == 1 {
+                "1 path".to_owned()
+            } else {
+                format!("{} paths", explanation.scope_reaches)
+            };
+            writeln!(
+                out,
+                "\n  It constrains nothing: its scope reaches {paths}, and the \
+                 rule has no requirement about any of them.\n  \
+                 Give it something to enforce, or delete it."
+            )
+        };
         return;
     }
 
@@ -365,7 +393,7 @@ mod tests {
                 "shape",
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec!["types".to_owned()],
+                    allowed_subfolders: Some(vec!["types".to_owned()]),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
                     filename_patterns: Vec::new(),
@@ -395,7 +423,7 @@ mod tests {
             "shape",
             &["src/*"],
             CompiledRuleKind::Structure {
-                allowed_subfolders: vec!["types".to_owned()],
+                allowed_subfolders: Some(vec!["types".to_owned()]),
                 warn_subfolders: Vec::new(),
                 recurse_into: Vec::new(),
                 filename_patterns: Vec::new(),
@@ -409,10 +437,11 @@ mod tests {
         assert_eq!(covered, ["src/user"]);
     }
 
-    /// A rule that reaches nothing says so, and points at the command that
-    /// explains why. This is the case a user runs `explain` to discover.
+    /// A rule whose scope reaches no path says so, and points at the command
+    /// that explains why. This is the case a user runs `explain` to discover,
+    /// and the one `doctor` does have a concern for.
     #[test]
-    fn a_rule_that_covers_nothing_says_so() {
+    fn a_rule_whose_scope_reaches_nothing_says_so_and_refers_on() {
         let text = rendered(
             &FILES,
             &config(vec![rule("elsewhere", &["packages/*"], naming())]),
@@ -421,10 +450,51 @@ mod tests {
         )
         .expect("explains");
 
-        assert!(text.contains("It covers nothing"), "{text}");
+        assert!(
+            text.contains("matches no path in this repository"),
+            "{text}"
+        );
         assert!(
             text.contains("config doctor"),
             "it points at the why: {text}"
+        );
+    }
+
+    /// Issue #41. The scope matched; what is empty is the rule's own set of
+    /// constraints, not the set of paths it reaches. Merging the two into "it
+    /// covers nothing" and referring to `doctor` sent a user to a command that
+    /// had nothing to say — at exactly the moment they had been told the tool
+    /// knew the answer.
+    ///
+    /// `explain` is the command that decided the rule constrains nothing, so
+    /// it is the command that says why.
+    #[test]
+    fn a_rule_that_reaches_paths_and_constrains_none_of_them_says_why_itself() {
+        let text = rendered(
+            &FILES,
+            &config(vec![rule(
+                "toothless",
+                &["src/*"],
+                CompiledRuleKind::Structure {
+                    allowed_subfolders: None,
+                    warn_subfolders: Vec::new(),
+                    recurse_into: Vec::new(),
+                    filename_patterns: Vec::new(),
+                },
+            )]),
+            "toothless",
+            crate::report::Format::Text,
+        )
+        .expect("explains");
+
+        assert!(text.contains("constrains nothing"), "{text}");
+        assert!(
+            text.contains("its scope reaches 1 path"),
+            "the scope matched, and saying so is the diagnosis: {text}"
+        );
+        assert!(
+            !text.contains("config doctor"),
+            "no round trip to a command that would repeat this: {text}"
         );
     }
 

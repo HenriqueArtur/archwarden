@@ -525,7 +525,7 @@ mod tests {
         assert!(
             CallObligationEngine::from_rule(&CompiledRule {
                 kind: CompiledRuleKind::Structure {
-                    allowed_subfolders: Vec::new(),
+                    allowed_subfolders: Some(Vec::new()),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
                     filename_patterns: Vec::new(),

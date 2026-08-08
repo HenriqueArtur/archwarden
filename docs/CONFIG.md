@@ -186,6 +186,13 @@ Ported from Flowmaatik's `check-structure.config.ts`:
 }
 ```
 
+**`allowed_subfolders: []` is not the same as leaving it out.** Omitted, the
+rule says nothing about subfolders. Written as an empty list, it is a list of
+what may exist holding nothing, so no subfolder may exist — the way to say
+"this directory is a leaf". A rule that names none of `allowed_subfolders`,
+`warn_subfolders` or `filename_patterns` enforces nothing, and `config doctor`
+says so as `rule-constrains-nothing`.
+
 `recurse_into` names a **container whose children** are entities of the same
 shape: `user/variants/nfe` is governed, `user/variants` is not, and `nfe` may
 be called anything. It is one level deeper than it reads, and it *removes*

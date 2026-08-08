@@ -921,7 +921,7 @@ mod tests {
                 "shape",
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: Vec::new(),
+                    allowed_subfolders: Some(Vec::new()),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
                     filename_patterns: vec![
@@ -951,7 +951,7 @@ mod tests {
                 "shape",
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec!["types".to_owned(), "calcs".to_owned()],
+                    allowed_subfolders: Some(vec!["types".to_owned(), "calcs".to_owned()]),
                     warn_subfolders: vec!["shared".to_owned()],
                     recurse_into: Vec::new(),
                     filename_patterns: Vec::new(),

@@ -53,6 +53,43 @@ saying so.
   Existing configs are unaffected: a rule that names no annotation ignores them
   exactly as before.
 
+### Fixed
+
+- **`allowed_subfolders: []` now forbids every subfolder, instead of enforcing
+  nothing.** ([#40](https://github.com/HenriqueArtur/archwarden/issues/40))
+
+  **This can make an existing, unchanged config report differently** — but only
+  one that wrote the empty list explicitly, which today enforces nothing and is
+  therefore a config whose author meant something by it. A rule that *omits*
+  the field is untouched, and that is every rule that constrains filenames
+  only.
+
+  The distinction is the fix: absent and `[]` used to arrive identical, so the
+  literal reading — a list of what may exist, holding nothing — could not be
+  given to one without giving it to the other. `allowed_subfolders` is now an
+  option. Omitted, the rule says nothing about subfolders; `[]` permits none of
+  them, which is how a directory says it is a leaf and was previously
+  unsayable.
+
+  `config doctor` gained `rule-constrains-nothing` for a `structure` rule that
+  names no allowed subfolder, no warned subfolder and no filename pattern —
+  the state that used to be valid at `validate`, silent at `doctor` and skipped
+  at `check`, all three agreeing a rule was fine while it enforced nothing.
+
+- **`config explain` no longer refers to `config doctor` for an answer `doctor`
+  does not have.** ([#41](https://github.com/HenriqueArtur/archwarden/issues/41))
+
+  "It covers nothing in this repository. Try `archwarden config doctor` for
+  why." merged two different faults and sent users to a command that had
+  nothing to say about one of them. They are now separate sentences:
+
+  - the scope matched no path — *"Its scope matches no path in this
+    repository"*, and the referral stays, because `doctor` does have that one;
+  - the scope matched and the rule asks nothing of what it matched — *"It
+    constrains nothing: its scope reaches 3 paths, and the rule has no
+    requirement about any of them"*, said by `explain` itself. It is the
+    command that decided, so it is the command that says why.
+
 ### Changed
 
 - **A `naming` finding about an export that exists now carries a span**, so it

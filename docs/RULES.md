@@ -83,6 +83,31 @@ which filenames may exist inside a folder.
 - **Filename patterns**. Given a root, every file inside must match at
   least one of a set of regexes. Non-matching files are errors.
 
+**An absent list and an empty one are different rules.** Omitting
+`allowed_subfolders` says nothing about subfolders — the rule may still
+constrain filenames, and every folder is permitted. Writing `[]` is a list of
+what may exist holding nothing, so **no subfolder may exist**, which is how a
+directory says it is a leaf:
+
+```json
+{
+  "type": "structure",
+  "id": "referencia-is-flat",
+  "level": "error",
+  "roots": ["referencia"],
+  "allowed_subfolders": []
+}
+```
+
+The two used to arrive identical and both did nothing, so the leaf rule was
+unsayable and the config that tried to say it passed three commands in a row —
+valid at `config validate`, silent at `config doctor`, skipped at `check`.
+Issue #40.
+
+A rule that names none of `allowed_subfolders`, `warn_subfolders` or
+`filename_patterns` constrains nothing at all, and `config doctor` reports it
+as `rule-constrains-nothing`.
+
 **Recursion**. Some modules have nested modules of the same shape (e.g.,
 "variants" of an entity). The `recurse_into` field lists **containers whose
 children** are modules of the same shape, recursively.

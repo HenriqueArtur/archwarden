@@ -109,8 +109,15 @@ pub struct StructureRule {
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Subdirectory names that are permitted.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_subfolders: Vec<String>,
+    ///
+    /// An **option, not a list**, because absent and `[]` are different rules
+    /// and a plain `Vec` cannot tell them apart. Absent means the rule says
+    /// nothing about subfolders — it may still constrain filenames. `[]` is a
+    /// list of what may exist holding nothing, so no subfolder is permitted,
+    /// which is how "this directory is a leaf" is said. Issue #40, where the
+    /// empty list validated, ran, and enforced nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_subfolders: Option<Vec<String>>,
     /// Subdirectory names that are permitted but reported as warnings,
     /// whatever `level` says. Naming a folder is more specific than the rule's
     /// blanket severity, and the more specific declaration wins.
@@ -469,7 +476,14 @@ mod tests {
         };
         assert_eq!(rule.id().as_str(), "domain-entity-shape");
         assert_eq!(rule.level(), Level::Error);
-        assert_eq!(structure.allowed_subfolders.len(), 8);
+        assert_eq!(
+            structure
+                .allowed_subfolders
+                .as_ref()
+                .expect("names a list")
+                .len(),
+            8
+        );
         assert_eq!(structure.warn_subfolders, ["shared", "adapters"]);
         assert_eq!(structure.recurse_into, ["variants"]);
         assert!(structure.filename_patterns.is_empty());
@@ -496,7 +510,9 @@ mod tests {
             panic!("expected a structure rule");
         };
         assert_eq!(structure.filename_patterns.len(), 3);
-        assert!(structure.allowed_subfolders.is_empty());
+        // Absent, not empty: this rule constrains filenames and says nothing
+        // about the directories beside them.
+        assert_eq!(structure.allowed_subfolders, None);
     }
 
     /// The `naming` example, with the scope corrected to `use-cases/*` when
@@ -542,6 +558,32 @@ mod tests {
         };
         assert_eq!(naming.must_export.kind.as_slice(), ["function", "arrow"]);
         assert_eq!(naming.must_export.signature_hint, None);
+    }
+
+    /// Issue #40. `[]` is a list of what may exist holding nothing, and the
+    /// rule that says "this directory is a leaf" has no other spelling. The
+    /// field has to be an option for that to be sayable at all: with a plain
+    /// `Vec` an omitted field and an empty one arrive identical, so giving `[]`
+    /// a meaning would give it to every config that never mentioned subfolders.
+    #[test]
+    fn an_absent_allowed_subfolders_is_not_an_empty_one() {
+        let absent = parse(
+            r#"{"type":"structure","id":"s","level":"error","roots":"referencia",
+                "filename_patterns":["^[a-z-]+\\.md$"]}"#,
+        );
+        let Rule::Structure(absent) = &absent else {
+            panic!("expected a structure rule");
+        };
+        assert_eq!(absent.allowed_subfolders, None);
+
+        let empty = parse(
+            r#"{"type":"structure","id":"s","level":"error","roots":"referencia",
+                "allowed_subfolders":[]}"#,
+        );
+        let Rule::Structure(empty) = &empty else {
+            panic!("expected a structure rule");
+        };
+        assert_eq!(empty.allowed_subfolders, Some(Vec::new()));
     }
 
     /// The field issue #39 asks for, in the shape the issue writes it.

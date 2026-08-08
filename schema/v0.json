@@ -174,8 +174,11 @@
               "$ref": "#/$defs/OneOrMany"
             },
             "allowed_subfolders": {
-              "description": "Subdirectory names that are permitted.",
-              "type": "array",
+              "description": "Subdirectory names that are permitted.\n\nAn **option, not a list**, because absent and `[]` are different rules\nand a plain `Vec` cannot tell them apart. Absent means the rule says\nnothing about subfolders — it may still constrain filenames. `[]` is a\nlist of what may exist holding nothing, so no subfolder is permitted,\nwhich is how \"this directory is a leaf\" is said. Issue #40, where the\nempty list validated, ran, and enforced nothing.",
+              "type": [
+                "array",
+                "null"
+              ],
               "items": {
                 "type": "string"
               }

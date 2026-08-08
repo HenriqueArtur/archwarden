@@ -347,7 +347,7 @@ mod tests {
             level: Level::Error,
             scope: Scope::compile([roots]).expect("valid scope"),
             kind: CompiledRuleKind::Structure {
-                allowed_subfolders: vec!["types".to_owned()],
+                allowed_subfolders: Some(vec!["types".to_owned()]),
                 warn_subfolders: Vec::new(),
                 recurse_into: Vec::new(),
                 filename_patterns: Vec::new(),

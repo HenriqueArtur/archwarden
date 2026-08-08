@@ -379,7 +379,10 @@ fn unclaimed_name(kind: &CompiledRuleKind) -> String {
     };
 
     let claimed = |name: &str| {
-        allowed_subfolders.iter().any(|other| other == name)
+        allowed_subfolders
+            .iter()
+            .flatten()
+            .any(|other| other == name)
             || warn_subfolders.iter().any(|other| other == name)
             || recurse_into.iter().any(|other| other == name)
     };
@@ -598,7 +601,7 @@ mod tests {
                 "entity-shape",
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec!["types".to_owned()],
+                    allowed_subfolders: Some(vec!["types".to_owned()]),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
                     filename_patterns: Vec::new(),
@@ -643,7 +646,7 @@ mod tests {
                 "nowhere",
                 &["packages/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec!["types".to_owned()],
+                    allowed_subfolders: Some(vec!["types".to_owned()]),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
                     filename_patterns: Vec::new(),
@@ -711,7 +714,7 @@ mod tests {
                 "entity-shape",
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec![PROBE.to_owned(), "types".to_owned()],
+                    allowed_subfolders: Some(vec![PROBE.to_owned(), "types".to_owned()]),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
                     filename_patterns: Vec::new(),
