@@ -381,6 +381,20 @@ saying so.
   so a job added to CI cannot be one that only ever fails on GitHub. The prose
   list in `CONTRIBUTING.md` that this replaces had silently lost both coverage
   floors.
+
+  The environment is part of the gate, not decoration around it. CI's
+  `RUSTFLAGS: -D warnings` does not reach rustdoc — the toolchain action
+  exports `RUSTDOCFLAGS` as well — and a run carrying only the command
+  reproduced CI's compiler while missing its documentation build. A broken
+  intra-doc link passed all 13 gates locally and failed on GitHub before this
+  was fixed, and both halves of the environment are checked against the
+  workflow now.
+- **`cargo xtask clean` removes build caches in tiers.** The default takes
+  incremental compilation state and leaves the compiled dependencies, so the
+  next build is still warm; `--deps` and `--all` take more. Targets are named
+  rather than globbed, benchmark history is never removed, and `cargo-mutants`
+  build trees orphaned by a killed run are swept. Measured here once: 27 GB of
+  the 59 in `target` was incremental state.
 - **A `cargo-mutants` run that is interrupted after finding survivors now
   blocks the push.** It used to read any exit code other than `2` as "the tool
   could not form an opinion" and let the push through — which is right for a
