@@ -214,6 +214,11 @@ fn compile_rule(
             allowed_subfolders: r.allowed_subfolders.clone(),
             warn_subfolders: r.warn_subfolders.clone(),
             recurse_into: r.recurse_into.clone(),
+            subfolder_patterns: r
+                .subfolder_patterns
+                .iter()
+                .map(|p| pattern(&id, "subfolder_patterns", p))
+                .collect::<Result<_, _>>()?,
             filename_patterns: r
                 .filename_patterns
                 .iter()

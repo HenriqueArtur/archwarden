@@ -283,6 +283,7 @@ mod tests {
                 allowed_subfolders: Some(Vec::new()),
                 warn_subfolders: Vec::new(),
                 recurse_into: Vec::new(),
+                subfolder_patterns: Vec::new(),
                 filename_patterns: Vec::new(),
             },
         }
@@ -310,6 +311,7 @@ mod tests {
             expected: Expectation::AllowedSubfolders {
                 allowed: vec!["use-cases".to_owned()],
                 warn: Vec::new(),
+                patterns: Vec::new(),
             },
         }
     }

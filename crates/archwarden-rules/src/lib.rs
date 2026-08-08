@@ -45,12 +45,14 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     allowed_subfolders,
                     warn_subfolders,
                     recurse_into,
+                    subfolder_patterns,
                     filename_patterns,
                 } => Box::new(structure::StructureEngine::build(
                     rule,
                     allowed_subfolders.as_ref(),
                     warn_subfolders,
                     recurse_into,
+                    subfolder_patterns,
                     filename_patterns,
                     config.skip_dirs().clone(),
                 )),
@@ -164,6 +166,7 @@ mod tests {
             allowed_subfolders: Some(vec!["types".to_owned()]),
             warn_subfolders: Vec::new(),
             recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
             filename_patterns: Vec::new(),
         }
     }

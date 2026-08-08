@@ -143,6 +143,23 @@ pub struct StructureRule {
     /// is the answer to "did this mean what I think" for exactly this field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recurse_into: Vec<String>,
+    /// Regexes a direct child *directory*'s name may match instead of being
+    /// named in `allowed_subfolders`.
+    ///
+    /// `filename_patterns` one entry over, for the other kind of directory
+    /// entry. `allowed_subfolders` constrains names by enumeration, which works
+    /// for a fixed vocabulary (`types`, `calcs`, `actions`) and cannot work for
+    /// an open set where the *shape* is the rule — sixteen lesson folders named
+    /// `NN-slug` and more arriving. Issue #43.
+    ///
+    /// A union with the two lists, the way `filename_patterns` is a union of
+    /// its own regexes: a name is permitted if a list names it *or* a pattern
+    /// matches it. The lists are consulted first, so a `warn_subfolders` entry
+    /// whose name happens to have the right shape still warns — the most
+    /// specific declaration wins, and a name written out is more specific than
+    /// a regex.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subfolder_patterns: Vec<String>,
     /// Regexes every direct child file's name must match at least one of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filename_patterns: Vec<String>,
@@ -558,6 +575,25 @@ mod tests {
         };
         assert_eq!(naming.must_export.kind.as_slice(), ["function", "arrow"]);
         assert_eq!(naming.must_export.signature_hint, None);
+    }
+
+    /// Issue #43. The regex-over-a-directory-name capability existed on
+    /// `naming.dir_pattern` and was reachable only through a door that requires
+    /// a TypeScript parse, so a repository with no `.ts` near its folders could
+    /// not use it at all.
+    #[test]
+    fn subfolder_patterns_parse_beside_the_lists() {
+        let rule = parse(
+            r#"{"type":"structure","id":"licao-nome-da-pasta","level":"error",
+                "roots":["projetos"],
+                "subfolder_patterns":["^\\d{2}-[a-z0-9-]+$"]}"#,
+        );
+        let Rule::Structure(structure) = &rule else {
+            panic!("expected a structure rule");
+        };
+
+        assert_eq!(structure.subfolder_patterns, [r"^\d{2}-[a-z0-9-]+$"]);
+        assert_eq!(structure.allowed_subfolders, None);
     }
 
     /// Issue #40. `[]` is a list of what may exist holding nothing, and the

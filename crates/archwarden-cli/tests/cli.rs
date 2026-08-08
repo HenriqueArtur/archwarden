@@ -319,6 +319,57 @@ fn a_rule_that_never_mentions_subfolders_still_allows_them() {
         .success();
 }
 
+/// Issue #43. Lesson folders are `NN-slug` and the two digits are the sort key
+/// for a generated index, so `semaforo` and `03_semaforo` break it silently.
+/// The regex-over-a-directory-name matcher existed on `naming.dir_pattern` and
+/// was reachable only through a door that requires a TypeScript parse — and
+/// there is no TypeScript anywhere near these folders.
+#[test]
+fn a_subfolder_pattern_constrains_directory_names_without_any_typescript() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"licao-nome-da-pasta","level":"error",
+                 "roots":["projetos"],
+                 "subfolder_patterns":["^\\d{2}-[a-z0-9-]+$"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        ("projetos/semaforo/projeto.md", "# semaforo\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("projetos/semaforo"))
+        .stdout(contains("projetos/01-blink").not());
+}
+
+/// And the half that pays: the answer arrives before the folder is created,
+/// which is where a naming convention is cheap to follow.
+#[test]
+fn scaffold_names_the_shape_a_subfolder_must_have() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"licao-nome-da-pasta","level":"error",
+                 "roots":["projetos"],
+                 "subfolder_patterns":["^\\d{2}-[a-z0-9-]+$"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["scaffold", "projetos"])
+        .assert()
+        .success()
+        .stdout(contains(r"any name matching ^\d{2}-[a-z0-9-]+$"));
+}
+
 /// Issue #41. `explain` used to end a "covers nothing" report by referring to
 /// `config doctor`, which then said nothing about that rule — a dead end at
 /// exactly the moment a user had been told the tool knew the answer.

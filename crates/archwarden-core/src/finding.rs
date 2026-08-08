@@ -42,6 +42,10 @@ pub enum Expectation {
         allowed: Vec<String>,
         /// Names that are permitted but reported as warnings.
         warn: Vec<String>,
+        /// Regexes a name may match instead of being listed, as written in the
+        /// config. Empty when the rule constrains names by enumeration only.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        patterns: Vec<String>,
     },
     /// Every file here must match one of these filename patterns.
     FilenamePattern {

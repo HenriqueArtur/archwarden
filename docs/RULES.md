@@ -104,9 +104,42 @@ unsayable and the config that tried to say it passed three commands in a row —
 valid at `config validate`, silent at `config doctor`, skipped at `check`.
 Issue #40.
 
-A rule that names none of `allowed_subfolders`, `warn_subfolders` or
-`filename_patterns` constrains nothing at all, and `config doctor` reports it
-as `rule-constrains-nothing`.
+A rule that names none of `allowed_subfolders`, `warn_subfolders`,
+`subfolder_patterns` or `filename_patterns` constrains nothing at all, and
+`config doctor` reports it as `rule-constrains-nothing`.
+
+- **Subfolder patterns**. `filename_patterns` one entry over, for the other
+  kind of directory entry: every direct child *directory* must match at least
+  one regex. Enumeration works for a fixed vocabulary (`types`, `calcs`,
+  `actions`) and cannot work for an open set where the shape is the rule —
+  sixteen lesson folders named `NN-slug` with more arriving, and nobody
+  listing them forever.
+
+  ```json
+  {
+    "type": "structure",
+    "id": "licao-nome-da-pasta",
+    "level": "error",
+    "roots": ["projetos"],
+    "subfolder_patterns": ["^\\d{2}-[a-z0-9-]+$"]
+  }
+  ```
+
+  It is a **union** with the two lists, the way `filename_patterns` is a union
+  of its own regexes: a name passes if a list names it *or* a pattern matches
+  it. So `allowed_subfolders: ["_template"]` beside the pattern above permits
+  `_template` and every `NN-slug`.
+
+  The lists are consulted **first**. A `warn_subfolders` entry whose name
+  happens to have the right shape still warns — severity precedence above says
+  the most specific declaration wins, and a name written out is more specific
+  than a regex. Reading the patterns first would silence the one list that
+  exists to be heard.
+
+  Purely lexical, like the rest of `structure`: no parse, no disk beyond the
+  walk. `naming.dir_pattern` is the same matcher and reaches it only through
+  `must_export`, which needs a TypeScript parse of a file inside — so a
+  directory with no `.ts` near it could not use it at all. Issue #43.
 
 **Recursion**. Some modules have nested modules of the same shape (e.g.,
 "variants" of an entity). The `recurse_into` field lists **containers whose

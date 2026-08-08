@@ -422,6 +422,7 @@ mod tests {
             allowed_subfolders: Some(allowed.iter().map(|s| (*s).to_owned()).collect()),
             warn_subfolders: Vec::new(),
             recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
             filename_patterns: Vec::new(),
         }
     }

@@ -371,6 +371,7 @@ mod tests {
                         expected: Expectation::AllowedSubfolders {
                             allowed: Vec::new(),
                             warn: Vec::new(),
+                            patterns: Vec::new(),
                         },
                     })
                 })
@@ -381,6 +382,7 @@ mod tests {
             vec![Expectation::AllowedSubfolders {
                 allowed: Vec::new(),
                 warn: Vec::new(),
+                patterns: Vec::new(),
             }]
         }
     }

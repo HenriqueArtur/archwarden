@@ -197,6 +197,13 @@
                 "type": "string"
               }
             },
+            "subfolder_patterns": {
+              "description": "Regexes a direct child *directory*'s name may match instead of being\nnamed in `allowed_subfolders`.\n\n`filename_patterns` one entry over, for the other kind of directory\nentry. `allowed_subfolders` constrains names by enumeration, which works\nfor a fixed vocabulary (`types`, `calcs`, `actions`) and cannot work for\nan open set where the *shape* is the rule — sixteen lesson folders named\n`NN-slug` and more arriving. Issue #43.\n\nA union with the two lists, the way `filename_patterns` is a union of\nits own regexes: a name is permitted if a list names it *or* a pattern\nmatches it. The lists are consulted first, so a `warn_subfolders` entry\nwhose name happens to have the right shape still warns — the most\nspecific declaration wins, and a name written out is more specific than\na regex.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "filename_patterns": {
               "description": "Regexes every direct child file's name must match at least one of.",
               "type": "array",

@@ -31,6 +31,7 @@ pub struct StructureEngine {
     allowed_subfolders: Option<Vec<String>>,
     warn_subfolders: Vec<String>,
     recurse_into: Vec<String>,
+    subfolder_patterns: Vec<Pattern>,
     filename_patterns: Vec<Pattern>,
     skip_dirs: SkipDirs,
 }
@@ -51,6 +52,7 @@ impl StructureEngine {
             allowed_subfolders,
             warn_subfolders,
             recurse_into,
+            subfolder_patterns,
             filename_patterns,
         } = &rule.kind
         else {
@@ -62,6 +64,7 @@ impl StructureEngine {
             allowed_subfolders.as_ref(),
             warn_subfolders,
             recurse_into,
+            subfolder_patterns,
             filename_patterns,
             skip_dirs,
         ))
@@ -79,6 +82,7 @@ impl StructureEngine {
         allowed_subfolders: Option<&Vec<String>>,
         warn_subfolders: &[String],
         recurse_into: &[String],
+        subfolder_patterns: &[Pattern],
         filename_patterns: &[Pattern],
         skip_dirs: SkipDirs,
     ) -> Self {
@@ -90,6 +94,7 @@ impl StructureEngine {
             allowed_subfolders: allowed_subfolders.cloned(),
             warn_subfolders: warn_subfolders.to_vec(),
             recurse_into: recurse_into.to_vec(),
+            subfolder_patterns: subfolder_patterns.to_vec(),
             filename_patterns: filename_patterns.to_vec(),
             skip_dirs,
         }
@@ -176,6 +181,14 @@ impl StructureEngine {
                 },
             ));
         }
+        // After the two literal lists, never before them. `docs/RULES.md` has
+        // the rule already: the most specific declaration wins, and a name
+        // written out is more specific than a regex. Consulting the patterns
+        // first would silence a `warn_subfolders` entry whose name happens to
+        // have the right shape, which is the one thing that list is for.
+        if self.subfolder_patterns.iter().any(|p| p.is_match(name)) {
+            return None;
+        }
         Some((
             self.level,
             Observed::UnexpectedSubfolder {
@@ -206,13 +219,20 @@ impl StructureEngine {
     /// unsayable — valid at `validate`, silent at `doctor`, skipped at
     /// `check`.
     fn constrains_subfolders(&self) -> bool {
-        self.allowed_subfolders.is_some() || !self.warn_subfolders.is_empty()
+        self.allowed_subfolders.is_some()
+            || !self.warn_subfolders.is_empty()
+            || !self.subfolder_patterns.is_empty()
     }
 
     fn subfolder_expectation(&self) -> Expectation {
         Expectation::AllowedSubfolders {
             allowed: self.allowed_subfolders.clone().unwrap_or_default(),
             warn: self.warn_subfolders.clone(),
+            patterns: self
+                .subfolder_patterns
+                .iter()
+                .map(|pattern| pattern.as_str().to_owned())
+                .collect(),
         }
     }
 
@@ -354,6 +374,7 @@ mod tests {
                 allowed_subfolders: Some(owned(allowed)),
                 warn_subfolders: owned(warn),
                 recurse_into: owned(recurse),
+                subfolder_patterns: Vec::new(),
                 filename_patterns: patterns(filenames),
             },
         );
@@ -378,6 +399,7 @@ mod tests {
                 allowed_subfolders: None,
                 warn_subfolders: owned(warn),
                 recurse_into: Vec::new(),
+                subfolder_patterns: Vec::new(),
                 filename_patterns: Vec::new(),
             },
         );
@@ -455,12 +477,122 @@ mod tests {
             [Expectation::AllowedSubfolders {
                 allowed: Vec::new(),
                 warn: Vec::new(),
+                patterns: Vec::new(),
             }]
         );
         assert!(
             engine_allowing_any_subfolder(&["referencia"], &[])
                 .describe_expectation(&path("referencia"))
                 .is_empty()
+        );
+    }
+
+    /// Issue #43. Lesson folders are `NN-slug` and there is no `.ts` anywhere
+    /// near them, so the regex-over-a-directory-name capability that already
+    /// exists on `naming.dir_pattern` was reachable only through a door that
+    /// requires a TypeScript parse.
+    fn engine_with_subfolder_patterns(
+        scope: &[&str],
+        allowed: Option<&[&str]>,
+        warn: &[&str],
+        subfolders: &[&str],
+    ) -> StructureEngine {
+        let rule = rule(
+            scope,
+            CompiledRuleKind::Structure {
+                allowed_subfolders: allowed.map(owned),
+                warn_subfolders: owned(warn),
+                recurse_into: Vec::new(),
+                subfolder_patterns: patterns(subfolders),
+                filename_patterns: Vec::new(),
+            },
+        );
+
+        StructureEngine::from_rule(&rule, SkipDirs::default()).expect("is a structure rule")
+    }
+
+    #[test]
+    fn a_subfolder_pattern_accepts_the_names_that_match_and_flags_the_rest() {
+        let engine =
+            engine_with_subfolder_patterns(&["projetos"], None, &[], &[r"^\d{2}-[a-z0-9-]+$"]);
+
+        let findings = engine.check_directory(DirectoryContext {
+            path: &path("projetos"),
+            subdirectories: &[
+                "01-blink".to_owned(),
+                "12-display-oled".to_owned(),
+                "semaforo".to_owned(),
+                "03_semaforo".to_owned(),
+            ],
+            files: &[],
+        });
+
+        let flagged: Vec<&str> = findings
+            .iter()
+            .filter_map(|finding| finding.path.file_name())
+            .collect();
+        assert_eq!(flagged, ["semaforo", "03_semaforo"]);
+    }
+
+    /// A union, the way `filename_patterns` is a union of its own regexes: a
+    /// name is fine if the list names it *or* a pattern matches it. The two
+    /// answer the same question about the same entry, and a name that either
+    /// one permits is a name the rule permits.
+    #[test]
+    fn a_named_folder_and_a_matching_one_are_both_allowed() {
+        let engine = engine_with_subfolder_patterns(
+            &["projetos"],
+            Some(&["_template"]),
+            &[],
+            &[r"^\d{2}-[a-z0-9-]+$"],
+        );
+
+        let findings = engine.check_directory(DirectoryContext {
+            path: &path("projetos"),
+            subdirectories: &["_template".to_owned(), "01-blink".to_owned()],
+            files: &[],
+        });
+
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    /// Severity precedence, which `docs/RULES.md` already states: the most
+    /// specific declaration wins, and a literal name is more specific than a
+    /// regex. Otherwise a warn entry whose name happens to match the shape
+    /// would go silent, which is the one thing `warn_subfolders` exists to
+    /// stop.
+    #[test]
+    fn a_warned_name_still_warns_when_a_pattern_would_have_accepted_it() {
+        let engine = engine_with_subfolder_patterns(
+            &["projetos"],
+            None,
+            &["99-legacy"],
+            &[r"^\d{2}-[a-z0-9-]+$"],
+        );
+
+        let findings = engine.check_directory(DirectoryContext {
+            path: &path("projetos"),
+            subdirectories: &["99-legacy".to_owned()],
+            files: &[],
+        });
+
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].level, Level::Warning);
+    }
+
+    /// The half the issue actually wants: an answer before the folder exists.
+    #[test]
+    fn the_patterns_are_advertised_for_a_directory_that_does_not_exist_yet() {
+        let engine =
+            engine_with_subfolder_patterns(&["projetos"], None, &[], &[r"^\d{2}-[a-z0-9-]+$"]);
+
+        assert_eq!(
+            engine.describe_expectation(&path("projetos")),
+            [Expectation::AllowedSubfolders {
+                allowed: Vec::new(),
+                warn: Vec::new(),
+                patterns: vec![r"^\d{2}-[a-z0-9-]+$".to_owned()],
+            }]
         );
     }
 

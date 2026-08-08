@@ -148,6 +148,7 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
         CompiledRuleKind::Structure {
             allowed_subfolders,
             warn_subfolders,
+            subfolder_patterns,
             filename_patterns,
             ..
         } => {
@@ -159,6 +160,17 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
                     let _ = write!(line, "; allowed with a warning: {}", join(warn_subfolders));
                 }
                 lines.push(line);
+            }
+            if !subfolder_patterns.is_empty() {
+                lines.push(format!(
+                    "subfolder names must match: {}",
+                    join(
+                        &subfolder_patterns
+                            .iter()
+                            .map(|p| p.as_str().to_owned())
+                            .collect::<Vec<_>>()
+                    )
+                ));
             }
             if !filename_patterns.is_empty() {
                 lines.push(format!(
@@ -556,6 +568,32 @@ mod tests {
     /// requirement missing from it is a requirement the agent will break and
     /// then be told about. The annotation is checked, so it belongs in the
     /// sentence rather than under it as a suggestion.
+    /// A digest is what an agent has instead of the config, and "the folder
+    /// name has to look like this" is exactly what it needs before creating
+    /// one.
+    #[test]
+    fn a_subfolder_pattern_appears_in_the_digest() {
+        let by_shape = config(vec![rule(
+            "licao-nome-da-pasta",
+            None,
+            &["projetos"],
+            CompiledRuleKind::Structure {
+                allowed_subfolders: None,
+                warn_subfolders: Vec::new(),
+                recurse_into: Vec::new(),
+                subfolder_patterns: vec![Pattern::compile(r"^\d{2}-[a-z0-9-]+$").expect("valid")],
+                filename_patterns: Vec::new(),
+            },
+        )]);
+
+        let markdown = rendered(&by_shape, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains(r"subfolder names must match: `^\d{2}-[a-z0-9-]+$`"),
+            "{markdown}"
+        );
+    }
+
     #[test]
     fn a_required_annotation_is_part_of_the_sentence() {
         let annotated = CompiledRuleKind::Naming {
@@ -820,6 +858,7 @@ mod tests {
                     allowed_subfolders: Some(Vec::new()),
                     warn_subfolders: vec!["shared".to_owned()],
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: Vec::new(),
                 },
             )]),
@@ -844,6 +883,7 @@ mod tests {
                     allowed_subfolders: None,
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: vec![Pattern::compile("^[a-z-]+\\.ts$").expect("valid")],
                 },
             )]),
@@ -870,6 +910,7 @@ mod tests {
                     allowed_subfolders: Some(vec!["types".to_owned()]),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: Vec::new(),
                 },
             )]),
@@ -946,6 +987,7 @@ mod tests {
                     allowed_subfolders: Some(vec!["types".to_owned()]),
                     warn_subfolders: vec!["shared".to_owned()],
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: vec![Pattern::compile("^[a-z-]+\\.ts$").expect("valid")],
                 },
             ),

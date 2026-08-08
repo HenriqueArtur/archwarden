@@ -99,6 +99,10 @@ pub struct AllowedSubfolders {
     pub allowed: Vec<String>,
     /// Names permitted but reported as warnings.
     pub warn: Vec<String>,
+    /// Regexes a name may match instead of being listed. Absent when the rule
+    /// constrains names by enumeration only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub patterns: Vec<String>,
 }
 
 /// Transposes every expectation that applies to `path` into one shape.
@@ -188,8 +192,16 @@ fn absorb(shape: &mut Scaffold, expectation: Expectation) {
             imported_from,
         }),
         Expectation::FilenamePattern { patterns } => shape.filename_patterns.extend(patterns),
-        Expectation::AllowedSubfolders { allowed, warn } => {
-            shape.allowed_subfolders = Some(AllowedSubfolders { allowed, warn });
+        Expectation::AllowedSubfolders {
+            allowed,
+            warn,
+            patterns,
+        } => {
+            shape.allowed_subfolders = Some(AllowedSubfolders {
+                allowed,
+                warn,
+                patterns,
+            });
         }
         // `Expectation` is non_exhaustive. A variant added later is not
         // something this shape can place, and guessing would be worse than the
@@ -270,6 +282,9 @@ fn render_text(path: &RepoRelPath, shape: &Scaffold, out: &mut dyn std::io::Writ
         }
         for name in &subfolders.warn {
             let _ = writeln!(out, "    {name} (allowed, reported as a warning)");
+        }
+        for pattern in &subfolders.patterns {
+            let _ = writeln!(out, "    any name matching {pattern}");
         }
     }
 
@@ -924,6 +939,7 @@ mod tests {
                     allowed_subfolders: Some(Vec::new()),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: vec![
                         Pattern::compile(r"^[a-z-]+\.use-case\.ts$").expect("valid"),
                     ],
@@ -954,6 +970,7 @@ mod tests {
                     allowed_subfolders: Some(vec!["types".to_owned(), "calcs".to_owned()]),
                     warn_subfolders: vec!["shared".to_owned()],
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: Vec::new(),
                 },
             )]),

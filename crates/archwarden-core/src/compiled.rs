@@ -85,6 +85,9 @@ pub enum CompiledRuleKind {
         warn_subfolders: Vec<String>,
         /// Subdirectories carrying the same contract, recursively.
         recurse_into: Vec<String>,
+        /// Regexes a direct child *directory*'s name may match instead of
+        /// being named in `allowed_subfolders`.
+        subfolder_patterns: Vec<Pattern>,
         /// Every direct child file must match one of these.
         filename_patterns: Vec<Pattern>,
     },
@@ -361,6 +364,7 @@ mod tests {
             allowed_subfolders: Some(vec!["types".to_owned()]),
             warn_subfolders: Vec::new(),
             recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
             filename_patterns: Vec::new(),
         }
     }

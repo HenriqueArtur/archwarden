@@ -427,6 +427,7 @@ mod tests {
             expected: Expectation::AllowedSubfolders {
                 allowed: vec!["types".to_owned()],
                 warn: Vec::new(),
+                patterns: Vec::new(),
             },
         }
     }

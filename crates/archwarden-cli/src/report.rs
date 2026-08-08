@@ -996,15 +996,40 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
 /// Shared with `describe`, which renders the same expectations for a file that
 /// does not exist yet. One renderer, so the gate and the informant can never
 /// word the same requirement differently -- decision 9.
+/// What may live inside a directory, by name and by shape.
+///
+/// Split out of [`describe_expectation`] because it is the one arm with three
+/// clauses to compose, and because "one of no folders" -- the sentence a rule
+/// constraining by shape alone used to get -- describes the opposite of that
+/// rule. The enumeration clause appears only when there is an enumeration.
+fn describe_subfolders(allowed: &[String], warn: &[String], patterns: &[String]) -> String {
+    let mut parts = Vec::new();
+
+    if !allowed.is_empty() || patterns.is_empty() {
+        parts.push(format!("one of {}", join_or(allowed, "no folders")));
+    }
+    if !warn.is_empty() {
+        parts.push(format!("or {} as a warning", join_or(warn, "")));
+    }
+    if !patterns.is_empty() {
+        let clause = format!("a name matching {}", join_or(patterns, ""));
+        parts.push(if parts.is_empty() {
+            clause
+        } else {
+            format!("or {clause}")
+        });
+    }
+
+    parts.join(", ")
+}
+
 pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
     match expectation {
-        Expectation::AllowedSubfolders { allowed, warn } => {
-            let mut parts = vec![format!("one of {}", join_or(allowed, "no folders"))];
-            if !warn.is_empty() {
-                parts.push(format!("or {} as a warning", join_or(warn, "")));
-            }
-            parts.join(", ")
-        }
+        Expectation::AllowedSubfolders {
+            allowed,
+            warn,
+            patterns,
+        } => describe_subfolders(allowed, warn, patterns),
         Expectation::FilenamePattern { patterns } => {
             format!("a name matching {}", join_or(patterns, "no pattern"))
         }
@@ -1130,6 +1155,7 @@ mod tests {
             expected: Expectation::AllowedSubfolders {
                 allowed: vec!["types".to_owned(), "calcs".to_owned()],
                 warn: Vec::new(),
+                patterns: Vec::new(),
             },
         }
     }
@@ -2035,6 +2061,29 @@ mod tests {
         }
     }
 
+    /// Issue #43: a rule whose subfolder names are a *shape* rather than a
+    /// list. "one of no folders" was the old sentence for that, which describes
+    /// the opposite of the rule.
+    #[test]
+    fn a_subfolder_pattern_reads_as_a_shape_not_an_empty_list() {
+        let by_shape = describe_expectation(&Expectation::AllowedSubfolders {
+            allowed: Vec::new(),
+            warn: Vec::new(),
+            patterns: vec![r"^\d{2}-[a-z0-9-]+$".to_owned()],
+        });
+        assert_eq!(by_shape, r"a name matching `^\d{2}-[a-z0-9-]+$`");
+
+        let both = describe_expectation(&Expectation::AllowedSubfolders {
+            allowed: vec!["_template".to_owned()],
+            warn: Vec::new(),
+            patterns: vec![r"^\d{2}-[a-z0-9-]+$".to_owned()],
+        });
+        assert_eq!(
+            both,
+            r"one of `_template`, or a name matching `^\d{2}-[a-z0-9-]+$`"
+        );
+    }
+
     /// The two annotation faults are different sentences because they are
     /// different fixes. Both would otherwise fall through to the
     /// `non_exhaustive` arm and reach a user as a Rust `Debug` dump, which is
@@ -2158,6 +2207,7 @@ mod tests {
         let sentence = describe_expectation(&Expectation::AllowedSubfolders {
             allowed: vec!["types".to_owned()],
             warn: vec!["shared".to_owned()],
+            patterns: Vec::new(),
         });
 
         assert_eq!(sentence, "one of `types`, or `shared` as a warning");

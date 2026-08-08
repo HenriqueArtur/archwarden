@@ -53,6 +53,32 @@ saying so.
   Existing configs are unaffected: a rule that names no annotation ignores them
   exactly as before.
 
+- **`structure.subfolder_patterns`: a regex over directory names.**
+  ([#43](https://github.com/HenriqueArtur/archwarden/issues/43))
+
+  ```json
+  "subfolder_patterns": ["^\\d{2}-[a-z0-9-]+$"]
+  ```
+
+  `filename_patterns` one field over, for the other kind of directory entry.
+  `allowed_subfolders` constrains names by enumeration, which works for a fixed
+  vocabulary and cannot work for an open set where the *shape* is the rule —
+  sixteen lesson folders named `NN-slug` with more arriving, and nobody listing
+  them forever.
+
+  The same matcher already existed as `naming.dir_pattern` and was reachable
+  only through `must_export`, which needs a TypeScript parse of a file inside;
+  a directory with no `.ts` near it could not use it at all.
+
+  A union with the two lists: a name passes if a list names it *or* a pattern
+  matches it. The lists are read first, so a `warn_subfolders` entry whose name
+  happens to have the right shape still warns — the most specific declaration
+  wins, and a name written out is more specific than a regex.
+
+  `describe`, `scaffold` and `agent-guide` all carry it, so the shape is
+  answerable before the folder exists, which is where a folder-naming
+  convention is cheap to follow.
+
 ### Fixed
 
 - **`allowed_subfolders: []` now forbids every subfolder, instead of enforcing

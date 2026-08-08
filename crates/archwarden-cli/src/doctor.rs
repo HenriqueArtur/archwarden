@@ -77,6 +77,7 @@ fn constrains_nothing(rule: &CompiledRule, concerns: &mut Vec<Concern>) {
     let CompiledRuleKind::Structure {
         allowed_subfolders,
         warn_subfolders,
+        subfolder_patterns,
         filename_patterns,
         ..
     } = &rule.kind
@@ -87,7 +88,10 @@ fn constrains_nothing(rule: &CompiledRule, concerns: &mut Vec<Concern>) {
     // An *empty* `allowed_subfolders` is a constraint -- "no subfolder may
     // exist here" -- so what matters is whether the field was named at all.
     // Issue #40.
-    if allowed_subfolders.is_some() || !warn_subfolders.is_empty() || !filename_patterns.is_empty()
+    if allowed_subfolders.is_some()
+        || !warn_subfolders.is_empty()
+        || !subfolder_patterns.is_empty()
+        || !filename_patterns.is_empty()
     {
         return;
     }
@@ -97,7 +101,8 @@ fn constrains_nothing(rule: &CompiledRule, concerns: &mut Vec<Concern>) {
         rule_id: Some(rule.id.clone()),
         path: None,
         message: "it names no allowed subfolder, no warned subfolder and no \
-                  filename pattern, so there is nothing it can report"
+                  pattern for a folder or a filename, so there is nothing it \
+                  can report"
             .to_owned(),
         fix: "give it something to enforce — `allowed_subfolders: []` forbids \
               every subfolder — or drop the rule"
@@ -802,6 +807,7 @@ mod tests {
             allowed_subfolders: Some(allowed.iter().map(|s| (*s).to_owned()).collect()),
             warn_subfolders: warn.iter().map(|s| (*s).to_owned()).collect(),
             recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
             filename_patterns: Vec::new(),
         }
     }
@@ -1006,6 +1012,7 @@ mod tests {
                 allowed_subfolders: None,
                 warn_subfolders: Vec::new(),
                 recurse_into: Vec::new(),
+                subfolder_patterns: Vec::new(),
                 filename_patterns: Vec::new(),
             },
         )]);
@@ -1042,6 +1049,7 @@ mod tests {
                     allowed_subfolders: allowed.clone(),
                     warn_subfolders: warn.clone(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: filenames.clone(),
                 },
             )]);
@@ -1052,6 +1060,25 @@ mod tests {
                 filenames.len()
             );
         }
+    }
+
+    /// A rule that constrains subfolder names by shape has plenty to enforce,
+    /// and names none of the three fields this check started out looking at.
+    #[test]
+    fn a_subfolder_pattern_alone_is_something_to_enforce() {
+        let by_shape = config(vec![rule(
+            "licao-nome-da-pasta",
+            &["projetos"],
+            CompiledRuleKind::Structure {
+                allowed_subfolders: None,
+                warn_subfolders: Vec::new(),
+                recurse_into: Vec::new(),
+                subfolder_patterns: vec![Pattern::compile(r"^\d{2}-[a-z0-9-]+$").expect("valid")],
+                filename_patterns: Vec::new(),
+            },
+        )]);
+
+        assert!(examine(&by_shape).is_empty(), "{:?}", examine(&by_shape));
     }
 
     /// A structure rule that names no list says nothing about folders, so it
@@ -1066,6 +1093,7 @@ mod tests {
                     allowed_subfolders: None,
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: Vec::new(),
                 },
             ),
@@ -1350,6 +1378,7 @@ mod tests {
                         allowed_subfolders: Some(Vec::new()),
                         warn_subfolders: Vec::new(),
                         recurse_into: Vec::new(),
+                        subfolder_patterns: Vec::new(),
                         filename_patterns: vec![
                             Pattern::compile(r"^[a-z-]+\.use-case\.ts$").expect("valid"),
                         ],
