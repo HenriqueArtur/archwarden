@@ -1066,6 +1066,25 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
         // directory, and what the reader has to do is create the file *in it*.
         Observed::RequiredFileMissing { name } => format!("`{name}` is not here"),
         Observed::NoFileMatching { pattern } => format!("no file here matches `{pattern}`"),
+        Observed::FrontmatterAbsent => "has no frontmatter block".to_owned(),
+        Observed::FrontmatterMalformed { reason } => {
+            format!("its frontmatter block is not YAML: {reason}")
+        }
+        Observed::FrontmatterKeyMissing { key } => {
+            format!("its frontmatter carries no `{key}`")
+        }
+        // The value is quoted back rather than merely called wrong: a
+        // vocabulary miss is almost always a spelling, and seeing the spelling
+        // is the fix.
+        Observed::FrontmatterValueOutsideVocabulary { key, found } => {
+            format!("`{key}` is `{found}`, which is not one of the accepted values")
+        }
+        Observed::FrontmatterValueDisagrees { key, found, wanted } => {
+            format!("`{key}` is `{found}`, and the path says `{wanted}`")
+        }
+        Observed::FrontmatterValueNotScalar { key } => {
+            format!("`{key}` is not a single value, so there is nothing to compare")
+        }
         Observed::CompanionMissing { path } | Observed::SiblingMissing { path } => {
             format!("`{path}` does not exist")
         }
@@ -1108,6 +1127,46 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
 /// Shared with `describe`, which renders the same expectations for a file that
 /// does not exist yet. One renderer, so the gate and the informant can never
 /// word the same requirement differently -- decision 9.
+/// What a document's frontmatter must carry.
+///
+/// Three clauses, in the order the rule reads them: the keys, then the closed
+/// vocabularies, then the agreements with the path. Each is skipped when the
+/// rule did not ask for it, so a rule that only names keys gets one clause.
+fn describe_frontmatter(
+    keys: &[String],
+    vocabularies: &[(String, Vec<String>)],
+    agreements: &[(String, String)],
+) -> String {
+    let mut parts = Vec::new();
+
+    if !keys.is_empty() {
+        let quoted: Vec<&str> = keys.iter().map(String::as_str).collect();
+        parts.push(format!("frontmatter carrying {}", join_and(&quoted)));
+    }
+    for (key, accepted) in vocabularies {
+        let quoted: Vec<&str> = accepted.iter().map(String::as_str).collect();
+        parts.push(format!(
+            "with `{key}` one of {}",
+            join_or(&quoted, "nothing")
+        ));
+    }
+    for (key, wanted) in agreements {
+        parts.push(format!("and `{key}` equal to `{wanted}`"));
+    }
+
+    parts.join(", ")
+}
+
+/// `a`, `b` and `c` — for a list where every entry is required.
+fn join_and(items: &[&str]) -> String {
+    let quoted: Vec<String> = items.iter().map(|item| format!("`{item}`")).collect();
+    match quoted.split_last() {
+        None => "nothing".to_owned(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 /// What must live inside a directory, by name and by shape.
 ///
 /// "and", never "or": every entry is required, and the `join_or` this module
@@ -1172,6 +1231,11 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
         } => describe_subfolders(allowed, warn, patterns),
         Expectation::RequiredFiles { names, patterns } => describe_required_files(names, patterns),
         Expectation::RequiredCompanion { path } => format!("`{path}` beside it"),
+        Expectation::RequiredFrontmatter {
+            keys,
+            vocabularies,
+            agreements,
+        } => describe_frontmatter(keys, vocabularies, agreements),
         Expectation::FilenamePattern { patterns } => {
             format!("a name matching {}", join_or(patterns, "no pattern"))
         }
@@ -2220,6 +2284,72 @@ mod tests {
                 "{observed:?} rendered as {sentence}"
             );
         }
+    }
+
+    /// Issue #44. Six ways a frontmatter block can disappoint a rule, and six
+    /// sentences, because they are six different edits.
+    #[test]
+    fn a_frontmatter_fault_reads_as_a_sentence() {
+        let cases = [
+            (Observed::FrontmatterAbsent, "has no frontmatter block"),
+            (
+                Observed::FrontmatterMalformed {
+                    reason: "mapping values are not allowed here".to_owned(),
+                },
+                "is not YAML",
+            ),
+            (
+                Observed::FrontmatterKeyMissing {
+                    key: "componentes".to_owned(),
+                },
+                "carries no `componentes`",
+            ),
+            (
+                Observed::FrontmatterValueOutsideVocabulary {
+                    key: "status".to_owned(),
+                    found: "concluido".to_owned(),
+                },
+                "`status` is `concluido`",
+            ),
+            (
+                Observed::FrontmatterValueDisagrees {
+                    key: "id".to_owned(),
+                    found: "semaforo".to_owned(),
+                    wanted: "03-semaforo".to_owned(),
+                },
+                "`id` is `semaforo`, and the path says `03-semaforo`",
+            ),
+            (
+                Observed::FrontmatterValueNotScalar {
+                    key: "nivel".to_owned(),
+                },
+                "`nivel` is not a single value",
+            ),
+        ];
+
+        for (observed, fragment) in cases {
+            let sentence = describe_observed(&observed);
+            assert!(
+                sentence.contains(fragment),
+                "{observed:?} rendered as {sentence}"
+            );
+        }
+    }
+
+    /// What the rule wants, for someone who has not read the config.
+    #[test]
+    fn a_required_frontmatter_reads_as_a_sentence() {
+        let expected = describe_expectation(&Expectation::RequiredFrontmatter {
+            keys: vec!["id".to_owned(), "nivel".to_owned()],
+            vocabularies: vec![("nivel".to_owned(), vec!["1".to_owned(), "2".to_owned()])],
+            agreements: vec![("id".to_owned(), "03-semaforo".to_owned())],
+        });
+
+        assert_eq!(
+            expected,
+            "frontmatter carrying `id` and `nivel`, \
+             with `nivel` one of `1` or `2`, and `id` equal to `03-semaforo`"
+        );
     }
 
     /// Issue #45. The finding is on the file that needs the companion, so the

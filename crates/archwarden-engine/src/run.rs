@@ -150,6 +150,14 @@ pub fn resolves_imports(config: &CompiledConfig) -> bool {
 ///
 /// A configuration whose rules are all structural never reads a byte, cache or
 /// no cache.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the run loop is one sequence: walk, offer directories, read what \
+              a rule looks inside, offer files, count what nobody could \
+              decide. Splitting it would put the counters behind a signature \
+              and hide the one property that matters -- that every branch \
+              which fails to produce facts also files a reason"
+)]
 #[must_use]
 pub fn check(run: Run<'_>) -> Report {
     let Run {
@@ -203,6 +211,27 @@ pub fn check(run: Run<'_>) -> Report {
             // Read the file only if a rule that applies to it actually looks
             // inside. Deciding this per file rather than per run is what keeps
             // a mostly-structural configuration off the disk.
+            // A document is read on the same terms: only when a rule that
+            // applies to it looks inside one.
+            let docs = if file.class == FileClass::Document
+                && wanted_by
+                    .iter()
+                    .any(|engine| engine.needs_facts() == FactsNeeded::Document)
+            {
+                read_docs(
+                    root,
+                    &file.path,
+                    cache.as_deref_mut(),
+                    &mut Counters {
+                        parsed: &mut files_parsed,
+                        reused: &mut facts_reused,
+                        unreadable: &mut unreadable_files,
+                    },
+                )
+            } else {
+                None
+            };
+
             let mut facts = if file.class == FileClass::Source
                 && wanted_by
                     .iter()
@@ -259,13 +288,27 @@ pub fn check(run: Run<'_>) -> Report {
                 // pointed at a `.md` wanted code facts from a file that could
                 // never have them and lost nothing, while the same rule pointed
                 // at a `.py` lost everything and used to say so nowhere.
-                if facts.is_none() && file.class.yields(engine.needs_facts()) {
+                // Whether the rule got what it asked for. A rule that asks for
+                // nothing always did; `yields` then answers `false` for it
+                // anyway, and the two agreeing is what keeps a structural rule
+                // out of the count.
+                let needed = engine.needs_facts();
+                let looked = match needed {
+                    FactsNeeded::Nothing => true,
+                    FactsNeeded::Code => facts.is_some(),
+                    FactsNeeded::Document => docs.is_some(),
+                    // `FactsNeeded` is non_exhaustive; a kind added later has no
+                    // front-end here yet, and "did not look" is honest for it.
+                    _ => false,
+                };
+                if !looked && file.class.yields(needed) {
                     checks_skipped += 1;
                     skipped_checks.push((engine.id().to_string(), file.path.clone()));
                 }
                 findings.extend(engine.check_file(FileContext {
                     path: &file.path,
                     facts: facts.as_ref(),
+                    docs: docs.as_ref(),
                     siblings: &file_names,
                     // The walk already knows the whole repository, so a rule
                     // asking about a path outside this directory costs a map
@@ -338,6 +381,69 @@ fn facts_for(
     }
 
     Ok((parse(path, &source, content)?, Source::Parsed))
+}
+
+/// Where a read lands, so one call can report all three outcomes.
+struct Counters<'a> {
+    parsed: &'a mut usize,
+    reused: &'a mut usize,
+    unreadable: &'a mut Vec<(RepoRelPath, String)>,
+}
+
+/// Reads a document and files the outcome, or `None` when it could not be read.
+fn read_docs(
+    root: &Utf8Path,
+    path: &RepoRelPath,
+    cache: Option<&mut Cache>,
+    counters: &mut Counters<'_>,
+) -> Option<archwarden_core::docs::DocFacts> {
+    match docs_for(root, path, cache) {
+        Ok((docs, Source::Cache)) => {
+            *counters.reused += 1;
+            Some(docs)
+        }
+        Ok((docs, Source::Parsed)) => {
+            *counters.parsed += 1;
+            Some(docs)
+        }
+        Err(reason) => {
+            counters.unreadable.push((path.clone(), reason));
+            None
+        }
+    }
+}
+
+/// Document facts for one file, from the cache when they are there.
+///
+/// The same shape as [`facts_for`], deliberately: the second front-end earns no
+/// exception. Reading a document is infallible, so the `Result` a code parse
+/// needs is absent here — a document that disappoints a rule does so through
+/// its facts, not through an error.
+fn docs_for(
+    root: &Utf8Path,
+    path: &RepoRelPath,
+    cache: Option<&mut Cache>,
+) -> Result<(archwarden_core::docs::DocFacts, Source), String> {
+    let source =
+        std::fs::read_to_string(root.join(path.as_path())).map_err(|error| error.to_string())?;
+    let content = ContentHash::of(source.as_bytes());
+
+    if let Some(cache) = cache {
+        // Keyed by content alone, so the path is supplied rather than read
+        // back. Same reasoning as `facts_for`; same bug if it is not. Issue #20.
+        if let Some(docs) = cache.docs(content, path) {
+            return Ok((docs, Source::Cache));
+        }
+
+        let docs = archwarden_parser::document::read(path, &source, content);
+        cache.put_docs(content, &docs);
+        return Ok((docs, Source::Parsed));
+    }
+
+    Ok((
+        archwarden_parser::document::read(path, &source, content),
+        Source::Parsed,
+    ))
 }
 
 /// Facts for one file, read and parsed now.

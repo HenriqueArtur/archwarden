@@ -1,11 +1,18 @@
 # Rule categories
 
-archwarden ships eight rule categories in v0. Each has narrow, well-defined
+archwarden ships nine rule categories in v0. Each has narrow, well-defined
 semantics. This document is the reference for what each rule can and cannot
 express. Config syntax lives in [`CONFIG.md`](CONFIG.md).
 
 Ordering: cheap and file-local first, expensive and graph-wide last. The
 engine runs them in the same order for cache-friendly evaluation.
+
+**Three of them need no parser at all.** `structure`, `presence` and `pair`
+reason about names and paths on disk, so they work on a repository in any
+language — or in none. `spec-pair` joins them unless `require_non_empty_spec`
+or `skip_type_only` is set. The rules that do open a file are `naming`,
+`call-obligation`, `no-passthrough` and `import-boundary` for JS/TS, and
+`frontmatter` for markdown. See decision 19 for what a new language costs.
 
 ---
 
@@ -22,6 +29,7 @@ directory:
 | `naming` | `file_pattern` | the direct child files, by basename |
 | `naming` | `dir_pattern` | the selected directory itself, by its own basename |
 | `presence` | `require`, `require_any` | the direct child files, by name and by shape |
+| `frontmatter` | `file_pattern` | the direct child documents, by basename; then the `---` block inside |
 | `pair` | `file_pattern` | the direct child files, by basename; the companion may sit outside |
 | `spec-pair` | `subfolders` | the listed subdirectories **and everything below them** (`"."` = the directory itself, its own files only), then files in them |
 | `call-obligation` | `file_pattern` | the direct child files, by basename |
@@ -501,7 +509,76 @@ stops being consultable. Issue #45.
 
 ---
 
-## 5. Spec pairing (TDD gate)
+## 5. Frontmatter
+
+**What it enforces**: a document's YAML frontmatter carries the keys something
+depends on.
+
+**Scope**: file-local. Reads the document, not the code.
+
+**Shape**:
+
+- `file_pattern` — regex over the filename of the documents this is about.
+- `require` — keys the block must carry.
+- `one_of` — the closed vocabulary a key's value must come from.
+- `equals` — a key whose value must equal a template rendered from the path.
+
+```json
+{
+  "type": "frontmatter",
+  "id": "projeto-frontmatter",
+  "level": "error",
+  "roots": ["projetos/*"],
+  "file_pattern": "^projeto\\.md$",
+  "require": ["id", "nivel", "componentes"],
+  "one_of": { "nivel": ["1", "2", "3"] },
+  "equals": { "id": "{{raw(dirname)}}" }
+}
+```
+
+**The frontmatter is often not documentation.** It is the machine-readable half
+of the document — the part three scripts and an index page depend on — and
+nothing type-checks a markdown file. A `projeto.md` with no `componentes` does
+not fail to load; it reports as a lesson that needs no components, so "which
+projects use the DHT11?" returns an answer that is confidently short.
+
+**`one_of` is the one that earns the rule.** A missing key is at least an
+absence. A value *outside* the vocabulary is confidently wrong: `status:
+concluido` where the vocabulary is `feito` drops the document out of the
+generated table with no row and no error. Same failure shape as
+`must_export.annotation`, one file format over.
+
+**Values compare as text.** `"1"` in the config matches `nivel: 1` in the
+document, and a quoted value matches an unquoted one. That answers the question
+without archwarden growing a type system nothing else here needs.
+
+**`equals` is the `naming` question**, asked of a file with no exported symbol
+to ask it about: a name agreeing with a path. `{{raw(dirname)}}` is the name of
+the directory the document sits in, and it is the only group a document
+template may name. The form is `naming`'s, so the transforms come along —
+`{{kebab(dirname)}}` is spelled the same way here as there.
+
+**A document with no block is a finding, not a skip.** Skipping would make
+*deleting the block* the way out of the rule, which is the argument
+`skip_type_only` already makes about deleting the `export` keyword. A block
+that is not YAML is a *different* finding, because "write the block" and "what
+you wrote is not YAML" are different next steps.
+
+**One dialect.** `---`-fenced YAML. TOML `+++` and JSON frontmatter are
+guesses until somebody asks, and one dialect that is definitely right beats
+three that are probably.
+
+**Cannot express**: the shape of a value — `type`, `min_items`, a regex over a
+value, a nested path. That is a document schema, JSON Schema is one, and the
+line this rule keeps is the one every other rule here keeps: **archwarden
+asserts names and vocabularies, never the shape of a value.** Nor referential
+integrity between documents: "every `componentes[].id` exists in
+`inventario.yml`" is a cross-file lookup into a file archwarden knows nothing
+about, and `RULES.md` keeps cross-file questions out of file-local rules.
+
+---
+
+## 6. Spec pairing (TDD gate)
 
 **What it enforces**: every unit file under configured subfolders must
 have a `.spec.<ext>` sibling.
@@ -605,7 +682,7 @@ noisy and unreliable. `require_non_empty_spec` is the practical proxy.
 
 ---
 
-## 6. Import boundaries
+## 7. Import boundaries
 
 **What it enforces**: layer A may not import from layer B; or, layer C
 must import from layer D.
@@ -708,7 +785,7 @@ above, declined the same way.
 
 ---
 
-## 7. Call obligations
+## 8. Call obligations
 
 **What it enforces**: files matching a pattern must contain at least one
 call to a specific imported symbol.
@@ -747,7 +824,7 @@ into program analysis territory and are out of scope.
 
 ---
 
-## 8. No passthrough
+## 9. No passthrough
 
 **What it enforces**: a file must add something of its own. A file whose whole
 content is forwarding another module is an indirection wearing the name of a

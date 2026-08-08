@@ -25,15 +25,26 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 /// cache is a rebuildable artefact, and migration code for one is a liability
 /// nobody is paid back for. See decision 3.
 ///
+/// 4 → 5: a `docs` table, and `FileClass` gained two answers — an entry
+/// written by the previous build was classified by a function that had never
+/// heard of `Document` or `UnreadableSource`.
+///
 /// 3 → 4: `ExportFact::annotations`. A field with a serde default is the
 /// dangerous kind of shape change — an entry written by the previous build
 /// deserialises cleanly and claims every export annotates nothing, which is a
 /// finding against a file whose annotation is right there in the source.
-pub const FORMAT_VERSION: u32 = 4;
+pub const FORMAT_VERSION: u32 = 5;
 
 const META: TableDefinition<'_, &str, u32> = TableDefinition::new("meta");
 const FACTS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("facts");
 const FINDINGS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("findings");
+/// Document facts, keyed the same way as code facts.
+///
+/// A second table rather than a second shape in the first, for the same reason
+/// `DocFacts` is not a field on `FileFacts`: they are different facts about
+/// different files, and a reader of either should not have to skip past the
+/// other.
+const DOCS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("docs");
 
 const VERSION_KEY: &str = "format_version";
 
@@ -66,6 +77,7 @@ pub struct Cache {
     database: Database,
     path: Utf8PathBuf,
     pending_facts: Vec<(ContentHash, Vec<u8>)>,
+    pending_docs: Vec<(ContentHash, Vec<u8>)>,
     pending_findings: Vec<(ContentHash, Vec<u8>)>,
 }
 
@@ -104,6 +116,7 @@ impl Cache {
             database,
             path: path.to_owned(),
             pending_facts: Vec::new(),
+            pending_docs: Vec::new(),
             pending_findings: Vec::new(),
         };
         cache.stamp_version()?;
@@ -172,6 +185,22 @@ impl Cache {
         Some(facts)
     }
 
+    /// Reads cached document facts, stamped with the path asked about.
+    ///
+    /// Same contract as [`facts`](Self::facts): everything stored is a function
+    /// of the bytes, and two identical documents in two places share an entry
+    /// correctly, so the path is the caller's to supply.
+    #[must_use]
+    pub fn docs(
+        &self,
+        content: ContentHash,
+        path: &archwarden_core::path::RepoRelPath,
+    ) -> Option<archwarden_core::docs::DocFacts> {
+        let mut docs: archwarden_core::docs::DocFacts = self.read(DOCS, content)?;
+        docs.path = path.clone();
+        Some(docs)
+    }
+
     /// Reads cached findings for a composite key.
     #[must_use]
     pub fn findings(&self, key: ContentHash) -> Option<Vec<Finding>> {
@@ -199,6 +228,13 @@ impl Cache {
         }
     }
 
+    /// Queues document facts to be written.
+    pub fn put_docs(&mut self, content: ContentHash, docs: &archwarden_core::docs::DocFacts) {
+        if let Ok(encoded) = rmp_serde::to_vec_named(docs) {
+            self.pending_docs.push((content, encoded));
+        }
+    }
+
     /// Queues findings to be written.
     pub fn put_findings(&mut self, key: ContentHash, findings: &[Finding]) {
         if let Ok(encoded) = rmp_serde::to_vec_named(findings) {
@@ -209,7 +245,7 @@ impl Cache {
     /// How many entries are waiting to be written.
     #[must_use]
     pub fn pending(&self) -> usize {
-        self.pending_facts.len() + self.pending_findings.len()
+        self.pending_facts.len() + self.pending_docs.len() + self.pending_findings.len()
     }
 
     /// Writes everything queued, in one transaction.
@@ -230,6 +266,12 @@ impl Cache {
                     .map_err(failed)?;
             }
 
+            let mut docs = transaction.open_table(DOCS).map_err(failed)?;
+            for (key, value) in &self.pending_docs {
+                docs.insert(key.as_bytes().as_slice(), value.as_slice())
+                    .map_err(failed)?;
+            }
+
             let mut findings = transaction.open_table(FINDINGS).map_err(failed)?;
             for (key, value) in &self.pending_findings {
                 findings
@@ -240,6 +282,7 @@ impl Cache {
         transaction.commit().map_err(failed)?;
 
         self.pending_facts.clear();
+        self.pending_docs.clear();
         self.pending_findings.clear();
         Ok(())
     }

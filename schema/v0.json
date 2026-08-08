@@ -612,6 +612,65 @@
             "file_pattern",
             "must_exist"
           ]
+        },
+        {
+          "description": "A document's frontmatter must carry these keys.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "file_pattern": {
+              "description": "Regex over the filename of the documents this rule is about.",
+              "type": "string"
+            },
+            "require": {
+              "description": "Keys the block must carry.\n\nNinety per cent of the value, and the whole of it that is about *names*.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "one_of": {
+              "description": "The closed vocabulary a key's value must come from.\n\nThe case that justifies the rule existing. A missing key is at least an\nabsence; a value outside the vocabulary is *confidently wrong* — the\ngenerated table simply has no row for it — which is the same failure\nshape `must_export.annotation` exists for.\n\nValues are compared as text, so `\"1\"` here matches `nivel: 1` in the\ndocument. That is deliberate: it answers the question without archwarden\ngrowing a type system nothing else here needs.",
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/OneOrMany"
+              }
+            },
+            "equals": {
+              "description": "A key whose value must equal a template rendered from the path.\n\n`{{raw(dirname)}}` is the name of the directory the document sits in,\nand it is the only group a document template may name. The form is the\none `naming` already uses, so the transforms come along:\n`{{kebab(dirname)}}` is spelled the same way here as there.\n\nThis is the `naming` rule's question — a name agreeing with a path —\nasked of a file that has no exported symbol to ask it about.",
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "frontmatter"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots",
+            "file_pattern"
+          ]
         }
       ]
     },

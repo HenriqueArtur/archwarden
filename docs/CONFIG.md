@@ -119,7 +119,7 @@ would refuse to complete.
 
 Every rule has:
 
-- `type` — discriminator (`structure`, `naming`, `spec-pair`, `import-boundary`, `call-obligation`, `no-passthrough`).
+- `type` — discriminator (`structure`, `naming`, `presence`, `pair`, `frontmatter`, `spec-pair`, `import-boundary`, `call-obligation`, `no-passthrough`).
 - `id` — stable identifier used in output and in `explain`. Required, unique per config.
 - `level` — `error` or `warning`.
 - a **scope**: `roots` on every rule, except `import-boundary` where it is
@@ -172,6 +172,33 @@ A module takes one too, and it is a separate answer rather than a fallback:
 least one rule in the config has a `why` — a project that never used the field
 has not adopted the practice, and being nagged about a convention you did not
 choose is how a command that gives advice becomes one nobody runs.
+
+### Frontmatter rule
+
+For a document whose YAML block is read by something.
+
+```json
+{
+  "type": "frontmatter",
+  "id": "projeto-frontmatter",
+  "level": "error",
+  "roots": ["projetos/*"],
+  "file_pattern": "^projeto\\.md$",
+  "require": ["id", "nivel", "componentes"],
+  "one_of": { "nivel": ["1", "2", "3"] },
+  "equals": { "id": "{{raw(dirname)}}" }
+}
+```
+
+Values compare as text, so `"1"` matches `nivel: 1` and a quoted value matches
+an unquoted one. `{{raw(dirname)}}` is the directory the document sits in, and
+it is the only group a document template may name — the form is `naming`'s, so
+`{{kebab(dirname)}}` works too.
+
+A document with no `---` block is a finding, not a skip; a block that is not
+YAML is a different finding. What this rule deliberately cannot say is anything
+about the *shape* of a value — no `type`, no `min_items`, no nested paths. That
+is a document schema and JSON Schema is one. See [`RULES.md`](RULES.md).
 
 ### A note on regexes
 

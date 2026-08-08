@@ -130,6 +130,7 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
         CompiledRuleKind::SpecPair { .. } => a_file_with_no_spec(rule, engine, tree),
         CompiledRuleKind::Presence { .. } => a_directory_holding_nothing(rule, engine, tree),
         CompiledRuleKind::Pair { .. } => a_file_with_no_companion(rule, engine, tree),
+        CompiledRuleKind::Frontmatter { .. } => a_document_with_no_block(rule, engine, tree),
         CompiledRuleKind::ImportBoundary {
             forbid,
             forbid_packages,
@@ -163,6 +164,53 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
     }
 }
 
+/// A document this rule covers, handed facts saying it has no block.
+///
+/// Absence is easy to synthesise, and this rule's own documentation says a
+/// document with no frontmatter must be a finding rather than a skip -- so the
+/// probe is the exact case the rule promises to catch.
+fn a_document_with_no_block(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+) -> Verdict {
+    let Some(covered) = tree
+        .directories()
+        .flat_map(|(_, directory)| directory.files.iter())
+        .map(|file| &file.path)
+        .find(|path| engine.applies_to(path))
+    else {
+        return Verdict::Unverified {
+            why: format!(
+                "no document in this repository is one `{}` is about",
+                rule.id
+            ),
+        };
+    };
+
+    let docs = archwarden_core::docs::DocFacts {
+        path: covered.clone(),
+        content_hash: ContentHash::of(PROBE.as_bytes()),
+        frontmatter: archwarden_core::docs::Frontmatter::Absent,
+        headings: Vec::new(),
+    };
+
+    let findings = engine.check_file(FileContext {
+        path: covered,
+        facts: None,
+        docs: Some(&docs),
+        siblings: &[],
+        exists: Exists::none(),
+    });
+
+    let on = format!("`{covered}` with no frontmatter block");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
+    }
+}
+
 /// A file this rule covers, in a repository holding nothing else.
 ///
 /// The probe is a real file -- one the rule says it applies to -- asked about
@@ -192,6 +240,7 @@ fn a_file_with_no_companion(
     let findings = engine.check_file(FileContext {
         path: covered,
         facts: None,
+        docs: None,
         siblings: &[],
         exists: Exists::none(),
     });
@@ -315,6 +364,7 @@ fn a_file_with_no_spec(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &Repo
     let findings = engine.check_file(FileContext {
         path: &lonely,
         facts: Some(&facts),
+        docs: None,
         siblings: std::slice::from_ref(&name),
         exists: Exists::none(),
     });
@@ -383,6 +433,7 @@ fn crossed_boundary(
     let findings = engine.check_file(FileContext {
         path: importer,
         facts: Some(&facts),
+        docs: None,
         siblings: &[],
         exists: Exists::none(),
     });

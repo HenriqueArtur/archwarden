@@ -67,12 +67,13 @@ struct GuideRule<'a> {
 /// Listed here rather than derived, because `CompiledRuleKind::type_name` maps
 /// one way only. A test walks the enum through this list, so the two cannot
 /// drift.
-pub const KINDS: [&str; 7] = [
+pub const KINDS: [&str; 8] = [
     "structure",
     "naming",
     "spec-pair",
     "presence",
     "pair",
+    "frontmatter",
     "import-boundary",
     "call-obligation",
 ];
@@ -314,6 +315,29 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             }
             if !require.is_empty() {
                 lines.push(format!("must import from {}", join(require.patterns())));
+            }
+            lines
+        }
+        CompiledRuleKind::Frontmatter {
+            file_pattern,
+            require,
+            one_of,
+            equals,
+        } => {
+            let mut lines = vec![format!(
+                "documents matching `{}` need frontmatter",
+                file_pattern.as_str()
+            )];
+            if !require.is_empty() {
+                let quoted: Vec<String> = require.iter().map(|k| format!("`{k}`")).collect();
+                lines.push(format!("carrying: {}", quoted.join(", ")));
+            }
+            for (key, accepted) in one_of {
+                let quoted: Vec<String> = accepted.iter().map(|v| format!("`{v}`")).collect();
+                lines.push(format!("`{key}` one of: {}", quoted.join(", ")));
+            }
+            for (key, template) in equals {
+                lines.push(format!("`{key}` equal to `{template}`"));
             }
             lines
         }
@@ -621,6 +645,36 @@ mod tests {
     /// requirement missing from it is a requirement the agent will break and
     /// then be told about. The annotation is checked, so it belongs in the
     /// sentence rather than under it as a suggestion.
+    /// Issue #44. The digest is what an agent has before it writes a document,
+    /// and the frontmatter is the half a human never reads.
+    #[test]
+    fn a_frontmatter_rule_lists_its_keys_and_vocabularies() {
+        let config = config(vec![rule(
+            "projeto-frontmatter",
+            None,
+            &["projetos/*"],
+            CompiledRuleKind::Frontmatter {
+                file_pattern: Pattern::compile(r"^projeto\.md$").expect("valid"),
+                require: vec!["id".to_owned(), "nivel".to_owned()],
+                one_of: vec![("nivel".to_owned(), vec!["1".to_owned(), "2".to_owned()])],
+                equals: vec![("id".to_owned(), "{{raw(dirname)}}".to_owned())],
+            },
+        )]);
+
+        let markdown = rendered(&config, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains(r"documents matching `^projeto\.md$` need frontmatter"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("carrying: `id`, `nivel`"), "{markdown}");
+        assert!(markdown.contains("`nivel` one of: `1`, `2`"), "{markdown}");
+        assert!(
+            markdown.contains("`id` equal to `{{raw(dirname)}}`"),
+            "{markdown}"
+        );
+    }
+
     /// Issue #45. The digest has to say which of the two files needs the
     /// other, because the rule is one-directional and an agent that got it
     /// backwards would create the wrong file.

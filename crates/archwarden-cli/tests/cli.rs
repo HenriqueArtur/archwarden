@@ -319,6 +319,86 @@ fn a_rule_that_never_mentions_subfolders_still_allows_them() {
         .success();
 }
 
+/// Issue #44, end to end and through every layer that is new: the walk
+/// classifies a `.md` as a document, the document front-end finds the fence and
+/// parses the block, the cache stores it in its own table, and the rule asks it
+/// questions.
+///
+/// The frontmatter here is not documentation. It is the schema three scripts
+/// read, and nothing else in this repository type-checks a markdown file.
+#[test]
+fn a_document_whose_frontmatter_is_wrong_fails_the_check() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"frontmatter","id":"projeto-frontmatter","level":"error",
+                 "why":"three scripts and the generated index read this block",
+                 "roots":["projetos/*"],
+                 "file_pattern":"^projeto\\.md$",
+                 "require":["id","nivel","componentes"],
+                 "one_of":{"nivel":["1","2","3"]},
+                 "equals":{"id":"{{raw(dirname)}}"}}]}"#,
+        ),
+        (
+            "projetos/01-blink/projeto.md",
+            "---\nid: 01-blink\nnivel: 1\ncomponentes:\n  - { id: led, qtd: 1 }\n---\n\n# Blink\n",
+        ),
+        (
+            "projetos/03-semaforo/projeto.md",
+            "---\nid: semaforo\nnivel: 9\n---\n\n# Semáforo\n",
+        ),
+        ("projetos/07-oled/projeto.md", "# OLED\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        // The key that is simply absent.
+        .stdout(contains("carries no `componentes`"))
+        // The value outside the vocabulary — quoted back, because it is almost
+        // always a spelling.
+        .stdout(contains("`nivel` is `9`"))
+        // The value that disagrees with the path.
+        .stdout(contains(
+            "`id` is `semaforo`, and the path says `03-semaforo`",
+        ))
+        // And no block at all is a finding, not a skip.
+        .stdout(contains("has no frontmatter block"))
+        // The complete document is not mentioned.
+        .stdout(contains("01-blink").not())
+        // The reason travels with it.
+        .stdout(contains("why: three scripts and the generated index"));
+}
+
+/// A number in the document and a number in the config are one question in two
+/// notations, and a quoted value is the same value.
+#[test]
+fn a_scalar_matches_however_yaml_spelled_it() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"frontmatter","id":"notas-status","level":"error",
+                 "roots":["projetos/*"],
+                 "file_pattern":"^notas\\.md$",
+                 "one_of":{"status":["feito","fazendo"],"nivel":["1"]}}]}"#,
+        ),
+        (
+            "projetos/01-blink/notas.md",
+            "---\nstatus: \"feito\"  # concluído ontem\nnivel: 1\n---\n\n# Notas\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success();
+}
+
 /// Issue #45, end to end. The separation exists so a lesson can be rewritten
 /// without destroying what was written while doing it, and it only works if the
 /// notes file is *there* — a directory with no `notas.md` is one a regeneration

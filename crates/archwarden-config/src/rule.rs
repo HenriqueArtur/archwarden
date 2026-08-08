@@ -42,6 +42,8 @@ pub enum Rule {
     Presence(PresenceRule),
     /// A file of one kind must have a companion of another.
     Pair(PairRule),
+    /// A document's frontmatter must carry these keys.
+    Frontmatter(FrontmatterRule),
 }
 
 impl Rule {
@@ -57,6 +59,7 @@ impl Rule {
             Self::NoPassthrough(r) => &r.id,
             Self::Presence(r) => &r.id,
             Self::Pair(r) => &r.id,
+            Self::Frontmatter(r) => &r.id,
         }
     }
 
@@ -72,6 +75,7 @@ impl Rule {
             Self::NoPassthrough(r) => r.level,
             Self::Presence(r) => r.level,
             Self::Pair(r) => r.level,
+            Self::Frontmatter(r) => r.level,
         }
     }
 
@@ -87,6 +91,7 @@ impl Rule {
             Self::NoPassthrough(r) => r.why.as_deref(),
             Self::Presence(r) => r.why.as_deref(),
             Self::Pair(r) => r.why.as_deref(),
+            Self::Frontmatter(r) => r.why.as_deref(),
         }
     }
 
@@ -106,6 +111,7 @@ impl Rule {
             Self::NoPassthrough(r) => &r.roots,
             Self::Presence(r) => &r.roots,
             Self::Pair(r) => &r.roots,
+            Self::Frontmatter(r) => &r.roots,
         }
     }
 
@@ -121,6 +127,7 @@ impl Rule {
             Self::NoPassthrough(_) => "no-passthrough",
             Self::Presence(_) => "presence",
             Self::Pair(_) => "pair",
+            Self::Frontmatter(_) => "frontmatter",
         }
     }
 }
@@ -284,6 +291,58 @@ pub struct PairRule {
     /// `file_pattern` needs the companion, and never the reverse — an orphan
     /// `notas.md` is a note taken before the lesson was written, which is fine.
     pub must_exist: String,
+}
+
+/// A document's frontmatter must carry these keys.
+///
+/// The first rule that reads a file that is not code. The frontmatter of a
+/// `.md` is often not documentation at all — it is the machine-readable half
+/// of the document, and a missing or mis-spelled key fails *silently*: the
+/// project with no `componentes` reports as needing none, and the lesson whose
+/// `status` is outside the vocabulary drops out of the generated table with no
+/// row and no error. Nothing type-checks a markdown file. Issue #44.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FrontmatterRule {
+    /// Stable identifier.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Directory globs this rule applies to.
+    pub roots: Patterns,
+    /// Regex over the filename of the documents this rule is about.
+    pub file_pattern: String,
+    /// Keys the block must carry.
+    ///
+    /// Ninety per cent of the value, and the whole of it that is about *names*.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub require: Patterns,
+    /// The closed vocabulary a key's value must come from.
+    ///
+    /// The case that justifies the rule existing. A missing key is at least an
+    /// absence; a value outside the vocabulary is *confidently wrong* — the
+    /// generated table simply has no row for it — which is the same failure
+    /// shape `must_export.annotation` exists for.
+    ///
+    /// Values are compared as text, so `"1"` here matches `nivel: 1` in the
+    /// document. That is deliberate: it answers the question without archwarden
+    /// growing a type system nothing else here needs.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub one_of: std::collections::BTreeMap<String, Patterns>,
+    /// A key whose value must equal a template rendered from the path.
+    ///
+    /// `{{raw(dirname)}}` is the name of the directory the document sits in,
+    /// and it is the only group a document template may name. The form is the
+    /// one `naming` already uses, so the transforms come along:
+    /// `{{kebab(dirname)}}` is spelled the same way here as there.
+    ///
+    /// This is the `naming` rule's question — a name agreeing with a path —
+    /// asked of a file that has no exported symbol to ask it about.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub equals: std::collections::BTreeMap<String, String>,
 }
 
 /// The filename dictates the exported symbol's name.
@@ -756,6 +815,29 @@ mod tests {
         };
         assert_eq!(naming.must_export.kind.as_slice(), ["function", "arrow"]);
         assert_eq!(naming.must_export.signature_hint, None);
+    }
+
+    /// Issue #44. The frontmatter is not documentation — it is the schema
+    /// three scripts and one index page depend on, and nothing type-checks a
+    /// markdown file.
+    #[test]
+    fn a_frontmatter_rule_names_keys_a_vocabulary_and_an_agreement() {
+        let rule = parse(
+            r#"{"type":"frontmatter","id":"projeto-frontmatter","level":"error",
+                "roots":["projetos/*"],
+                "file_pattern":"^projeto\\.md$",
+                "require":["id","nivel","componentes"],
+                "one_of":{"nivel":["1","2","3"]},
+                "equals":{"id":"{{raw(dirname)}}"}}"#,
+        );
+
+        let Rule::Frontmatter(front) = &rule else {
+            panic!("expected a frontmatter rule, got {}", rule.type_name());
+        };
+        assert_eq!(front.require.as_slice(), ["id", "nivel", "componentes"]);
+        assert_eq!(front.one_of["nivel"].as_slice(), ["1", "2", "3"]);
+        assert_eq!(front.equals["id"], "{{raw(dirname)}}");
+        assert_eq!(rule.type_name(), "frontmatter");
     }
 
     /// Issue #45. `spec-pair` is the rule for this and its baked-in ignores

@@ -194,6 +194,7 @@ mod tests {
         engine.check_file(FileContext {
             path: &path(file),
             facts: None,
+            docs: None,
             siblings: &[],
             exists: Exists::new(&exists),
         })

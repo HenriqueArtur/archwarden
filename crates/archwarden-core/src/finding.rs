@@ -78,6 +78,17 @@ pub enum Expectation {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         patterns: Vec<String>,
     },
+    /// A document's frontmatter must carry these keys.
+    RequiredFrontmatter {
+        /// Keys that must be there.
+        keys: Vec<String>,
+        /// The closed vocabulary a key's value must come from.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        vocabularies: Vec<(String, Vec<String>)>,
+        /// A key whose value must equal this, already rendered from the path.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        agreements: Vec<(String, String)>,
+    },
     /// A companion file must exist, named relative to this one.
     ///
     /// Distinct from [`RequiredSibling`](Self::RequiredSibling), which carries
@@ -229,6 +240,55 @@ pub enum Observed {
     NoFileMatching {
         /// The pattern that found nothing, as written in the config.
         pattern: String,
+    },
+    /// The document has no frontmatter block at all.
+    ///
+    /// A finding rather than a skip: skipping would make *deleting the block*
+    /// the way out of the rule, which is the argument `skip_type_only` already
+    /// makes about deleting the `export` keyword.
+    FrontmatterAbsent,
+    /// There is a block and it is not a YAML mapping.
+    ///
+    /// Separate from [`Observed::FrontmatterAbsent`] because the next steps
+    /// differ: one is "write the block", the other is "what you wrote is not
+    /// YAML".
+    FrontmatterMalformed {
+        /// What the parser objected to.
+        reason: String,
+    },
+    /// A key the block had to carry is not there.
+    FrontmatterKeyMissing {
+        /// The key that was looked for.
+        key: String,
+    },
+    /// A key's value is outside the closed vocabulary the rule names.
+    ///
+    /// The confidently-wrong case, which is worse than an absence: a value
+    /// outside the vocabulary drops the document out of whatever reads it, with
+    /// no row and no error.
+    FrontmatterValueOutsideVocabulary {
+        /// The key.
+        key: String,
+        /// What was written there.
+        found: String,
+    },
+    /// A key's value does not agree with what the path says it should be.
+    FrontmatterValueDisagrees {
+        /// The key.
+        key: String,
+        /// What was written there.
+        found: String,
+        /// What the path says it should be.
+        wanted: String,
+    },
+    /// A key the rule asks a question about holds a list or a mapping.
+    ///
+    /// Distinct from being outside a vocabulary, because there is no value to
+    /// compare: "fix the value" and "you wrote a list here" are different
+    /// sentences.
+    FrontmatterValueNotScalar {
+        /// The key.
+        key: String,
     },
     /// The companion this file needs is not there.
     CompanionMissing {

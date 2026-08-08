@@ -229,6 +229,12 @@ fn rules_hash(config: &Config) -> ContentHash {
     ContentHash::of(&serialised)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per rule kind, each a literal. Splitting it would put the \
+              arms somewhere the exhaustive match no longer names them, which \
+              is what makes a kind added without lowering fail to build"
+)]
 fn compile_rule(
     rule: &Rule,
     module: Option<archwarden_core::ids::ModuleId>,
@@ -326,6 +332,24 @@ fn compile_rule(
             must_exist: companion(&id, &r.must_exist)?,
         },
 
+        Rule::Frontmatter(r) => CompiledRuleKind::Frontmatter {
+            file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
+            require: r.require.iter().cloned().collect(),
+            one_of: r
+                .one_of
+                .iter()
+                .map(|(key, values)| (key.clone(), values.iter().cloned().collect()))
+                .collect(),
+            equals: r
+                .equals
+                .iter()
+                .map(|(key, template)| {
+                    check_document_template(&id, template)?;
+                    Ok((key.clone(), template.clone()))
+                })
+                .collect::<Result<_, CompileError>>()?,
+        },
+
         Rule::CallObligation(r) => CompiledRuleKind::CallObligation {
             file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
             symbol: r.must_call.symbol.clone(),
@@ -341,6 +365,25 @@ fn compile_rule(
         level: rule.level(),
         scope,
         kind,
+    })
+}
+
+/// The only group a document template may name.
+///
+/// A `naming` template renders from the capture groups of a `file_pattern`; a
+/// document has one thing worth agreeing with, and it is the directory it sits
+/// in. Refused rather than rendered empty, because a template naming a group
+/// nobody defines is a rule that would quietly demand the wrong value.
+const DOCUMENT_GROUP: &str = "dirname";
+
+fn check_document_template(rule: &RuleId, source: &str) -> Result<(), CompileError> {
+    template::render(source, |group| {
+        (group == DOCUMENT_GROUP).then(|| "placeholder".to_owned())
+    })
+    .map(|_| ())
+    .map_err(|source| CompileError::Template {
+        rule: rule.clone(),
+        source,
     })
 }
 

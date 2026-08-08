@@ -210,6 +210,7 @@ pub fn check_file(root: &Utf8Path, config: &CompiledConfig, path: &RepoRelPath) 
         findings.extend(engine.check_file(FileContext {
             path,
             facts: facts.as_ref(),
+            docs: None,
             siblings: &siblings,
             // No walk here -- this command exists to answer about one file
             // without one -- so the question goes to disk. `is_file` and not

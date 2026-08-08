@@ -182,6 +182,17 @@ pub enum CompiledRuleKind {
         /// start with `../`.
         must_exist: String,
     },
+    /// A document's frontmatter must carry these keys.
+    Frontmatter {
+        /// Regex over the filename of the documents this rule is about.
+        file_pattern: Pattern,
+        /// Keys the block must carry.
+        require: Vec<String>,
+        /// The closed vocabulary a key's value must come from, as text.
+        one_of: Vec<(String, Vec<String>)>,
+        /// A key whose value must equal this template, rendered from the path.
+        equals: Vec<(String, String)>,
+    },
     /// Files matching a pattern must call a symbol.
     CallObligation {
         /// Regex over the filename.
@@ -205,6 +216,7 @@ impl CompiledRuleKind {
             Self::ImportBoundary { .. } => "import-boundary",
             Self::Presence { .. } => "presence",
             Self::Pair { .. } => "pair",
+            Self::Frontmatter { .. } => "frontmatter",
             Self::CallObligation { .. } => "call-obligation",
         }
     }
@@ -216,9 +228,15 @@ impl CompiledRuleKind {
     #[must_use]
     pub fn needs_parse(&self) -> bool {
         match self {
-            // Both ask only whether a name is on disk.
-            // All three ask only whether a name is on disk.
-            Self::Structure { .. } | Self::Presence { .. } | Self::Pair { .. } => false,
+            // The first three ask only whether a name is on disk.
+            // `Frontmatter` does read a file -- but not through *this*
+            // front-end, and this method answers only for that one.
+            // `RuleEngine::needs_facts` is what says which front-end a rule
+            // wants.
+            Self::Structure { .. }
+            | Self::Presence { .. }
+            | Self::Pair { .. }
+            | Self::Frontmatter { .. } => false,
             Self::SpecPair {
                 require_non_empty_spec,
                 skip_type_only,

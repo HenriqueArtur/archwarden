@@ -73,6 +73,14 @@ pub struct FileContext<'a> {
     /// Its facts, once a parser has run. `None` on a walk-only pass, which is
     /// what a structure-only configuration does.
     pub facts: Option<&'a FileFacts>,
+    /// Its document facts, for the rules that read a `.md` rather than code.
+    ///
+    /// A second field rather than an enum, because the two are produced by
+    /// different front-ends from different files and no rule wants both. A
+    /// rule declares which it reads through
+    /// [`needs_facts`](RuleEngine::needs_facts), so the one it did not ask for
+    /// being `None` is never a surprise it has to handle.
+    pub docs: Option<&'a crate::docs::DocFacts>,
     /// Names of the entries sitting beside it, for sibling checks. Supplied by
     /// the walk so a rule never touches the filesystem itself -- which is what
     /// keeps rules deterministic and cheap to test.
@@ -366,6 +374,7 @@ mod tests {
         let findings = engine.check_file(FileContext {
             path: &facts.path,
             facts: Some(&facts),
+            docs: None,
             siblings: &[],
             exists: Exists::none(),
         });
@@ -402,6 +411,7 @@ mod tests {
                 .check_file(FileContext {
                     path: &facts.path,
                     facts: Some(&facts),
+                    docs: None,
                     siblings: &[],
                     exists: Exists::none()
                 })
@@ -494,6 +504,7 @@ mod tests {
                 .check_file(FileContext {
                     path: &facts.path,
                     facts: Some(&facts),
+                    docs: None,
                     siblings: &[],
                     exists: Exists::none(),
                 })
@@ -538,6 +549,7 @@ mod tests {
                 .check_file(FileContext {
                     path: &facts.path,
                     facts: Some(&facts),
+                    docs: None,
                     siblings: &[],
                     exists: Exists::none()
                 })
@@ -558,6 +570,7 @@ mod tests {
         let ctx = FileContext {
             path: &facts.path,
             facts: Some(&facts),
+            docs: None,
             siblings: &siblings,
             exists: Exists::none(),
         };

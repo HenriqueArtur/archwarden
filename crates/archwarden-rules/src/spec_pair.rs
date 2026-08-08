@@ -487,6 +487,7 @@ mod tests {
                 engine.check_file(FileContext {
                     path: &file,
                     facts: known,
+                    docs: None,
                     siblings: &siblings,
                     exists: Exists::none(),
                 })
@@ -1012,6 +1013,7 @@ mod tests {
             engine.check_file(FileContext {
                 path: &spec,
                 facts: Some(&facts),
+                docs: None,
                 siblings: &[],
                 exists: Exists::none(),
             })

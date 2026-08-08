@@ -447,6 +447,7 @@ mod tests {
         engine.check_file(FileContext {
             path: &facts.path,
             facts: Some(facts),
+            docs: None,
             siblings: &[],
             exists: Exists::none(),
         })
@@ -644,6 +645,7 @@ mod tests {
         let findings = engine.check_file(FileContext {
             path: &path,
             facts: None,
+            docs: None,
             siblings: &[],
             exists: Exists::none(),
         });

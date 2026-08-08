@@ -53,6 +53,43 @@ saying so.
   Existing configs are unaffected: a rule that names no annotation ignores them
   exactly as before.
 
+- **A `frontmatter` rule: a document's YAML block must carry these keys.**
+  ([#44](https://github.com/HenriqueArtur/archwarden/issues/44))
+
+  ```json
+  { "type": "frontmatter", "id": "projeto-frontmatter", "level": "error",
+    "roots": ["projetos/*"], "file_pattern": "^projeto\\.md$",
+    "require": ["id", "nivel", "componentes"],
+    "one_of": { "nivel": ["1", "2", "3"] },
+    "equals": { "id": "{{raw(dirname)}}" } }
+  ```
+
+  The first rule that reads a file which is not code. A `.md`'s frontmatter is
+  often not documentation at all — it is the machine-readable half of the
+  document — and nothing type-checks a markdown file. A `projeto.md` with no
+  `componentes` does not fail to load; it reports as a lesson that needs none.
+
+  `one_of` is the clause that earns the rule. A missing key is an absence; a
+  value *outside* the vocabulary is confidently wrong — `status: concluido`
+  where the vocabulary is `feito` drops the document out of the generated table
+  with no row and no error.
+
+  `equals` is the `naming` question asked of a file with no exported symbol:
+  a name agreeing with a path. Values compare as text, so `"1"` matches
+  `nivel: 1`.
+
+  Deliberately absent: `type`, `min_items`, nested paths, and anything about a
+  value's shape. That is a document schema and JSON Schema is one. The line
+  every rule here keeps is names and vocabularies, never shapes.
+
+  A document with no block is a finding, not a skip — otherwise deleting the
+  block would be the way out of the rule. A block that is not YAML is a
+  different finding, because the next steps differ.
+
+  `---`-fenced YAML only. Reading it takes `yaml-rust2`, the first parsing
+  dependency that is not `oxc`: `status: "feito"  # done`, a flow mapping and
+  an anchor are all things a line scanner reads wrong in silence.
+
 - **A `pair` rule: a file of one kind must have a companion of another.**
   ([#45](https://github.com/HenriqueArtur/archwarden/issues/45))
 
@@ -175,6 +212,21 @@ saying so.
   convention is cheap to follow.
 
 ### Fixed
+
+- **Source in a language archwarden cannot read is counted, instead of passing
+  in silence.**
+
+  A `.py` under an `import-boundary` rule was classified `Other` — the class
+  that exists so a PNG does not inflate `checks_skipped` — so the rule saw no
+  imports, reported nothing and counted nothing. A rule enforcing nothing looks
+  exactly like a repository that satisfies it.
+
+  `FileClass` now has four answers, and a missing fact counts as a lost answer
+  only when the file could have carried it: a boundary rule pointed at a `.md`
+  lost nothing, and pointed at a `.py` lost everything. `check --file` gained a
+  `no-front-end` reason distinct from `not-source` — one means the rule is
+  pointed at the wrong thing, the other means the rule is right and archwarden
+  cannot read the file.
 
 - **`allowed_subfolders: []` now forbids every subfolder, instead of enforcing
   nothing.** ([#40](https://github.com/HenriqueArtur/archwarden/issues/40))

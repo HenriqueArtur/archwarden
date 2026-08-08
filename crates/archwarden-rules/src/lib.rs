@@ -14,6 +14,7 @@
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
 pub mod call_obligation;
+pub mod frontmatter;
 pub mod import_boundary;
 pub mod naming;
 pub mod no_passthrough;
@@ -121,6 +122,18 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     except,
                     except_from,
                     *include_type_only,
+                )),
+                CompiledRuleKind::Frontmatter {
+                    file_pattern,
+                    require,
+                    one_of,
+                    equals,
+                } => Box::new(frontmatter::FrontmatterEngine::build(
+                    rule,
+                    file_pattern,
+                    require,
+                    one_of,
+                    equals,
                 )),
                 CompiledRuleKind::Pair {
                     file_pattern,
