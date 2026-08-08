@@ -373,6 +373,19 @@ saying so.
   about all three. A cache from an older format is discarded rather than
   misread, so the first run after upgrading is a cold one and nothing else
   changes.
+- **`cargo xtask ci` runs every gate the workflow runs**, and the `pre-push`
+  hook runs it. A gate whose tool is not installed *fails* rather than
+  skipping: this release lost three rounds of CI to checks that had never run
+  locally, each one reported as `skipped` in a message that read like a pass.
+  A test reads `.github/workflows/ci.yml` and fails if the two lists disagree,
+  so a job added to CI cannot be one that only ever fails on GitHub. The prose
+  list in `CONTRIBUTING.md` that this replaces had silently lost both coverage
+  floors.
+- **A `cargo-mutants` run that is interrupted after finding survivors now
+  blocks the push.** It used to read any exit code other than `2` as "the tool
+  could not form an opinion" and let the push through — which is right for a
+  build failure and wrong for a run that had already printed what it found.
+  190 survivors left through that gap.
 
 ## [0.9.2] — 2026-08-07
 

@@ -1,0 +1,30 @@
+# What mutation testing is not asked to prove.
+#
+# `cargo-mutants` runs on the push hook, over the diff being pushed. It earns
+# its place on logic: a comparison flipped, a branch inverted, a count off by
+# one. Everything below is a place where the tool can generate a mutant that no
+# honest test would catch, and the test that would catch it is worse than the
+# mutant.
+
+exclude_globs = [
+    # The translation tables.
+    #
+    # Every method in these files returns a constant string, so the tool offers
+    # two mutants each: `""` and `"xyzzy"`.
+    #
+    # The `""` half is a real defect -- a section with no heading, a legend with
+    # no label -- and `phrases::tests::no_language_leaves_a_phrase_blank`
+    # catches all of it, in both languages, by name.
+    #
+    # The `"xyzzy"` half can only be caught by asserting each phrase against its
+    # own literal. That test would fail on every copy edit, would be updated by
+    # pasting the new string in, and would prove exactly one thing: that the
+    # string is the string. It is a change detector wearing a test's clothes,
+    # and 190 of them would teach a contributor that a red hook means "paste it
+    # again".
+    #
+    # These files are data. The trait they implement is not: `phrases/mod.rs`
+    # holds `plural`, `Language::of` and `tag`, and stays mutated.
+    "crates/archwarden-cli/src/phrases/en.rs",
+    "crates/archwarden-cli/src/phrases/pt_br.rs",
+]

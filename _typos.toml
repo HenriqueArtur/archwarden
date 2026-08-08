@@ -32,3 +32,14 @@ extend-ignore-re = ["`[0-9a-f]{7,40}`"]
 PnP = "PnP"
 # oxc's crate and type names are not English and must not be "corrected".
 oxc = "oxc"
+# Frontmatter keys from the worked example in RULES.md, CONFIG.md and the
+# preview fixture. The example is a Portuguese repository on purpose: the whole
+# point of the `frontmatter` rule is that the keys are the *repository's*, not
+# archwarden's, and an example whose keys are all English words makes that
+# argument badly. `componentes` is offered as `components` and `inventario` as
+# `inventor`, and both corrections would be wrong.
+#
+# Identifiers rather than words: these are key names, and this list is matched
+# before a token is split, which is what a key name needs.
+componentes = "componentes"
+inventario = "inventario"

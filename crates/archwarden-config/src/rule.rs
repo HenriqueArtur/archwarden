@@ -297,7 +297,7 @@ pub struct PairRule {
 ///
 /// The first rule that reads a file that is not code. The frontmatter of a
 /// `.md` is often not documentation at all — it is the machine-readable half
-/// of the document, and a missing or mis-spelled key fails *silently*: the
+/// of the document, and a missing or misspelled key fails *silently*: the
 /// project with no `componentes` reports as needing none, and the lesson whose
 /// `status` is outside the vocabulary drops out of the generated table with no
 /// row and no error. Nothing type-checks a markdown file. Issue #44.

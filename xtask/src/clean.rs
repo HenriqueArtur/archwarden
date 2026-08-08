@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(Depth::parse(&[]), Ok(Depth::Caches));
         assert_eq!(Depth::parse(&["--deps".to_owned()]), Ok(Depth::Deps));
         assert_eq!(Depth::parse(&["--all".to_owned()]), Ok(Depth::All));
-        assert!(Depth::parse(&["--evertything".to_owned()]).is_err());
+        assert!(Depth::parse(&["--dpes".to_owned()]).is_err());
     }
 
     /// It removes what it names and nothing beside it.

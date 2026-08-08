@@ -5,6 +5,7 @@
 
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
+mod ci;
 mod clean;
 mod preview;
 
@@ -28,6 +29,10 @@ fn main() -> ExitCode {
         Some("check-schema") => run(gen_schema(Mode::Check)),
         Some("hooks") => run(install_hooks()),
         Some("preview") => run(preview::run(&repository_root())),
+        Some("ci") => {
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            run(ci::Mode::parse(&rest).and_then(|mode| ci::run(&repository_root(), mode)))
+        }
         Some("clean") => {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             run(clean::Depth::parse(&rest).and_then(|depth| clean::run(&repository_root(), depth)))
@@ -36,14 +41,17 @@ fn main() -> ExitCode {
             if let Some(unknown) = other {
                 eprintln!("unknown task `{unknown}`");
             }
-            eprintln!("usage: cargo xtask <gen-schema|check-schema|hooks|preview|clean>");
+            eprintln!("usage: cargo xtask <ci|gen-schema|check-schema|hooks|preview|clean>");
             eprintln!();
+            eprintln!("  ci            every gate the workflow runs, before it runs them");
+            eprintln!("                (--doctor lists the tools without running anything)");
             eprintln!("  gen-schema    write {SCHEMA_PATH} from the config types");
             eprintln!("  check-schema  fail if {SCHEMA_PATH} is out of date");
             eprintln!("  hooks         point git at {HOOKS_PATH}");
             eprintln!(
                 "  preview       write the HTML reports for a fixture repository, to look at"
             );
+            eprintln!("  clean         remove build caches ([--deps|--all] take more)");
             ExitCode::FAILURE
         }
     }

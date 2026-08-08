@@ -238,4 +238,110 @@ mod tests {
         assert_eq!(Language::En.phrases().errors(1), "1 error");
         assert_eq!(Language::En.phrases().errors(3), "3 errors");
     }
+
+    /// Every phrase in the trait, by name, as one language says it.
+    ///
+    /// Written out rather than derived: a macro would generate this list from
+    /// the trait and would therefore generate it *wrong* in exactly the case
+    /// this guards — a method added and never called. Adding a phrase means
+    /// adding a line here, and forgetting to is the only way a phrase escapes
+    /// the check below.
+    fn every_phrase(p: &dyn Phrases) -> Vec<(&'static str, String)> {
+        vec![
+            ("guide_title", p.guide_title().to_owned()),
+            ("guide_stamp", p.guide_stamp().to_owned()),
+            ("guide_heading", p.guide_heading(3, 2)),
+            ("tally_rules", p.tally_rules().to_owned()),
+            ("tally_modules", p.tally_modules().to_owned()),
+            ("tally_cross_module", p.tally_cross_module().to_owned()),
+            ("tally_no_reason", p.tally_no_reason().to_owned()),
+            ("rules_eyebrow", p.rules_eyebrow().to_owned()),
+            ("rules_heading", p.rules_heading().to_owned()),
+            ("rules_lede", p.rules_lede().to_owned()),
+            ("applies_to", p.applies_to("src/**")),
+            ("guide_footer", p.guide_footer().to_owned()),
+            ("report_title", p.report_title().to_owned()),
+            ("report_stamp", p.report_stamp().to_owned()),
+            ("report_heading", p.report_heading(3, 2, 1)),
+            ("tally_files", p.tally_files().to_owned()),
+            ("tally_errors", p.tally_errors().to_owned()),
+            ("tally_warnings", p.tally_warnings().to_owned()),
+            ("tally_accepted", p.tally_accepted().to_owned()),
+            ("tally_undecided", p.tally_undecided().to_owned()),
+            ("map_eyebrow", p.map_eyebrow().to_owned()),
+            ("map_heading", p.map_heading().to_owned()),
+            ("map_lede", p.map_lede().to_owned()),
+            ("no_reason_recorded", p.no_reason_recorded().to_owned()),
+            ("clean", p.clean().to_owned()),
+            ("errors", p.errors(2)),
+            ("warnings", p.warnings(2)),
+            ("files", p.files(2)),
+            ("rules", p.rules(2)),
+            ("walls_eyebrow", p.walls_eyebrow().to_owned()),
+            ("walls_heading", p.walls_heading().to_owned()),
+            ("walls_lede", p.walls_lede().to_owned()),
+            ("legend_allowed", p.legend_allowed().to_owned()),
+            ("legend_forbidden", p.legend_forbidden().to_owned()),
+            ("legend_crossed", p.legend_crossed().to_owned()),
+            ("pressure_eyebrow", p.pressure_eyebrow().to_owned()),
+            ("pressure_heading", p.pressure_heading().to_owned()),
+            ("pressure_lede", p.pressure_lede().to_owned()),
+            ("holding", p.holding().to_owned()),
+            ("crossing_now", p.crossing_now(2)),
+            ("nothing_crosses", p.nothing_crosses().to_owned()),
+            ("imports", p.imports(2)),
+            ("blindspots_heading", p.blindspots_heading().to_owned()),
+            ("blindspots_lede", p.blindspots_lede().to_owned()),
+            ("not_read", p.not_read().to_owned()),
+            ("checks_nobody_could_make", p.checks_nobody_could_make(2)),
+            ("unresolved_imports", p.unresolved_imports(2)),
+            ("accepted_in_baseline", p.accepted_in_baseline(2)),
+            ("read_only", p.read_only().to_owned()),
+            ("regenerate_with", p.regenerate_with().to_owned()),
+            ("scanned", p.scanned(9, 3)),
+        ]
+    }
+
+    /// An empty phrase is not a blank space on the page — it is a section with
+    /// no heading, a legend with no label, a footer that says nothing about
+    /// where the file came from. Nothing else notices: the HTML is still valid
+    /// and the page still renders, which is what makes this worth asserting.
+    ///
+    /// Both languages, because a translation is exactly where a phrase gets
+    /// left behind.
+    #[test]
+    fn no_language_leaves_a_phrase_blank() {
+        for language in [Language::En, Language::PtBr] {
+            for (name, said) in every_phrase(language.phrases()) {
+                assert!(
+                    !said.trim().is_empty(),
+                    "{language:?} says nothing for {name}"
+                );
+                assert_eq!(
+                    said.trim(),
+                    said,
+                    "{language:?} pads {name}, and the page spaces its own text"
+                );
+            }
+        }
+    }
+
+    /// The trait is the contract and the compiler enforces it, so a language
+    /// cannot be missing a method. It can be missing a *translation* — every
+    /// method answering with the English one — and the compiler is happy with
+    /// that. Terms of art are deliberately shared, so this asks that most of
+    /// the page differs rather than all of it.
+    #[test]
+    fn a_second_language_is_actually_a_second_language() {
+        let en = every_phrase(Language::En.phrases());
+        let pt = every_phrase(Language::PtBr.phrases());
+
+        let shared = en.iter().zip(&pt).filter(|((_, a), (_, b))| a == b).count();
+
+        assert!(
+            shared * 4 < en.len(),
+            "{shared} of {} phrases are identical in both languages",
+            en.len()
+        );
+    }
 }

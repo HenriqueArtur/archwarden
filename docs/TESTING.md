@@ -123,6 +123,13 @@ binary must not be unable to push; they would reach for `--no-verify` once and
 never come back. Mutation testing is advisory exactly when it could not form an
 opinion, which is the honest reading of "the tool did not finish".
 
+**"Could not form an opinion" is checked, not assumed.** The hook used to read
+the exit code alone, and 190 survivors went out past it: the run was
+interrupted *after* it had printed them, and an interruption is not exit 2. It
+reads `mutants.out/missed.txt` now, and blocks on a non-empty one whatever the
+exit code was. A run that found something found it, however it ended — the
+honest caveat is that there may be more, and the hook says so.
+
 Not installed is not a failure either: the hook says so and carries on, the
 same policy `pre-commit` applies to `typos`. `git push --no-verify` skips it,
 which is the point — a hook catches mistakes, it does not take the decision
