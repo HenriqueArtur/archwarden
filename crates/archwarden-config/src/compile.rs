@@ -98,6 +98,20 @@ pub enum CompileError {
         kinds: String,
     },
 
+    /// A `presence.require` entry names a path rather than a file.
+    #[error(
+        "rule `{rule}`: `require` takes filenames, and `{entry}` is a path. \
+         One rule answers for one directory, which is what lets `describe` \
+         answer for a directory that does not exist yet. Scope a second rule \
+         one level down instead."
+    )]
+    RequireIsAPath {
+        /// The rule.
+        rule: RuleId,
+        /// The entry as written.
+        entry: String,
+    },
+
     /// A `spec-pair` marker is not a single filename component.
     #[error(
         "rule `{rule}`: `{marker}` is not a spec marker. A marker is one \
@@ -281,6 +295,19 @@ fn compile_rule(
             include_type_only: r.include_type_only,
         },
 
+        Rule::Presence(r) => CompiledRuleKind::Presence {
+            require: r
+                .require
+                .iter()
+                .map(|name| require_name(&id, name))
+                .collect::<Result<_, _>>()?,
+            require_any: r
+                .require_any
+                .iter()
+                .map(|p| pattern(&id, "require_any", p))
+                .collect::<Result<_, _>>()?,
+        },
+
         Rule::CallObligation(r) => CompiledRuleKind::CallObligation {
             file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
             symbol: r.must_call.symbol.clone(),
@@ -297,6 +324,24 @@ fn compile_rule(
         scope,
         kind,
     })
+}
+
+/// A `require` entry, refused if it is a path rather than a name.
+///
+/// A rule answers for one directory's contract, which is what lets `describe`
+/// answer for a directory that does not exist yet. An entry reaching into a
+/// subdirectory would make one rule answer for two, and the same requirement
+/// is already sayable by a second rule scoped one level down -- so this is a
+/// redirection, not a limitation.
+fn require_name(rule: &RuleId, name: &str) -> Result<String, CompileError> {
+    if name.contains('/') || name.contains('\\') {
+        return Err(CompileError::RequireIsAPath {
+            rule: rule.clone(),
+            entry: name.to_owned(),
+        });
+    }
+
+    Ok(name.to_owned())
 }
 
 fn pattern(rule: &RuleId, field: &'static str, source: &str) -> Result<Pattern, CompileError> {

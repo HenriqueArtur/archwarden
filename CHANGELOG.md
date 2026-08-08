@@ -53,6 +53,38 @@ saying so.
   Existing configs are unaffected: a rule that names no annotation ignores them
   exactly as before.
 
+- **A `presence` rule: these files must exist in each governed directory.**
+  ([#42](https://github.com/HenriqueArtur/archwarden/issues/42))
+
+  ```json
+  { "type": "presence", "id": "licao-completa", "level": "error",
+    "roots": ["projetos/*"],
+    "require": ["projeto.md", "exercicios.md", "notas.md"],
+    "require_any": ["\\.ino$"] }
+  ```
+
+  The rule kind `RULES.md` has been deferring by name. `filename_patterns` is a
+  whitelist of what *may* exist and is satisfied by an empty directory, which is
+  exactly the state this is about: a unit of work is incomplete until its
+  companion files are there, nothing errors when one is missing, and the gap is
+  found by whoever needed the file.
+
+  The first rule that reasons about a path that is *not* there. It needs no
+  parse and no resolution — a name against the walk.
+
+  `require` takes **filenames, not paths**; an entry with a `/` is refused when
+  the config compiles, and the same requirement is sayable by a second rule
+  scoped one level down. One rule answering for one directory is what lets
+  `describe` and `scaffold` answer for a directory that does not exist yet,
+  which is where this rule is worth most: `scaffold projetos/17-nova` prints the
+  filenames, and a unit of work gets started rather than corrected.
+
+  One finding per missing entry, not one per directory — each is a separate file
+  to create, which is how `spec-pair` reports a missing sibling too.
+
+  It is also the cleanest rule `config verify-rules` has: a violation is a
+  directory with no files in it, so nothing has to be invented.
+
 - **`why`: a rule, or a module, can say why it exists.**
   ([#46](https://github.com/HenriqueArtur/archwarden/issues/46))
 

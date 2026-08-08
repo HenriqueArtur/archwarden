@@ -166,6 +166,14 @@ pub enum CompiledRuleKind {
         /// Whether `import type` counts.
         include_type_only: bool,
     },
+    /// Files that must exist in each governed directory.
+    Presence {
+        /// Filenames that must be there. Names, not paths — an entry with a
+        /// separator is refused when the config compiles.
+        require: Vec<String>,
+        /// Regexes at least one file must match, one file per entry.
+        require_any: Vec<Pattern>,
+    },
     /// Files matching a pattern must call a symbol.
     CallObligation {
         /// Regex over the filename.
@@ -187,6 +195,7 @@ impl CompiledRuleKind {
             Self::SpecPair { .. } => "spec-pair",
             Self::NoPassthrough { .. } => "no-passthrough",
             Self::ImportBoundary { .. } => "import-boundary",
+            Self::Presence { .. } => "presence",
             Self::CallObligation { .. } => "call-obligation",
         }
     }
@@ -198,7 +207,8 @@ impl CompiledRuleKind {
     #[must_use]
     pub fn needs_parse(&self) -> bool {
         match self {
-            Self::Structure { .. } => false,
+            // Both ask only whether a name is on disk.
+            Self::Structure { .. } | Self::Presence { .. } => false,
             Self::SpecPair {
                 require_non_empty_spec,
                 skip_type_only,

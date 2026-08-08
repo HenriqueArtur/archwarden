@@ -1,6 +1,6 @@
 # Rule categories
 
-archwarden ships six rule categories in v0. Each has narrow, well-defined
+archwarden ships seven rule categories in v0. Each has narrow, well-defined
 semantics. This document is the reference for what each rule can and cannot
 express. Config syntax lives in [`CONFIG.md`](CONFIG.md).
 
@@ -21,6 +21,7 @@ directory:
 | `structure` | `filename_patterns` | the direct child files, by basename |
 | `naming` | `file_pattern` | the direct child files, by basename |
 | `naming` | `dir_pattern` | the selected directory itself, by its own basename |
+| `presence` | `require`, `require_any` | the direct child files, by name and by shape |
 | `spec-pair` | `subfolders` | the listed subdirectories **and everything below them** (`"."` = the directory itself, its own files only), then files in them |
 | `call-obligation` | `file_pattern` | the direct child files, by basename |
 | `import-boundary` | *(scope only)* | every file in the directory is a candidate importer |
@@ -392,7 +393,61 @@ type checking. Use `tsc` for that.
 
 ---
 
-## 3. Spec pairing (TDD gate)
+## 3. Presence
+
+**What it enforces**: named files must exist in each governed directory.
+
+**Scope**: directory-local. No parse, no resolve — a name against the walk.
+
+**Shape**:
+
+- `require` — filenames that must be there.
+- `require_any` — regexes at least one file must match, **one file per entry**.
+
+```json
+{
+  "type": "presence",
+  "id": "licao-completa",
+  "level": "error",
+  "roots": ["projetos/*"],
+  "require": ["projeto.md", "exercicios.md", "notas.md", "diagram.json"],
+  "require_any": ["\\.ino$"]
+}
+```
+
+**This is not the inverse of `filename_patterns`.** That field is a whitelist
+of what *may* exist and is satisfied by an empty directory, which is exactly
+the state this rule is about. A unit of work is incomplete until its companion
+files are there, and the companion is what a hurried pass leaves out — nothing
+errors, nothing fails to build, and the gap is found by whoever needed the
+file. `spec-pair` is the same argument for one specific pair.
+
+**`require` takes filenames, not paths.** An entry with a `/` is refused when
+the config compiles. The same requirement is already sayable, by the rule that
+is about that directory:
+
+```json
+{ "type": "presence", "id": "sketch-existe", "level": "error",
+  "roots": ["projetos/*/sketch"], "require_any": ["\\.ino$"] }
+```
+
+One rule answering for one directory is what lets `describe` and `scaffold`
+answer for a directory that does not exist yet, which is where this rule is
+worth most: `archwarden scaffold projetos/17-nova` prints the filenames, and a
+lesson gets started rather than corrected.
+
+**One finding per missing entry**, not one per directory. Each is a separate
+file to create — the shape `spec-pair` already reports a missing sibling in —
+so a brand-new empty directory earns four findings for four absent files.
+`--summary` is the answer to volume.
+
+**Cannot express**: "this file needs *that* file", where the second is named
+relative to the first rather than to the directory. That is a pairing question
+rather than a presence one; see issue #45.
+
+---
+
+## 4. Spec pairing (TDD gate)
 
 **What it enforces**: every unit file under configured subfolders must
 have a `.spec.<ext>` sibling.
@@ -496,7 +551,7 @@ noisy and unreliable. `require_non_empty_spec` is the practical proxy.
 
 ---
 
-## 4. Import boundaries
+## 5. Import boundaries
 
 **What it enforces**: layer A may not import from layer B; or, layer C
 must import from layer D.
@@ -599,7 +654,7 @@ above, declined the same way.
 
 ---
 
-## 5. Call obligations
+## 6. Call obligations
 
 **What it enforces**: files matching a pattern must contain at least one
 call to a specific imported symbol.
@@ -638,7 +693,7 @@ into program analysis territory and are out of scope.
 
 ---
 
-## 6. No passthrough
+## 7. No passthrough
 
 **What it enforces**: a file must add something of its own. A file whose whole
 content is forwarding another module is an indirection wearing the name of a

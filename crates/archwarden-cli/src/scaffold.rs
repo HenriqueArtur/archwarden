@@ -40,6 +40,23 @@ pub struct Scaffold {
     pub filename_patterns: Vec<String>,
     /// When asked about a directory: what may live inside it.
     pub allowed_subfolders: Option<AllowedSubfolders>,
+    /// When asked about a directory: what must live inside it.
+    ///
+    /// Always present, even when empty, unlike `allowed_subfolders`. That one
+    /// distinguishes "nothing constrains this directory" from "these folders
+    /// are allowed"; here an empty list already says what there is to say, and
+    /// a consumer reading two lists should not have to unwrap one of them.
+    #[serde(default)]
+    pub required_files: RequiredFiles,
+}
+
+/// What a directory must contain.
+#[derive(Debug, Default, Serialize)]
+pub struct RequiredFiles {
+    /// Filenames that must be there.
+    pub names: Vec<String>,
+    /// Regexes at least one file must match, one file per entry.
+    pub patterns: Vec<String>,
 }
 
 /// One export the file must carry.
@@ -192,6 +209,10 @@ fn absorb(shape: &mut Scaffold, expectation: Expectation) {
             imported_from,
         }),
         Expectation::FilenamePattern { patterns } => shape.filename_patterns.extend(patterns),
+        Expectation::RequiredFiles { names, patterns } => {
+            shape.required_files.names.extend(names);
+            shape.required_files.patterns.extend(patterns);
+        }
         Expectation::AllowedSubfolders {
             allowed,
             warn,
@@ -288,6 +309,16 @@ fn render_text(path: &RepoRelPath, shape: &Scaffold, out: &mut dyn std::io::Writ
         }
     }
 
+    if !shape.required_files.names.is_empty() || !shape.required_files.patterns.is_empty() {
+        let _ = writeln!(out, "\n  Files that must exist here:");
+        for name in &shape.required_files.names {
+            let _ = writeln!(out, "    {name}");
+        }
+        for pattern in &shape.required_files.patterns {
+            let _ = writeln!(out, "    a file matching {pattern}");
+        }
+    }
+
     if !shape.required_exports.is_empty() {
         let _ = writeln!(out, "\n  Required exports:");
         for export in &shape.required_exports {
@@ -343,6 +374,8 @@ fn is_empty(shape: &Scaffold) -> bool {
         && shape.call_obligations.is_empty()
         && shape.filename_patterns.is_empty()
         && shape.allowed_subfolders.is_none()
+        && shape.required_files.names.is_empty()
+        && shape.required_files.patterns.is_empty()
 }
 
 /// The declaration line an agent can paste.
@@ -620,6 +653,31 @@ mod tests {
             text.contains("export function CreateClient(deps: Deps): UseCase<In, Out>"),
             "{text}"
         );
+    }
+
+    /// Issue #42 names this as the command that makes the rule worth having:
+    /// `scaffold projetos/17-nova` printing the filenames is how a unit of
+    /// work gets started, which puts archwarden before the writing rather than
+    /// after it.
+    #[test]
+    fn a_presence_rule_lists_the_files_to_create() {
+        let shape = scaffold(
+            &config(vec![rule(
+                "licao-completa",
+                &["projetos/*"],
+                CompiledRuleKind::Presence {
+                    require: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
+                    require_any: vec![Pattern::compile(r"\.ino$").expect("valid")],
+                },
+            )]),
+            &path("projetos/17-nova"),
+        );
+
+        assert_eq!(
+            shape.required_files.names,
+            ["projeto.md".to_owned(), "notas.md".to_owned()]
+        );
+        assert_eq!(shape.required_files.patterns, [r"\.ino$".to_owned()]);
     }
 
     /// A naming rule that fixes both the name and the annotation, which is the

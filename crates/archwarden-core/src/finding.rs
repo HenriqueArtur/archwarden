@@ -70,6 +70,14 @@ pub enum Expectation {
         /// A free-form signature shown by `scaffold`. Never verified.
         signature_hint: Option<String>,
     },
+    /// These files must exist in the directory.
+    RequiredFiles {
+        /// Filenames that must be there.
+        names: Vec<String>,
+        /// Regexes at least one file must match, one file per entry.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        patterns: Vec<String>,
+    },
     /// A sibling file must exist.
     RequiredSibling {
         /// The sibling's path.
@@ -192,6 +200,25 @@ pub enum Observed {
         name: String,
         /// Where it is re-exported from.
         from: String,
+    },
+    /// A file the directory must hold is not there.
+    ///
+    /// The first observation about a path that does not exist. Every other one
+    /// describes something a rule opened and disagreed with; this describes an
+    /// absence, which is the failure nobody notices — nothing errors, nothing
+    /// fails to build, and the gap is found by whoever needed the file.
+    RequiredFileMissing {
+        /// The name that was looked for.
+        name: String,
+    },
+    /// No file in the directory matches a pattern one had to.
+    ///
+    /// Separate from [`Observed::RequiredFileMissing`] because there is no
+    /// name to report: the requirement is a shape, and "create `\\.ino$`" is
+    /// not an instruction anybody can follow.
+    NoFileMatching {
+        /// The pattern that found nothing, as written in the config.
+        pattern: String,
     },
     /// The required sibling is not there.
     SiblingMissing {

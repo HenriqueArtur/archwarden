@@ -602,12 +602,13 @@ entry is a question about intent, and a rule with that hole in it ticks here.
 Rules whose violation cannot be synthesised are reported as `?` with the reason
 rather than left out — an unchecked rule has to be visible as unchecked.
 
-## The six rule kinds
+## The seven rule kinds
 
 | kind | asks | you satisfy it by |
 |---|---|---|
 | `structure` | may this folder or filename exist here? | putting the file where `allowed_subfolders` / `filename_patterns` allow |
 | `naming` | does the filename — and sometimes its directory — match the exported symbol? | exporting the exact name `scaffold` gives you |
+| `presence` | do the files this folder owes exist? | creating each name `scaffold <directory>` lists |
 | `spec-pair` | is there a test beside it? | creating the sibling `.spec.ts` — **write it, do not leave it empty** if `non_empty_spec` is true |
 | `import-boundary` | may this layer import that one — or that *dependency*? | importing through whatever `except` allows, or not at all |
 | `call-obligation` | does this file call the required symbol? | calling it **anywhere in the file**, including from a local helper |

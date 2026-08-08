@@ -1062,6 +1062,10 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
                 format!("{names} {forwards} another module; the rest of the file is its own")
             }
         }
+        // "is not here" rather than "does not exist": the finding is on the
+        // directory, and what the reader has to do is create the file *in it*.
+        Observed::RequiredFileMissing { name } => format!("`{name}` is not here"),
+        Observed::NoFileMatching { pattern } => format!("no file here matches `{pattern}`"),
         Observed::SiblingMissing { path } => format!("`{path}` does not exist"),
         Observed::SpecIsEmpty { path } => format!("`{path}` contains no test cases"),
         Observed::ForbiddenImport {
@@ -1102,6 +1106,34 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
 /// Shared with `describe`, which renders the same expectations for a file that
 /// does not exist yet. One renderer, so the gate and the informant can never
 /// word the same requirement differently -- decision 9.
+/// What must live inside a directory, by name and by shape.
+///
+/// "and", never "or": every entry is required, and the `join_or` this module
+/// uses everywhere else would say the opposite of the rule.
+fn describe_required_files(names: &[String], patterns: &[String]) -> String {
+    let mut parts = Vec::new();
+
+    if !names.is_empty() {
+        let quoted: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
+        parts.push(match quoted.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => String::new(),
+        });
+    }
+
+    for pattern in patterns {
+        let clause = format!("a file matching `{pattern}`");
+        parts.push(if parts.is_empty() {
+            clause
+        } else {
+            format!("and {clause}")
+        });
+    }
+
+    parts.join(", ")
+}
+
 /// What may live inside a directory, by name and by shape.
 ///
 /// Split out of [`describe_expectation`] because it is the one arm with three
@@ -1136,6 +1168,7 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
             warn,
             patterns,
         } => describe_subfolders(allowed, warn, patterns),
+        Expectation::RequiredFiles { names, patterns } => describe_required_files(names, patterns),
         Expectation::FilenamePattern { patterns } => {
             format!("a name matching {}", join_or(patterns, "no pattern"))
         }
@@ -2184,6 +2217,32 @@ mod tests {
                 "{observed:?} rendered as {sentence}"
             );
         }
+    }
+
+    /// Issue #42. The first observation about a path that is *not* there, so
+    /// the sentence has to read as an absence rather than as a disagreement
+    /// with something on disk.
+    #[test]
+    fn a_missing_required_file_reads_as_a_sentence() {
+        assert_eq!(
+            describe_observed(&Observed::RequiredFileMissing {
+                name: "notas.md".to_owned()
+            }),
+            "`notas.md` is not here"
+        );
+        assert_eq!(
+            describe_observed(&Observed::NoFileMatching {
+                pattern: r"\.ino$".to_owned()
+            }),
+            r"no file here matches `\.ino$`"
+        );
+        assert_eq!(
+            describe_expectation(&Expectation::RequiredFiles {
+                names: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
+                patterns: vec![r"\.ino$".to_owned()],
+            }),
+            r"`projeto.md` and `notas.md`, and a file matching `\.ino$`"
+        );
     }
 
     /// Issue #46. A finding says what the rule wanted and what the file did,

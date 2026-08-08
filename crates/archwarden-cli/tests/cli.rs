@@ -319,6 +319,83 @@ fn a_rule_that_never_mentions_subfolders_still_allows_them() {
         .success();
 }
 
+/// Issue #42, end to end. A lesson missing `exercicios.md` still renders,
+/// still commits, still shows up in the index — and is found weeks later by
+/// the person who reaches the end of it. There is no build here at all, so
+/// nothing else was ever going to catch it.
+#[test]
+fn a_directory_missing_a_required_file_fails_the_check() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"licao-completa","level":"error",
+                 "roots":["projetos/*"],
+                 "require":["projeto.md","exercicios.md","notas.md"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        ("projetos/01-blink/exercicios.md", "# ex\n"),
+        ("projetos/01-blink/notas.md", "# notas\n"),
+        ("projetos/03-semaforo/projeto.md", "# semaforo\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("`exercicios.md` is not here"))
+        .stdout(contains("`notas.md` is not here"))
+        // The complete lesson is not mentioned.
+        .stdout(contains("01-blink").not());
+}
+
+/// The half the issue asks for by name: the filenames arrive *before* the
+/// directory does, which is how a unit of work gets started.
+#[test]
+fn scaffold_lists_the_files_a_new_directory_must_have() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"licao-completa","level":"error",
+                 "roots":["projetos/*"],
+                 "require":["projeto.md","notas.md"],
+                 "require_any":["\\.ino$"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["scaffold", "projetos/17-nova"])
+        .assert()
+        .success()
+        .stdout(contains("Files that must exist here:"))
+        .stdout(contains("projeto.md"))
+        .stdout(contains("notas.md"))
+        .stdout(contains(r"a file matching \.ino$"));
+}
+
+/// `require` takes filenames. A path is refused with the rule that says it
+/// instead, rather than silently reaching into a subdirectory or silently not.
+#[test]
+fn a_require_entry_that_is_a_path_is_refused() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"presence","id":"licao-completa","level":"error",
+             "roots":["projetos/*"],"require":["sketch/sketch.ino"]}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "validate"])
+        .assert()
+        .code(2)
+        .stderr(contains("takes filenames"));
+}
+
 /// Issue #46, through the real process. A finding says what the rule wanted
 /// and what the file did, and used to never say why the rule exists — so an
 /// agent reading one could comply and nothing else, which is how a config gets

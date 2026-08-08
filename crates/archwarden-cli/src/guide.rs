@@ -67,10 +67,11 @@ struct GuideRule<'a> {
 /// Listed here rather than derived, because `CompiledRuleKind::type_name` maps
 /// one way only. A test walks the enum through this list, so the two cannot
 /// drift.
-pub const KINDS: [&str; 5] = [
+pub const KINDS: [&str; 6] = [
     "structure",
     "naming",
     "spec-pair",
+    "presence",
     "import-boundary",
     "call-obligation",
 ];
@@ -312,6 +313,30 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             }
             if !require.is_empty() {
                 lines.push(format!("must import from {}", join(require.patterns())));
+            }
+            lines
+        }
+        CompiledRuleKind::Presence {
+            require,
+            require_any,
+        } => {
+            let mut lines = Vec::new();
+            if !require.is_empty() {
+                // Comma-joined, not `join`: that helper reads "a or b", and
+                // every one of these is required.
+                let quoted: Vec<String> = require.iter().map(|n| format!("`{n}`")).collect();
+                lines.push(format!("must contain: {}", quoted.join(", ")));
+            }
+            if !require_any.is_empty() {
+                lines.push(format!(
+                    "at least one file matching: {}",
+                    join(
+                        &require_any
+                            .iter()
+                            .map(|p| p.as_str().to_owned())
+                            .collect::<Vec<_>>()
+                    )
+                ));
             }
             lines
         }
@@ -588,6 +613,33 @@ mod tests {
     /// requirement missing from it is a requirement the agent will break and
     /// then be told about. The annotation is checked, so it belongs in the
     /// sentence rather than under it as a suggestion.
+    /// Issue #42. The digest teaches the rules before a question is asked, and
+    /// "a lesson directory has these four files" is the one an agent most needs
+    /// before creating one.
+    #[test]
+    fn a_presence_rule_lists_what_must_exist() {
+        let config = config(vec![rule(
+            "licao-completa",
+            None,
+            &["projetos/*"],
+            CompiledRuleKind::Presence {
+                require: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
+                require_any: vec![Pattern::compile(r"\.ino$").expect("valid")],
+            },
+        )]);
+
+        let markdown = rendered(&config, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains("must contain: `projeto.md`, `notas.md`"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains(r"at least one file matching: `\.ino$`"),
+            "{markdown}"
+        );
+    }
+
     /// Issue #46. The digest is a list of prohibitions without them, and a
     /// list of prohibitions is what an agent works around.
     #[test]

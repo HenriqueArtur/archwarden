@@ -522,6 +522,50 @@
             "level",
             "roots"
           ]
+        },
+        {
+          "description": "These files must exist in each governed directory.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "require": {
+              "description": "Filenames that must exist directly inside each governed directory.\n\n**Names, not paths.** An entry with a `/` is refused when the config\ncompiles, and the message says what to write instead: a second rule\nscoped one level down. `roots: [\"projetos/*/sketch\"]` with\n`require: [\"sketch.ino\"]` is the same requirement, said by the rule that\nis about that directory — and it keeps one rule answering for one\ndirectory's contract, which is what makes `describe` able to answer for\na directory that does not exist yet.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "require_any": {
+              "description": "Regexes at least one file in each governed directory must match.\n\nFor \"there has to be a sketch and I do not care what it is called\".\nOne entry, one requirement: two regexes mean two files must be found,\none for each.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "type": {
+              "type": "string",
+              "const": "presence"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots"
+          ]
         }
       ]
     },

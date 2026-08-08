@@ -38,6 +38,8 @@ pub enum Rule {
     CallObligation(CallObligationRule),
     /// A file whose whole content is forwarding another module.
     NoPassthrough(NoPassthroughRule),
+    /// These files must exist in each governed directory.
+    Presence(PresenceRule),
 }
 
 impl Rule {
@@ -51,6 +53,7 @@ impl Rule {
             Self::ImportBoundary(r) => &r.id,
             Self::CallObligation(r) => &r.id,
             Self::NoPassthrough(r) => &r.id,
+            Self::Presence(r) => &r.id,
         }
     }
 
@@ -64,6 +67,7 @@ impl Rule {
             Self::ImportBoundary(r) => r.level,
             Self::CallObligation(r) => r.level,
             Self::NoPassthrough(r) => r.level,
+            Self::Presence(r) => r.level,
         }
     }
 
@@ -77,6 +81,7 @@ impl Rule {
             Self::ImportBoundary(r) => r.why.as_deref(),
             Self::CallObligation(r) => r.why.as_deref(),
             Self::NoPassthrough(r) => r.why.as_deref(),
+            Self::Presence(r) => r.why.as_deref(),
         }
     }
 
@@ -94,6 +99,7 @@ impl Rule {
             Self::ImportBoundary(r) => &r.from,
             Self::CallObligation(r) => &r.roots,
             Self::NoPassthrough(r) => &r.roots,
+            Self::Presence(r) => &r.roots,
         }
     }
 
@@ -107,6 +113,7 @@ impl Rule {
             Self::ImportBoundary(_) => "import-boundary",
             Self::CallObligation(_) => "call-obligation",
             Self::NoPassthrough(_) => "no-passthrough",
+            Self::Presence(_) => "presence",
         }
     }
 }
@@ -191,6 +198,45 @@ pub struct StructureRule {
     /// Regexes every direct child file's name must match at least one of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filename_patterns: Vec<String>,
+}
+
+/// Files that must exist in each governed directory.
+///
+/// `structure.filename_patterns` is a whitelist of what *may* exist, and the
+/// two are not each other's inverse — a `filename_patterns` rule is satisfied
+/// by an empty directory, which is exactly the state this one is about. A unit
+/// of work is incomplete until its companion files are there, and the
+/// companion is what a hurried pass leaves out. Issue #42.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PresenceRule {
+    /// Stable identifier.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Directory globs this rule applies to.
+    pub roots: Patterns,
+    /// Filenames that must exist directly inside each governed directory.
+    ///
+    /// **Names, not paths.** An entry with a `/` is refused when the config
+    /// compiles, and the message says what to write instead: a second rule
+    /// scoped one level down. `roots: ["projetos/*/sketch"]` with
+    /// `require: ["sketch.ino"]` is the same requirement, said by the rule that
+    /// is about that directory — and it keeps one rule answering for one
+    /// directory's contract, which is what makes `describe` able to answer for
+    /// a directory that does not exist yet.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub require: Patterns,
+    /// Regexes at least one file in each governed directory must match.
+    ///
+    /// For "there has to be a sketch and I do not care what it is called".
+    /// One entry, one requirement: two regexes mean two files must be found,
+    /// one for each.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub require_any: Patterns,
 }
 
 /// The filename dictates the exported symbol's name.
@@ -663,6 +709,29 @@ mod tests {
         };
         assert_eq!(naming.must_export.kind.as_slice(), ["function", "arrow"]);
         assert_eq!(naming.must_export.signature_hint, None);
+    }
+
+    /// Issue #42. A unit of work is incomplete until its companion files are
+    /// there, and `filename_patterns` is a whitelist of what *may* exist —
+    /// satisfied by an empty directory, which is the state this rule is about.
+    #[test]
+    fn a_presence_rule_lists_what_must_exist() {
+        let rule = parse(
+            r#"{"type":"presence","id":"licao-completa","level":"error",
+                "roots":["projetos/*"],
+                "require":["projeto.md","exercicios.md","notas.md"],
+                "require_any":["\\.ino$"]}"#,
+        );
+
+        let Rule::Presence(presence) = &rule else {
+            panic!("expected a presence rule, got {}", rule.type_name());
+        };
+        assert_eq!(
+            presence.require.as_slice(),
+            ["projeto.md", "exercicios.md", "notas.md"]
+        );
+        assert_eq!(presence.require_any.as_slice(), [r"\.ino$"]);
+        assert_eq!(rule.type_name(), "presence");
     }
 
     /// Issue #46. Decision 5 chose JSON over YAML and JSON5, so a config has

@@ -128,6 +128,7 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
     match &rule.kind {
         CompiledRuleKind::Structure { .. } => forbidden_subfolder(rule, engine, tree),
         CompiledRuleKind::SpecPair { .. } => a_file_with_no_spec(rule, engine, tree),
+        CompiledRuleKind::Presence { .. } => a_directory_holding_nothing(rule, engine, tree),
         CompiledRuleKind::ImportBoundary {
             forbid,
             forbid_packages,
@@ -158,6 +159,40 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
                   of one shape would tick for a rule about another"
                 .to_owned(),
         },
+    }
+}
+
+/// A directory this rule covers, emptied.
+///
+/// The cleanest synthesis of the six: a rule that asks for files is violated
+/// by a directory with none, and nothing has to be invented -- unlike `naming`,
+/// where a violating input is a filename and producing one means running a
+/// regex backwards.
+fn a_directory_holding_nothing(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+) -> Verdict {
+    let Some(directory) = a_directory_in_scope(rule, tree) else {
+        return Verdict::Unverified {
+            why: format!(
+                "no directory in this repository is inside `{}`",
+                rule.scope.patterns().join("`, `")
+            ),
+        };
+    };
+
+    let findings = engine.check_directory(DirectoryContext {
+        path: directory,
+        subdirectories: &[],
+        files: &[],
+    });
+
+    let on = format!("`{directory}` holding none of the files it requires");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
     }
 }
 

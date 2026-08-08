@@ -17,6 +17,7 @@ pub mod call_obligation;
 pub mod import_boundary;
 pub mod naming;
 pub mod no_passthrough;
+pub mod presence;
 pub mod spec_pair;
 pub mod structure;
 
@@ -113,6 +114,15 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     except,
                     except_from,
                     *include_type_only,
+                )),
+                CompiledRuleKind::Presence {
+                    require,
+                    require_any,
+                } => Box::new(presence::PresenceEngine::build(
+                    rule,
+                    require,
+                    require_any,
+                    config.skip_dirs().clone(),
                 )),
                 CompiledRuleKind::CallObligation {
                     file_pattern,
