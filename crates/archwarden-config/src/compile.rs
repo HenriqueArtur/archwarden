@@ -111,6 +111,22 @@ pub enum CompileError {
         path: String,
     },
 
+    /// A `pair.must_exist` carries a template placeholder.
+    #[error(
+        "rule `{rule}`: `must_exist` is literal, and `{path}` reads as a \
+         template. A `pair` rule asks for one named companion beside the file, \
+         so `{{{{...}}}}` is not substituted here and would be hunted for as \
+         part of the name. For a companion whose name varies with the file, \
+         `naming.must_export` and `frontmatter.equals` are where templates \
+         live; a fixed name is what this field takes."
+    )]
+    CompanionIsATemplate {
+        /// The rule.
+        rule: RuleId,
+        /// The path as written.
+        path: String,
+    },
+
     /// A `presence.require` entry names a path rather than a file.
     #[error(
         "rule `{rule}`: `require` takes filenames, and `{entry}` is a path. \
@@ -402,6 +418,19 @@ fn companion(rule: &RuleId, path: &str) -> Result<String, CompileError> {
         });
     }
 
+    // Literal means literal, and saying so in the docs was not enough. The
+    // template form is the one `naming.must_export` and `frontmatter.equals`
+    // accept, so reaching for it here is the obvious mistake -- and it used to
+    // compile, run, and report every governed file as missing a companion with
+    // braces in its name. Sixteen confident findings about a file nothing could
+    // create is worse than the rule not existing.
+    if trimmed.contains("{{") {
+        return Err(CompileError::CompanionIsATemplate {
+            rule: rule.clone(),
+            path: path.to_owned(),
+        });
+    }
+
     Ok(trimmed.to_owned())
 }
 
@@ -587,6 +616,54 @@ fn check_template(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `must_exist` names one companion beside the file, literally.
+    ///
+    /// Tested here rather than only through the CLI: this crate owns the rule
+    /// about what the field accepts, and a crate that leans on an integration
+    /// test three crates away has no test of its own contract.
+    #[test]
+    fn a_companion_is_a_relative_literal_path() {
+        let id = RuleId::new("r").expect("valid id");
+
+        assert_eq!(companion(&id, "notas.md").expect("relative"), "notas.md");
+        assert_eq!(
+            companion(&id, "  ../projeto.md  ").expect("relative"),
+            "../projeto.md",
+            "and it is trimmed"
+        );
+    }
+
+    /// Absolute or empty is refused: the file that needs the companion is the
+    /// anchor, and an absolute path would say the same thing from every
+    /// directory the rule covers.
+    #[test]
+    fn a_companion_that_is_not_relative_is_refused() {
+        let id = RuleId::new("r").expect("valid id");
+
+        for path in ["/etc/hosts", "\\windows\\path", "", "   "] {
+            assert!(
+                companion(&id, path).is_err(),
+                "`{path}` was accepted as a companion"
+            );
+        }
+    }
+
+    /// Issue #50. The template form is what `naming.must_export` and
+    /// `frontmatter.equals` accept, so reaching for it here is the obvious
+    /// mistake -- and it used to compile, then report every governed file as
+    /// missing a companion with braces in its name.
+    #[test]
+    fn a_companion_that_reaches_for_a_template_is_refused() {
+        let id = RuleId::new("r").expect("valid id");
+
+        let error = companion(&id, "../../meu/{{raw(dirname)}}.md").expect_err("refused");
+        assert!(
+            error.to_string().contains("literal"),
+            "the message should say why: {error}"
+        );
+    }
+
     use archwarden_core::{ids::ModuleId, level::Level, path::RepoRelPath};
     use camino::Utf8PathBuf;
 

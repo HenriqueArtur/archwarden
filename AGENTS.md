@@ -690,7 +690,7 @@ prints the command it installed. For Claude Code that is
       {
         "matcher": "Write|Edit|MultiEdit",
         "hooks": [
-          { "type": "command", "command": "npx archwarden hook claude-code" }
+          { "type": "command", "command": "./node_modules/.bin/archwarden hook claude-code" }
         ]
       }
     ]
@@ -700,6 +700,13 @@ prints the command it installed. For Claude Code that is
 
 If a write is denied, the message names the rules and points at
 `scaffold <path>`. Ask for the shape rather than trying variations.
+
+If instead you get a `systemMessage` beginning **"archwarden did not check this
+write"**, the write was allowed and *nothing examined it*: no config was found,
+the config did not compile, the path fell outside the repository, or the event
+was unreadable. That is not approval. Say so rather than treating the write as
+cleared — the sentence names which of those happened, and every one of them is a
+minute's fix.
 
 ## Rules for you
 

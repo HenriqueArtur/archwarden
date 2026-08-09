@@ -408,18 +408,24 @@ pub fn examine_repository(
 /// this config mean what you think?", and a rule reaching zero files is
 /// exactly a rule that does not.
 ///
-/// `structure` is exempt: its findings are about directories, so having no
-/// files to inspect is its ordinary state rather than a symptom. So is any
-/// rule another concern has already explained — a `file_pattern` matching
-/// nothing reaches no file *because* of that, and reporting both would make
-/// one mistake look like two.
+/// A rule whose findings are about directories is exempt: having no files to
+/// inspect is its ordinary state rather than a symptom. That used to be a match
+/// on `structure` by name, and `presence` arrived answering the same way and
+/// was not on the list — so `doctor` called every `presence` rule idle while
+/// `check` was firing it on the same repository, and the fix it suggested
+/// (widen the scope) would have turned a working rule into a wall of false
+/// errors. The engine is asked now, via `answers_for_directories`.
+///
+/// So is any rule another concern has already explained — a `file_pattern`
+/// matching nothing reaches no file *because* of that, and reporting both would
+/// make one mistake look like two.
 fn rule_evaluates_nothing(
     rule: &CompiledRule,
     engine: &dyn archwarden_core::traits::RuleEngine,
     tree: &RepoTree,
     concerns: &mut Vec<Concern>,
 ) {
-    if matches!(rule.kind, CompiledRuleKind::Structure { .. }) {
+    if engine.answers_for_directories() {
         return;
     }
     // Only when the scope did match something: a scope matching no directory

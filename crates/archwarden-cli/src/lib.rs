@@ -1197,26 +1197,71 @@ fn hook(
 
     let mut payload = String::new();
     if std::io::Read::read_to_string(output.input, &mut payload).is_err() {
-        return allow(output);
+        return unable(output, "the hook event could not be read from stdin");
     }
-    let Some(argument) = crate::hook::target(&payload) else {
-        return allow(output);
+    let argument = match crate::hook::target(&payload) {
+        crate::hook::Target::Path(path) => path,
+        // The one silence that is correct: most tools write no file, and a
+        // word about each would be a hook nobody keeps.
+        crate::hook::Target::NoFile => return allow(output),
+        crate::hook::Target::Unreadable => {
+            return unable(
+                output,
+                "the hook event was not in a shape archwarden could read, so this write \
+                 was not checked against any rule",
+            );
+        }
     };
 
     // A broken or absent configuration is the user's problem to fix at their
-    // own pace, not a reason to stop them writing a file.
+    // own pace, not a reason to stop them writing a file. It is, however, a
+    // reason to say so: an unconfigured gate that permits in silence is
+    // indistinguishable from one that examined the write and approved it.
     let Ok(loaded) = load(location, working_directory) else {
-        return allow(output);
+        return unable(
+            output,
+            "no archwarden config was found from here, so this write was not checked \
+             against any rule",
+        );
     };
+    // Checked here as well as on the `check` path, and for a sharper reason: a
+    // version this build cannot interpret parses into a config with no rules,
+    // which compiles, matches nothing and permits every write. The gate does
+    // not fail — it evaporates. Found by a test that expected the silence to
+    // have been fixed everywhere and discovered one more place it had not.
+    if !loaded.config.version_is_supported() {
+        return unable(
+            output,
+            &format!(
+                "the config declares version {}, which this build does not understand (it \
+                 reads version {}), so this write was not checked against any rule",
+                loaded.config.version,
+                archwarden_config::config::SCHEMA_VERSION,
+            ),
+        );
+    }
+
     let Ok(merged) = extends::merge(loaded, &PresetResolver::new()) else {
-        return allow(output);
+        return unable(
+            output,
+            "the config could not be assembled (a preset it extends is missing or \
+             invalid), so this write was not checked against any rule",
+        );
     };
     let Ok(compiled) = compile::compile(&merged) else {
-        return allow(output);
+        return unable(
+            output,
+            "the config did not compile, so this write was not checked against any \
+             rule. `archwarden config validate` names the problem",
+        );
     };
-    let Ok(path) = crate::describe::repo_relative(&merged.root, working_directory, &argument)
-    else {
-        return allow(output);
+    let path = match crate::describe::repo_relative(&merged.root, working_directory, &argument) {
+        Ok(path) => path,
+        // `repo_relative` resolves a second route to the same directory, so
+        // reaching here means the path really is somewhere else. Which is a
+        // fine thing for a write to be — and the hook still has to say that it
+        // formed no opinion, rather than nodding.
+        Err(reason) => return unable(output, &reason),
     };
 
     let mut single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
@@ -1254,6 +1299,32 @@ fn allow(output: &mut Output<'_>) -> Exit {
         output.out,
         "{}",
         crate::hook::respond(&crate::hook::Decision::Allow)
+    );
+    Exit::Clean
+}
+
+/// Permits the write, and says that it was permitted unexamined.
+///
+/// The distinction this exists for: *"I have no objection"* and *"I could not
+/// tell"* are different answers, and only the first is safe to ignore. Both
+/// used to be `{}`.
+///
+/// A gate that cannot judge a write and permits it in silence is
+/// indistinguishable from one that judged it and approved — which is the
+/// property `verify-rules` exists to refuse for rules, one layer up and with
+/// nothing checking it. On a machine where every write took this path, the only
+/// symptom was CI failing later on files a pre-write gate was installed to
+/// refuse.
+///
+/// Still permits. A hook that blocked because *it* could not do its job would
+/// be worse than no hook.
+fn unable(output: &mut Output<'_>, reason: &str) -> Exit {
+    let _ = write!(
+        output.out,
+        "{}",
+        crate::hook::respond(&crate::hook::Decision::Note(format!(
+            "archwarden did not check this write: {reason}."
+        )))
     );
     Exit::Clean
 }
@@ -3500,10 +3571,20 @@ mod tests {
     }
 
     /// A hook that blocked because *it* failed would be worse than no hook.
-    /// Every unexpected shape lets the write through.
+    /// Every unexpected shape lets the write through — and says that it did,
+    /// which is the half this used to get wrong.
+    ///
+    /// Permitting in silence made a gate that could not run look exactly like
+    /// one that ran and approved. The write still goes through; the difference
+    /// is that somebody can tell.
     #[test]
     fn the_hook_never_blocks_because_of_its_own_trouble() {
-        let cases: [(&str, &str); 4] = [
+        // A config with no rules is deliberately not here. That is a working
+        // gate over an empty rule set: the write was examined and nothing
+        // objected, which is the one thing `{}` is supposed to mean. Whether a
+        // config should constrain something is `config doctor`'s question, and
+        // asking it again on every write would be noise.
+        let cases: [(&str, &str); 3] = [
             ("a broken config", r#"{"version": 0,,}"#),
             ("a config for a future version", r#"{"version": 99}"#),
             (
@@ -3511,7 +3592,6 @@ mod tests {
                 r#"{"version":0,"rules":[{"type":"structure",
                 "id":"a","level":"error","roots":"["}]}"#,
             ),
-            ("no rules at all", r#"{"version":0}"#),
         ];
 
         for (what, config) in cases {
@@ -3526,17 +3606,113 @@ mod tests {
             };
 
             assert_eq!(result.exit, Exit::Clean, "{what}");
-            assert_eq!(result.out, "{}\n", "{what} should allow the write");
+            assert!(
+                !result.out.contains("\"permissionDecision\""),
+                "{what} should not block the write: {}",
+                result.out
+            );
+            assert!(
+                result.out.contains("did not check this write"),
+                "{what} permitted the write without saying it went unchecked: {}",
+                result.out
+            );
         }
     }
 
-    /// A payload naming no file is not this hook's business.
+    /// A config that constrains nothing still *checked* the write.
+    ///
+    /// The line this whole change is drawn along: "I examined it and had no
+    /// objection" stays silent, "I could not examine it" does not. An empty
+    /// rule set is the first of those, however little it enforces — and
+    /// `config doctor` is where the question of whether it should enforce
+    /// something belongs.
     #[test]
-    fn the_hook_allows_a_tool_that_writes_nothing() {
-        let (_guard, result) = run_in(&[("arch.config.json", NAMING)], &["hook", "claude-code"]);
+    fn a_config_with_no_rules_examined_the_write_and_says_nothing() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::write(root.join("arch.config.json"), r#"{"version":0}"#).expect("write");
+
+        let result = run_with(&root, &["hook", "claude-code"], WRITE_EVENT);
 
         assert_eq!(result.exit, Exit::Clean);
         assert_eq!(result.out, "{}\n");
+    }
+
+    /// A payload naming no file is not this hook's business, and it says
+    /// nothing at all about it.
+    ///
+    /// The only silence left. With a matcher broader than `Write|Edit|
+    /// MultiEdit` this is every `Bash` and every `Read`, and a remark on each
+    /// one is a hook somebody removes.
+    #[test]
+    fn the_hook_passes_over_a_tool_that_writes_nothing_in_silence() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::write(root.join("arch.config.json"), NAMING).expect("write");
+
+        let result = run_with(
+            &root,
+            &["hook", "claude-code"],
+            r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#,
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert_eq!(result.out, "{}\n");
+    }
+
+    /// And an event it cannot read at all is the other answer.
+    ///
+    /// `echo 'not json' | archwarden hook claude-code` permitted in silence,
+    /// so a misconfigured hook was indistinguishable from a working one.
+    #[test]
+    fn the_hook_says_so_when_it_cannot_read_the_event() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::write(root.join("arch.config.json"), NAMING).expect("write");
+
+        let result = run_with(&root, &["hook", "claude-code"], "not json");
+
+        assert_eq!(result.exit, Exit::Clean, "it still must not block");
+        assert!(
+            result.out.contains("did not check this write"),
+            "an unreadable event permitted in silence: {}",
+            result.out
+        );
+    }
+
+    /// A path that really is elsewhere is permitted, and named.
+    ///
+    /// The hook has nothing to say about a file outside the repository, and
+    /// "nothing to say" is itself worth one sentence: a harness whose `cwd`
+    /// lands somewhere unexpected would otherwise get a gate that reports
+    /// success on every write it never looked at.
+    #[test]
+    fn the_hook_says_so_when_the_path_is_outside_the_repository() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::write(root.join("arch.config.json"), NAMING).expect("write");
+
+        let result = run_with(
+            &root,
+            &["hook", "claude-code"],
+            r#"{"tool_input":{"file_path":"/elsewhere/entirely/a.ts"}}"#,
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        assert!(
+            !result.out.contains("\"permissionDecision\""),
+            "it must not block a write it has no opinion about: {}",
+            result.out
+        );
+        assert!(
+            result.out.contains("outside the repository"),
+            "the reason was not carried: {}",
+            result.out
+        );
     }
 
     /// `install-hooks` writes the settings file, and says what it did.

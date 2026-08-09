@@ -17,6 +17,103 @@ saying so.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-08-09
+
+Four faults in the pre-write hook, reported together against 0.10.0
+([#48](https://github.com/HenriqueArtur/archwarden/issues/48)). Three of them
+are the same fault: **the hook permitted writes it had never examined, in
+silence.**
+
+A minor rather than a patch, by the question `RELEASING.md` asks — *does this
+change what an existing, unchanged config reports?* On a machine with a
+symlinked checkout it changes it completely: writes that sailed through are now
+refused, which is what the hook was installed to do and never did.
+
+### Fixed
+
+- **A path that reaches the repository by another route is inside the
+  repository.** A symlinked checkout, a bind-mounted worktree, `/tmp` →
+  `/private/tmp` on macOS, a container whose mount path differs from the
+  host's: each gives one directory two absolute spellings, and a harness hands
+  over whichever its own `cwd` resolved to. The two were compared as text, so
+  the other spelling read as "outside the repository" — and the hook permitted
+  every write on such a machine while reporting success. The only symptom was
+  CI failing later, on files a pre-write gate was installed to refuse.
+
+  The parent directory is resolved rather than the whole path: a pre-write hook
+  is asked *before* the write, so the file it names usually does not exist yet.
+  `check --file` gets the same fix, because two spellings of one directory
+  should mean one thing everywhere.
+
+- **A gate that could not judge a write now says so.** An unreadable event, a
+  missing config, a config that does not compile, a path genuinely elsewhere —
+  each returned `{}`, which is *"no objection"*. They carry a `systemMessage`
+  beginning *"archwarden did not check this write"* now, and still permit: a
+  hook that blocked because it could not do its job would be worse than no
+  hook.
+
+  A tool that writes no file stays silent, and it is the only thing that does.
+  With a matcher broader than `Write|Edit|MultiEdit` that is every `Bash` and
+  every `Read`, and a remark on each is a hook somebody removes.
+
+- **A config declaring an unsupported version no longer disables the hook
+  silently.** `check` refuses one; the hook parsed it into a config with no
+  rules, which compiled, matched nothing and permitted everything. Found by a
+  test written for the fault above, in the one place it had not been looked
+  for.
+
+- **`config verify-rules` probes the axis a rule constrains**
+  ([#49](https://github.com/HenriqueArtur/archwarden/issues/49)). Every
+  `structure` rule was offered an unlisted folder. A rule that constrains
+  `filename_patterns` and says nothing about subfolders is correctly silent on
+  that, and was reported as enforcing nothing — 5 of 14 rules in one
+  repository, all 5 of which fire.
+
+  Worse than a wrong tick, because *"5 enforce nothing"* is the line a reader
+  acts on, and acting on it means deleting five working rules. A verifier that
+  reports a false negative is worse than no verifier, for the reason the docs
+  give about silent rules: it is indistinguishable from the real thing. Each
+  constrained axis is probed now, and a rule that constrains neither is still
+  reported silent — that one really does enforce nothing.
+
+- **`config doctor` no longer calls every `presence` rule idle**
+  ([#51](https://github.com/HenriqueArtur/archwarden/issues/51)).
+  `rule-evaluates-nothing` asks whether any file is subject to a rule, which is
+  a good question about a rule concerning files and a meaningless one about a
+  rule concerning directories. `structure` was exempt by name; `presence`
+  arrived answering the same way and was not, so `doctor` reported it as idle
+  while `check` was firing it on the same repository.
+
+  The suggested fix made it worse: widening `roots` from `projetos/*` to
+  `projetos/**` would have asked every subdirectory to hold the required files,
+  turning a working rule into a wall of false errors. The engine is asked now,
+  through `RuleEngine::answers_for_directories`, so the third directory rule
+  has to answer rather than be remembered.
+
+- **`pair.must_exist` refuses a template instead of hunting for braces**
+  ([#50](https://github.com/HenriqueArtur/archwarden/issues/50)). The field is
+  documented as literal, and a config reaching for `{{raw(dirname)}}` anyway
+  validated, ran, and reported every governed file as missing a companion with
+  braces in its name — sixteen confident findings about a file nothing could
+  create. The template form is what `naming` and `frontmatter.equals` accept,
+  so writing one here is the obvious mistake; it is refused when the config
+  compiles, the way `presence.require` refuses a path separator.
+
+### Changed
+
+- **`install-hooks` edits the `hooks` key and nothing else.** It used to
+  round-trip `.claude/settings.json` through a serialiser, which produces valid
+  JSON and *a different file*: blank lines grouping a long `permissions.allow`
+  list into sections were dropped, and everything re-indented. Installing and
+  then removing now returns the file byte-identical.
+
+- **The installed command is detected, not configured.**
+  `./node_modules/.bin/archwarden` when it is installed, `npx archwarden` for a
+  `package.json` with nothing installed yet, the bare command otherwise. The
+  local binary is preferred because `npx` *fetches* what it cannot find, so a
+  project that dropped the dependency would keep a working hook at a version
+  nobody chose — and because some repositories ban `npx` outright.
+
 ## [0.10.0] — 2026-08-08
 
 ### Added

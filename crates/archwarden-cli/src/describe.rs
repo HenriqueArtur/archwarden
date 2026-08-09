@@ -95,8 +95,11 @@ pub fn repo_relative(
 
     let relative = if raw.is_absolute() {
         raw.strip_prefix(root)
-            .map_err(|_| format!("`{argument}` is outside the repository at `{root}`"))?
-            .to_string()
+            .map(Utf8Path::to_string)
+            .or_else(|_| {
+                same_directory_by_another_name(root, raw)
+                    .ok_or_else(|| format!("`{argument}` is outside the repository at `{root}`"))
+            })?
     } else {
         let inside = working_directory.strip_prefix(root).map_err(|_| {
             format!("the working directory `{working_directory}` is outside `{root}`")
@@ -112,6 +115,42 @@ pub fn repo_relative(
 
     RepoRelPath::new(&relative)
         .map_err(|error| format!("`{argument}` is not a path inside the repository: {error}"))
+}
+
+/// The same path, when the text says otherwise and the filesystem disagrees.
+///
+/// A repository has more than one absolute path more often than it looks: a
+/// symlinked checkout, a bind-mounted worktree, `/tmp` → `/private/tmp` on
+/// macOS, a container whose mount path differs from the host's. A harness hands
+/// over whichever spelling its own `cwd` resolved to, and comparing the two as
+/// text says "outside the repository" about a file plainly inside it.
+///
+/// # Why the parent and not the whole path
+///
+/// A pre-write hook is asked *before* the write, so the file it names usually
+/// does not exist and `canonicalize` on it would fail — the case this most
+/// needs to work. The parent directory does exist, so that is what gets
+/// resolved, and the file name is put back afterwards.
+///
+/// It also keeps a change nobody asked for from creeping in. Resolving the
+/// whole path would follow a symlinked *file* to wherever it points, so a link
+/// inside the repository aimed outside it would start being refused. That may
+/// even be right, but it is a different question from this one and it should be
+/// asked on its own.
+///
+/// Returns `None` when the path is genuinely somewhere else, which is still
+/// most of the times this is reached.
+fn same_directory_by_another_name(root: &Utf8Path, raw: &Utf8Path) -> Option<String> {
+    let name = raw.file_name()?;
+    let parent = raw.parent()?;
+
+    let real_root = std::fs::canonicalize(root).ok()?;
+    let real_parent = std::fs::canonicalize(parent).ok()?;
+
+    let inside = real_parent.strip_prefix(&real_root).ok()?;
+
+    let relative = Utf8Path::from_path(inside)?.join(name);
+    Some(relative.to_string())
 }
 
 /// Picks between the two readings. See [`repo_relative`].
@@ -681,6 +720,85 @@ mod tests {
         assert_eq!(
             repo_relative(&root(), &root(), "../a.ts").expect_err("escapes"),
             "`../a.ts` is not a path inside the repository: `../a.ts` escapes the repository root"
+        );
+    }
+
+    /// Two spellings of one directory are one directory.
+    ///
+    /// A symlinked checkout, a bind-mounted worktree, `/tmp` → `/private/tmp`
+    /// on macOS, a container whose mount path differs from the host's: each
+    /// gives a repository two absolute paths, and a harness hands over
+    /// whichever one its own `cwd` resolved to. Comparing the two as text
+    /// answers "outside the repository" about a file plainly inside it.
+    ///
+    /// Reported against 0.10.0, where the consequence was a pre-write hook
+    /// that permitted every write on such a machine while reporting success.
+    #[cfg(unix)]
+    #[test]
+    fn a_second_route_to_the_same_directory_is_the_same_directory() {
+        let temporary = tempfile::tempdir().expect("temp dir");
+        let real = temporary.path().join("real");
+        std::fs::create_dir_all(real.join("src")).expect("create");
+        std::fs::write(real.join("src/a.ts"), b"export const a = 1;").expect("write");
+
+        let link = temporary.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let root = Utf8PathBuf::from_path_buf(real).expect("utf-8");
+        let through_link = Utf8PathBuf::from_path_buf(link)
+            .expect("utf-8")
+            .join("src/a.ts");
+
+        assert_eq!(
+            repo_relative(&root, &root, through_link.as_str()).expect("resolves"),
+            path("src/a.ts")
+        );
+    }
+
+    /// And the same when the file is not there yet, which is the case a
+    /// pre-write hook is always in: it is asked before the write, so the path
+    /// it is handed usually names nothing on disk.
+    #[cfg(unix)]
+    #[test]
+    fn a_second_route_resolves_for_a_file_that_does_not_exist_yet() {
+        let temporary = tempfile::tempdir().expect("temp dir");
+        let real = temporary.path().join("real");
+        std::fs::create_dir_all(real.join("src")).expect("create");
+
+        let link = temporary.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let root = Utf8PathBuf::from_path_buf(real).expect("utf-8");
+        let through_link = Utf8PathBuf::from_path_buf(link)
+            .expect("utf-8")
+            .join("src/not-written-yet.ts");
+
+        assert_eq!(
+            repo_relative(&root, &root, through_link.as_str()).expect("resolves"),
+            path("src/not-written-yet.ts")
+        );
+    }
+
+    /// A path that is genuinely elsewhere still says so. The point is to stop
+    /// mistaking one directory for two, not to stop refusing.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_that_is_really_outside_is_still_refused() {
+        let temporary = tempfile::tempdir().expect("temp dir");
+        let real = temporary.path().join("real");
+        let other = temporary.path().join("other");
+        std::fs::create_dir_all(&real).expect("create");
+        std::fs::create_dir_all(&other).expect("create");
+        std::fs::write(other.join("a.ts"), b"export const a = 1;").expect("write");
+
+        let root = Utf8PathBuf::from_path_buf(real).expect("utf-8");
+        let outside = Utf8PathBuf::from_path_buf(other)
+            .expect("utf-8")
+            .join("a.ts");
+
+        assert!(
+            repo_relative(&root, &root, outside.as_str()).is_err(),
+            "a path in another directory was accepted"
         );
     }
 

@@ -123,6 +123,13 @@ impl RuleEngine for PresenceEngine {
         false
     }
 
+    fn answers_for_directories(&self) -> bool {
+        // Which is the other half of `applies_to` returning false, and the
+        // half `config doctor` needs: a rule reaching no file is a symptom for
+        // a rule about files and the ordinary state for this one.
+        true
+    }
+
     fn check_directory(&self, ctx: DirectoryContext<'_>) -> Vec<Finding> {
         if !self.governs(ctx.path) {
             return Vec::new();
@@ -431,5 +438,15 @@ mod tests {
         assert_eq!(engine.id().as_str(), "licao-completa");
         assert_eq!(engine.module(), None);
         assert_eq!(engine.level(), Level::Error);
+    }
+    /// A `presence` rule answers for the directory, and `config doctor` needs
+    /// to know it. While this was a match on rule names in `doctor`, every
+    /// `presence` rule was reported as evaluating nothing -- with a suggested
+    /// fix that would have turned a working rule into a wall of false errors.
+    #[test]
+    fn it_answers_for_a_directory_rather_than_for_the_files_in_it() {
+        let engine = engine(&["projetos/*"], &["projeto.md"], &[]);
+
+        assert!(engine.answers_for_directories());
     }
 }

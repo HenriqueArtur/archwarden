@@ -221,6 +221,24 @@ pub trait RuleEngine: Send + Sync {
         false
     }
 
+    /// Whether this rule's findings are about a directory rather than about
+    /// the files in it.
+    ///
+    /// Asked by `config doctor`, which reports a rule that reaches no file as
+    /// idle — a good question for a rule about files and a meaningless one for
+    /// a rule about directories, where reaching no file is the ordinary state.
+    ///
+    /// A method rather than a match on rule kinds, because the match was the
+    /// bug: `structure` was exempt by name, `presence` arrived later answering
+    /// the same way and was not, and `doctor` called every `presence` rule idle
+    /// while `check` was firing it. Whoever writes the third one has to answer
+    /// this, and the compiler will not remind them — but a default of `false`
+    /// is the safe way to be wrong, since it only ever costs a concern that can
+    /// be read and dismissed.
+    fn answers_for_directories(&self) -> bool {
+        false
+    }
+
     /// Evaluates the rule against one directory.
     fn check_directory(&self, ctx: DirectoryContext<'_>) -> Vec<Finding> {
         let _ = ctx;
@@ -572,6 +590,17 @@ mod tests {
             "a directory rule reads names, not contents"
         );
         assert!(!directory_rule.needs_resolution());
+
+        // The default, which is the safe way to be wrong: a rule that does not
+        // answer this is treated as a rule about files, so `config doctor` may
+        // report a concern that can be read and dismissed rather than staying
+        // quiet about one that matters. The two rule kinds whose findings are
+        // about directories override it, and `doctor` calling every `presence`
+        // rule idle is what happened while that question was a match on names.
+        assert!(
+            !directory_rule.answers_for_directories(),
+            "the default is `false`, whatever this double checks"
+        );
     }
 
     #[test]
