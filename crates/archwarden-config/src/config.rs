@@ -42,6 +42,35 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub ignore: OneOrMany<String>,
 
+    /// The language the HTML pages are written in.
+    ///
+    /// A repository decides this once, the way it decides its rules — the
+    /// people reading a report of *this* project read it in one language, and
+    /// putting that in the config means nobody has to remember a flag.
+    /// `--lang` still wins, for the one run that wants the other.
+    ///
+    /// Reaches the pages and nothing else: the terminal, the JSON and the
+    /// markdown digest are English whatever this says. See
+    /// `crate::config::PageLanguage`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<PageLanguage>,
+
+    /// Which languages this repository asks archwarden to read.
+    ///
+    /// Defaults to `["ts"]`, which is JavaScript and TypeScript together —
+    /// every config written before this field meant exactly that, and still
+    /// does.
+    ///
+    /// **Opt-in on purpose, and not because of cost.** A repository with no
+    /// `.astro` file pays nothing for an Astro front-end either way. What the
+    /// field buys is that widening what archwarden governs is a decision
+    /// written in the config, rather than one that arrives with a dependency
+    /// upgrade — and the un-opted state is loud rather than silent: a file in a
+    /// language this config did not ask for is a *counted, named* skip, so a
+    /// user who never read about the feature still finds out. Issue #13.
+    #[serde(default = "default_languages", skip_serializing_if = "Vec::is_empty")]
+    pub languages: Vec<Language>,
+
     /// The `_`-prefix escape hatch.
     #[serde(default)]
     pub skip_dirs: SkipDirs,
@@ -72,9 +101,51 @@ pub struct Config {
 pub struct Module {
     /// The label.
     pub id: ModuleId,
+    /// Why this module exists, in the author's words.
+    ///
+    /// A module is a bigger decision than any rule inside it — one sentence
+    /// explaining why `domain` is sealed explains every rule under it — so it
+    /// gets its own, and a rule's `why` never substitutes for it. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// The rules in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<Rule>,
+}
+
+/// A language the HTML pages can be written in.
+///
+/// Separate from [`Language`], which is about *source* archwarden reads. These
+/// two would be a confusing single field: one says what the tool can parse and
+/// the other says what a person wants to read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum PageLanguage {
+    /// English.
+    En,
+    /// Brazilian Portuguese.
+    PtBr,
+}
+
+/// A language archwarden has a front-end for.
+///
+/// Markdown is absent on purpose: a `frontmatter` rule names the documents it
+/// is about, so asking for it in two places would let them disagree. This list
+/// is for languages whose files would otherwise be read as *code* by a rule
+/// that never named them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum Language {
+    /// JavaScript and TypeScript, which are one front-end.
+    Ts,
+    /// Astro components: the TypeScript module inside the `---` fence.
+    Astro,
+}
+
+fn default_languages() -> Vec<Language> {
+    vec![Language::Ts]
 }
 
 /// Which directories are exempt, and from what.
@@ -127,16 +198,17 @@ impl Config {
     ///
     /// Top-level rules yield `None`. Rules named in `disable` are skipped, so
     /// no caller has to remember to apply it.
-    pub fn rules(&self) -> impl Iterator<Item = (Option<&ModuleId>, &Rule)> {
-        let from_modules = self
-            .modules
-            .iter()
-            .flat_map(|m| m.rules.iter().map(move |r| (Some(&m.id), r)));
-        let top_level = self.rules.iter().map(|r| (None, r));
+    pub fn rules(&self) -> impl Iterator<Item = (Option<&ModuleId>, Option<&str>, &Rule)> {
+        let from_modules = self.modules.iter().flat_map(|m| {
+            m.rules
+                .iter()
+                .map(move |r| (Some(&m.id), m.why.as_deref(), r))
+        });
+        let top_level = self.rules.iter().map(|r| (None, None, r));
 
         from_modules
             .chain(top_level)
-            .filter(|(_, rule)| !self.disable.contains(rule.id()))
+            .filter(|(_, _, rule)| !self.disable.contains(rule.id()))
     }
 
     /// Whether this config's `version` is one this build understands.
@@ -228,7 +300,7 @@ mod tests {
 
         let rules: Vec<_> = config.rules().collect();
         assert_eq!(rules.len(), 1);
-        let (module, rule) = &rules[0];
+        let (module, _, rule) = &rules[0];
         assert_eq!(module.map(ModuleId::as_str), Some("src"));
         assert_eq!(rule.id().as_str(), "src-needs-spec");
     }
@@ -253,7 +325,7 @@ mod tests {
 
         let collected: Vec<_> = config
             .rules()
-            .map(|(m, r)| (m.map(ModuleId::as_str), r.id().as_str()))
+            .map(|(m, _, r)| (m.map(ModuleId::as_str), r.id().as_str()))
             .collect();
 
         assert_eq!(
@@ -277,7 +349,7 @@ mod tests {
             }"#,
         );
 
-        let ids: Vec<_> = config.rules().map(|(_, r)| r.id().as_str()).collect();
+        let ids: Vec<_> = config.rules().map(|(_, _, r)| r.id().as_str()).collect();
         assert_eq!(ids, ["kept"]);
     }
 
@@ -355,7 +427,7 @@ mod tests {
         assert!(!json.contains("disable"), "{json}");
         assert!(!json.contains("$schema"), "{json}");
 
-        let (module, rule) = original.rules().next().expect("one rule");
+        let (module, _, rule) = original.rules().next().expect("one rule");
         assert_eq!(module, None);
         assert_eq!(rule.level(), Level::Warning);
     }

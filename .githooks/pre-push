@@ -35,10 +35,28 @@
 #
 # `git push --no-verify` skips it. That is deliberate: the hook is here to
 # catch mistakes, not to take the decision away from whoever is pushing.
+#
+# # The gates come first
+#
+# Before any of the above, this runs `cargo xtask ci` — every check the
+# workflow runs, on the machine that is about to push. It is the slow half of
+# this hook and it is here for one reason: three checks failed on a pull
+# request in a row because none of their tools was installed locally, and each
+# one had been reported as `skipped` in a message that read like a pass.
+#
+# The rule that came out of it, and that `xtask/src/ci.rs` enforces: a check
+# that cannot run is a failure, not a skip.
 
 set -eu
 
 cd "$(git rev-parse --show-toplevel)"
+
+printf 'pre-push: the gates CI runs...\n\n'
+if ! cargo xtask ci; then
+    printf '\npre-push: nothing was pushed. `git push --no-verify` to override.\n'
+    exit 1
+fi
+printf '\n'
 
 # Not installed by default, and a hook that blocks a push because an optional
 # tool is missing is a hook that gets uninstalled.
@@ -113,6 +131,13 @@ cargo mutants --in-diff "$diff" >"$diff.log" 2>&1 || status=$?
 # again. It warns and lets the push through instead. That makes the check
 # advisory exactly when it could not form an opinion, which is the honest
 # reading of "the tool did not finish".
+#
+# "Could not form an opinion" is the load-bearing half, and it used to be
+# assumed rather than checked. A run that is interrupted after it has already
+# reported survivors *has* formed one, and the survivors it named are as real
+# as any from a run that finished: 190 of them went out this way, past a hook
+# that read exit 141 and announced the push was going ahead. So the third
+# branch asks the survivor list rather than the exit code.
 case "$status" in
     0)
         printf 'ok\n'
@@ -128,6 +153,14 @@ case "$status" in
         exit 1
         ;;
     *)
+        if [ -s mutants.out/missed.txt ]; then
+            printf 'stopped early (exit %s), and had already found these:\n\n' "$status"
+            sed 's/^/    /' mutants.out/missed.txt | head -30
+            printf '\n  It did not finish, so there may be more. What it did find is\n'
+            printf '  still a behaviour with no test.\n'
+            printf '\npre-push: nothing was pushed. `git push --no-verify` to override.\n'
+            exit 1
+        fi
         printf 'could not run (exit %s)\n' "$status"
         printf '  The push is going ahead: this says nothing about your tests.\n'
         tail -5 "$diff.log" | sed 's/^/    /'

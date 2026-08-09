@@ -8,6 +8,8 @@
 //! `Expectation` values the JSON carries, so the two can never describe a
 //! finding differently.
 
+use std::fmt::Write as _;
+
 use archwarden_core::{
     facts::ExportKind,
     finding::{Expectation, Finding, Observed},
@@ -31,6 +33,51 @@ use serde::Serialize;
 /// Not bumped for `summary.duration_ms` either: a consumer that ignores it
 /// reads the report exactly as before.
 pub const REPORT_VERSION: u32 = 0;
+
+/// The standing reason behind each rule, by rule id.
+///
+/// Looked up when a report is rendered rather than carried on a [`Finding`],
+/// deliberately. A `why` is prose about a *rule*; a finding is about a file,
+/// and copying the prose onto every one of them would put it in the baseline's
+/// path -- `.archwarden/baseline.json` must not churn because somebody
+/// reworded a sentence -- and would make every rule engine take a field it
+/// never reads. Issue #46.
+#[derive(Debug, Default)]
+pub struct Reasons(std::collections::BTreeMap<String, String>);
+
+impl Reasons {
+    /// Reads the reasons a compiled configuration carries.
+    #[must_use]
+    pub fn of(config: &archwarden_core::compiled::CompiledConfig) -> Self {
+        Self(
+            config
+                .rules()
+                .filter_map(|rule| {
+                    rule.why
+                        .as_ref()
+                        .map(|why| (rule.id.as_str().to_owned(), why.clone()))
+                })
+                .collect(),
+        )
+    }
+
+    /// Why this rule exists, when its author said.
+    #[must_use]
+    pub fn of_rule(&self, rule: &archwarden_core::ids::RuleId) -> Option<&str> {
+        self.0.get(rule.as_str()).map(String::as_str)
+    }
+}
+
+impl<const N: usize> From<[(&str, &str); N]> for Reasons {
+    fn from(pairs: [(&str, &str); N]) -> Self {
+        Self(
+            pairs
+                .into_iter()
+                .map(|(rule, why)| (rule.to_owned(), why.to_owned()))
+                .collect(),
+        )
+    }
+}
 
 /// How to render a report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
@@ -272,9 +319,32 @@ struct JsonReport<'a> {
     /// benefit at all. Absence is opt-in — a consumer that never passes the
     /// flag sees the field it always saw.
     #[serde(skip_serializing_if = "Option::is_none")]
-    findings: Option<&'a [&'a Finding]>,
+    findings: Option<Vec<JsonFinding<'a>>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     unreadable_files: Vec<UnreadableFile<'a>>,
+}
+
+/// A finding, plus the standing reason its rule exists.
+///
+/// `why` is flattened in beside the finding's own fields rather than nested,
+/// because a consumer reading a finding is reading one object. It is absent
+/// when the rule's author said nothing, which is every rule in every config
+/// written before the field existed.
+#[derive(Debug, Serialize)]
+struct JsonFinding<'a> {
+    #[serde(flatten)]
+    finding: &'a Finding,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    why: Option<&'a str>,
+}
+
+impl<'a> JsonFinding<'a> {
+    fn new(finding: &'a Finding, reasons: &'a Reasons) -> Self {
+        Self {
+            finding,
+            why: reasons.of_rule(&finding.rule_id),
+        }
+    }
 }
 
 /// One check nobody could make.
@@ -427,6 +497,8 @@ pub struct Rendered<'a> {
     pub report: &'a Report,
     /// What of it to show.
     pub view: &'a View<'a>,
+    /// Why each rule exists, for the line under its first finding.
+    pub reasons: &'a Reasons,
     /// How long the whole run took -- config load, walk, check and cache
     /// flush. Passed in rather than measured here because wall-clock belongs
     /// to the invocation, and a test that could not fix it could not assert on
@@ -522,13 +594,19 @@ fn render_json(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
     let Rendered {
         report,
         view,
+        reasons,
         elapsed,
         ..
     } = *rendered;
     let envelope = JsonReport {
         version: REPORT_VERSION,
         summary: Summary::of(report, view, elapsed),
-        findings: view.breakdown.is_none().then_some(view.findings.as_slice()),
+        findings: view.breakdown.is_none().then(|| {
+            view.findings
+                .iter()
+                .map(|finding| JsonFinding::new(finding, reasons))
+                .collect()
+        }),
         unreadable_files: report
             .unreadable_files
             .iter()
@@ -556,7 +634,7 @@ fn render_json(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
 ///
 /// Shared by the full report and the single-file check, so a hook and a
 /// commit-time run word the same finding identically.
-fn render_finding(finding: &Finding, at: &str, out: &mut dyn std::io::Write) {
+fn render_finding(finding: &Finding, at: &str, why: Option<&str>, out: &mut dyn std::io::Write) {
     let module = finding
         .module_id
         .as_ref()
@@ -576,6 +654,11 @@ fn render_finding(finding: &Finding, at: &str, out: &mut dyn std::io::Write) {
         "        expected: {}",
         describe_expectation(&finding.expected)
     );
+    // Wrapped and indented under the finding rather than beside it: this is a
+    // paragraph, and the two lines above are a diagnosis.
+    if let Some(why) = why {
+        let _ = writeln!(out, "        why: {why}");
+    }
     let _ = writeln!(out);
 }
 
@@ -636,6 +719,7 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         root,
         report,
         view,
+        reasons,
         elapsed,
     } = *rendered;
 
@@ -643,9 +727,16 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         render_breakdown(breakdown, out);
     } else {
         let mut positions = Positions::default();
+        // A repository with two hundred findings over six rules must not print
+        // two hundred paragraphs. Six, at the point each rule first comes up,
+        // is where a reader is already looking. Issue #46.
+        let mut explained = std::collections::BTreeSet::new();
         for finding in &view.findings {
             let at = positions.label(root, finding);
-            render_finding(finding, &at, out);
+            let why = reasons
+                .of_rule(&finding.rule_id)
+                .filter(|_| explained.insert(finding.rule_id.as_str()));
+            render_finding(finding, &at, why, out);
         }
     }
 
@@ -680,6 +771,13 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
             );
         }
     }
+
+    // The other half of the same number. A skip on a file that *is* named above
+    // is a bug to investigate; a skip on one that is not was never attempted --
+    // a language this configuration did not ask archwarden to read, most often.
+    // `1 skipped` could not tell those apart, and they are opposite decisions.
+    // Issue #13.
+    render_unattempted_skips(report, out);
 
     // Without this, `0 errors` beside exit 1 is a contradiction the reader
     // cannot resolve: the gate counts what was evaluated, and the line above
@@ -803,7 +901,7 @@ fn render_unresolved_imports(unresolved: &[(RepoRelPath, String)], out: &mut dyn
 struct JsonSingle<'a> {
     version: u32,
     path: &'a archwarden_core::path::RepoRelPath,
-    findings: &'a [Finding],
+    findings: Vec<JsonFinding<'a>>,
     /// Always present, even when empty. A caller needs to see that the list is
     /// empty rather than infer it from absence -- that is the whole point of
     /// reporting skips (correction C6).
@@ -826,20 +924,29 @@ struct JsonSkipped<'a> {
 /// Writes a single-file check in the requested format.
 pub fn render_single(
     single: &archwarden_engine::single::Single,
+    reasons: &Reasons,
     format: Format,
     out: &mut dyn std::io::Write,
 ) {
     match format {
-        Format::Text => render_single_text(single, out),
-        Format::Json => render_single_json(single, out),
+        Format::Text => render_single_text(single, reasons, out),
+        Format::Json => render_single_json(single, reasons, out),
     }
 }
 
-fn render_single_json(single: &archwarden_engine::single::Single, out: &mut dyn std::io::Write) {
+fn render_single_json(
+    single: &archwarden_engine::single::Single,
+    reasons: &Reasons,
+    out: &mut dyn std::io::Write,
+) {
     let envelope = JsonSingle {
         version: REPORT_VERSION,
         path: &single.path,
-        findings: &single.findings,
+        findings: single
+            .findings
+            .iter()
+            .map(|finding| JsonFinding::new(finding, reasons))
+            .collect(),
         skipped: single
             .skipped
             .iter()
@@ -861,9 +968,17 @@ fn render_single_json(single: &archwarden_engine::single::Single, out: &mut dyn 
     }
 }
 
-fn render_single_text(single: &archwarden_engine::single::Single, out: &mut dyn std::io::Write) {
+fn render_single_text(
+    single: &archwarden_engine::single::Single,
+    reasons: &Reasons,
+    out: &mut dyn std::io::Write,
+) {
+    let mut explained = std::collections::BTreeSet::new();
     for finding in &single.findings {
-        render_finding(finding, finding.path.as_str(), out);
+        let why = reasons
+            .of_rule(&finding.rule_id)
+            .filter(|_| explained.insert(finding.rule_id.as_str()));
+        render_finding(finding, finding.path.as_str(), why, out);
     }
 
     for skipped in &single.skipped {
@@ -916,6 +1031,16 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
             let kinds: Vec<_> = found.iter().map(ExportKind::as_str).collect();
             format!("`{name}` is declared as {}", join_or(&kinds, "nothing"))
         }
+        // "declares no type of its own" rather than "has no annotation": the
+        // reader's next action is to write one, and the sentence that names
+        // the absence names the fix.
+        Observed::ExportMissingAnnotation { name } => {
+            format!("`{name}` declares no type of its own")
+        }
+        Observed::ExportWrongAnnotation { name, found } => {
+            let written: Vec<&str> = found.iter().map(String::as_str).collect();
+            format!("`{name}` is declared as {}", join_or(&written, "nothing"))
+        }
         Observed::OnlyDefaultExport => {
             "the only export is a default, whose name does not bind importers".to_owned()
         }
@@ -944,7 +1069,32 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
                 format!("{names} {forwards} another module; the rest of the file is its own")
             }
         }
-        Observed::SiblingMissing { path } => format!("`{path}` does not exist"),
+        // "is not here" rather than "does not exist": the finding is on the
+        // directory, and what the reader has to do is create the file *in it*.
+        Observed::RequiredFileMissing { name } => format!("`{name}` is not here"),
+        Observed::NoFileMatching { pattern } => format!("no file here matches `{pattern}`"),
+        Observed::FrontmatterAbsent => "has no frontmatter block".to_owned(),
+        Observed::FrontmatterMalformed { reason } => {
+            format!("its frontmatter block is not YAML: {reason}")
+        }
+        Observed::FrontmatterKeyMissing { key } => {
+            format!("its frontmatter carries no `{key}`")
+        }
+        // The value is quoted back rather than merely called wrong: a
+        // vocabulary miss is almost always a spelling, and seeing the spelling
+        // is the fix.
+        Observed::FrontmatterValueOutsideVocabulary { key, found } => {
+            format!("`{key}` is `{found}`, which is not one of the accepted values")
+        }
+        Observed::FrontmatterValueDisagrees { key, found, wanted } => {
+            format!("`{key}` is `{found}`, and the path says `{wanted}`")
+        }
+        Observed::FrontmatterValueNotScalar { key } => {
+            format!("`{key}` is not a single value, so there is nothing to compare")
+        }
+        Observed::CompanionMissing { path } | Observed::SiblingMissing { path } => {
+            format!("`{path}` does not exist")
+        }
         Observed::SpecIsEmpty { path } => format!("`{path}` contains no test cases"),
         Observed::ForbiddenImport {
             specifier,
@@ -984,26 +1134,565 @@ pub(crate) fn describe_observed(observed: &Observed) -> String {
 /// Shared with `describe`, which renders the same expectations for a file that
 /// does not exist yet. One renderer, so the gate and the informant can never
 /// word the same requirement differently -- decision 9.
+/// The run as a page: the map, the walls, the pressure on them, and the
+/// blind spots.
+///
+/// Ordered for somebody about to *change* the architecture rather than to
+/// satisfy it. That reader is not asking "is it clean" -- they are asking where
+/// reality is pushing against the design, so the pressure is grouped by **wall**
+/// and not by file. A wall crossed eleven times is a question about the wall.
+///
+/// Accepted debt is given the same weight as a current error, and that is
+/// deliberate: it is where somebody already decided the design was losing, and
+/// today it is buried in `.archwarden/baseline.json` where nobody reads it.
+#[must_use]
+pub fn html_page(
+    config: &archwarden_core::compiled::CompiledConfig,
+    tree: &archwarden_engine::walk::RepoTree,
+    report: &Report,
+    shown: &[&Finding],
+    baseline: Option<&crate::baseline::Baseline>,
+    language: crate::phrases::Language,
+) -> String {
+    use std::io::Write as _;
+
+    use crate::html::{close, escape, open};
+    use crate::matrix::{Cell, Matrix};
+
+    let matrix = Matrix::of(config, tree, &report.findings);
+    let accepted = baseline.map_or(0, |baseline| baseline.entries().count());
+
+    let mut out: Vec<u8> = Vec::new();
+    let say = language.phrases();
+    open(say.report_title(), language, &mut out);
+
+    let crossed = matrix
+        .rows
+        .iter()
+        .flatten()
+        .filter(|cell| matches!(cell, Cell::Crossed(_)))
+        .count();
+    let walls = matrix
+        .rows
+        .iter()
+        .flatten()
+        .filter(|cell| matches!(cell, Cell::Forbidden | Cell::Crossed(_)))
+        .count();
+
+    let _ = write!(
+        out,
+        "<header class=\"masthead\">\n\
+         <div class=\"stamp\">{}</div>\n\
+         <h1>{}</h1>\n\
+         <div class=\"tallies\">\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{accepted}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         </div>\n</header>\n",
+        escape(say.report_stamp()),
+        escape(&say.report_heading(matrix.modules.len(), walls, crossed)),
+        report.files_scanned,
+        escape(say.tally_files()),
+        config.rule_count(),
+        escape(say.tally_rules()),
+        if report.error_count() > 0 {
+            " is-crossed"
+        } else {
+            ""
+        },
+        shown.iter().filter(|f| f.level.fails_build()).count(),
+        escape(say.tally_errors()),
+        shown.iter().filter(|f| !f.level.fails_build()).count(),
+        escape(say.tally_warnings()),
+        if accepted > 0 { " is-accepted" } else { "" },
+        escape(say.tally_accepted()),
+        if report.checks_skipped > 0 {
+            " is-accepted"
+        } else {
+            ""
+        },
+        report.checks_skipped,
+        escape(say.tally_undecided()),
+    );
+
+    html_map(&matrix, say, &mut out);
+    html_matrix(&matrix, say, &mut out);
+    html_pressure(&matrix, say, &mut out);
+    html_blindspots(report, accepted, say, &mut out);
+
+    let _ = write!(
+        out,
+        "<footer><span>archwarden {}</span>\n\
+         <span>{}</span>\n\
+         <span>{} · {} <code>archwarden check --html</code></span>\n\
+         </footer>\n",
+        escape(env!("CARGO_PKG_VERSION")),
+        escape(&say.scanned(report.files_scanned, report.directories_scanned)),
+        escape(say.read_only()),
+        escape(say.regenerate_with()),
+    );
+
+    close(&mut out);
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// The modules, with what the config says they are for.
+fn html_map(matrix: &crate::matrix::Matrix, say: &dyn crate::phrases::Phrases, out: &mut Vec<u8>) {
+    use std::io::Write as _;
+
+    use crate::html::{code, escape, section};
+
+    let _ = writeln!(
+        out,
+        "{}<div class=\"modules\">",
+        section(say.map_eyebrow(), say.map_heading(), say.map_lede())
+    );
+
+    for module in &matrix.modules {
+        let counts = if module.errors == 0 && module.warnings == 0 {
+            say.clean().to_owned()
+        } else {
+            let mut parts = Vec::new();
+            if module.errors > 0 {
+                parts.push(format!(
+                    "<span class=\"hot\">{}</span>",
+                    escape(&say.errors(module.errors))
+                ));
+            }
+            if module.warnings > 0 {
+                parts.push(escape(&say.warnings(module.warnings)));
+            }
+            parts.join(" · ")
+        };
+
+        let _ = write!(
+            out,
+            "<div class=\"module\">\n<span class=\"name\">{}</span>\n\
+             <span class=\"counts\">{} · {counts}</span>\n\
+             <span class=\"scope\">{}</span>\n",
+            escape(&module.id),
+            escape(&say.files(module.files)),
+            module
+                .scopes
+                .iter()
+                .map(|glob| code(glob))
+                .collect::<Vec<_>>()
+                .join(" "),
+        );
+        match &module.why {
+            Some(why) => {
+                let _ = writeln!(out, "<p class=\"why\">{}</p>", escape(why));
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "<p class=\"why is-absent\">{}</p>",
+                    escape(say.no_reason_recorded())
+                );
+            }
+        }
+        let _ = writeln!(out, "</div>\n");
+    }
+
+    let _ = writeln!(out, "</div>\n</section>");
+}
+
+/// The grid. Rows are numbered and columns carry only the number, which is what
+/// keeps it readable past ten modules -- a name in every column header costs
+/// about a hundred pixels each and a repository with twenty of them would
+/// scroll sideways before the first cell.
+fn html_matrix(
+    matrix: &crate::matrix::Matrix,
+    say: &dyn crate::phrases::Phrases,
+    out: &mut Vec<u8>,
+) {
+    use std::io::Write as _;
+
+    use crate::html::{escape, section};
+    use crate::matrix::Cell;
+
+    let _ = write!(
+        out,
+        "{}<div class=\"plate\">\n<table class=\"matrix\">\n<thead>\n<tr>\n\
+         <th class=\"corner\"></th>",
+        section(say.walls_eyebrow(), say.walls_heading(), say.walls_lede())
+    );
+
+    for (index, _) in matrix.modules.iter().enumerate() {
+        let _ = writeln!(out, "<th scope=\"col\">{}</th>\n", index + 1);
+    }
+    let _ = writeln!(out, "</tr>\n</thead>\n<tbody>");
+
+    for (index, (module, row)) in matrix.modules.iter().zip(&matrix.rows).enumerate() {
+        let _ = write!(
+            out,
+            "<tr>\n<th scope=\"row\"><span class=\"n\">{}</span> {}</th>",
+            index + 1,
+            escape(&module.id)
+        );
+        for cell in row {
+            let _ = match cell {
+                Cell::Self_ => writeln!(out, "<td><span class=\"cell self\">—</span></td>"),
+                Cell::Allowed => writeln!(out, "<td><span class=\"cell\"></span></td>"),
+                Cell::Forbidden => {
+                    writeln!(out, "<td><span class=\"cell forbidden\"></span></td>")
+                }
+                Cell::Crossed(n) => {
+                    writeln!(out, "<td><span class=\"cell crossed\">{n}</span></td>")
+                }
+            };
+        }
+        let _ = writeln!(out, "</tr>\n");
+    }
+
+    let _ = write!(
+        out,
+        "</tbody>\n</table>\n</div>\n\
+         <div class=\"legend\">\n\
+         <span><i class=\"swatch\"></i> {}</span>\n\
+         <span><i class=\"swatch forbidden\"></i> {}</span>\n\
+         <span><i class=\"swatch crossed\"></i> {}</span>\n\
+         </div>\n</section>",
+        escape(say.legend_allowed()),
+        escape(say.legend_forbidden()),
+        escape(say.legend_crossed()),
+    );
+}
+
+/// The walls, worst first, each with what is going through it.
+fn html_pressure(
+    matrix: &crate::matrix::Matrix,
+    say: &dyn crate::phrases::Phrases,
+    out: &mut Vec<u8>,
+) {
+    use std::io::Write as _;
+
+    use crate::html::{code, escape, section};
+
+    if matrix.walls.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(
+        out,
+        "{}<div class=\"walls\">",
+        section(
+            say.pressure_eyebrow(),
+            say.pressure_heading(),
+            say.pressure_lede()
+        )
+    );
+
+    for wall in &matrix.walls {
+        let crossings = wall.crossings.len();
+        let _ = write!(
+            out,
+            "<article class=\"wall\">\n<header>\n\
+             <span class=\"edge\">{} ↛ {}</span>\n\
+             <span class=\"rule-id\">{}</span>\n<span class=\"pills\">",
+            escape(&wall.from),
+            escape(&wall.to),
+            escape(&wall.rule_id),
+        );
+        let _ = if crossings == 0 {
+            write!(
+                out,
+                "<span class=\"pill quiet\">{}</span>",
+                escape(say.holding())
+            )
+        } else {
+            write!(
+                out,
+                "<span class=\"pill now\">{}</span>",
+                escape(&say.crossing_now(crossings))
+            )
+        };
+        let _ = writeln!(out, "</span>\n</header>");
+
+        if let Some(why) = &wall.why {
+            let _ = writeln!(out, "<p class=\"why\">{}</p>\n", escape(why));
+        }
+
+        if crossings == 0 {
+            let _ = write!(
+                out,
+                "<ul class=\"crossings\"><li>{}</li></ul>\n</article>",
+                escape(say.nothing_crosses())
+            );
+            continue;
+        }
+
+        // Folded past five, and folded by `<details>` rather than truncated:
+        // the count stays on the summary line, so nothing is hidden and the
+        // page does not become a wall of text. No script, and it prints open if
+        // the reader opens it.
+        let folded = crossings > 5;
+        if folded {
+            let _ = writeln!(
+                out,
+                "<details><summary>{}</summary>",
+                escape(&say.imports(crossings))
+            );
+        }
+        let _ = writeln!(out, "<ul class=\"crossings\">");
+        for (importer, specifier) in &wall.crossings {
+            let _ = writeln!(
+                out,
+                "<li><span class=\"file\">{}</span> → {}</li>",
+                escape(importer.as_str()),
+                code(specifier)
+            );
+        }
+        let _ = writeln!(out, "</ul>");
+        if folded {
+            let _ = writeln!(out, "</details>");
+        }
+        let _ = writeln!(out, "</article>");
+    }
+
+    let _ = writeln!(out, "</div>\n</section>");
+}
+
+/// What the run could not decide.
+///
+/// Bordered and coloured rather than tucked into a footer, on purpose. A page
+/// that hid these would be worse than the JSON: it would look more trustworthy
+/// while knowing less.
+fn html_blindspots(
+    report: &Report,
+    accepted: usize,
+    say: &dyn crate::phrases::Phrases,
+    out: &mut Vec<u8>,
+) {
+    use std::io::Write as _;
+
+    use crate::html::{code, escape, prose};
+
+    let mut notes: Vec<String> = Vec::new();
+
+    for (_, reason) in &report.unreadable_files {
+        // The reason is the parser's own sentence and already names the file
+        // in backticks, so the path is not repeated -- `prose` turns those into
+        // elements, and printing both left the same path twice, once as an
+        // element and once as punctuation.
+        notes.push(format!(
+            "<strong>{}</strong> {}",
+            escape(say.not_read()),
+            prose(reason)
+        ));
+    }
+    if report.checks_skipped > 0 {
+        notes.push(format!(
+            "<strong>{}</strong> {}",
+            escape(&say.checks_nobody_could_make(report.checks_skipped)),
+            report
+                .skipped_checks
+                .iter()
+                .map(|(rule, path)| format!("{} on {}", code(rule), code(path.as_str())))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if report.imports.unresolved > 0 {
+        notes.push(format!(
+            "<strong>{}</strong>",
+            escape(&say.unresolved_imports(report.imports.unresolved)),
+        ));
+    }
+    if accepted > 0 {
+        notes.push(format!(
+            "<strong>{}</strong>",
+            escape(&say.accepted_in_baseline(accepted)),
+        ));
+    }
+
+    if notes.is_empty() {
+        return;
+    }
+
+    let _ = write!(
+        out,
+        "<section>\n<div class=\"blindspots\">\n\
+         <h2>{}</h2>\n\
+         <p class=\"lede\">{}</p>\n<ul>\n",
+        escape(say.blindspots_heading()),
+        escape(say.blindspots_lede()),
+    );
+    for note in notes {
+        let _ = writeln!(out, "<li>{note}</li>");
+    }
+    let _ = writeln!(out, "</ul>\n</div>\n</section>");
+}
+
+/// Skips on files the unreadable-file notes above do not account for.
+///
+/// The other half of the same number. A skip on a file that *is* named above is
+/// a bug to investigate; a skip on one that is not was never attempted -- a
+/// language this configuration did not ask archwarden to read, most often.
+/// `1 skipped` could not tell those apart, and they are opposite decisions.
+/// Issue #13.
+fn render_unattempted_skips(report: &Report, out: &mut dyn std::io::Write) {
+    let mut by_path: std::collections::BTreeMap<&RepoRelPath, Vec<&str>> =
+        std::collections::BTreeMap::new();
+
+    for (rule, path) in &report.skipped_checks {
+        let named_above = report
+            .unreadable_files
+            .iter()
+            .any(|(unreadable, _)| unreadable == path);
+        if !named_above {
+            by_path.entry(path).or_default().push(rule.as_str());
+        }
+    }
+
+    for (path, rules) in by_path {
+        let _ = writeln!(
+            out,
+            "note: `{path}` was not read, so {} {} skipped there: {}",
+            rules.len(),
+            plural(rules.len(), "check was", "checks were"),
+            rules.join(", "),
+        );
+    }
+}
+
+/// What a document's frontmatter must carry.
+///
+/// Three clauses, in the order the rule reads them: the keys, then the closed
+/// vocabularies, then the agreements with the path. Each is skipped when the
+/// rule did not ask for it, so a rule that only names keys gets one clause.
+fn describe_frontmatter(
+    keys: &[String],
+    vocabularies: &[(String, Vec<String>)],
+    agreements: &[(String, String)],
+) -> String {
+    let mut parts = Vec::new();
+
+    if !keys.is_empty() {
+        let quoted: Vec<&str> = keys.iter().map(String::as_str).collect();
+        parts.push(format!("frontmatter carrying {}", join_and(&quoted)));
+    }
+    for (key, accepted) in vocabularies {
+        let quoted: Vec<&str> = accepted.iter().map(String::as_str).collect();
+        parts.push(format!(
+            "with `{key}` one of {}",
+            join_or(&quoted, "nothing")
+        ));
+    }
+    for (key, wanted) in agreements {
+        parts.push(format!("and `{key}` equal to `{wanted}`"));
+    }
+
+    parts.join(", ")
+}
+
+/// `a`, `b` and `c` — for a list where every entry is required.
+fn join_and(items: &[&str]) -> String {
+    let quoted: Vec<String> = items.iter().map(|item| format!("`{item}`")).collect();
+    match quoted.split_last() {
+        None => "nothing".to_owned(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// What must live inside a directory, by name and by shape.
+///
+/// "and", never "or": every entry is required, and the `join_or` this module
+/// uses everywhere else would say the opposite of the rule.
+fn describe_required_files(names: &[String], patterns: &[String]) -> String {
+    let mut parts = Vec::new();
+
+    if !names.is_empty() {
+        let quoted: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
+        parts.push(match quoted.split_last() {
+            Some((last, [])) => last.clone(),
+            Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            None => String::new(),
+        });
+    }
+
+    for pattern in patterns {
+        let clause = format!("a file matching `{pattern}`");
+        parts.push(if parts.is_empty() {
+            clause
+        } else {
+            format!("and {clause}")
+        });
+    }
+
+    parts.join(", ")
+}
+
+/// What may live inside a directory, by name and by shape.
+///
+/// Split out of [`describe_expectation`] because it is the one arm with three
+/// clauses to compose, and because "one of no folders" -- the sentence a rule
+/// constraining by shape alone used to get -- describes the opposite of that
+/// rule. The enumeration clause appears only when there is an enumeration.
+fn describe_subfolders(allowed: &[String], warn: &[String], patterns: &[String]) -> String {
+    let mut parts = Vec::new();
+
+    if !allowed.is_empty() || patterns.is_empty() {
+        parts.push(format!("one of {}", join_or(allowed, "no folders")));
+    }
+    if !warn.is_empty() {
+        parts.push(format!("or {} as a warning", join_or(warn, "")));
+    }
+    if !patterns.is_empty() {
+        let clause = format!("a name matching {}", join_or(patterns, ""));
+        parts.push(if parts.is_empty() {
+            clause
+        } else {
+            format!("or {clause}")
+        });
+    }
+
+    parts.join(", ")
+}
+
 pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
     match expectation {
-        Expectation::AllowedSubfolders { allowed, warn } => {
-            let mut parts = vec![format!("one of {}", join_or(allowed, "no folders"))];
-            if !warn.is_empty() {
-                parts.push(format!("or {} as a warning", join_or(warn, "")));
-            }
-            parts.join(", ")
-        }
+        Expectation::AllowedSubfolders {
+            allowed,
+            warn,
+            patterns,
+        } => describe_subfolders(allowed, warn, patterns),
+        Expectation::RequiredFiles { names, patterns } => describe_required_files(names, patterns),
+        Expectation::RequiredCompanion { path } => format!("`{path}` beside it"),
+        Expectation::RequiredFrontmatter {
+            keys,
+            vocabularies,
+            agreements,
+        } => describe_frontmatter(keys, vocabularies, agreements),
         Expectation::FilenamePattern { patterns } => {
             format!("a name matching {}", join_or(patterns, "no pattern"))
         }
         Expectation::RequiredExport {
             name,
+            annotation,
             signature_hint,
             ..
-        } => signature_hint.as_ref().map_or_else(
-            || format!("an export named `{name}`"),
-            |hint| format!("an export named `{name}`, shaped like `{hint}`"),
-        ),
+        } => {
+            let mut sentence = format!("an export named `{name}`");
+            // The checked clause first, and the suggestion after it. A reader
+            // acting on one of the two should reach the enforced one first.
+            if !annotation.is_empty() {
+                let accepted: Vec<&str> = annotation.iter().map(String::as_str).collect();
+                let _ = write!(
+                    sentence,
+                    ", annotated {}",
+                    join_or(&accepted, "no type at all")
+                );
+            }
+            if let Some(hint) = signature_hint {
+                let _ = write!(sentence, ", shaped like `{hint}`");
+            }
+            sentence
+        }
         Expectation::NoPassthrough { forms } => {
             format!(
                 "a file must add something of its own, not only {}",
@@ -1080,7 +1769,7 @@ fn join_or(items: &[impl AsRef<str>], empty: &str) -> String {
 mod tests {
     use super::*;
     use archwarden_core::{
-        facts::ExportTags,
+        facts::{ExportTags, KindFilter},
         ids::{ModuleId, RuleId},
         level::Level,
         path::RepoRelPath,
@@ -1104,6 +1793,7 @@ mod tests {
             expected: Expectation::AllowedSubfolders {
                 allowed: vec!["types".to_owned(), "calcs".to_owned()],
                 warn: Vec::new(),
+                patterns: Vec::new(),
             },
         }
     }
@@ -1160,6 +1850,23 @@ mod tests {
         rendered_after(report, format, TOOK)
     }
 
+    /// Rendered with the standing reasons a configuration carries.
+    fn rendered_with(report: &Report, reasons: &Reasons, format: Format) -> String {
+        let mut out = Vec::new();
+        render(
+            &Rendered {
+                root: Utf8Path::new("."),
+                report,
+                view: &View::everything(report),
+                reasons,
+                elapsed: TOOK,
+            },
+            format,
+            &mut out,
+        );
+        String::from_utf8(out).expect("output is UTF-8")
+    }
+
     /// Rendered against a real tree, for the cases that need one on disk.
     fn rendered_at(root: &Utf8Path, report: &Report, format: Format) -> String {
         let mut out = Vec::new();
@@ -1168,6 +1875,7 @@ mod tests {
                 root,
                 report,
                 view: &View::everything(report),
+                reasons: &Reasons::default(),
                 elapsed: TOOK,
             },
             format,
@@ -1194,6 +1902,7 @@ mod tests {
                 root: Utf8Path::new("/nonexistent"),
                 report,
                 view,
+                reasons: &Reasons::default(),
                 elapsed,
             },
             format,
@@ -2009,6 +2718,278 @@ mod tests {
         }
     }
 
+    /// Issue #13's reporting half. `1 skipped` is indistinguishable from a
+    /// skip on an unreadable file and one on a rule nobody could evaluate, and
+    /// the two mean opposite things: one is a bug to investigate, the other is
+    /// a decision the project has not made — a language the config never asked
+    /// archwarden to read.
+    ///
+    /// The unreadable case already names its file. This is the other one, which
+    /// named nothing.
+    #[test]
+    fn a_skip_with_no_unreadable_file_still_names_what_and_where() {
+        let mut report = report(Vec::new());
+        report.checks_skipped = 1;
+        report.skipped_checks = vec![(
+            "pages-forbid-domain".to_owned(),
+            path("src/pages/blog.astro"),
+        )];
+
+        let text = rendered(&report, Format::Text);
+
+        assert!(text.contains("src/pages/blog.astro"), "{text}");
+        assert!(text.contains("pages-forbid-domain"), "{text}");
+    }
+
+    /// And a skip the unreadable-file note already accounts for is not printed
+    /// twice.
+    #[test]
+    fn a_skip_under_an_unreadable_file_is_named_once() {
+        let mut report = report(Vec::new());
+        report.unreadable_files = vec![(path("src/broken.ts"), "unexpected token".to_owned())];
+        report.checks_skipped = 1;
+        report.skipped_checks = vec![("usecase-name".to_owned(), path("src/broken.ts"))];
+
+        let text = rendered(&report, Format::Text);
+
+        assert_eq!(text.matches("src/broken.ts").count(), 1, "{text}");
+    }
+
+    /// Issue #44. Six ways a frontmatter block can disappoint a rule, and six
+    /// sentences, because they are six different edits.
+    #[test]
+    fn a_frontmatter_fault_reads_as_a_sentence() {
+        let cases = [
+            (Observed::FrontmatterAbsent, "has no frontmatter block"),
+            (
+                Observed::FrontmatterMalformed {
+                    reason: "mapping values are not allowed here".to_owned(),
+                },
+                "is not YAML",
+            ),
+            (
+                Observed::FrontmatterKeyMissing {
+                    key: "componentes".to_owned(),
+                },
+                "carries no `componentes`",
+            ),
+            (
+                Observed::FrontmatterValueOutsideVocabulary {
+                    key: "status".to_owned(),
+                    found: "concluido".to_owned(),
+                },
+                "`status` is `concluido`",
+            ),
+            (
+                Observed::FrontmatterValueDisagrees {
+                    key: "id".to_owned(),
+                    found: "semaforo".to_owned(),
+                    wanted: "03-semaforo".to_owned(),
+                },
+                "`id` is `semaforo`, and the path says `03-semaforo`",
+            ),
+            (
+                Observed::FrontmatterValueNotScalar {
+                    key: "nivel".to_owned(),
+                },
+                "`nivel` is not a single value",
+            ),
+        ];
+
+        for (observed, fragment) in cases {
+            let sentence = describe_observed(&observed);
+            assert!(
+                sentence.contains(fragment),
+                "{observed:?} rendered as {sentence}"
+            );
+        }
+    }
+
+    /// What the rule wants, for someone who has not read the config.
+    #[test]
+    fn a_required_frontmatter_reads_as_a_sentence() {
+        let expected = describe_expectation(&Expectation::RequiredFrontmatter {
+            keys: vec!["id".to_owned(), "nivel".to_owned()],
+            vocabularies: vec![("nivel".to_owned(), vec!["1".to_owned(), "2".to_owned()])],
+            agreements: vec![("id".to_owned(), "03-semaforo".to_owned())],
+        });
+
+        assert_eq!(
+            expected,
+            "frontmatter carrying `id` and `nivel`, \
+             with `nivel` one of `1` or `2`, and `id` equal to `03-semaforo`"
+        );
+    }
+
+    /// Issue #45. The finding is on the file that needs the companion, so the
+    /// sentence has to name the companion rather than repeat the file.
+    #[test]
+    fn a_missing_companion_reads_as_a_sentence() {
+        assert_eq!(
+            describe_observed(&Observed::CompanionMissing {
+                path: path("projetos/03-semaforo/notas.md")
+            }),
+            "`projetos/03-semaforo/notas.md` does not exist"
+        );
+        assert_eq!(
+            describe_expectation(&Expectation::RequiredCompanion {
+                path: path("projetos/03-semaforo/notas.md")
+            }),
+            "`projetos/03-semaforo/notas.md` beside it"
+        );
+    }
+
+    /// Issue #42. The first observation about a path that is *not* there, so
+    /// the sentence has to read as an absence rather than as a disagreement
+    /// with something on disk.
+    #[test]
+    fn a_missing_required_file_reads_as_a_sentence() {
+        assert_eq!(
+            describe_observed(&Observed::RequiredFileMissing {
+                name: "notas.md".to_owned()
+            }),
+            "`notas.md` is not here"
+        );
+        assert_eq!(
+            describe_observed(&Observed::NoFileMatching {
+                pattern: r"\.ino$".to_owned()
+            }),
+            r"no file here matches `\.ino$`"
+        );
+        assert_eq!(
+            describe_expectation(&Expectation::RequiredFiles {
+                names: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
+                patterns: vec![r"\.ino$".to_owned()],
+            }),
+            r"`projeto.md` and `notas.md`, and a file matching `\.ino$`"
+        );
+    }
+
+    /// Issue #46. A finding says what the rule wanted and what the file did,
+    /// and never why the rule exists. An agent reading one can comply and that
+    /// is all it can do -- which is how a config gets edited to make a check
+    /// pass.
+    ///
+    /// Once per rule, at its first occurrence. A repository with two hundred
+    /// findings over six rules must not print two hundred paragraphs; six, in
+    /// the place a reader is already looking, is the whole design constraint.
+    #[test]
+    fn a_rules_reason_is_printed_once_at_its_first_finding() {
+        let report = report(vec![
+            finding(Level::Error, None),
+            finding(Level::Error, None),
+        ]);
+        let reasons = Reasons::from([(
+            "domain-entity-shape",
+            "domain is published as its own package and the app is not",
+        )]);
+
+        let text = rendered_with(&report, &reasons, Format::Text);
+
+        assert_eq!(
+            text.matches("why: domain is published").count(),
+            1,
+            "one paragraph per rule, not per finding: {text}"
+        );
+    }
+
+    /// A rule whose author said nothing prints nothing extra, which is every
+    /// rule in every config written before the field existed.
+    #[test]
+    fn a_rule_with_no_reason_adds_no_line() {
+        let report = report(vec![finding(Level::Error, None)]);
+
+        let text = rendered_with(&report, &Reasons::default(), Format::Text);
+
+        assert!(!text.contains("why:"), "{text}");
+    }
+
+    /// A consumer renders it itself, so every finding carries it -- the
+    /// once-per-rule economy is a property of the text output, not of the data.
+    #[test]
+    fn every_finding_carries_the_reason_in_json() {
+        let report = report(vec![
+            finding(Level::Error, None),
+            finding(Level::Error, None),
+        ]);
+        let reasons = Reasons::from([("domain-entity-shape", "it is published")]);
+
+        let text = rendered_with(&report, &reasons, Format::Json);
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        assert_eq!(parsed["findings"][0]["why"], "it is published");
+        assert_eq!(parsed["findings"][1]["why"], "it is published");
+    }
+
+    /// Issue #43: a rule whose subfolder names are a *shape* rather than a
+    /// list. "one of no folders" was the old sentence for that, which describes
+    /// the opposite of the rule.
+    #[test]
+    fn a_subfolder_pattern_reads_as_a_shape_not_an_empty_list() {
+        let by_shape = describe_expectation(&Expectation::AllowedSubfolders {
+            allowed: Vec::new(),
+            warn: Vec::new(),
+            patterns: vec![r"^\d{2}-[a-z0-9-]+$".to_owned()],
+        });
+        assert_eq!(by_shape, r"a name matching `^\d{2}-[a-z0-9-]+$`");
+
+        let both = describe_expectation(&Expectation::AllowedSubfolders {
+            allowed: vec!["_template".to_owned()],
+            warn: Vec::new(),
+            patterns: vec![r"^\d{2}-[a-z0-9-]+$".to_owned()],
+        });
+        assert_eq!(
+            both,
+            r"one of `_template`, or a name matching `^\d{2}-[a-z0-9-]+$`"
+        );
+    }
+
+    /// The two annotation faults are different sentences because they are
+    /// different fixes. Both would otherwise fall through to the
+    /// `non_exhaustive` arm and reach a user as a Rust `Debug` dump, which is
+    /// the failure mode that arm exists to soften and not one to ship.
+    #[test]
+    fn an_annotation_fault_reads_as_a_sentence() {
+        let missing = describe_observed(&Observed::ExportMissingAnnotation {
+            name: "AGENT_TOOL".to_owned(),
+        });
+        assert_eq!(missing, "`AGENT_TOOL` declares no type of its own");
+
+        let wrong = describe_observed(&Observed::ExportWrongAnnotation {
+            name: "AGENT_TOOL".to_owned(),
+            found: vec!["LegacyToolModule".to_owned()],
+        });
+        assert_eq!(wrong, "`AGENT_TOOL` is declared as `LegacyToolModule`");
+
+        // A class names one contract per `implements` clause, and a sentence
+        // that showed only the first would be describing a file that is not
+        // there.
+        let several = describe_observed(&Observed::ExportWrongAnnotation {
+            name: "Tool".to_owned(),
+            found: vec!["Disposable".to_owned(), "Serializable".to_owned()],
+        });
+        assert_eq!(
+            several,
+            "`Tool` is declared as `Disposable` or `Serializable`"
+        );
+    }
+
+    /// What the rule wants, worded for someone who has not read the config.
+    #[test]
+    fn a_required_annotation_reads_as_a_sentence() {
+        let expected = describe_expectation(&Expectation::RequiredExport {
+            kind: KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
+            name: "AGENT_TOOL".to_owned(),
+            annotation: vec!["AgentToolModule".to_owned()],
+            signature_hint: None,
+        });
+
+        assert_eq!(
+            expected,
+            "an export named `AGENT_TOOL`, annotated `AgentToolModule`"
+        );
+    }
+
     /// A deep import names a package the specifier does not spell, so the
     /// sentence has to carry both; a bare one would read "imports `three`,
     /// which is part of the package `three`". And `fs` is not *part of*
@@ -2086,6 +3067,7 @@ mod tests {
         let sentence = describe_expectation(&Expectation::AllowedSubfolders {
             allowed: vec!["types".to_owned()],
             warn: vec!["shared".to_owned()],
+            patterns: Vec::new(),
         });
 
         assert_eq!(sentence, "one of `types`, or `shared` as a warning");

@@ -32,6 +32,27 @@
       "description": "Extra ignore globs, on top of `.gitignore`, which is always honoured.\n\nIgnore always wins over a rule's scope, however specific that scope is:\na kill-switch that can be overridden by accident is not one.",
       "$ref": "#/$defs/OneOrMany"
     },
+    "language": {
+      "description": "The language the HTML pages are written in.\n\nA repository decides this once, the way it decides its rules — the\npeople reading a report of *this* project read it in one language, and\nputting that in the config means nobody has to remember a flag.\n`--lang` still wins, for the one run that wants the other.\n\nReaches the pages and nothing else: the terminal, the JSON and the\nmarkdown digest are English whatever this says. See\n`crate::config::PageLanguage`.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PageLanguage"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "languages": {
+      "description": "Which languages this repository asks archwarden to read.\n\nDefaults to `[\"ts\"]`, which is JavaScript and TypeScript together —\nevery config written before this field meant exactly that, and still\ndoes.\n\n**Opt-in on purpose, and not because of cost.** A repository with no\n`.astro` file pays nothing for an Astro front-end either way. What the\nfield buys is that widening what archwarden governs is a decision\nwritten in the config, rather than one that arrives with a dependency\nupgrade — and the un-opted state is loud rather than silent: a file in a\nlanguage this config did not ask for is a *counted, named* skip, so a\nuser who never read about the feature still finds out. Issue #13.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/Language"
+      },
+      "default": [
+        "ts"
+      ]
+    },
     "skip_dirs": {
       "description": "The `_`-prefix escape hatch.",
       "$ref": "#/$defs/SkipDirs",
@@ -82,6 +103,36 @@
           "items": {
             "type": "string"
           }
+        }
+      ]
+    },
+    "PageLanguage": {
+      "description": "A language the HTML pages can be written in.\n\nSeparate from [`Language`], which is about *source* archwarden reads. These\ntwo would be a confusing single field: one says what the tool can parse and\nthe other says what a person wants to read.",
+      "oneOf": [
+        {
+          "description": "English.",
+          "type": "string",
+          "const": "en"
+        },
+        {
+          "description": "Brazilian Portuguese.",
+          "type": "string",
+          "const": "pt-br"
+        }
+      ]
+    },
+    "Language": {
+      "description": "A language archwarden has a front-end for.\n\nMarkdown is absent on purpose: a `frontmatter` rule names the documents it\nis about, so asking for it in two places would let them disagree. This list\nis for languages whose files would otherwise be read as *code* by a rule\nthat never named them.",
+      "oneOf": [
+        {
+          "description": "JavaScript and TypeScript, which are one front-end.",
+          "type": "string",
+          "const": "ts"
+        },
+        {
+          "description": "Astro components: the TypeScript module inside the `---` fence.",
+          "type": "string",
+          "const": "astro"
         }
       ]
     },
@@ -137,6 +188,13 @@
           "description": "The label.",
           "$ref": "#/$defs/ModuleId"
         },
+        "why": {
+          "description": "Why this module exists, in the author's words.\n\nA module is a bigger decision than any rule inside it — one sentence\nexplaining why `domain` is sealed explains every rule under it — so it\ngets its own, and a rule's `why` never substitutes for it. Issue #46.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "rules": {
           "description": "The rules in it.",
           "type": "array",
@@ -169,13 +227,23 @@
               "description": "Severity.",
               "$ref": "#/$defs/Level"
             },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "roots": {
               "description": "Directory globs this rule applies to.",
               "$ref": "#/$defs/OneOrMany"
             },
             "allowed_subfolders": {
-              "description": "Subdirectory names that are permitted.",
-              "type": "array",
+              "description": "Subdirectory names that are permitted.\n\nAn **option, not a list**, because absent and `[]` are different rules\nand a plain `Vec` cannot tell them apart. Absent means the rule says\nnothing about subfolders — it may still constrain filenames. `[]` is a\nlist of what may exist holding nothing, so no subfolder is permitted,\nwhich is how \"this directory is a leaf\" is said. Issue #40, where the\nempty list validated, ran, and enforced nothing.",
+              "type": [
+                "array",
+                "null"
+              ],
               "items": {
                 "type": "string"
               }
@@ -189,6 +257,13 @@
             },
             "recurse_into": {
               "description": "Containers whose *children* carry this rule's contract, recursively.\n\nThe container itself is not governed and its children's names are not\nchecked — they are modules in their own right, and a module's name is\nno more constrained here than one selected by `roots`. Given\n`recurse_into: [\"variants\"]`, the governed directory is\n`user/variants/nfe`, and `nfe` may be called anything.\n\nThis description used to read \"subdirectories that carry the same\nstructural contract, recursively\", which one reader took to mean the\ncontract applies *inside* the named folder. Adding it to a namespace\nholding nineteen modules cleared nineteen findings and read as\nmodelling; what it did was promote those nineteen directories from\n\"unexpected subfolder\" to \"module\", which is a real decision and was\nnot the one they thought they were making. Issue #29.\n\n`config explain <rule-id>` lists every directory a rule governs, which\nis the answer to \"did this mean what I think\" for exactly this field.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "subfolder_patterns": {
+              "description": "Regexes a direct child *directory*'s name may match instead of being\nnamed in `allowed_subfolders`.\n\n`filename_patterns` one entry over, for the other kind of directory\nentry. `allowed_subfolders` constrains names by enumeration, which works\nfor a fixed vocabulary (`types`, `calcs`, `actions`) and cannot work for\nan open set where the *shape* is the rule — sixteen lesson folders named\n`NN-slug` and more arriving. Issue #43.\n\nA union with the two lists, the way `filename_patterns` is a union of\nits own regexes: a name is permitted if a list names it *or* a pattern\nmatches it. The lists are consulted first, so a `warn_subfolders` entry\nwhose name happens to have the right shape still warns — the most\nspecific declaration wins, and a name written out is more specific than\na regex.",
               "type": "array",
               "items": {
                 "type": "string"
@@ -225,6 +300,13 @@
             "level": {
               "description": "Severity.",
               "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "roots": {
               "description": "Directory globs this rule applies to.",
@@ -271,6 +353,13 @@
             "level": {
               "description": "Severity.",
               "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "roots": {
               "description": "Directory globs this rule applies to.",
@@ -328,6 +417,13 @@
               "description": "Severity.",
               "$ref": "#/$defs/Level"
             },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "from": {
               "description": "Directory globs selecting the importer. Same semantics as `roots`.",
               "$ref": "#/$defs/OneOrMany"
@@ -382,6 +478,13 @@
               "description": "Severity.",
               "$ref": "#/$defs/Level"
             },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "roots": {
               "description": "Directory globs this rule applies to.",
               "$ref": "#/$defs/OneOrMany"
@@ -420,6 +523,13 @@
             "level": {
               "description": "Severity.",
               "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words.\n\nThe config already says *what* a rule does, in a form that cannot drift\nfrom what it enforces; a prose restatement of that would be a second\nsource of truth going stale. The reason cannot drift, because nothing\nelse records it — decision 5 chose JSON, so there are no comments, and\na commit message is not in front of anybody at the moment a rule fires.\n\nShown by the pre-write hook when it denies a write, by `describe`,\n`scaffold`, `agent-guide` and `config explain`, and beside a finding.\nNot a message override: `observed` and `expected` remain the whole\ndiagnosis, and a `why` restating them will contradict them the day the\nrule changes. Issue #46.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "roots": {
               "description": "Directory globs this rule applies to.",
@@ -463,6 +573,155 @@
             "level",
             "roots"
           ]
+        },
+        {
+          "description": "These files must exist in each governed directory.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "require": {
+              "description": "Filenames that must exist directly inside each governed directory.\n\n**Names, not paths.** An entry with a `/` is refused when the config\ncompiles, and the message says what to write instead: a second rule\nscoped one level down. `roots: [\"projetos/*/sketch\"]` with\n`require: [\"sketch.ino\"]` is the same requirement, said by the rule that\nis about that directory — and it keeps one rule answering for one\ndirectory's contract, which is what makes `describe` able to answer for\na directory that does not exist yet.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "require_any": {
+              "description": "Regexes at least one file in each governed directory must match.\n\nFor \"there has to be a sketch and I do not care what it is called\".\nOne entry, one requirement: two regexes mean two files must be found,\none for each.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "type": {
+              "type": "string",
+              "const": "presence"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots"
+          ]
+        },
+        {
+          "description": "A file of one kind must have a companion of another.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "file_pattern": {
+              "description": "Regex over the filename of the file that *needs* a companion.",
+              "type": "string"
+            },
+            "must_exist": {
+              "description": "The companion, as a path relative to the directory the file sits in.\n\n**Literal, never derived.** `<stem>.<marker>.<ext>` is `spec-pair`'s\nidea and does not generalise; two fixed names in one directory is what\nthe rest of the world has.\n\n**May leave the directory.** `../projeto.md` is the case this rule\nexists for alongside the flat one — a sketch needs the lesson one level\nup, and no directory-scoped rule can say that. `presence` refuses paths\nfor exactly the opposite reason: it answers for a directory, and this\none answers for a file, which is what gives it an anchor to be relative\nto.\n\n**One direction, always.** This rule says the file matching\n`file_pattern` needs the companion, and never the reverse — an orphan\n`notas.md` is a note taken before the lesson was written, which is fine.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "pair"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots",
+            "file_pattern",
+            "must_exist"
+          ]
+        },
+        {
+          "description": "A document's frontmatter must carry these keys.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "file_pattern": {
+              "description": "Regex over the filename of the documents this rule is about.",
+              "type": "string"
+            },
+            "require": {
+              "description": "Keys the block must carry.\n\nNinety per cent of the value, and the whole of it that is about *names*.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "one_of": {
+              "description": "The closed vocabulary a key's value must come from.\n\nThe case that justifies the rule existing. A missing key is at least an\nabsence; a value outside the vocabulary is *confidently wrong* — the\ngenerated table simply has no row for it — which is the same failure\nshape `must_export.annotation` exists for.\n\nValues are compared as text, so `\"1\"` here matches `nivel: 1` in the\ndocument. That is deliberate: it answers the question without archwarden\ngrowing a type system nothing else here needs.",
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/OneOrMany"
+              }
+            },
+            "equals": {
+              "description": "A key whose value must equal a template rendered from the path.\n\n`{{raw(dirname)}}` is the name of the directory the document sits in,\nand it is the only group a document template may name. The form is the\none `naming` already uses, so the transforms come along:\n`{{kebab(dirname)}}` is spelled the same way here as there.\n\nThis is the `naming` rule's question — a name agreeing with a path —\nasked of a file that has no exported symbol to ask it about.",
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "frontmatter"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots",
+            "file_pattern"
+          ]
         }
       ]
     },
@@ -496,6 +755,17 @@
         "name": {
           "description": "The required name, as a template over `file_pattern`'s capture groups.",
           "type": "string"
+        },
+        "annotation": {
+          "description": "The type the export must be annotated with, as a template over the same\ngroups. One value, or several meaning \"any of\".\n\n**Checked**, and the one field here that is — which is why it is not\nspelled into `signature_hint`. That field is documented as a suggestion\n`scaffold` renders and `check` ignores, and code depends on that; a\nseparate field keeps the promise of each legible.\n\nStill not type checking. Nothing is resolved and nothing is inferred:\nthe annotation is a token in the same declaration whose `kind` this rule\nalready reads, and comparing it is the same class of work as comparing\nthe name. A file annotating `AgentToolModule` over an object that is not\none is `tsc`'s problem and stays that way. What this buys is that the\ndeclaration is *submitted to* `tsc`'s judgement at all — the guarantee a\nregistry loses when it moves from a typed array to `readdir` and\n`import()`. Issue #39.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OneOrMany"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "signature_hint": {
           "description": "A signature shown by `scaffold`. **Never verified** — constraining the\ntype of an export is type checking, which is `tsc`'s job.",

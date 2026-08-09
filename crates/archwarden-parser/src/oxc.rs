@@ -24,7 +24,7 @@ use oxc_ast::ast::{
     VariableDeclarationKind,
 };
 use oxc_ast_visit::Visit;
-use oxc_span::SourceType;
+use oxc_span::{GetSpan, SourceType};
 
 /// Why a file could not be parsed.
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +63,27 @@ impl ParserTrait for OxcParser {
         let source_type = SourceType::from_path(path.as_path())
             .map_err(|_| ParseError::UnsupportedExtension { path: path.clone() })?;
 
+        Self::parse_as(path, source, source_type, content_hash)
+    }
+}
+
+impl OxcParser {
+    /// Extracts facts from source whose kind the caller decides.
+    ///
+    /// `SourceType::from_path` answers for a file archwarden reads whole. A
+    /// front-end for a format that *embeds* a module -- an `.astro` fence -- has
+    /// a path the extension list rejects and a slice it already knows is
+    /// TypeScript, so the decision moves to a parameter rather than being taken
+    /// from a name that cannot answer. Issue #13.
+    ///
+    /// # Errors
+    /// When the slice does not parse.
+    pub fn parse_as(
+        path: &RepoRelPath,
+        source: &str,
+        source_type: SourceType,
+        content_hash: ContentHash,
+    ) -> Result<FileFacts, ParseError> {
         let allocator = Allocator::default();
         let parsed = oxc_parser::Parser::new(&allocator, source, source_type).parse();
 
@@ -81,6 +102,7 @@ impl ParserTrait for OxcParser {
         }
 
         let declaration_tags = declaration_tags(&parsed.program);
+        let declaration_annotations = declaration_annotations(&parsed.program, source);
         let forwarded = forwarded_bindings(&parsed.program);
 
         let (imports, has_opaque_import) = imports(&parsed.module_record, &parsed.program);
@@ -89,7 +111,12 @@ impl ParserTrait for OxcParser {
             path: path.clone(),
             content_hash,
             imports,
-            exports: exports(&parsed.module_record, &declaration_tags, &forwarded),
+            exports: exports(
+                &parsed.module_record,
+                &declaration_tags,
+                &declaration_annotations,
+                &forwarded,
+            ),
             calls: calls(&parsed.program),
             has_opaque_import,
         })
@@ -319,6 +346,95 @@ fn record_declaration(declaration: &Declaration<'_>, tags: &mut HashMap<String, 
     }
 }
 
+/// Maps every top-level binding to the types it writes down about itself.
+///
+/// A second pass over the same statements rather than another field threaded
+/// through [`declaration_tags`]: that one answers "how was this declared", this
+/// one answers "what does it claim to be", and the two are separately
+/// interesting.
+fn declaration_annotations(program: &Program<'_>, source: &str) -> HashMap<String, Vec<String>> {
+    let mut annotations = HashMap::new();
+
+    for statement in &program.body {
+        let declaration = match statement {
+            Statement::ExportNamedDeclaration(export) => export.declaration.as_ref(),
+            Statement::VariableDeclaration(_) | Statement::ClassDeclaration(_) => {
+                statement.as_declaration()
+            }
+            _ => None,
+        };
+
+        if let Some(declaration) = declaration {
+            record_annotations(declaration, source, &mut annotations);
+        }
+    }
+
+    annotations
+}
+
+/// Records the annotations of one declaration, for the forms that have any.
+///
+/// Two forms, because those are the two places TypeScript lets a declaration
+/// name the contract it is written against: the annotation on a binding, and
+/// a class's `implements` clauses. Everything else is left absent rather than
+/// guessed at -- see [`ExportFact::annotations`].
+fn record_annotations(
+    declaration: &Declaration<'_>,
+    source: &str,
+    annotations: &mut HashMap<String, Vec<String>>,
+) {
+    match declaration {
+        Declaration::VariableDeclaration(variable) => {
+            for declarator in &variable.declarations {
+                let (Some(identifier), Some(annotation)) = (
+                    declarator.id.get_binding_identifier(),
+                    &declarator.type_annotation,
+                ) else {
+                    continue;
+                };
+
+                // The `TSTypeAnnotation` span opens at the `:`; the type's own
+                // span is what a config author writes into a rule.
+                if let Some(text) = collapsed(source, annotation.type_annotation.span()) {
+                    annotations.insert(identifier.name.to_string(), vec![text]);
+                }
+            }
+        }
+
+        Declaration::ClassDeclaration(class) => {
+            let Some(identifier) = &class.id else {
+                return;
+            };
+
+            let clauses: Vec<String> = class
+                .implements
+                .iter()
+                .filter_map(|clause| collapsed(source, clause.span))
+                .collect();
+
+            if !clauses.is_empty() {
+                annotations.insert(identifier.name.to_string(), clauses);
+            }
+        }
+
+        _ => {}
+    }
+}
+
+/// The source between two byte offsets, with runs of whitespace collapsed.
+///
+/// A type broken over three lines by a formatter and the same type on one line
+/// are the same annotation, and a rule that disagreed with a formatter is a
+/// rule nobody keeps. Collapsed rather than stripped because this text is
+/// printed back at a user in a finding; the comparison that consumes it ignores
+/// spacing entirely, on both sides.
+fn collapsed(source: &str, span: oxc_span::Span) -> Option<String> {
+    let text = source.get(span.start as usize..span.end as usize)?;
+
+    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!joined.is_empty()).then_some(joined)
+}
+
 fn record_default(
     declaration: &oxc_ast::ast::ExportDefaultDeclarationKind<'_>,
     tags: &mut HashMap<String, ExportTags>,
@@ -349,6 +465,7 @@ fn record_default(
 fn exports(
     record: &oxc_syntax::module_record::ModuleRecord<'_>,
     declaration_tags: &HashMap<String, ExportTags>,
+    declaration_annotations: &HashMap<String, Vec<String>>,
     forwarded: &HashMap<String, String>,
 ) -> Vec<ExportFact> {
     let mut facts = Vec::new();
@@ -362,6 +479,13 @@ fn exports(
                 .as_ref()
                 .and_then(|name| declaration_tags.get(name).copied())
                 .unwrap_or_else(ExportTags::none),
+            // Keyed by the *local* name, like the tags: `export { Local as
+            // Public }` annotates `Local`, and what the rule asks about is
+            // `Public`.
+            annotations: local
+                .as_ref()
+                .and_then(|name| declaration_annotations.get(name).cloned())
+                .unwrap_or_default(),
             is_default: entry.export_name.is_default(),
             // Either the binding is an alias or a wrapper this file declared,
             // or `export { X }` names something the file never declared — in
@@ -387,6 +511,10 @@ fn exports(
         facts.push(ExportFact {
             name: export_name(&entry.export_name),
             tags: ExportTags::only(ExportKind::Reexport),
+            // The declaration is in another file, so whether it annotates
+            // anything is not knowable from here -- the same reason the kind
+            // is `reexport` rather than guessed at.
+            annotations: Vec::new(),
             is_default: entry.export_name.is_default(),
             reexport_from: entry
                 .module_request
@@ -739,6 +867,73 @@ export { Value, Helper, Thing };
         let export = facts.named_export("Foo").expect("Foo is exported");
         assert_eq!(export.tags, ExportTags::only(ExportKind::Reexport));
         assert_eq!(export.reexport_from.as_deref(), Some("./other"));
+    }
+
+    /// The fact issue #39 needs: whether the declaration wrote its type down.
+    /// Not what that type resolves to -- the token, as the author typed it.
+    #[test]
+    fn an_annotated_binding_records_the_type_as_written() {
+        let facts = parse(
+            "src/x.ts",
+            "export const AGENT_TOOL: AgentToolModule = { spec: {} };",
+        );
+
+        let export = facts.named_export("AGENT_TOOL").expect("is exported");
+        assert_eq!(export.annotations, ["AgentToolModule"]);
+    }
+
+    /// The case the issue is about: `tsc` is green, archwarden is green, and
+    /// the worker dies at boot because nothing ever submitted the object to a
+    /// type. The absence has to be visible as an absence.
+    #[test]
+    fn an_unannotated_binding_records_nothing() {
+        let facts = parse("src/x.ts", "export const AGENT_TOOL = { spec: {} };");
+
+        let export = facts.named_export("AGENT_TOOL").expect("is exported");
+        assert!(export.annotations.is_empty());
+    }
+
+    /// A class names its contract in `implements`, which is the same claim
+    /// written where the language writes it. One entry per clause: a class
+    /// implementing two interfaces satisfies a rule asking for either, and
+    /// joining them into one string would make the rule for `B` fail.
+    #[test]
+    fn a_class_records_every_implements_clause() {
+        let facts = parse(
+            "src/x.ts",
+            "export class Tool implements AgentToolModule, Disposable {}",
+        );
+
+        let export = facts.named_export("Tool").expect("is exported");
+        assert_eq!(export.annotations, ["AgentToolModule", "Disposable"]);
+    }
+
+    /// A function declares a *return* type, which is a different claim. Reading
+    /// it as an annotation would let `function AGENT_TOOL(): AgentToolModule`
+    /// satisfy a rule that asked for a module object.
+    #[test]
+    fn a_functions_return_type_is_not_an_annotation() {
+        let facts = parse(
+            "src/x.ts",
+            "export function AGENT_TOOL(): AgentToolModule {}",
+        );
+
+        let export = facts.named_export("AGENT_TOOL").expect("is exported");
+        assert!(export.annotations.is_empty());
+    }
+
+    /// Whitespace is the formatter's business. The fact keeps a readable form
+    /// -- it is printed back at a user in a finding -- and the comparison that
+    /// uses it ignores spacing on both sides.
+    #[test]
+    fn an_annotation_broken_over_lines_is_collapsed_to_one() {
+        let facts = parse(
+            "src/x.ts",
+            "export const T: AgentToolModule<\n  Input,\n  Output\n> = x;",
+        );
+
+        let export = facts.named_export("T").expect("is exported");
+        assert_eq!(export.annotations, ["AgentToolModule< Input, Output >"]);
     }
 
     #[test]

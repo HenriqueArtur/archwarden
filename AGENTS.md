@@ -139,6 +139,12 @@ npx archwarden scaffold packages/app/src/use-cases/refund-order/refund-order.use
 `signature_hint` is a suggestion — archwarden never verifies it. Follow it
 anyway; it is the project's own house style.
 
+`annotation` is not a suggestion. When it is present, the export must carry
+that type as written — `export const AGENT_TOOL: AgentToolModule = {...}`,
+never `export const AGENT_TOOL = {...}` — and `check` fails on a file that
+leaves it off. Several entries mean any one of them will do. Write the
+declaration line `scaffold` gives you and it passes.
+
 Pass a **directory** to ask what may exist inside it. `allowed_subfolders` is
 `null` when nothing constrains the directory, and otherwise names both lists:
 
@@ -404,6 +410,20 @@ the filter removed. And an unknown rule id is **exit 2**, never an empty
 report: a filter matching nothing would otherwise look exactly like a clean
 repository.
 
+### The HTML pages are for a human, not for you
+
+```bash
+npx archwarden agent-guide --format html > architecture.html   # the rules, as declared
+npx archwarden check --html report.html                        # and where they stand
+```
+
+Read-only, self-contained, no script. **They are not a contract** — `--format
+json` is. Never parse one, and never regenerate one to make a check pass; the
+page shows what `check` decided and cannot change it.
+
+Mention them when a human asks to *see* the architecture. For anything you have
+to act on, use `describe`, `scaffold` or `--format json`.
+
 ### `agent-guide` — every rule, as context
 
 ```bash
@@ -596,12 +616,15 @@ entry is a question about intent, and a rule with that hole in it ticks here.
 Rules whose violation cannot be synthesised are reported as `?` with the reason
 rather than left out — an unchecked rule has to be visible as unchecked.
 
-## The six rule kinds
+## The nine rule kinds
 
 | kind | asks | you satisfy it by |
 |---|---|---|
 | `structure` | may this folder or filename exist here? | putting the file where `allowed_subfolders` / `filename_patterns` allow |
 | `naming` | does the filename — and sometimes its directory — match the exported symbol? | exporting the exact name `scaffold` gives you |
+| `presence` | do the files this folder owes exist? | creating each name `scaffold <directory>` lists |
+| `frontmatter` | does this document's YAML block carry the keys something reads? | writing the keys `scaffold` names, with values from the vocabularies it lists |
+| `pair` | does the file that goes with this one exist? | creating the companion `scaffold` names |
 | `spec-pair` | is there a test beside it? | creating the sibling `.spec.ts` — **write it, do not leave it empty** if `non_empty_spec` is true |
 | `import-boundary` | may this layer import that one — or that *dependency*? | importing through whatever `except` allows, or not at all |
 | `call-obligation` | does this file call the required symbol? | calling it **anywhere in the file**, including from a local helper |
@@ -636,6 +659,12 @@ position, and `null` when the finding is about the file's existence or
 location. In the text output a finding with a span is printed as
 `path:line:column`, which an editor and most terminals turn into a link. The
 JSON keeps the byte range, which is what a tool wants.
+
+`why` is the reason the rule exists, when the project wrote one down. It is
+**not** part of the diagnosis — `observed` and `expected` are — and it is not
+an argument to negotiate with. It is there so that a constraint which looks
+arbitrary is not: read it before deciding the rule is wrong. In text output it
+appears once per rule, under that rule's first finding.
 
 `module_id` is `null` for a rule declared in the top-level `rules` array rather
 than inside a module — import boundaries usually are. In text output that rule

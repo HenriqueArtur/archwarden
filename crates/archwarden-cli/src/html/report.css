@@ -1,0 +1,396 @@
+:root {
+  /* Drafting vellum, cooled. Not cream — this is a drawing, not a letter. */
+  --paper:      #F6F8FB;
+  --paper-sunk: #EDF1F6;
+  --ink:        #141A22;
+  --ink-soft:   #58657A;
+  --rule:       #CBD5E2;
+  --rule-hair:  #DEE5EE;
+  /* Drafting-pencil blue. The accent, spent only on structure. */
+  --blue:       #2B54D4;
+  /* A wall being crossed. Warm against a cool ground. */
+  --crossed:    #B93E12;
+  /* Debt already accepted: known, not new. */
+  --accepted:   #8A6216;
+
+  --font-text: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-code: ui-monospace, "SF Mono", "Cascadia Code", "JetBrains Mono", Menlo, monospace;
+
+  --measure: 62ch;
+  --sheet: 1080px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper:      #0F141B;
+    --paper-sunk: #161D26;
+    --ink:        #E4EAF2;
+    --ink-soft:   #8896A9;
+    --rule:       #2C3644;
+    --rule-hair:  #222B37;
+    --blue:       #6E93FF;
+    --crossed:    #F0764A;
+    --accepted:   #D6A44A;
+  }
+}
+:root[data-theme="dark"] {
+  --paper:      #0F141B;
+  --paper-sunk: #161D26;
+  --ink:        #E4EAF2;
+  --ink-soft:   #8896A9;
+  --rule:       #2C3644;
+  --rule-hair:  #222B37;
+  --blue:       #6E93FF;
+  --crossed:    #F0764A;
+  --accepted:   #D6A44A;
+}
+:root[data-theme="light"] {
+  --paper:      #F6F8FB;
+  --paper-sunk: #EDF1F6;
+  --ink:        #141A22;
+  --ink-soft:   #58657A;
+  --rule:       #CBD5E2;
+  --rule-hair:  #DEE5EE;
+  --blue:       #2B54D4;
+  --crossed:    #B93E12;
+  --accepted:   #8A6216;
+}
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-text);
+  font-size: 15px;
+  line-height: 1.6;
+  margin: 0;
+  padding: 0 24px 96px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.sheet {
+  max-width: var(--sheet);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 56px;
+}
+
+/* ---- masthead ------------------------------------------------------- */
+
+.masthead {
+  padding-top: 56px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.masthead h1 {
+  font-size: 30px;
+  line-height: 1.15;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0;
+  text-wrap: balance;
+}
+.masthead h1 .repo { font-family: var(--font-code); font-weight: 500; }
+.stamp {
+  font-family: var(--font-code);
+  font-size: 11px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.tallies {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.tally {
+  flex: 1 1 132px;
+  padding: 14px 18px;
+  border-right: 1px solid var(--rule-hair);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.tally:last-child { border-right: 0; }
+.tally .n {
+  font-family: var(--font-code);
+  font-size: 22px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.tally .k {
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.tally.is-crossed .n  { color: var(--crossed); }
+.tally.is-accepted .n { color: var(--accepted); }
+
+/* ---- sections ------------------------------------------------------- */
+
+section { display: flex; flex-direction: column; gap: 20px; }
+
+.eyebrow {
+  font-family: var(--font-code);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--blue);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.eyebrow::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--rule-hair);
+}
+h2 {
+  font-size: 21px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  margin: 0;
+}
+.lede {
+  max-width: var(--measure);
+  color: var(--ink-soft);
+  margin: 0;
+}
+
+code, .mono { font-family: var(--font-code); font-size: 0.9em; }
+
+/* ---- the map -------------------------------------------------------- */
+
+.modules { display: grid; gap: 1px; background: var(--rule-hair); border: 1px solid var(--rule); border-radius: 2px; }
+.module {
+  background: var(--paper);
+  padding: 16px 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 24px;
+  align-items: baseline;
+}
+.module .name {
+  font-family: var(--font-code);
+  font-size: 15px;
+  font-weight: 600;
+}
+.module .scope { font-family: var(--font-code); font-size: 12px; color: var(--ink-soft); }
+.module .why {
+  grid-column: 1 / -1;
+  max-width: var(--measure);
+  font-size: 14px;
+  color: var(--ink-soft);
+  border-left: 2px solid var(--rule);
+  padding-left: 12px;
+  margin-top: 6px;
+}
+.module .why.is-absent { color: var(--accepted); border-left-color: var(--accepted); font-style: italic; }
+.counts { font-family: var(--font-code); font-size: 12px; font-variant-numeric: tabular-nums; color: var(--ink-soft); white-space: nowrap; }
+.counts .hot { color: var(--crossed); }
+
+/* ---- the matrix ----------------------------------------------------- */
+
+.plate { overflow-x: auto; border: 1px solid var(--rule); border-radius: 2px; }
+table.matrix { border-collapse: collapse; font-family: var(--font-code); font-size: 12px; width: 100%; }
+table.matrix th, table.matrix td {
+  border: 1px solid var(--rule-hair);
+  padding: 0;
+  text-align: center;
+}
+table.matrix thead th {
+  padding: 10px 8px;
+  font-weight: 500;
+  color: var(--ink-soft);
+  white-space: nowrap;
+  background: var(--paper-sunk);
+}
+table.matrix tbody th {
+  text-align: left;
+  padding: 0 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--paper-sunk);
+}
+table.matrix thead th.corner { background: var(--paper); border-top: 0; border-left: 0; }
+.cell { display: block; height: 44px; line-height: 44px; }
+
+/* Forbidden is the *normal* state — a wall is the point — so it is drawn,
+   not alarmed: drafting hatch, no colour. */
+.cell.forbidden {
+  background-image: repeating-linear-gradient(
+    45deg, transparent 0 4px, var(--rule) 4px 5px
+  );
+}
+.cell.crossed {
+  background: color-mix(in srgb, var(--crossed) 15%, transparent);
+  color: var(--crossed);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  box-shadow: inset 0 0 0 1px var(--crossed);
+}
+.cell.self { color: var(--rule); }
+
+.legend { display: flex; flex-wrap: wrap; gap: 20px; font-size: 13px; color: var(--ink-soft); }
+.legend span { display: flex; align-items: center; gap: 8px; }
+.swatch { width: 22px; height: 16px; border: 1px solid var(--rule-hair); border-radius: 1px; display: inline-block; }
+.swatch.forbidden { background-image: repeating-linear-gradient(45deg, transparent 0 4px, var(--rule) 4px 5px); }
+.swatch.crossed { background: color-mix(in srgb, var(--crossed) 15%, transparent); box-shadow: inset 0 0 0 1px var(--crossed); }
+
+/* ---- pressure ------------------------------------------------------- */
+
+.walls { display: flex; flex-direction: column; gap: 1px; background: var(--rule-hair); border: 1px solid var(--rule); border-radius: 2px; }
+.wall { background: var(--paper); padding: 18px; display: flex; flex-direction: column; gap: 10px; }
+.wall header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 14px; }
+.wall .edge { font-family: var(--font-code); font-size: 15px; font-weight: 600; }
+.wall .rule-id { font-family: var(--font-code); font-size: 12px; color: var(--ink-soft); }
+.wall .why { max-width: var(--measure); color: var(--ink-soft); font-size: 14px; margin: 0; }
+
+.pills { display: flex; flex-wrap: wrap; gap: 8px; }
+.pill {
+  font-family: var(--font-code);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  white-space: nowrap;
+}
+.pill.now      { color: var(--crossed); }
+.pill.accepted { color: var(--accepted); }
+.pill.quiet    { color: var(--ink-soft); }
+
+/* A rule card is not a wall card. A wall has two sides and a state; a rule has
+   an id, a kind and a severity, and borrowing the wall's treatment made the
+   severity read as a state ("holding") and the kind read as a rule id. */
+.rules {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--rule-hair);
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+}
+.rule {
+  background: var(--paper);
+  padding: 16px 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 16px;
+  align-items: baseline;
+}
+.rule .id { font-family: var(--font-code); font-size: 14.5px; font-weight: 600; }
+.rule .kind {
+  grid-column: 1 / -1;
+  font-family: var(--font-code);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+.rule ul {
+  grid-column: 1 / -1;
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.rule ul li { font-size: 13.5px; color: var(--ink-soft); }
+.rule .why {
+  grid-column: 1 / -1;
+  max-width: var(--measure);
+  font-size: 14px;
+  color: var(--ink-soft);
+  border-left: 2px solid var(--blue);
+  padding-left: 12px;
+  margin: 8px 0 0;
+}
+
+/* Severity is a property of the rule, not a state of the world, so it is a
+   chip and not a pill: no border, a tinted ground, and the two colours the
+   report already uses for the two levels. */
+.severity {
+  font-family: var(--font-code);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 3px 8px;
+  border-radius: 2px;
+  white-space: nowrap;
+  justify-self: end;
+}
+.severity.error   { color: var(--crossed);  background: color-mix(in srgb, var(--crossed) 13%, transparent); }
+.severity.warning { color: var(--accepted); background: color-mix(in srgb, var(--accepted) 16%, transparent); }
+
+/* The row number in the matrix, which is the label the columns refer to. */
+table.matrix tbody th .n {
+  display: inline-block;
+  min-width: 1.6em;
+  color: var(--ink-soft);
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A folded crossing list. No script: `<details>` is the only disclosure a
+   read-only page needs, and the count stays on the summary line so nothing is
+   hidden. */
+details { margin: 0; }
+details > summary {
+  cursor: pointer;
+  font-family: var(--font-code);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  padding: 2px 0;
+}
+details > summary:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+details[open] > summary { margin-bottom: 6px; }
+
+ul.crossings { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 5px; }
+ul.crossings li { font-family: var(--font-code); font-size: 12.5px; color: var(--ink-soft); }
+ul.crossings li .file { color: var(--ink); }
+
+.suspicion { background: var(--paper); padding: 18px; display: flex; flex-direction: column; gap: 6px; }
+.suspicion .path { font-family: var(--font-code); font-size: 13px; font-weight: 600; }
+.suspicion .verdict { color: var(--ink-soft); font-size: 14px; max-width: var(--measure); }
+.suspicion .numbers { font-family: var(--font-code); font-size: 12px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+
+/* ---- honesty -------------------------------------------------------- */
+
+.blindspots {
+  border: 1px solid var(--accepted);
+  border-radius: 2px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: color-mix(in srgb, var(--accepted) 6%, transparent);
+}
+.blindspots h2 { font-size: 17px; }
+.blindspots ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 7px; }
+.blindspots li { color: var(--ink-soft); }
+.blindspots li strong { color: var(--ink); font-weight: 600; }
+
+footer {
+  border-top: 1px solid var(--rule-hair);
+  padding-top: 18px;
+  font-family: var(--font-code);
+  font-size: 11.5px;
+  color: var(--ink-soft);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+}
+
+@media (max-width: 620px) {
+  .module { grid-template-columns: minmax(0, 1fr); }
+  .counts { grid-column: 1; }
+}

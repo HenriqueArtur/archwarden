@@ -52,7 +52,7 @@ use archwarden_core::{
     facts::{ExportFact, ExportKind, ExportTags, FileFacts, ImportFact, Span},
     hash::ContentHash,
     path::{FileClass, RepoRelPath},
-    traits::{DirectoryContext, FileContext, RuleEngine},
+    traits::{DirectoryContext, Exists, FileContext, RuleEngine},
 };
 use archwarden_engine::walk::RepoTree;
 
@@ -128,6 +128,9 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
     match &rule.kind {
         CompiledRuleKind::Structure { .. } => forbidden_subfolder(rule, engine, tree),
         CompiledRuleKind::SpecPair { .. } => a_file_with_no_spec(rule, engine, tree),
+        CompiledRuleKind::Presence { .. } => a_directory_holding_nothing(rule, engine, tree),
+        CompiledRuleKind::Pair { .. } => a_file_with_no_companion(rule, engine, tree),
+        CompiledRuleKind::Frontmatter { .. } => a_document_with_no_block(rule, engine, tree),
         CompiledRuleKind::ImportBoundary {
             forbid,
             forbid_packages,
@@ -158,6 +161,129 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
                   of one shape would tick for a rule about another"
                 .to_owned(),
         },
+    }
+}
+
+/// A document this rule covers, handed facts saying it has no block.
+///
+/// Absence is easy to synthesise, and this rule's own documentation says a
+/// document with no frontmatter must be a finding rather than a skip -- so the
+/// probe is the exact case the rule promises to catch.
+fn a_document_with_no_block(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+) -> Verdict {
+    let Some(covered) = tree
+        .directories()
+        .flat_map(|(_, directory)| directory.files.iter())
+        .map(|file| &file.path)
+        .find(|path| engine.applies_to(path))
+    else {
+        return Verdict::Unverified {
+            why: format!(
+                "no document in this repository is one `{}` is about",
+                rule.id
+            ),
+        };
+    };
+
+    let docs = archwarden_core::docs::DocFacts {
+        path: covered.clone(),
+        content_hash: ContentHash::of(PROBE.as_bytes()),
+        frontmatter: archwarden_core::docs::Frontmatter::Absent,
+        headings: Vec::new(),
+    };
+
+    let findings = engine.check_file(FileContext {
+        path: covered,
+        facts: None,
+        docs: Some(&docs),
+        siblings: &[],
+        exists: Exists::none(),
+    });
+
+    let on = format!("`{covered}` with no frontmatter block");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
+    }
+}
+
+/// A file this rule covers, in a repository holding nothing else.
+///
+/// The probe is a real file -- one the rule says it applies to -- asked about
+/// against an empty repository. Nothing has to be invented, unlike `naming`,
+/// where a violating input is a filename and producing one means running a
+/// regex backwards; here the violating input is the *absence* of the
+/// companion, and absence is easy to synthesise.
+fn a_file_with_no_companion(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+) -> Verdict {
+    let Some(covered) = tree
+        .directories()
+        .flat_map(|(_, directory)| directory.files.iter())
+        .map(|file| &file.path)
+        .find(|path| engine.applies_to(path))
+    else {
+        return Verdict::Unverified {
+            why: format!(
+                "no file in this repository is one `{}` asks for a companion of",
+                rule.id
+            ),
+        };
+    };
+
+    let findings = engine.check_file(FileContext {
+        path: covered,
+        facts: None,
+        docs: None,
+        siblings: &[],
+        exists: Exists::none(),
+    });
+
+    let on = format!("`{covered}` with its companion missing");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
+    }
+}
+
+/// A directory this rule covers, emptied.
+///
+/// The cleanest synthesis of the six: a rule that asks for files is violated
+/// by a directory with none, and nothing has to be invented -- unlike `naming`,
+/// where a violating input is a filename and producing one means running a
+/// regex backwards.
+fn a_directory_holding_nothing(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+) -> Verdict {
+    let Some(directory) = a_directory_in_scope(rule, tree) else {
+        return Verdict::Unverified {
+            why: format!(
+                "no directory in this repository is inside `{}`",
+                rule.scope.patterns().join("`, `")
+            ),
+        };
+    };
+
+    let findings = engine.check_directory(DirectoryContext {
+        path: directory,
+        subdirectories: &[],
+        files: &[],
+    });
+
+    let on = format!("`{directory}` holding none of the files it requires");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
     }
 }
 
@@ -231,13 +357,16 @@ fn a_file_with_no_spec(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &Repo
         is_default: false,
         reexport_from: None,
         forwards: None,
+        annotations: Vec::new(),
         span: Span::new(0, 1),
     });
 
     let findings = engine.check_file(FileContext {
         path: &lonely,
         facts: Some(&facts),
+        docs: None,
         siblings: std::slice::from_ref(&name),
+        exists: Exists::none(),
     });
 
     let on = format!("`{lonely}` with no spec beside it");
@@ -304,7 +433,9 @@ fn crossed_boundary(
     let findings = engine.check_file(FileContext {
         path: importer,
         facts: Some(&facts),
+        docs: None,
         siblings: &[],
+        exists: Exists::none(),
     });
 
     if findings.is_empty() {
@@ -378,7 +509,10 @@ fn unclaimed_name(kind: &CompiledRuleKind) -> String {
     };
 
     let claimed = |name: &str| {
-        allowed_subfolders.iter().any(|other| other == name)
+        allowed_subfolders
+            .iter()
+            .flatten()
+            .any(|other| other == name)
             || warn_subfolders.iter().any(|other| other == name)
             || recurse_into.iter().any(|other| other == name)
     };
@@ -522,6 +656,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -597,9 +733,10 @@ mod tests {
                 "entity-shape",
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec!["types".to_owned()],
+                    allowed_subfolders: Some(vec!["types".to_owned()]),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: Vec::new(),
                 },
             )],
@@ -642,9 +779,10 @@ mod tests {
                 "nowhere",
                 &["packages/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec!["types".to_owned()],
+                    allowed_subfolders: Some(vec!["types".to_owned()]),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: Vec::new(),
                 },
             )],
@@ -686,6 +824,7 @@ mod tests {
                     dir_pattern: None,
                     name_template: "{{pascal(name)}}".to_owned(),
                     kind: archwarden_core::facts::KindFilter::Any,
+                    annotation: Vec::new(),
                     signature_hint: None,
                 },
             )],
@@ -709,9 +848,10 @@ mod tests {
                 "entity-shape",
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec![PROBE.to_owned(), "types".to_owned()],
+                    allowed_subfolders: Some(vec![PROBE.to_owned(), "types".to_owned()]),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: Vec::new(),
                 },
             )],

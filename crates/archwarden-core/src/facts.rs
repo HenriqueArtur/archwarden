@@ -246,6 +246,24 @@ pub struct ExportFact {
     /// export fact does not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forwards: Option<String>,
+    /// The types this declaration writes down about itself, as written.
+    ///
+    /// One entry for a binding's annotation — `export const X: Foo = {}` gives
+    /// `["Foo"]` — and one per clause for a class, since
+    /// `export class X implements A, B` claims two contracts and satisfying
+    /// either is satisfying one of them. Empty when the declaration annotates
+    /// nothing, and empty for the forms that have no annotation position: a
+    /// function declares a *return* type, which is a different claim.
+    ///
+    /// Text, not a type. Whitespace is collapsed to single spaces so a finding
+    /// can print it back, and nothing else is done — no resolution, no
+    /// inference, no assignability. What this supports is a rule asking whether
+    /// a declaration *submits itself* to `tsc`'s judgement at all, which is the
+    /// guarantee a discovery-based registry loses when the typed static
+    /// registry it replaced goes away. Whether the annotated value really is
+    /// of that type stays `tsc`'s question.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub annotations: Vec<String>,
     /// Where it appears in the source.
     pub span: Span,
 }
@@ -302,6 +320,34 @@ pub struct FileFacts {
 }
 
 impl FileFacts {
+    /// Moves every span forward by `offset` bytes.
+    ///
+    /// For a front-end that parses a *slice* of a file. An `.astro` module
+    /// lives inside a `---` fence, so oxc's offsets are relative to the fence
+    /// and every finding would point at the wrong line — which is worse than
+    /// not reporting a position at all, because a wrong `path:line:column` is
+    /// one a reader opens. Issue #13.
+    ///
+    /// Saturating: an offset that would overflow leaves the span where it is,
+    /// which is wrong by a known amount rather than wrong by wrapping to the
+    /// top of the file.
+    pub fn shift_spans(&mut self, offset: u32) {
+        let shift = |span: &mut Span| {
+            span.start = span.start.saturating_add(offset);
+            span.end = span.end.saturating_add(offset);
+        };
+
+        for import in &mut self.imports {
+            shift(&mut import.span);
+        }
+        for export in &mut self.exports {
+            shift(&mut export.span);
+        }
+        for call in &mut self.calls {
+            shift(&mut call.span);
+        }
+    }
+
     /// Facts for a file that has been hashed but not parsed. Used for files no
     /// rule needs to look inside, which is most of them on a structure-only
     /// run.
@@ -334,6 +380,50 @@ mod tests {
         RepoRelPath::new("packages/domain/src/user/user.ts").expect("valid")
     }
 
+    /// Issue #13. A front-end that parses a slice reports offsets into the
+    /// slice, and a wrong `path:line:column` is worse than none: it is one a
+    /// reader opens.
+    #[test]
+    fn shifting_moves_every_kind_of_span() {
+        let mut facts = FileFacts::unparsed(path(), ContentHash::of(b""));
+        facts.imports.push(ImportFact {
+            specifier: "./x".to_owned(),
+            resolved: None,
+            type_only: false,
+            names: Vec::new(),
+            span: Span::new(0, 10),
+        });
+        facts.exports.push(ExportFact {
+            span: Span::new(20, 30),
+            ..export("X", ExportTags::only(ExportKind::Const))
+        });
+        facts.calls.push(CallFact {
+            callee: "f".to_owned(),
+            span: Span::new(40, 50),
+        });
+
+        facts.shift_spans(4);
+
+        assert_eq!(facts.imports[0].span, Span::new(4, 14));
+        assert_eq!(facts.exports[0].span, Span::new(24, 34));
+        assert_eq!(facts.calls[0].span, Span::new(44, 54));
+    }
+
+    /// Saturating rather than wrapping: wrong by a known amount beats a span
+    /// that jumps to the top of the file.
+    #[test]
+    fn an_offset_that_would_overflow_leaves_the_span_alone() {
+        let mut facts = FileFacts::unparsed(path(), ContentHash::of(b""));
+        facts.calls.push(CallFact {
+            callee: "f".to_owned(),
+            span: Span::new(u32::MAX - 1, u32::MAX),
+        });
+
+        facts.shift_spans(10);
+
+        assert_eq!(facts.calls[0].span, Span::new(u32::MAX, u32::MAX));
+    }
+
     fn export(name: &str, tags: ExportTags) -> ExportFact {
         ExportFact {
             name: Some(name.to_owned()),
@@ -341,6 +431,7 @@ mod tests {
             is_default: false,
             reexport_from: None,
             forwards: None,
+            annotations: Vec::new(),
             span: Span::new(0, 1),
         }
     }

@@ -17,6 +17,64 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 19 — A second front-end, and what a third would cost
+Status: accepted.
+Context: issue #44 asked for a rule over markdown frontmatter, which is the
+first time archwarden reads a file that is not JavaScript. Decision 6 put
+the parser behind a trait for exactly this and the trait had never been
+exercised, so the question "what does another language cost" had no
+written answer and was re-derived every time it came up.
+Decision: markdown gets a front-end of its own producing `DocFacts`, a
+second fact type rather than fields on `FileFacts`. Facts are per *kind of
+file*, not one struct everything grows into: a markdown file has no
+imports, exports or calls, and sharing the struct would hand every rule
+engine a field it never reads. The cache gains a table on the same terms.
+`FileClass` gains `Document` and `UnreadableSource`, and `needs_facts`
+returns which facts a rule wants rather than whether it wants any, so a
+missing fact is counted as a lost answer only when the file could have
+carried it.
+
+What a third front-end costs, measured against this repository:
+
+- **The parser is one function.** `Parser::parse(path, source, hash) ->
+  FileFacts`. The whole JS/TS front-end is ~1 200 lines including tests;
+  a language with fewer ways to spell an export is smaller, not bigger.
+  No rule, command, cache or report changes.
+- **`FileFacts` is JS-shaped**, and that is the real cost. `ExportKind` is
+  `function`/`arrow`/`const`/`class`/`interface`/…, plus `is_default` and
+  `reexport_from`. Python has no `export`; Go's is capitalisation. Before
+  a second *code* front-end, decide whether `ExportKind` grows or whether
+  "not applicable" becomes a documented per-language state that `doctor`
+  reports — getting that wrong makes every later language fight it again.
+- **The resolver is the expensive half, and only `import-boundary` needs
+  it.** ~2 650 lines across five files, Node-shaped throughout:
+  `tsconfig.paths` per importer, `package.json` `exports`, workspace
+  manifests, extension and directory-index resolution. Its size is not the
+  cost; issues #36, #37 and #38 are all alias bugs found in a resolver
+  that was already shipping, and a new one starts that clock at zero.
+  Python's `sys.path`, Go's `go.mod` and Rust's module tree are different
+  algorithms, not variants.
+- **Everything except `import-boundary` needs only the parser.** That is
+  the division worth holding on to.
+
+Consequences: three rules (`structure`, `presence`, `pair`) already work on
+any repository and `RULES.md` now says so. A language may ship without a
+resolver; when it does, an `import-boundary` rule over its files must be a
+loud refusal and never a silent pass — which is the same principle
+`UnreadableSource` enforces today for a language with no front-end at all.
+Astro (issue #13) is the cheapest possible third front-end and reuses both
+`oxc` and this decision's fence extractor.
+Alternatives:
+- Generalise `FileFacts` now, before a second language exists. Rejected:
+  an abstraction designed while looking at one language is designed from
+  the thing it is supposed to abstract over. The seam is a one-function
+  trait and needs exercising, not widening.
+- Read frontmatter inside the rule, bypassing the facts layer. Rejected:
+  it would need its own skip accounting, its own place in
+  `unreadable_files`, its own answer for `check --file` and `--no-cache`.
+  Going through the seam makes a malformed block behave exactly like a
+  `.ts` that will not parse.
+
 ### 18 — `tsconfig.paths` is read per importer, and the maps are never merged
 Status: accepted.
 Context: issue #22 reported that the aliased half of a boundary rule

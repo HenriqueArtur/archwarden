@@ -19,6 +19,17 @@ use crate::{
     scope::Scope,
 };
 
+/// Which languages the configuration asked archwarden to read.
+///
+/// Carried rather than assumed, because a file in a language nobody asked for
+/// is a *counted, named* skip and not a silent pass. See issue #13.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Languages {
+    /// Astro components. JS/TS is always read and needs no flag: a
+    /// configuration that asked for nothing still means TypeScript.
+    pub astro: bool,
+}
+
 /// How far a `skip_dirs` exemption reaches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -77,11 +88,17 @@ pub enum CompiledRuleKind {
     /// Which subdirectories may exist, and which filenames.
     Structure {
         /// Subdirectory names that are permitted.
-        allowed_subfolders: Vec<String>,
+        ///
+        /// `None` when the rule says nothing about subfolders; `Some([])` when
+        /// it permits none of them. See `StructureRule::allowed_subfolders`.
+        allowed_subfolders: Option<Vec<String>>,
         /// Names permitted but reported as warnings, whatever the rule's level.
         warn_subfolders: Vec<String>,
         /// Subdirectories carrying the same contract, recursively.
         recurse_into: Vec<String>,
+        /// Regexes a direct child *directory*'s name may match instead of
+        /// being named in `allowed_subfolders`.
+        subfolder_patterns: Vec<Pattern>,
         /// Every direct child file must match one of these.
         filename_patterns: Vec<Pattern>,
     },
@@ -99,6 +116,10 @@ pub enum CompiledRuleKind {
         name_template: String,
         /// Which declaration forms satisfy the rule.
         kind: KindFilter,
+        /// The type annotations that satisfy the rule, any one of them, as
+        /// templates over the same groups. Empty when the rule asks for none,
+        /// which is every rule written before the field existed.
+        annotation: Vec<String>,
         /// A signature shown by `scaffold`. Never verified.
         signature_hint: Option<String>,
     },
@@ -156,6 +177,33 @@ pub enum CompiledRuleKind {
         /// Whether `import type` counts.
         include_type_only: bool,
     },
+    /// Files that must exist in each governed directory.
+    Presence {
+        /// Filenames that must be there. Names, not paths — an entry with a
+        /// separator is refused when the config compiles.
+        require: Vec<String>,
+        /// Regexes at least one file must match, one file per entry.
+        require_any: Vec<Pattern>,
+    },
+    /// A file of one kind must have a companion of another.
+    Pair {
+        /// Regex over the filename of the file that needs a companion.
+        file_pattern: Pattern,
+        /// The companion, relative to the directory the file sits in. May
+        /// start with `../`.
+        must_exist: String,
+    },
+    /// A document's frontmatter must carry these keys.
+    Frontmatter {
+        /// Regex over the filename of the documents this rule is about.
+        file_pattern: Pattern,
+        /// Keys the block must carry.
+        require: Vec<String>,
+        /// The closed vocabulary a key's value must come from, as text.
+        one_of: Vec<(String, Vec<String>)>,
+        /// A key whose value must equal this template, rendered from the path.
+        equals: Vec<(String, String)>,
+    },
     /// Files matching a pattern must call a symbol.
     CallObligation {
         /// Regex over the filename.
@@ -177,6 +225,9 @@ impl CompiledRuleKind {
             Self::SpecPair { .. } => "spec-pair",
             Self::NoPassthrough { .. } => "no-passthrough",
             Self::ImportBoundary { .. } => "import-boundary",
+            Self::Presence { .. } => "presence",
+            Self::Pair { .. } => "pair",
+            Self::Frontmatter { .. } => "frontmatter",
             Self::CallObligation { .. } => "call-obligation",
         }
     }
@@ -188,7 +239,15 @@ impl CompiledRuleKind {
     #[must_use]
     pub fn needs_parse(&self) -> bool {
         match self {
-            Self::Structure { .. } => false,
+            // The first three ask only whether a name is on disk.
+            // `Frontmatter` does read a file -- but not through *this*
+            // front-end, and this method answers only for that one.
+            // `RuleEngine::needs_facts` is what says which front-end a rule
+            // wants.
+            Self::Structure { .. }
+            | Self::Presence { .. }
+            | Self::Pair { .. }
+            | Self::Frontmatter { .. } => false,
             Self::SpecPair {
                 require_non_empty_spec,
                 skip_type_only,
@@ -220,6 +279,19 @@ pub struct CompiledRule {
     pub id: RuleId,
     /// The module it was declared under, if any.
     pub module: Option<ModuleId>,
+    /// Why this rule exists, as its author wrote it.
+    ///
+    /// Prose, carried rather than interpreted. It is shown wherever a user or
+    /// an agent meets the rule — the pre-write hook's denial, `describe`,
+    /// `scaffold`, `agent-guide`, `config explain`, and beside a finding — and
+    /// it never changes what the rule decides. Issue #46.
+    pub why: Option<String>,
+    /// Why the *module* this rule was declared under exists.
+    ///
+    /// A separate field, not a fallback: "why is `domain` sealed" explains
+    /// eight rules at once and is not an answer to "why this one". Both are
+    /// shown; neither stands in for the other.
+    pub module_why: Option<String>,
     /// Severity of its findings.
     pub level: Level,
     /// The directories it applies to.
@@ -252,9 +324,28 @@ pub struct CompiledConfig {
     ignore: PathSet,
     skip_dirs: SkipDirs,
     rules_hash: ContentHash,
+    languages: Languages,
 }
 
 impl CompiledConfig {
+    /// Records which languages the configuration asked for.
+    ///
+    /// A builder step rather than a fifth parameter to `new`: every caller that
+    /// does not care -- which is every test of a rule -- keeps the constructor
+    /// it had, and the one that does says so in a line that names what it is
+    /// setting.
+    #[must_use]
+    pub fn with_languages(mut self, languages: Languages) -> Self {
+        self.languages = languages;
+        self
+    }
+
+    /// Which languages this configuration asked archwarden to read.
+    #[must_use]
+    pub fn languages(&self) -> Languages {
+        self.languages
+    }
+
     /// Builds a compiled config.
     #[must_use]
     pub fn new(
@@ -268,6 +359,7 @@ impl CompiledConfig {
             ignore,
             skip_dirs,
             rules_hash,
+            languages: Languages::default(),
         }
     }
 
@@ -343,6 +435,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind,
@@ -351,9 +445,10 @@ mod tests {
 
     fn structure() -> CompiledRuleKind {
         CompiledRuleKind::Structure {
-            allowed_subfolders: vec!["types".to_owned()],
+            allowed_subfolders: Some(vec!["types".to_owned()]),
             warn_subfolders: Vec::new(),
             recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
             filename_patterns: Vec::new(),
         }
     }
@@ -364,6 +459,7 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
+            annotation: Vec::new(),
             signature_hint: None,
         }
     }
@@ -375,6 +471,32 @@ mod tests {
             SkipDirs::default(),
             ContentHash::of(b"rules"),
         )
+    }
+
+    /// Which languages a configuration asked for travels with it, and a
+    /// configuration that asked for nothing still means TypeScript.
+    ///
+    /// A builder step rather than a fifth constructor parameter, so every test
+    /// of a rule keeps the constructor it had — which is why it needs a test of
+    /// its own here.
+    #[test]
+    fn the_languages_a_config_asked_for_travel_with_it() {
+        let bare = CompiledConfig::new(
+            Vec::new(),
+            PathSet::default(),
+            SkipDirs::default(),
+            ContentHash::of(b""),
+        );
+        assert!(!bare.languages().astro, "nobody asked for Astro");
+
+        let asked = CompiledConfig::new(
+            Vec::new(),
+            PathSet::default(),
+            SkipDirs::default(),
+            ContentHash::of(b""),
+        )
+        .with_languages(Languages { astro: true });
+        assert!(asked.languages().astro);
     }
 
     #[test]

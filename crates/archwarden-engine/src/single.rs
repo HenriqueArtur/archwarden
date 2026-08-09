@@ -30,7 +30,7 @@ use archwarden_core::{
     compiled::CompiledConfig,
     finding::Finding,
     path::{FileClass, RepoRelPath},
-    traits::{DirectoryContext, FileContext, RuleEngine},
+    traits::{DirectoryContext, Exists, FactsNeeded, FileContext, RuleEngine},
 };
 use camino::Utf8Path;
 
@@ -83,6 +83,15 @@ pub enum Reason {
     /// opposite: one means the file is broken, the other means the rule is
     /// pointed at something it cannot be about.
     NotSource,
+    /// The file is source in a language this build has no front-end for.
+    ///
+    /// Distinct from [`NotSource`](Self::NotSource) because the answer to it is
+    /// different: a `.json` under a rule about imports means the rule is
+    /// pointed at the wrong thing, and a `.py` under the same rule means the
+    /// rule is right and archwarden cannot read it. One is a config to fix, the
+    /// other is a front-end that does not exist yet. Issue #44 opened this
+    /// distinction; before it, both were silence.
+    NoFrontEnd,
 }
 
 impl Reason {
@@ -92,6 +101,7 @@ impl Reason {
         match self {
             Self::Unreadable => "unreadable",
             Self::NotSource => "not-source",
+            Self::NoFrontEnd => "no-front-end",
         }
     }
 
@@ -101,6 +111,10 @@ impl Reason {
         match self {
             Self::Unreadable => "the file could not be read",
             Self::NotSource => "it is not a TypeScript or JavaScript file",
+            Self::NoFrontEnd => {
+                "it is source in a language this build has no front-end for, so \
+                 the rule is right and archwarden cannot read the file"
+            }
         }
     }
 }
@@ -135,10 +149,11 @@ pub fn check_file(root: &Utf8Path, config: &CompiledConfig, path: &RepoRelPath) 
         .filter(|engine| engine.applies_to(path))
         .collect();
 
-    let needs_facts = applicable.iter().any(|engine| engine.needs_facts());
-    let is_source = path
-        .file_name()
-        .is_some_and(|name| FileClass::of(name) == FileClass::Source);
+    let needs_facts = applicable
+        .iter()
+        .any(|engine| engine.needs_facts() == FactsNeeded::Code);
+    let class = path.file_name().map_or(FileClass::Other, FileClass::of);
+    let is_source = class == FileClass::Source;
 
     // `is_source` is defence in depth, and `cargo-mutants` cannot kill it: the
     // parser refuses a non-source extension anyway, so dropping the guard
@@ -173,13 +188,21 @@ pub fn check_file(root: &Utf8Path, config: &CompiledConfig, path: &RepoRelPath) 
 
     let siblings = listing(root, path.parent().as_ref(), path.file_name());
     for engine in applicable {
-        if engine.needs_facts() && facts.is_none() {
+        // Reported whatever the class, unlike the full run: this command
+        // answers "what happened to *this* file", and "nothing, it is not
+        // source" is a real answer here. The full `check` counts only what
+        // somebody lost, so a `.json` beside the code keeps `checks_skipped`
+        // reachable at zero there. See `AGENTS.md`.
+        if facts.is_none() && engine.needs_facts() != FactsNeeded::Nothing {
             skipped.push(Skipped {
                 rule_id: engine.id().to_string(),
-                reason: if is_source {
-                    Reason::Unreadable
-                } else {
-                    Reason::NotSource
+                reason: match class {
+                    FileClass::Source => Reason::Unreadable,
+                    FileClass::UnreadableSource => Reason::NoFrontEnd,
+                    // `FileClass` is non_exhaustive; a class added later is a
+                    // file this rule could not read, which is what the
+                    // catch-all already says.
+                    _ => Reason::NotSource,
                 },
             });
             continue;
@@ -187,7 +210,13 @@ pub fn check_file(root: &Utf8Path, config: &CompiledConfig, path: &RepoRelPath) 
         findings.extend(engine.check_file(FileContext {
             path,
             facts: facts.as_ref(),
+            docs: None,
             siblings: &siblings,
+            // No walk here -- this command exists to answer about one file
+            // without one -- so the question goes to disk. `is_file` and not
+            // `exists`: a rule looking for `notas.md` and finding a directory
+            // of that name has not found its companion.
+            exists: Exists::new(&|candidate| root.join(candidate.as_str()).is_file()),
         }));
     }
 
@@ -389,6 +418,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -411,15 +442,17 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
+            annotation: Vec::new(),
             signature_hint: None,
         }
     }
 
     fn structure() -> CompiledRuleKind {
         CompiledRuleKind::Structure {
-            allowed_subfolders: vec!["types".to_owned()],
+            allowed_subfolders: Some(vec!["types".to_owned()]),
             warn_subfolders: Vec::new(),
             recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
             filename_patterns: Vec::new(),
         }
     }

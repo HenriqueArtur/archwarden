@@ -327,6 +327,8 @@ mod tests {
         CompiledRule {
             id: archwarden_core::ids::RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile([from]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {
@@ -344,12 +346,15 @@ mod tests {
         CompiledRule {
             id: archwarden_core::ids::RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile([roots]).expect("valid scope"),
             kind: CompiledRuleKind::Structure {
-                allowed_subfolders: vec!["types".to_owned()],
+                allowed_subfolders: Some(vec!["types".to_owned()]),
                 warn_subfolders: Vec::new(),
                 recurse_into: Vec::new(),
+                subfolder_patterns: Vec::new(),
                 filename_patterns: Vec::new(),
             },
         }

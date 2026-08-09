@@ -73,10 +73,85 @@ pub struct FileContext<'a> {
     /// Its facts, once a parser has run. `None` on a walk-only pass, which is
     /// what a structure-only configuration does.
     pub facts: Option<&'a FileFacts>,
+    /// Its document facts, for the rules that read a `.md` rather than code.
+    ///
+    /// A second field rather than an enum, because the two are produced by
+    /// different front-ends from different files and no rule wants both. A
+    /// rule declares which it reads through
+    /// [`needs_facts`](RuleEngine::needs_facts), so the one it did not ask for
+    /// being `None` is never a surprise it has to handle.
+    pub docs: Option<&'a crate::docs::DocFacts>,
     /// Names of the entries sitting beside it, for sibling checks. Supplied by
     /// the walk so a rule never touches the filesystem itself -- which is what
     /// keeps rules deterministic and cheap to test.
     pub siblings: &'a [String],
+    /// Whether a path anywhere in the repository exists.
+    ///
+    /// `siblings` answers for the directory the file is in, and a rule whose
+    /// companion may sit outside it -- `../projeto.md` -- has nothing to ask.
+    /// Supplied by the caller for the same reason `siblings` is: `check`
+    /// answers from the walk it already has, `check --file` answers from disk
+    /// because it has no walk, and a rule still never touches the filesystem
+    /// itself.
+    pub exists: Exists<'a>,
+}
+
+/// Which facts a rule needs read out of a file, if any.
+///
+/// `bool` was enough while one front-end existed. With two, "needs facts" is
+/// ambiguous in the one place it matters: whether an absent fact is an answer
+/// somebody lost. A boundary rule pointed at a `.md` wanted *code* facts from a
+/// file that could never have them, and counting that as a missed check would
+/// pin `checks_skipped` above zero in every repository that keeps documentation
+/// beside its code. See [`FileClass::yields`](crate::path::FileClass::yields).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FactsNeeded {
+    /// Nothing is read; the rule reasons about names and paths.
+    Nothing,
+    /// Imports, exports and calls — what a JS/TS front-end produces.
+    Code,
+    /// Frontmatter and headings — what a document front-end produces.
+    Document,
+}
+
+/// Whether a path exists, asked of whoever is driving the check.
+///
+/// A closure rather than a listing, because the two callers know it two
+/// different ways and neither can hand over the other's.
+#[derive(Clone, Copy)]
+pub struct Exists<'a>(&'a dyn Fn(&RepoRelPath) -> bool);
+
+impl<'a> Exists<'a> {
+    /// Wraps a predicate.
+    #[must_use]
+    pub fn new(predicate: &'a dyn Fn(&RepoRelPath) -> bool) -> Self {
+        Self(predicate)
+    }
+
+    /// Whether `path` is in the repository.
+    #[must_use]
+    pub fn at(&self, path: &RepoRelPath) -> bool {
+        (self.0)(path)
+    }
+}
+
+impl Exists<'static> {
+    /// A repository holding nothing, for a caller with no answer to give.
+    ///
+    /// Used by tests and by any driver that cannot see beyond the file it was
+    /// handed. A rule asking about a path it gets `false` for reports the path
+    /// as missing, which is the honest reading of "I cannot see it".
+    #[must_use]
+    pub fn none() -> Self {
+        Self(&|_| false)
+    }
+}
+
+impl std::fmt::Debug for Exists<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Exists(..)")
+    }
 }
 
 /// Everything a directory-local rule needs to reach a verdict.
@@ -122,14 +197,18 @@ pub trait RuleEngine: Send + Sync {
     /// files that do not exist yet.
     fn applies_to(&self, path: &RepoRelPath) -> bool;
 
-    /// Whether this rule reads inside a file.
+    /// Which facts this rule reads out of a file, if any.
     ///
     /// The runner uses this to decide what to parse. A structure-only
     /// configuration should never open a source file, and on a large
     /// repository that is the difference between a walk and thirty thousand
     /// reads.
-    fn needs_facts(&self) -> bool {
-        false
+    ///
+    /// It also decides whether a missing fact was an answer somebody lost:
+    /// paired with the file's class, "wanted code facts from a `.py`" is a
+    /// counted skip and "wanted code facts from a `.md`" is not.
+    fn needs_facts(&self) -> FactsNeeded {
+        FactsNeeded::Nothing
     }
 
     /// Whether this rule reads *where a file's imports land*.
@@ -191,8 +270,8 @@ mod tests {
             path.as_str().ends_with(".use-case.ts")
         }
 
-        fn needs_facts(&self) -> bool {
-            true
+        fn needs_facts(&self) -> FactsNeeded {
+            FactsNeeded::Code
         }
 
         fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {
@@ -232,6 +311,7 @@ mod tests {
             Expectation::RequiredExport {
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
                 name: self.name.clone(),
+                annotation: Vec::new(),
                 signature_hint: None,
             }
         }
@@ -260,7 +340,11 @@ mod tests {
         assert_eq!(engines[0].id().as_str(), "usecase-factory-name");
         assert_eq!(engines[0].level(), Level::Error);
         assert_eq!(engines[0].module(), None);
-        assert!(engines[0].needs_facts(), "it reads exports");
+        assert_eq!(
+            engines[0].needs_facts(),
+            FactsNeeded::Code,
+            "it reads exports"
+        );
         assert!(
             !engines[0].needs_resolution(),
             "but it never asks where an import goes"
@@ -290,7 +374,9 @@ mod tests {
         let findings = engine.check_file(FileContext {
             path: &facts.path,
             facts: Some(&facts),
+            docs: None,
             siblings: &[],
+            exists: Exists::none(),
         });
 
         let demanded = &findings
@@ -301,6 +387,41 @@ mod tests {
 
         assert_eq!(advertised.len(), 1);
         assert_eq!(advertised.first(), Some(demanded));
+    }
+
+    /// The predicate a caller supplies, asked and answered.
+    ///
+    /// Covered here rather than left to the crates that use it: this crate's
+    /// gate is 100% of functions, and a seam whose own crate never exercises it
+    /// is one whose contract nobody stated.
+    #[test]
+    fn an_existence_predicate_answers_for_the_path_it_is_given() {
+        let there = RepoRelPath::new("packages/domain/src/user.ts").expect("valid");
+        let predicate = |candidate: &RepoRelPath| candidate == &there;
+        let exists = Exists::new(&predicate);
+
+        assert!(exists.at(&there));
+        assert!(!exists.at(&RepoRelPath::new("packages/domain/src/order.ts").expect("valid")));
+    }
+
+    /// A repository holding nothing, for a caller with no answer to give. A
+    /// rule asking about a path it gets `false` for reports the path as
+    /// missing, which is the honest reading of "I cannot see it".
+    #[test]
+    fn a_caller_with_no_answer_says_nothing_is_there() {
+        assert!(!Exists::none().at(&RepoRelPath::new("anything.ts").expect("valid")));
+    }
+
+    /// It is `Copy` and it is `Debug`, because it rides inside a context that
+    /// is both, and a manual `Debug` that panicked or printed a pointer would
+    /// be found by whoever debugged a rule at three in the morning.
+    #[test]
+    fn the_predicate_can_be_copied_and_printed() {
+        let exists = Exists::none();
+        let copy = exists;
+
+        assert!(!copy.at(&RepoRelPath::new("anything.ts").expect("valid")));
+        assert_eq!(format!("{exists:?}"), "Exists(..)");
     }
 
     /// The path every file in a clean repository takes: the rule applies, the
@@ -315,6 +436,7 @@ mod tests {
             is_default: false,
             reexport_from: None,
             forwards: None,
+            annotations: Vec::new(),
             span: crate::facts::Span::new(0, 10),
         });
 
@@ -324,7 +446,9 @@ mod tests {
                 .check_file(FileContext {
                     path: &facts.path,
                     facts: Some(&facts),
-                    siblings: &[]
+                    docs: None,
+                    siblings: &[],
+                    exists: Exists::none()
                 })
                 .is_empty()
         );
@@ -369,6 +493,7 @@ mod tests {
                         expected: Expectation::AllowedSubfolders {
                             allowed: Vec::new(),
                             warn: Vec::new(),
+                            patterns: Vec::new(),
                         },
                     })
                 })
@@ -379,6 +504,7 @@ mod tests {
             vec![Expectation::AllowedSubfolders {
                 allowed: Vec::new(),
                 warn: Vec::new(),
+                patterns: Vec::new(),
             }]
         }
     }
@@ -413,7 +539,9 @@ mod tests {
                 .check_file(FileContext {
                     path: &facts.path,
                     facts: Some(&facts),
+                    docs: None,
                     siblings: &[],
+                    exists: Exists::none(),
                 })
                 .is_empty()
         );
@@ -438,8 +566,9 @@ mod tests {
         assert_eq!(directory_rule.level(), Level::Error);
         assert!(directory_rule.applies_to(&path));
         assert_eq!(directory_rule.describe_expectation(&path).len(), 1);
-        assert!(
-            !directory_rule.needs_facts(),
+        assert_eq!(
+            directory_rule.needs_facts(),
+            FactsNeeded::Nothing,
             "a directory rule reads names, not contents"
         );
         assert!(!directory_rule.needs_resolution());
@@ -455,7 +584,9 @@ mod tests {
                 .check_file(FileContext {
                     path: &facts.path,
                     facts: Some(&facts),
-                    siblings: &[]
+                    docs: None,
+                    siblings: &[],
+                    exists: Exists::none()
                 })
                 .is_empty()
         );
@@ -474,7 +605,9 @@ mod tests {
         let ctx = FileContext {
             path: &facts.path,
             facts: Some(&facts),
+            docs: None,
             siblings: &siblings,
+            exists: Exists::none(),
         };
 
         assert_eq!(ctx.siblings.len(), 2);

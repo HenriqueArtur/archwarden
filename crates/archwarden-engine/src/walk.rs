@@ -78,6 +78,25 @@ impl RepoTree {
         self.directories.get(path)
     }
 
+    /// Whether a file sits at this exact path.
+    ///
+    /// The walk is the answer to "does this exist" for every rule that asks
+    /// about a path outside the directory it was handed. Directories are not
+    /// files: a rule asking for `notas.md` and finding a folder of that name
+    /// has not found its companion.
+    #[must_use]
+    pub fn contains_file(&self, path: &RepoRelPath) -> bool {
+        let Some(parent) = path.parent() else {
+            return false;
+        };
+        let Some(name) = path.file_name() else {
+            return false;
+        };
+
+        self.directory(&parent)
+            .is_some_and(|directory| directory.contains_file(name))
+    }
+
     /// Every directory, root first, then in path order.
     pub fn directories(&self) -> impl Iterator<Item = (&RepoRelPath, &Directory)> {
         self.directories.iter()
@@ -426,7 +445,7 @@ mod tests {
         assert_eq!(
             classes,
             [
-                ("DOC.md", FileClass::Other),
+                ("DOC.md", FileClass::Document),
                 ("Makefile", FileClass::Other),
                 ("component.tsx", FileClass::Source),
                 ("data.json", FileClass::Other),

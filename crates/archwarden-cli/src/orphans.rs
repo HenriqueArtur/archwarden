@@ -516,12 +516,15 @@ mod tests {
         let rule = archwarden_core::compiled::CompiledRule {
             id: archwarden_core::ids::RuleId::new("shape").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: archwarden_core::level::Level::Error,
             scope: Scope::compile(["packages/domain/src/*"]).expect("valid scope"),
             kind: archwarden_core::compiled::CompiledRuleKind::Structure {
-                allowed_subfolders: Vec::new(),
+                allowed_subfolders: Some(Vec::new()),
                 warn_subfolders: Vec::new(),
                 recurse_into: Vec::new(),
+                subfolder_patterns: Vec::new(),
                 filename_patterns: Vec::new(),
             },
         };

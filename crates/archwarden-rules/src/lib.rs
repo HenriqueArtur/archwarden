@@ -14,9 +14,12 @@
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
 pub mod call_obligation;
+pub mod frontmatter;
 pub mod import_boundary;
 pub mod naming;
 pub mod no_passthrough;
+pub mod pair;
+pub mod presence;
 pub mod spec_pair;
 pub mod structure;
 
@@ -36,6 +39,12 @@ use archwarden_core::{
 /// Declaration order is preserved, which is what makes a report's ordering
 /// follow the config rather than the order engines happen to be tried in.
 #[must_use]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per rule kind; splitting it would put the arms somewhere \
+              the exhaustive match no longer names them, which is the property \
+              that makes a kind added without an engine fail to build"
+)]
 pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
     config
         .rules()
@@ -45,12 +54,14 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     allowed_subfolders,
                     warn_subfolders,
                     recurse_into,
+                    subfolder_patterns,
                     filename_patterns,
                 } => Box::new(structure::StructureEngine::build(
                     rule,
-                    allowed_subfolders,
+                    allowed_subfolders.as_ref(),
                     warn_subfolders,
                     recurse_into,
+                    subfolder_patterns,
                     filename_patterns,
                     config.skip_dirs().clone(),
                 )),
@@ -85,6 +96,7 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     dir_pattern,
                     name_template,
                     kind,
+                    annotation,
                     signature_hint,
                 } => Box::new(naming::NamingEngine::build(
                     rule,
@@ -92,6 +104,7 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     dir_pattern.as_ref(),
                     name_template,
                     kind,
+                    annotation,
                     signature_hint.as_deref(),
                 )),
                 CompiledRuleKind::ImportBoundary {
@@ -109,6 +122,31 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     except,
                     except_from,
                     *include_type_only,
+                )),
+                CompiledRuleKind::Frontmatter {
+                    file_pattern,
+                    require,
+                    one_of,
+                    equals,
+                } => Box::new(frontmatter::FrontmatterEngine::build(
+                    rule,
+                    file_pattern,
+                    require,
+                    one_of,
+                    equals,
+                )),
+                CompiledRuleKind::Pair {
+                    file_pattern,
+                    must_exist,
+                } => Box::new(pair::PairEngine::build(rule, file_pattern, must_exist)),
+                CompiledRuleKind::Presence {
+                    require,
+                    require_any,
+                } => Box::new(presence::PresenceEngine::build(
+                    rule,
+                    require,
+                    require_any,
+                    config.skip_dirs().clone(),
                 )),
                 CompiledRuleKind::CallObligation {
                     file_pattern,
@@ -142,6 +180,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid scope"),
             kind,
@@ -159,9 +199,10 @@ mod tests {
 
     fn structure_rule() -> CompiledRuleKind {
         CompiledRuleKind::Structure {
-            allowed_subfolders: vec!["types".to_owned()],
+            allowed_subfolders: Some(vec!["types".to_owned()]),
             warn_subfolders: Vec::new(),
             recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
             filename_patterns: Vec::new(),
         }
     }
@@ -182,6 +223,7 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: archwarden_core::facts::KindFilter::Any,
+            annotation: Vec::new(),
             signature_hint: None,
         }
     }

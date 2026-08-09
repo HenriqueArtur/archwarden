@@ -20,8 +20,13 @@ use camino::{Utf8Path, Utf8PathBuf};
 ///
 /// TypeScript before JavaScript: in a repository that ships both `user.ts` and
 /// a compiled `user.js`, the source is the file a rule is about.
-const EXTENSIONS: [&str; 9] = [
-    ".ts", ".tsx", ".mts", ".cts", ".d.ts", ".js", ".jsx", ".mjs", ".cjs",
+/// `.astro` is last and is never guessed at: Astro requires the extension to
+/// be written, so this entry only ever matches an import that already said it.
+/// Without it, `import Layout from './Base.astro'` resolves to nothing and a
+/// boundary rule sees an unresolved specifier instead of an in-repo path.
+/// Issue #13.
+const EXTENSIONS: [&str; 10] = [
+    ".ts", ".tsx", ".mts", ".cts", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".astro",
 ];
 
 /// Fields consulted in a dependency's `package.json`, best first.

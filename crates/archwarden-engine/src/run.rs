@@ -17,7 +17,7 @@ use archwarden_core::{
     hash::ContentHash,
     level::Level,
     path::{FileClass, RepoRelPath},
-    traits::{FileContext, Parser as _},
+    traits::{Exists, FactsNeeded, FileContext, Parser as _},
 };
 use camino::Utf8Path;
 
@@ -131,7 +131,7 @@ pub struct Run<'a> {
 pub fn reads_files(config: &CompiledConfig) -> bool {
     archwarden_rules::engines_for(config)
         .iter()
-        .any(|engine| engine.needs_facts())
+        .any(|engine| engine.needs_facts() != FactsNeeded::Nothing)
 }
 
 /// Whether any rule in this configuration asks where an import lands.
@@ -150,6 +150,14 @@ pub fn resolves_imports(config: &CompiledConfig) -> bool {
 ///
 /// A configuration whose rules are all structural never reads a byte, cache or
 /// no cache.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the run loop is one sequence: walk, offer directories, read what \
+              a rule looks inside, offer files, count what nobody could \
+              decide. Splitting it would put the counters behind a signature \
+              and hide the one property that matters -- that every branch \
+              which fails to produce facts also files a reason"
+)]
 #[must_use]
 pub fn check(run: Run<'_>) -> Report {
     let Run {
@@ -200,15 +208,35 @@ pub fn check(run: Run<'_>) -> Report {
                 continue;
             }
 
-            // Bound once, because two decisions below depend on it and they
-            // must not drift: whether to read the file, and whether failing to
-            // have facts for it was a check nobody could make.
-            let is_source = file.class == FileClass::Source;
-
             // Read the file only if a rule that applies to it actually looks
             // inside. Deciding this per file rather than per run is what keeps
             // a mostly-structural configuration off the disk.
-            let mut facts = if is_source && wanted_by.iter().any(|engine| engine.needs_facts()) {
+            // A document is read on the same terms: only when a rule that
+            // applies to it looks inside one.
+            let docs = if file.class == FileClass::Document
+                && wanted_by
+                    .iter()
+                    .any(|engine| engine.needs_facts() == FactsNeeded::Document)
+            {
+                read_docs(
+                    root,
+                    &file.path,
+                    cache.as_deref_mut(),
+                    &mut Counters {
+                        parsed: &mut files_parsed,
+                        reused: &mut facts_reused,
+                        unreadable: &mut unreadable_files,
+                    },
+                )
+            } else {
+                None
+            };
+
+            let mut facts = if reads_as_code(file.class, config.languages())
+                && wanted_by
+                    .iter()
+                    .any(|engine| engine.needs_facts() == FactsNeeded::Code)
+            {
                 match facts_for(root, &file.path, cache.as_deref_mut()) {
                     Ok((facts, Source::Cache)) => {
                         facts_reused += 1;
@@ -256,14 +284,36 @@ pub fn check(run: Run<'_>) -> Report {
                 //
                 // The skip a file with no parser deserves is a different
                 // reason, not this one, and it is issue #13's to add.
-                if engine.needs_facts() && facts.is_none() && is_source {
+                // The pair decides, not the class alone: a boundary rule
+                // pointed at a `.md` wanted code facts from a file that could
+                // never have them and lost nothing, while the same rule pointed
+                // at a `.py` lost everything and used to say so nowhere.
+                // Whether the rule got what it asked for. A rule that asks for
+                // nothing always did; `yields` then answers `false` for it
+                // anyway, and the two agreeing is what keeps a structural rule
+                // out of the count.
+                let needed = engine.needs_facts();
+                let looked = match needed {
+                    FactsNeeded::Nothing => true,
+                    FactsNeeded::Code => facts.is_some(),
+                    FactsNeeded::Document => docs.is_some(),
+                    // `FactsNeeded` is non_exhaustive; a kind added later has no
+                    // front-end here yet, and "did not look" is honest for it.
+                    _ => false,
+                };
+                if !looked && file.class.yields(needed) {
                     checks_skipped += 1;
                     skipped_checks.push((engine.id().to_string(), file.path.clone()));
                 }
                 findings.extend(engine.check_file(FileContext {
                     path: &file.path,
                     facts: facts.as_ref(),
+                    docs: docs.as_ref(),
                     siblings: &file_names,
+                    // The walk already knows the whole repository, so a rule
+                    // asking about a path outside this directory costs a map
+                    // lookup and no disk.
+                    exists: Exists::new(&|candidate| tree.contains_file(candidate)),
                 }));
             }
         }
@@ -333,6 +383,82 @@ fn facts_for(
     Ok((parse(path, &source, content)?, Source::Parsed))
 }
 
+/// Where a read lands, so one call can report all three outcomes.
+struct Counters<'a> {
+    parsed: &'a mut usize,
+    reused: &'a mut usize,
+    unreadable: &'a mut Vec<(RepoRelPath, String)>,
+}
+
+/// Reads a document and files the outcome, or `None` when it could not be read.
+fn read_docs(
+    root: &Utf8Path,
+    path: &RepoRelPath,
+    cache: Option<&mut Cache>,
+    counters: &mut Counters<'_>,
+) -> Option<archwarden_core::docs::DocFacts> {
+    match docs_for(root, path, cache) {
+        Ok((docs, Source::Cache)) => {
+            *counters.reused += 1;
+            Some(docs)
+        }
+        Ok((docs, Source::Parsed)) => {
+            *counters.parsed += 1;
+            Some(docs)
+        }
+        Err(reason) => {
+            counters.unreadable.push((path.clone(), reason));
+            None
+        }
+    }
+}
+
+/// Whether this run may read a file of this class as code.
+///
+/// JS/TS always. Astro only when the configuration asked for it -- and when it
+/// did not, the file produces no facts, which `yields` then turns into a
+/// counted, named skip rather than a silent pass. Issue #13.
+fn reads_as_code(class: FileClass, languages: archwarden_core::compiled::Languages) -> bool {
+    match class {
+        FileClass::Source => true,
+        FileClass::Embedded => languages.astro,
+        _ => false,
+    }
+}
+
+/// Document facts for one file, from the cache when they are there.
+///
+/// The same shape as [`facts_for`], deliberately: the second front-end earns no
+/// exception. Reading a document is infallible, so the `Result` a code parse
+/// needs is absent here — a document that disappoints a rule does so through
+/// its facts, not through an error.
+fn docs_for(
+    root: &Utf8Path,
+    path: &RepoRelPath,
+    cache: Option<&mut Cache>,
+) -> Result<(archwarden_core::docs::DocFacts, Source), String> {
+    let source =
+        std::fs::read_to_string(root.join(path.as_path())).map_err(|error| error.to_string())?;
+    let content = ContentHash::of(source.as_bytes());
+
+    if let Some(cache) = cache {
+        // Keyed by content alone, so the path is supplied rather than read
+        // back. Same reasoning as `facts_for`; same bug if it is not. Issue #20.
+        if let Some(docs) = cache.docs(content, path) {
+            return Ok((docs, Source::Cache));
+        }
+
+        let docs = archwarden_parser::document::read(path, &source, content);
+        cache.put_docs(content, &docs);
+        return Ok((docs, Source::Parsed));
+    }
+
+    Ok((
+        archwarden_parser::document::read(path, &source, content),
+        Source::Parsed,
+    ))
+}
+
 /// Facts for one file, read and parsed now.
 ///
 /// The uncached path, exposed for `check --file`: a pre-write hook checks one
@@ -348,10 +474,19 @@ pub fn facts_of(root: &Utf8Path, path: &RepoRelPath) -> Result<FileFacts, String
     parse(path, &source, content)
 }
 
+/// Reads one file as code, through whichever front-end its class names.
+///
+/// The dispatch is by class rather than by extension: `FileClass` already
+/// answers "what kind of file is this" from the name alone, and asking a second
+/// time here is where the two would drift.
 fn parse(path: &RepoRelPath, source: &str, content: ContentHash) -> Result<FileFacts, String> {
-    archwarden_parser::oxc::OxcParser
-        .parse(path, source, content)
-        .map_err(|error| error.to_string())
+    let class = path.file_name().map_or(FileClass::Other, FileClass::of);
+
+    match class {
+        FileClass::Embedded => archwarden_parser::astro::parse(path, source, content),
+        _ => archwarden_parser::oxc::OxcParser.parse(path, source, content),
+    }
+    .map_err(|error| error.to_string())
 }
 
 /// The level a report should be summarised at, for a caller choosing an exit
@@ -398,6 +533,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind,
@@ -419,9 +556,10 @@ mod tests {
 
     fn structure(allowed: &[&str]) -> CompiledRuleKind {
         CompiledRuleKind::Structure {
-            allowed_subfolders: allowed.iter().map(|s| (*s).to_owned()).collect(),
+            allowed_subfolders: Some(allowed.iter().map(|s| (*s).to_owned()).collect()),
             warn_subfolders: Vec::new(),
             recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
             filename_patterns: Vec::new(),
         }
     }
@@ -453,6 +591,7 @@ mod tests {
                     archwarden_core::facts::ExportKind::Function,
                 ),
             ),
+            annotation: Vec::new(),
             signature_hint: None,
         }
     }
@@ -1201,6 +1340,52 @@ mod tests {
     /// wrong with the file. `AGENTS.md` says a run with skips must not be
     /// reported as clean, so such a count teaches a reader to ignore the one
     /// number it tells them to watch. Issue #15.
+    /// Issue #44's other half. A `.py` under a boundary rule used to be
+    /// `Other` — the class that exists so a PNG does not inflate the count — so
+    /// the rule saw no imports, reported nothing, and counted nothing. A rule
+    /// enforcing nothing looks exactly like a repository that satisfies it,
+    /// which `CONFIG.md` calls the worst failure a linter has.
+    ///
+    /// Nothing here becomes readable. It becomes *countable*.
+    #[test]
+    fn source_this_build_cannot_read_is_a_check_nobody_could_make() {
+        let (guard, root) = tree_at(&[
+            ("src/domain/order.ts", "export const order = 1;\n"),
+            (
+                "src/domain/handler.py",
+                "from src.infrastructure import db\n",
+            ),
+        ]);
+        let config = config(vec![rule(
+            "domain-forbids-infrastructure",
+            None,
+            &["src/*"],
+            boundary(&["src/infrastructure/**"], &[], &[]),
+        )]);
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let report = check(Run {
+            root: &root,
+            config: &config,
+            tree: &tree,
+            cache: None,
+        });
+        drop(guard);
+
+        assert_eq!(
+            report.checks_skipped, 1,
+            "the Python file has imports this build cannot read"
+        );
+        assert_eq!(
+            report
+                .skipped_checks
+                .iter()
+                .map(|(_, path)| path.as_str())
+                .collect::<Vec<_>>(),
+            ["src/domain/handler.py"],
+            "and the run names it, so nobody has to guess"
+        );
+    }
+
     #[test]
     fn a_file_that_is_not_source_is_not_a_check_nobody_could_make() {
         let (guard, root) = tree_at(&[

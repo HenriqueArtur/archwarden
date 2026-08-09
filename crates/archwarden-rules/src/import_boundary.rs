@@ -20,7 +20,7 @@ use archwarden_core::{
     level::Level,
     path::RepoRelPath,
     scope::Scope,
-    traits::{FileContext, RuleEngine},
+    traits::{FactsNeeded, FileContext, RuleEngine},
 };
 
 /// A compiled `import-boundary` rule.
@@ -199,8 +199,8 @@ impl RuleEngine for ImportBoundaryEngine {
         self.scope.contains_file(path.as_path())
     }
 
-    fn needs_facts(&self) -> bool {
-        true
+    fn needs_facts(&self) -> FactsNeeded {
+        FactsNeeded::Code
     }
 
     fn needs_resolution(&self) -> bool {
@@ -315,6 +315,8 @@ impl RuleEngine for ImportBoundaryEngine {
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::traits::Exists;
+
     use super::*;
     use archwarden_core::{
         facts::{FileFacts, Span},
@@ -338,6 +340,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new("ui-forbids-domain").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["packages/ui/**"]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {
@@ -383,7 +387,9 @@ mod tests {
         engine.check_file(FileContext {
             path: &facts.path,
             facts: Some(facts),
+            docs: None,
             siblings: &[],
+            exists: Exists::none(),
         })
     }
 
@@ -699,7 +705,9 @@ mod tests {
         let findings = engine.check_file(FileContext {
             path: &path("packages/ui/a.ts"),
             facts: None,
+            docs: None,
             siblings: &[],
+            exists: Exists::none(),
         });
 
         assert!(findings.is_empty());
@@ -711,7 +719,7 @@ mod tests {
     fn the_rule_declares_both_costs() {
         let engine = engine(&["packages/domain/**"], &[], &[], true);
 
-        assert!(engine.needs_facts());
+        assert_eq!(engine.needs_facts(), FactsNeeded::Code);
         assert!(engine.needs_resolution());
         assert_eq!(engine.id().as_str(), "ui-forbids-domain");
         assert_eq!(engine.module(), None);
@@ -752,12 +760,15 @@ mod tests {
         let structure = CompiledRule {
             id: RuleId::new("shape").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["packages/ui/**"]).expect("valid scope"),
             kind: CompiledRuleKind::Structure {
-                allowed_subfolders: Vec::new(),
+                allowed_subfolders: Some(Vec::new()),
                 warn_subfolders: Vec::new(),
                 recurse_into: Vec::new(),
+                subfolder_patterns: Vec::new(),
                 filename_patterns: Vec::new(),
             },
         };
@@ -771,6 +782,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("three-is-quarantined").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {

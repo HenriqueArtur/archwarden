@@ -52,6 +52,13 @@ struct GuideRule<'a> {
     applies_to: &'a [String],
     /// One sentence per requirement, the same prose `describe` prints.
     requires: Vec<String>,
+    /// Why the rule exists, when its author said. A digest without them is a
+    /// list of prohibitions, which is what an agent works around. Issue #46.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    why: Option<&'a str>,
+    /// Why the module it belongs to exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    module_why: Option<&'a str>,
 }
 
 /// Every rule kind archwarden has, as written in a config and on the command
@@ -60,10 +67,13 @@ struct GuideRule<'a> {
 /// Listed here rather than derived, because `CompiledRuleKind::type_name` maps
 /// one way only. A test walks the enum through this list, so the two cannot
 /// drift.
-pub const KINDS: [&str; 5] = [
+pub const KINDS: [&str; 8] = [
     "structure",
     "naming",
     "spec-pair",
+    "presence",
+    "pair",
+    "frontmatter",
     "import-boundary",
     "call-obligation",
 ];
@@ -116,6 +126,8 @@ pub fn guide<'a>(
                     .map(archwarden_core::ids::ModuleId::as_str),
                 applies_to: rule.scope.patterns(),
                 requires: requirements(&rule.kind),
+                why: rule.why.as_deref(),
+                module_why: rule.module_why.as_deref(),
             })
             .collect(),
     }
@@ -148,16 +160,29 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
         CompiledRuleKind::Structure {
             allowed_subfolders,
             warn_subfolders,
+            subfolder_patterns,
             filename_patterns,
             ..
         } => {
             let mut lines = Vec::new();
-            if !allowed_subfolders.is_empty() || !warn_subfolders.is_empty() {
-                let mut line = format!("subfolders: {}", join(allowed_subfolders));
+            if allowed_subfolders.is_some() || !warn_subfolders.is_empty() {
+                let allowed = allowed_subfolders.as_deref().unwrap_or_default();
+                let mut line = format!("subfolders: {}", join(allowed));
                 if !warn_subfolders.is_empty() {
                     let _ = write!(line, "; allowed with a warning: {}", join(warn_subfolders));
                 }
                 lines.push(line);
+            }
+            if !subfolder_patterns.is_empty() {
+                lines.push(format!(
+                    "subfolder names must match: {}",
+                    join(
+                        &subfolder_patterns
+                            .iter()
+                            .map(|p| p.as_str().to_owned())
+                            .collect::<Vec<_>>()
+                    )
+                ));
             }
             if !filename_patterns.is_empty() {
                 lines.push(format!(
@@ -208,6 +233,7 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             dir_pattern,
             name_template,
             kind,
+            annotation,
             signature_hint,
         } => {
             // The directory half belongs in the same sentence, not in a note
@@ -215,13 +241,19 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             // must export `{{pascal(entity)}}{{pascal(action)}}`" without being
             // told where `entity` comes from cannot produce the name, and this
             // digest is what it has instead of the config.
+            //
+            // The annotation belongs in that sentence too, and not in a note
+            // under it beside the hint: one of those two is enforced and the
+            // other is advice, and a digest that lists them together teaches an
+            // agent to treat both as optional.
             let mut lines = vec![format!(
-                "files matching `{}`{} must export `{name_template}`{}",
+                "files matching `{}`{} must export `{name_template}`{}{}",
                 file_pattern.as_str(),
                 dir_pattern.as_ref().map_or_else(String::new, |pattern| {
                     format!(", in a directory matching `{}`", pattern.as_str())
                 }),
                 declared_as(kind),
+                annotated_as(annotation),
             )];
             if let Some(hint) = signature_hint {
                 lines.push(format!("suggested signature: `{hint}`"));
@@ -286,6 +318,60 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             }
             lines
         }
+        CompiledRuleKind::Frontmatter {
+            file_pattern,
+            require,
+            one_of,
+            equals,
+        } => {
+            let mut lines = vec![format!(
+                "documents matching `{}` need frontmatter",
+                file_pattern.as_str()
+            )];
+            if !require.is_empty() {
+                let quoted: Vec<String> = require.iter().map(|k| format!("`{k}`")).collect();
+                lines.push(format!("carrying: {}", quoted.join(", ")));
+            }
+            for (key, accepted) in one_of {
+                let quoted: Vec<String> = accepted.iter().map(|v| format!("`{v}`")).collect();
+                lines.push(format!("`{key}` one of: {}", quoted.join(", ")));
+            }
+            for (key, template) in equals {
+                lines.push(format!("`{key}` equal to `{template}`"));
+            }
+            lines
+        }
+        CompiledRuleKind::Pair {
+            file_pattern,
+            must_exist,
+        } => vec![format!(
+            "files matching `{}` need `{must_exist}` beside them",
+            file_pattern.as_str()
+        )],
+        CompiledRuleKind::Presence {
+            require,
+            require_any,
+        } => {
+            let mut lines = Vec::new();
+            if !require.is_empty() {
+                // Comma-joined, not `join`: that helper reads "a or b", and
+                // every one of these is required.
+                let quoted: Vec<String> = require.iter().map(|n| format!("`{n}`")).collect();
+                lines.push(format!("must contain: {}", quoted.join(", ")));
+            }
+            if !require_any.is_empty() {
+                lines.push(format!(
+                    "at least one file matching: {}",
+                    join(
+                        &require_any
+                            .iter()
+                            .map(|p| p.as_str().to_owned())
+                            .collect::<Vec<_>>()
+                    )
+                ));
+            }
+            lines
+        }
         CompiledRuleKind::CallObligation {
             file_pattern,
             symbol,
@@ -313,6 +399,20 @@ fn declared_as(kind: &KindFilter) -> String {
     }
 }
 
+/// The clause naming the type the export must write down, if the rule asks.
+///
+/// Empty for a rule that asks for none, which keeps the sentence of every rule
+/// written before this field existed byte-identical -- `agent-guide` is
+/// documented as deterministic and safe to commit, so an unrelated rule
+/// growing a clause would show up as a diff in a repository nobody touched.
+fn annotated_as(annotation: &[String]) -> String {
+    if annotation.is_empty() {
+        return String::new();
+    }
+
+    format!(", annotated {}", join(annotation))
+}
+
 fn join(items: &[String]) -> String {
     let quoted: Vec<String> = items.iter().map(|item| format!("`{item}`")).collect();
     match quoted.split_last() {
@@ -330,14 +430,188 @@ pub enum GuideFormat {
     Markdown,
     /// The same content, as a versioned object.
     Json,
+    /// The same content, as a page for somebody about to change the
+    /// architecture rather than to satisfy it.
+    ///
+    /// Config-only, like the other two: this renders what the rules *declare*,
+    /// so it stays byte-stable and safe to commit. What the architecture
+    /// currently *is* — which walls are being crossed, and how often — needs
+    /// the repository, and lives in `check --html`.
+    Html,
 }
 
 /// Writes the guide.
-pub fn render(guide: &Guide<'_>, format: GuideFormat, out: &mut dyn std::io::Write) {
+pub fn render(
+    guide: &Guide<'_>,
+    format: GuideFormat,
+    language: crate::phrases::Language,
+    out: &mut dyn std::io::Write,
+) {
     match format {
+        // Markdown and JSON stay English whatever the language is. One is a
+        // digest an agent reads and the other is a contract; see `phrases`.
         GuideFormat::Markdown => render_markdown(guide, out),
         GuideFormat::Json => render_json(guide, out),
+        GuideFormat::Html => render_html(guide, language, out),
     }
+}
+
+/// The digest as a page: the map, the walls, and the reasons.
+///
+/// Grouped by module rather than listed by rule, because the reader is holding
+/// a mental map of the repository and not a list of ids. Rules that belong to
+/// no module come last, under their own heading — import boundaries usually
+/// are, and they are the walls between the modules above.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one page, written in the order it is read. Splitting it by \
+              section would put the shape of the document behind four \
+              signatures, and the shape is the thing under review"
+)]
+fn render_html(
+    guide: &Guide<'_>,
+    language: crate::phrases::Language,
+    out: &mut dyn std::io::Write,
+) {
+    use crate::html::{close, code, escape, open, prose, section};
+
+    let say = language.phrases();
+    open(say.guide_title(), language, out);
+
+    let modules = grouped_by_module(guide);
+    let unattached = guide
+        .rules
+        .iter()
+        .filter(|rule| rule.module.is_none())
+        .count();
+    let unexplained = guide.rules.iter().filter(|rule| rule.why.is_none()).count();
+
+    // Masthead. The counts are the ones the digest already carries; nothing is
+    // derived that `agent-guide --format json` does not also say.
+    let _ = write!(
+        out,
+        "<header class=\"masthead\">\n\
+         <div class=\"stamp\">{}</div>\n\
+         <h1>{}</h1>\n\
+         <div class=\"tallies\">\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally\"><span class=\"n\">{unattached}</span><span class=\"k\">{}</span></div>\n\
+         <div class=\"tally{}\"><span class=\"n\">{unexplained}</span><span class=\"k\">{}</span></div>\n\
+         </div>\n</header>\n",
+        escape(say.guide_stamp()),
+        escape(&say.guide_heading(guide.rules.len(), modules.len())),
+        guide.rules.len(),
+        escape(say.tally_rules()),
+        modules.len(),
+        escape(say.tally_modules()),
+        escape(say.tally_cross_module()),
+        // The class comes before the label because the format string puts it
+        // there: `<div class="tally{}">…<span class="k">{}</span>`. Getting
+        // this pair the wrong way round printed `is-accepted` as a label,
+        // which is a bug a reader sees and a test does not.
+        if unexplained > 0 { " is-accepted" } else { "" },
+        escape(say.tally_no_reason()),
+    );
+
+    let _ = write!(
+        out,
+        "{}",
+        section(say.map_eyebrow(), say.map_heading(), say.map_lede())
+    );
+
+    let _ = writeln!(out, "<div class=\"modules\">\n");
+    for (module, rules) in &modules {
+        let module_why = rules.iter().find_map(|rule| rule.module_why);
+        let _ = write!(
+            out,
+            "<div class=\"module\">\n<span class=\"name\">{}</span>\n\
+             <span class=\"counts\">{}</span>",
+            escape(module),
+            escape(&say.rules(rules.len())),
+        );
+        if let Some(why) = module_why {
+            let _ = writeln!(out, "<p class=\"why\">{}</p>", escape(why));
+        } else {
+            let _ = writeln!(
+                out,
+                "<p class=\"why is-absent\">{}</p>",
+                escape(say.no_reason_recorded())
+            );
+        }
+        let _ = writeln!(out, "</div>\n");
+    }
+    let _ = writeln!(out, "</div>\n</section>");
+
+    let _ = write!(
+        out,
+        "{}",
+        section(say.rules_eyebrow(), say.rules_heading(), say.rules_lede())
+    );
+
+    let _ = writeln!(out, "<div class=\"walls\">\n");
+    for rule in &guide.rules {
+        let _ = write!(
+            out,
+            "<article class=\"rule\">\n\
+             <span class=\"id\">{}</span>\n\
+             <span class=\"severity {2}\">{2}</span>\n\
+             <span class=\"kind\">{}</span>",
+            escape(rule.id),
+            escape(rule.kind),
+            escape(rule.level),
+        );
+        let _ = write!(
+            out,
+            "<ul>\n<li>{}</li>",
+            say.applies_to(
+                &rule
+                    .applies_to
+                    .iter()
+                    .map(|glob| code(glob))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        );
+        for requirement in &rule.requires {
+            let _ = writeln!(out, "<li>{}</li>", prose(requirement));
+        }
+        let _ = writeln!(out, "</ul>");
+        if let Some(why) = rule.why {
+            let _ = writeln!(out, "<p class=\"why\">{}</p>", escape(why));
+        }
+        let _ = writeln!(out, "</article>\n");
+    }
+    let _ = writeln!(out, "</div>\n</section>");
+
+    let _ = write!(
+        out,
+        "<footer><span>archwarden {}</span>\n\
+         <span>{} <code>archwarden check --html</code></span>\n\
+         <span>{}</span></footer>",
+        escape(env!("CARGO_PKG_VERSION")),
+        escape(say.guide_footer()),
+        escape(say.read_only()),
+    );
+
+    close(out);
+}
+
+/// The rules of each module, in configuration order, modules in name order.
+fn grouped_by_module<'a>(guide: &'a Guide<'a>) -> Vec<(&'a str, Vec<&'a GuideRule<'a>>)> {
+    let mut by_module: std::collections::BTreeMap<&str, Vec<&GuideRule<'_>>> =
+        std::collections::BTreeMap::new();
+
+    for rule in &guide.rules {
+        // A rule declared at the top level belongs to no module and reports as
+        // `[*]` everywhere else, so it is grouped under the same name here.
+        by_module
+            .entry(rule.module.unwrap_or("*"))
+            .or_default()
+            .push(rule);
+    }
+
+    by_module.into_iter().collect()
 }
 
 fn render_json(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
@@ -384,6 +658,15 @@ fn render_markdown(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
         for requirement in &rule.requires {
             let _ = writeln!(out, "- {requirement}");
         }
+        // Last, and on its own line: the requirements are what to do, this is
+        // why. A digest of prohibitions with no reasons is what an agent works
+        // around. Issue #46.
+        if let Some(why) = rule.why {
+            let _ = writeln!(out, "- **Why**: {why}");
+        }
+        if let Some(why) = rule.module_why {
+            let _ = writeln!(out, "- **Why this module**: {why}");
+        }
         let _ = writeln!(out);
     }
 
@@ -421,6 +704,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -447,6 +732,7 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
+            annotation: Vec::new(),
             signature_hint: Some("(deps: Deps): UseCase".to_owned()),
         }
     }
@@ -467,7 +753,12 @@ mod tests {
     ) -> String {
         let owned: Vec<String> = kinds.iter().map(|k| (*k).to_owned()).collect();
         let mut out = Vec::new();
-        render(&guide(config, scope, &owned), format, &mut out);
+        render(
+            &guide(config, scope, &owned),
+            format,
+            crate::phrases::Language::En,
+            &mut out,
+        );
         String::from_utf8(out).expect("output is UTF-8")
     }
 
@@ -527,6 +818,232 @@ mod tests {
         let markdown = rendered(&everywhere, None, GuideFormat::Markdown);
         assert!(markdown.contains("(nor anything under it)"), "{markdown}");
         assert!(!markdown.contains("only "), "{markdown}");
+    }
+
+    /// Every label on the page is a label, and not a CSS class that landed in
+    /// the wrong hole.
+    ///
+    /// The masthead interleaves counts, classes and labels in one format
+    /// string, and one pair the wrong way round printed `is-accepted` where a
+    /// reader expected a word. It compiled, and nothing else noticed.
+    #[test]
+    fn no_tally_label_is_a_class_name() {
+        let html = rendered(
+            &config(vec![rule("usecase-name", None, &["src/*"], naming())]),
+            None,
+            GuideFormat::Html,
+        );
+
+        for label in html.split("class=\"k\">").skip(1) {
+            let label = label.split('<').next().unwrap_or_default();
+            assert!(
+                !label.contains("is-"),
+                "`{label}` is a class, not a label: {html}"
+            );
+            assert!(!label.trim().is_empty(), "an empty label: {html}");
+        }
+    }
+
+    /// The digest is what an agent has *instead of* the config, so a
+    /// requirement missing from it is a requirement the agent will break and
+    /// then be told about. The annotation is checked, so it belongs in the
+    /// sentence rather than under it as a suggestion.
+    /// The human rendering of the same digest. `describe` and the JSON are for
+    /// an agent; this is for somebody about to change the architecture, who
+    /// wants the walls and the reasons in one place.
+    #[test]
+    fn the_html_page_carries_the_modules_the_walls_and_the_reasons() {
+        let mut boundary_rule = rule(
+            "domain-forbids-app",
+            Some("domain"),
+            &["packages/domain/**"],
+            boundary(),
+        );
+        boundary_rule.why =
+            Some("domain is published as its own package and the app is not".to_owned());
+        boundary_rule.module_why = Some("extracted so billing could depend on it".to_owned());
+
+        let html = rendered(&config(vec![boundary_rule]), None, GuideFormat::Html);
+
+        assert!(html.starts_with("<!doctype html>"), "{html}");
+        assert!(html.contains("domain-forbids-app"), "the rule id");
+        assert!(html.contains("packages/domain/**"), "the scope it governs");
+        assert!(
+            html.contains("domain is published as its own package"),
+            "the reason, which is the whole point"
+        );
+        assert!(
+            html.contains("extracted so billing could depend on it"),
+            "the module's own reason"
+        );
+    }
+
+    /// The page is a rendering of the digest, and the digest is documented as
+    /// byte-stable and safe to commit. The page has to be too, or a repository
+    /// that keeps one gets a diff every run.
+    #[test]
+    fn the_html_page_is_byte_stable() {
+        let config = config(vec![rule("usecase-name", None, &["src/*"], naming())]);
+
+        assert_eq!(
+            rendered(&config, None, GuideFormat::Html),
+            rendered(&config, None, GuideFormat::Html)
+        );
+    }
+
+    /// A reason is prose somebody wrote, and the likeliest string in the whole
+    /// config to contain a character that would close the element it sits in.
+    #[test]
+    fn a_reason_that_looks_like_markup_does_not_break_the_page() {
+        let mut reasoned = rule("layout-rule", None, &["src/*"], naming());
+        reasoned.why = Some("every page renders inside <Layout />".to_owned());
+
+        let html = rendered(&config(vec![reasoned]), None, GuideFormat::Html);
+
+        assert!(html.contains("&lt;Layout /&gt;"), "{html}");
+        assert!(!html.contains("<Layout />"), "it got out of its element");
+    }
+
+    /// Issue #44. The digest is what an agent has before it writes a document,
+    /// and the frontmatter is the half a human never reads.
+    #[test]
+    fn a_frontmatter_rule_lists_its_keys_and_vocabularies() {
+        let config = config(vec![rule(
+            "projeto-frontmatter",
+            None,
+            &["projetos/*"],
+            CompiledRuleKind::Frontmatter {
+                file_pattern: Pattern::compile(r"^projeto\.md$").expect("valid"),
+                require: vec!["id".to_owned(), "nivel".to_owned()],
+                one_of: vec![("nivel".to_owned(), vec!["1".to_owned(), "2".to_owned()])],
+                equals: vec![("id".to_owned(), "{{raw(dirname)}}".to_owned())],
+            },
+        )]);
+
+        let markdown = rendered(&config, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains(r"documents matching `^projeto\.md$` need frontmatter"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("carrying: `id`, `nivel`"), "{markdown}");
+        assert!(markdown.contains("`nivel` one of: `1`, `2`"), "{markdown}");
+        assert!(
+            markdown.contains("`id` equal to `{{raw(dirname)}}`"),
+            "{markdown}"
+        );
+    }
+
+    /// Issue #45. The digest has to say which of the two files needs the
+    /// other, because the rule is one-directional and an agent that got it
+    /// backwards would create the wrong file.
+    #[test]
+    fn a_pair_rule_says_which_file_needs_which() {
+        let config = config(vec![rule(
+            "licao-tem-notas",
+            None,
+            &["projetos/*"],
+            CompiledRuleKind::Pair {
+                file_pattern: Pattern::compile(r"^projeto\.md$").expect("valid"),
+                must_exist: "notas.md".to_owned(),
+            },
+        )]);
+
+        let markdown = rendered(&config, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains(r"files matching `^projeto\.md$` need `notas.md` beside them"),
+            "{markdown}"
+        );
+    }
+
+    /// Issue #42. The digest teaches the rules before a question is asked, and
+    /// "a lesson directory has these four files" is the one an agent most needs
+    /// before creating one.
+    #[test]
+    fn a_presence_rule_lists_what_must_exist() {
+        let config = config(vec![rule(
+            "licao-completa",
+            None,
+            &["projetos/*"],
+            CompiledRuleKind::Presence {
+                require: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
+                require_any: vec![Pattern::compile(r"\.ino$").expect("valid")],
+            },
+        )]);
+
+        let markdown = rendered(&config, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains("must contain: `projeto.md`, `notas.md`"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains(r"at least one file matching: `\.ino$`"),
+            "{markdown}"
+        );
+    }
+
+    /// Issue #46. The digest is a list of prohibitions without them, and a
+    /// list of prohibitions is what an agent works around.
+    #[test]
+    fn a_rules_reason_is_part_of_the_digest() {
+        let mut reasoned = rule("usecase-name", None, &["src/*"], naming());
+        reasoned.why = Some("the loader finds these by readdir".to_owned());
+        let config = config(vec![reasoned]);
+
+        let markdown = rendered(&config, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains("**Why**: the loader finds these by readdir"),
+            "{markdown}"
+        );
+    }
+
+    /// A digest is what an agent has instead of the config, and "the folder
+    /// name has to look like this" is exactly what it needs before creating
+    /// one.
+    #[test]
+    fn a_subfolder_pattern_appears_in_the_digest() {
+        let by_shape = config(vec![rule(
+            "licao-nome-da-pasta",
+            None,
+            &["projetos"],
+            CompiledRuleKind::Structure {
+                allowed_subfolders: None,
+                warn_subfolders: Vec::new(),
+                recurse_into: Vec::new(),
+                subfolder_patterns: vec![Pattern::compile(r"^\d{2}-[a-z0-9-]+$").expect("valid")],
+                filename_patterns: Vec::new(),
+            },
+        )]);
+
+        let markdown = rendered(&by_shape, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains(r"subfolder names must match: `^\d{2}-[a-z0-9-]+$`"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn a_required_annotation_is_part_of_the_sentence() {
+        let annotated = CompiledRuleKind::Naming {
+            file_pattern: Pattern::compile(r"^(?<tool>[a-z0-9-]+)\.tool\.ts$").expect("valid"),
+            dir_pattern: None,
+            name_template: "AGENT_TOOL".to_owned(),
+            kind: KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
+            annotation: vec!["AgentToolModule".to_owned()],
+            signature_hint: None,
+        };
+        let config = config(vec![rule("tools", None, &["src/*"], annotated)]);
+
+        let markdown = rendered(&config, None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains("annotated `AgentToolModule`"),
+            "{markdown}"
+        );
     }
 
     fn mixed() -> CompiledConfig {
@@ -770,9 +1287,10 @@ mod tests {
                 None,
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: Vec::new(),
+                    allowed_subfolders: Some(Vec::new()),
                     warn_subfolders: vec!["shared".to_owned()],
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: Vec::new(),
                 },
             )]),
@@ -791,9 +1309,13 @@ mod tests {
                 None,
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: Vec::new(),
+                    // Absent, not empty: after issue #40 an empty list is a
+                    // constraint -- "no subfolder may exist here" -- and the
+                    // digest has to say so.
+                    allowed_subfolders: None,
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: vec![Pattern::compile("^[a-z-]+\\.ts$").expect("valid")],
                 },
             )]),
@@ -817,9 +1339,10 @@ mod tests {
                 None,
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec!["types".to_owned()],
+                    allowed_subfolders: Some(vec!["types".to_owned()]),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: Vec::new(),
                 },
             )]),
@@ -893,9 +1416,10 @@ mod tests {
                 None,
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec!["types".to_owned()],
+                    allowed_subfolders: Some(vec!["types".to_owned()]),
                     warn_subfolders: vec!["shared".to_owned()],
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: vec![Pattern::compile("^[a-z-]+\\.ts$").expect("valid")],
                 },
             ),
@@ -995,6 +1519,7 @@ mod tests {
                     dir_pattern: None,
                     name_template: "{{pascal(name)}}".to_owned(),
                     kind: KindFilter::Any,
+                    annotation: Vec::new(),
                     signature_hint: None,
                 },
             )]),

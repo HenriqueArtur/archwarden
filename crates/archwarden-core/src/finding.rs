@@ -42,6 +42,10 @@ pub enum Expectation {
         allowed: Vec<String>,
         /// Names that are permitted but reported as warnings.
         warn: Vec<String>,
+        /// Regexes a name may match instead of being listed, as written in the
+        /// config. Empty when the rule constrains names by enumeration only.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        patterns: Vec<String>,
     },
     /// Every file here must match one of these filename patterns.
     FilenamePattern {
@@ -54,8 +58,46 @@ pub enum Expectation {
         kind: KindFilter,
         /// The required name, already rendered from the filename.
         name: String,
+        /// The type annotations that satisfy the rule, any one of them, already
+        /// rendered. Empty when the rule does not ask for one.
+        ///
+        /// Distinct from `signature_hint` on purpose. That field is a
+        /// suggestion `scaffold` renders and `check` ignores, and code depends
+        /// on that; this one is checked. Keeping the promise of each legible is
+        /// worth the second field.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        annotation: Vec<String>,
         /// A free-form signature shown by `scaffold`. Never verified.
         signature_hint: Option<String>,
+    },
+    /// These files must exist in the directory.
+    RequiredFiles {
+        /// Filenames that must be there.
+        names: Vec<String>,
+        /// Regexes at least one file must match, one file per entry.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        patterns: Vec<String>,
+    },
+    /// A document's frontmatter must carry these keys.
+    RequiredFrontmatter {
+        /// Keys that must be there.
+        keys: Vec<String>,
+        /// The closed vocabulary a key's value must come from.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        vocabularies: Vec<(String, Vec<String>)>,
+        /// A key whose value must equal this, already rendered from the path.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        agreements: Vec<(String, String)>,
+    },
+    /// A companion file must exist, named relative to this one.
+    ///
+    /// Distinct from [`RequiredSibling`](Self::RequiredSibling), which carries
+    /// `spec-pair`'s `non_empty_spec` and means a derived `<stem>.<marker>`
+    /// name. This one is literal and may sit outside the directory, and a
+    /// consumer branching on the tag should be able to tell them apart.
+    RequiredCompanion {
+        /// Where it goes, resolved.
+        path: RepoRelPath,
     },
     /// A sibling file must exist.
     RequiredSibling {
@@ -150,6 +192,27 @@ pub enum Observed {
         /// How it was actually declared.
         found: ExportTags,
     },
+    /// An export by the right name and kind, declaring no type at all.
+    ///
+    /// The state issue #39 is about: a declaration nothing submits to `tsc`,
+    /// so nothing rejects it until the module is loaded.
+    ExportMissingAnnotation {
+        /// The name that was found.
+        name: String,
+    },
+    /// An export annotated, but against another contract.
+    ///
+    /// Separate from [`Observed::ExportMissingAnnotation`] because the two are
+    /// different sentences and different fixes — one is "write the type down",
+    /// the other is "you wrote a different one" — the same reason
+    /// [`Observed::ExportWrongKind`] is not [`Observed::ExportMissing`].
+    ExportWrongAnnotation {
+        /// The name that was found.
+        name: String,
+        /// The types the declaration does claim, as written. More than one for
+        /// a class, which names a contract per `implements` clause.
+        found: Vec<String>,
+    },
     /// The only export is a default, whose name does not bind importers.
     OnlyDefaultExport,
     /// A re-export, whose kind cannot be determined without cross-file work.
@@ -158,6 +221,79 @@ pub enum Observed {
         name: String,
         /// Where it is re-exported from.
         from: String,
+    },
+    /// A file the directory must hold is not there.
+    ///
+    /// The first observation about a path that does not exist. Every other one
+    /// describes something a rule opened and disagreed with; this describes an
+    /// absence, which is the failure nobody notices — nothing errors, nothing
+    /// fails to build, and the gap is found by whoever needed the file.
+    RequiredFileMissing {
+        /// The name that was looked for.
+        name: String,
+    },
+    /// No file in the directory matches a pattern one had to.
+    ///
+    /// Separate from [`Observed::RequiredFileMissing`] because there is no
+    /// name to report: the requirement is a shape, and "create `\\.ino$`" is
+    /// not an instruction anybody can follow.
+    NoFileMatching {
+        /// The pattern that found nothing, as written in the config.
+        pattern: String,
+    },
+    /// The document has no frontmatter block at all.
+    ///
+    /// A finding rather than a skip: skipping would make *deleting the block*
+    /// the way out of the rule, which is the argument `skip_type_only` already
+    /// makes about deleting the `export` keyword.
+    FrontmatterAbsent,
+    /// There is a block and it is not a YAML mapping.
+    ///
+    /// Separate from [`Observed::FrontmatterAbsent`] because the next steps
+    /// differ: one is "write the block", the other is "what you wrote is not
+    /// YAML".
+    FrontmatterMalformed {
+        /// What the parser objected to.
+        reason: String,
+    },
+    /// A key the block had to carry is not there.
+    FrontmatterKeyMissing {
+        /// The key that was looked for.
+        key: String,
+    },
+    /// A key's value is outside the closed vocabulary the rule names.
+    ///
+    /// The confidently-wrong case, which is worse than an absence: a value
+    /// outside the vocabulary drops the document out of whatever reads it, with
+    /// no row and no error.
+    FrontmatterValueOutsideVocabulary {
+        /// The key.
+        key: String,
+        /// What was written there.
+        found: String,
+    },
+    /// A key's value does not agree with what the path says it should be.
+    FrontmatterValueDisagrees {
+        /// The key.
+        key: String,
+        /// What was written there.
+        found: String,
+        /// What the path says it should be.
+        wanted: String,
+    },
+    /// A key the rule asks a question about holds a list or a mapping.
+    ///
+    /// Distinct from being outside a vocabulary, because there is no value to
+    /// compare: "fix the value" and "you wrote a list here" are different
+    /// sentences.
+    FrontmatterValueNotScalar {
+        /// The key.
+        key: String,
+    },
+    /// The companion this file needs is not there.
+    CompanionMissing {
+        /// The path that was looked for, resolved.
+        path: RepoRelPath,
     },
     /// The required sibling is not there.
     SiblingMissing {
@@ -277,6 +413,7 @@ mod tests {
             expected: Expectation::RequiredExport {
                 kind: KindFilter::Any,
                 name: "Foo".to_owned(),
+                annotation: Vec::new(),
                 signature_hint: None,
             },
         }
@@ -377,6 +514,7 @@ mod tests {
             expected: Expectation::RequiredExport {
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
                 name: "Foo".to_owned(),
+                annotation: Vec::new(),
                 signature_hint: Some("(deps: FooDeps) => UseCase".to_owned()),
             },
         };

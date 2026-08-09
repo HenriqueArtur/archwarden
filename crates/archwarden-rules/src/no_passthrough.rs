@@ -45,7 +45,7 @@ use archwarden_core::{
     level::Level,
     path::RepoRelPath,
     scope::Scope,
-    traits::{FileContext, RuleEngine},
+    traits::{FactsNeeded, FileContext, RuleEngine},
 };
 
 /// A compiled `no-passthrough` rule.
@@ -180,8 +180,8 @@ impl RuleEngine for NoPassthroughEngine {
         !(self.allow_package_entrypoints && is_entry_point(path))
     }
 
-    fn needs_facts(&self) -> bool {
-        true
+    fn needs_facts(&self) -> FactsNeeded {
+        FactsNeeded::Code
     }
 
     fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {
@@ -267,6 +267,8 @@ fn is_entry_point(path: &RepoRelPath) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::traits::Exists;
+
     use super::*;
     use archwarden_core::facts::{ExportFact, ExportTags, ImportFact, Span};
 
@@ -278,6 +280,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("no-indirection").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Warning,
             scope: Scope::compile(["packages/domain/src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::NoPassthrough {
@@ -322,6 +326,7 @@ mod tests {
             is_default: false,
             reexport_from: None,
             forwards: forwards.map(ToOwned::to_owned),
+            annotations: Vec::new(),
             span: Span::new(0, 0),
         }
     }
@@ -330,7 +335,9 @@ mod tests {
         engine.check_file(FileContext {
             path: &facts.path,
             facts: Some(facts),
+            docs: None,
             siblings: &[],
+            exists: Exists::none(),
         })
     }
 
@@ -519,6 +526,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("no-barrels").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["packages/domain/src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::NoPassthrough {

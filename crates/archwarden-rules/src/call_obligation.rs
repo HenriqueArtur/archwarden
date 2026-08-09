@@ -21,7 +21,7 @@ use archwarden_core::{
     path::RepoRelPath,
     pattern::Pattern,
     scope::Scope,
-    traits::{FileContext, RuleEngine},
+    traits::{FactsNeeded, FileContext, RuleEngine},
 };
 
 /// A compiled `call-obligation` rule.
@@ -155,8 +155,8 @@ impl RuleEngine for CallObligationEngine {
                 .is_some_and(|name| self.file_pattern.is_match(name))
     }
 
-    fn needs_facts(&self) -> bool {
-        true
+    fn needs_facts(&self) -> FactsNeeded {
+        FactsNeeded::Code
     }
 
     fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {
@@ -205,6 +205,8 @@ impl RuleEngine for CallObligationEngine {
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::traits::Exists;
+
     use super::*;
     use archwarden_core::{
         facts::{CallFact, ImportFact, Span},
@@ -221,6 +223,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new("non-get-routes-must-audit").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["apps/app/src/app/api/**"]).expect("valid scope"),
             kind: CompiledRuleKind::CallObligation {
@@ -265,7 +269,9 @@ mod tests {
         engine.check_file(FileContext {
             path: &facts.path,
             facts: Some(facts),
+            docs: None,
             siblings: &[],
+            exists: Exists::none(),
         })
     }
 
@@ -467,7 +473,9 @@ mod tests {
         let findings = engine().check_file(FileContext {
             path: &path("apps/app/src/app/api/clients/route.post.ts"),
             facts: None,
+            docs: None,
             siblings: &[],
+            exists: Exists::none(),
         });
 
         assert!(findings.is_empty());
@@ -492,7 +500,7 @@ mod tests {
     fn the_rule_reads_facts_but_needs_no_resolution() {
         let engine = engine();
 
-        assert!(engine.needs_facts());
+        assert_eq!(engine.needs_facts(), FactsNeeded::Code);
         assert!(!engine.needs_resolution());
         assert_eq!(engine.id().as_str(), "non-get-routes-must-audit");
         assert_eq!(engine.module(), None);
@@ -525,9 +533,10 @@ mod tests {
         assert!(
             CallObligationEngine::from_rule(&CompiledRule {
                 kind: CompiledRuleKind::Structure {
-                    allowed_subfolders: Vec::new(),
+                    allowed_subfolders: Some(Vec::new()),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: Vec::new(),
                 },
                 ..rule()

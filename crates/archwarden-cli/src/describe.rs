@@ -147,6 +147,14 @@ struct JsonRule<'a> {
     level: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     module: Option<&'a str>,
+    /// Why the rule exists, when its author said. Issue #46: an agent that
+    /// knows the rule and not the reason can comply and nothing else, which is
+    /// how a config gets edited to make a check pass.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    why: Option<&'a str>,
+    /// Why the module it belongs to exists. A separate answer, not a fallback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    module_why: Option<&'a str>,
     expectations: &'a [Expectation],
 }
 
@@ -272,6 +280,8 @@ fn envelope_for<'a>(path: &'a RepoRelPath, applies: &'a [Applies<'a>]) -> JsonDe
                     .module
                     .as_ref()
                     .map(archwarden_core::ids::ModuleId::as_str),
+                why: entry.rule.why.as_deref(),
+                module_why: entry.rule.module_why.as_deref(),
                 expectations: &entry.expectations,
             })
             .collect(),
@@ -293,6 +303,8 @@ fn render_json(path: &RepoRelPath, applies: &[Applies<'_>], out: &mut dyn std::i
                     .module
                     .as_ref()
                     .map(archwarden_core::ids::ModuleId::as_str),
+                why: entry.rule.why.as_deref(),
+                module_why: entry.rule.module_why.as_deref(),
                 expectations: &entry.expectations,
             })
             .collect(),
@@ -332,6 +344,11 @@ fn render_text(path: &RepoRelPath, applies: &[Applies<'_>], out: &mut dyn std::i
             entry.rule.id,
             entry.rule.kind.type_name(),
         );
+        // Before the expectations, because it is why they are what they are.
+        // Issue #46.
+        if let Some(why) = &entry.rule.why {
+            let _ = writeln!(out, "    why: {why}");
+        }
         for expectation in &entry.expectations {
             let _ = writeln!(
                 out,
@@ -370,6 +387,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -383,6 +402,7 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
+            annotation: Vec::new(),
             signature_hint: Some("(deps: Deps) => UseCase".to_owned()),
         }
     }
@@ -418,6 +438,44 @@ mod tests {
 
     /// The reason the command exists: an agent about to write a file asks what
     /// is expected of it, and the file does not exist yet.
+    /// Issue #46. `describe` is what an agent asks *before* writing, which is
+    /// the moment a reason is worth most: knowing the rule is not knowing why,
+    /// and a constraint that looks arbitrary is the one that gets worked
+    /// around.
+    #[test]
+    fn a_rules_reason_reaches_the_json() {
+        let mut governed = rule(
+            "domain-forbids-app",
+            Some("domain"),
+            &["src/*"],
+            CompiledRuleKind::Structure {
+                allowed_subfolders: Some(vec!["types".to_owned()]),
+                warn_subfolders: Vec::new(),
+                recurse_into: Vec::new(),
+                subfolder_patterns: Vec::new(),
+                filename_patterns: Vec::new(),
+            },
+        );
+        governed.why = Some("domain is published and the app is not".to_owned());
+        governed.module_why = Some("extracted so billing could depend on it".to_owned());
+
+        let text = rendered(
+            &config(vec![governed], &[]),
+            &path("src/user"),
+            crate::report::Format::Json,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        assert_eq!(
+            parsed["rules"][0]["why"],
+            "domain is published and the app is not"
+        );
+        assert_eq!(
+            parsed["rules"][0]["module_why"],
+            "extracted so billing could depend on it"
+        );
+    }
+
     #[test]
     fn a_path_that_does_not_exist_still_has_rules() {
         let config = config(
@@ -653,9 +711,10 @@ mod tests {
 
     fn structure() -> CompiledRuleKind {
         CompiledRuleKind::Structure {
-            allowed_subfolders: vec!["types".to_owned()],
+            allowed_subfolders: Some(vec!["types".to_owned()]),
             warn_subfolders: Vec::new(),
             recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
             filename_patterns: Vec::new(),
         }
     }

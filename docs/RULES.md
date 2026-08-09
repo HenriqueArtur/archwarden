@@ -1,11 +1,18 @@
 # Rule categories
 
-archwarden ships six rule categories in v0. Each has narrow, well-defined
+archwarden ships nine rule categories in v0. Each has narrow, well-defined
 semantics. This document is the reference for what each rule can and cannot
 express. Config syntax lives in [`CONFIG.md`](CONFIG.md).
 
 Ordering: cheap and file-local first, expensive and graph-wide last. The
 engine runs them in the same order for cache-friendly evaluation.
+
+**Three of them need no parser at all.** `structure`, `presence` and `pair`
+reason about names and paths on disk, so they work on a repository in any
+language — or in none. `spec-pair` joins them unless `require_non_empty_spec`
+or `skip_type_only` is set. The rules that do open a file are `naming`,
+`call-obligation`, `no-passthrough` and `import-boundary` for JS/TS, and
+`frontmatter` for markdown. See decision 19 for what a new language costs.
 
 ---
 
@@ -21,6 +28,9 @@ directory:
 | `structure` | `filename_patterns` | the direct child files, by basename |
 | `naming` | `file_pattern` | the direct child files, by basename |
 | `naming` | `dir_pattern` | the selected directory itself, by its own basename |
+| `presence` | `require`, `require_any` | the direct child files, by name and by shape |
+| `frontmatter` | `file_pattern` | the direct child documents, by basename; then the `---` block inside |
+| `pair` | `file_pattern` | the direct child files, by basename; the companion may sit outside |
 | `spec-pair` | `subfolders` | the listed subdirectories **and everything below them** (`"."` = the directory itself, its own files only), then files in them |
 | `call-obligation` | `file_pattern` | the direct child files, by basename |
 | `import-boundary` | *(scope only)* | every file in the directory is a candidate importer |
@@ -82,6 +92,64 @@ which filenames may exist inside a folder.
   (documented technical debt).
 - **Filename patterns**. Given a root, every file inside must match at
   least one of a set of regexes. Non-matching files are errors.
+
+**An absent list and an empty one are different rules.** Omitting
+`allowed_subfolders` says nothing about subfolders — the rule may still
+constrain filenames, and every folder is permitted. Writing `[]` is a list of
+what may exist holding nothing, so **no subfolder may exist**, which is how a
+directory says it is a leaf:
+
+```json
+{
+  "type": "structure",
+  "id": "referencia-is-flat",
+  "level": "error",
+  "roots": ["referencia"],
+  "allowed_subfolders": []
+}
+```
+
+The two used to arrive identical and both did nothing, so the leaf rule was
+unsayable and the config that tried to say it passed three commands in a row —
+valid at `config validate`, silent at `config doctor`, skipped at `check`.
+Issue #40.
+
+A rule that names none of `allowed_subfolders`, `warn_subfolders`,
+`subfolder_patterns` or `filename_patterns` constrains nothing at all, and
+`config doctor` reports it as `rule-constrains-nothing`.
+
+- **Subfolder patterns**. `filename_patterns` one entry over, for the other
+  kind of directory entry: every direct child *directory* must match at least
+  one regex. Enumeration works for a fixed vocabulary (`types`, `calcs`,
+  `actions`) and cannot work for an open set where the shape is the rule —
+  sixteen lesson folders named `NN-slug` with more arriving, and nobody
+  listing them forever.
+
+  ```json
+  {
+    "type": "structure",
+    "id": "licao-nome-da-pasta",
+    "level": "error",
+    "roots": ["projetos"],
+    "subfolder_patterns": ["^\\d{2}-[a-z0-9-]+$"]
+  }
+  ```
+
+  It is a **union** with the two lists, the way `filename_patterns` is a union
+  of its own regexes: a name passes if a list names it *or* a pattern matches
+  it. So `allowed_subfolders: ["_template"]` beside the pattern above permits
+  `_template` and every `NN-slug`.
+
+  The lists are consulted **first**. A `warn_subfolders` entry whose name
+  happens to have the right shape still warns — severity precedence above says
+  the most specific declaration wins, and a name written out is more specific
+  than a regex. Reading the patterns first would silence the one list that
+  exists to be heard.
+
+  Purely lexical, like the rest of `structure`: no parse, no disk beyond the
+  walk. `naming.dir_pattern` is the same matcher and reaches it only through
+  `must_export`, which needs a TypeScript parse of a file inside — so a
+  directory with no `.ts` near it could not use it at all. Issue #43.
 
 **Recursion**. Some modules have nested modules of the same shape (e.g.,
 "variants" of an entity). The `recurse_into` field lists **containers whose
@@ -158,6 +226,9 @@ derivable from the filename by a case transform.
 - `must_export` — describes the required export:
   - `kind` — one tag or a list of tags (see table below).
   - `name` — templated from the capture groups.
+  - `annotation` — optional. The type the export must be **annotated with**,
+    templated from the same groups, as one value or a list meaning "any of".
+    **Verified.** See below.
   - `signature_hint` — optional free-form string. **Never verified.** It exists
     so `scaffold` can show a realistic skeleton
     (`export function Foo(deps: FooDeps): UseCase<FooInput, FooOutput>`)
@@ -266,13 +337,248 @@ a file-local rule cross-file, which is not what this rule is.
 one, they are ignored. The rule enforces presence and correctness of the
 required export, not exclusivity.
 
-**Cannot express**: constraints on the *type* of the export (e.g.,
-"function returning `UseCase<X>`"). That is type checking, not
-architecture linting. Use `tsc` for that.
+### When the export must write its type down
+
+A registry built by discovery has no compile-time gate. Every
+`tools/*.tool.ts` exports one symbol under a fixed name, a loader does
+`readdir` plus `import()`, and nothing imports those files statically any
+more. The name and the declaration form are already expressible; the shape is
+not, and this is what it costs:
+
+```ts
+export const AGENT_TOOL = { spec: { name: "lookup_cep" } };   // ✓ archwarden ✓ tsc ✗ boot
+```
+
+`kind` is satisfied, the name is exact, `check` is green — and the worker dies
+when the loader finds no `build`. The static registry that this replaced typed
+its array, so the compiler rejected a malformed module. `readdir` plus
+`import()` **removes that guarantee**, and the annotation on the export is the
+only thing that restores it.
+
+```json
+{
+  "type": "naming",
+  "id": "agent-tools-export-contract",
+  "level": "error",
+  "roots": ["apps/worker/src/agent-tools/tools"],
+  "file_pattern": "^(?<tool>[a-z0-9-]+)\\.tool\\.ts$",
+  "must_export": {
+    "kind": ["const"],
+    "name": "AGENT_TOOL",
+    "annotation": "AgentToolModule"
+  }
+}
+```
+
+`export const AGENT_TOOL: AgentToolModule = {...}` passes;
+`export const AGENT_TOOL = {...}` does not.
+
+Four things about it:
+
+- **This is not type checking.** Nothing is resolved and nothing is inferred.
+  The annotation is a token in the same declaration whose `kind` the rule
+  already reads, and comparing it is the same class of work as comparing the
+  name. A file annotating `AgentToolModule` over an object that is not one is
+  `tsc`'s problem and stays that way. What the rule buys is that the
+  declaration is *submitted to* `tsc`'s judgement at all — today a missing
+  annotation means there is nothing for `tsc` to check against.
+- **Where an annotation can live.** A binding writes it after the colon; a
+  class writes it in `implements`, and one that implements several contracts
+  satisfies a rule asking for any of them. A function declares a *return*
+  type, which is a different claim — so `annotation` beside
+  `kind: ["function"]` is a rule no file could satisfy, and the config is
+  refused rather than left to flag every file forever.
+- **Whitespace is not significant**, on either side. A type a formatter broke
+  over three lines is the same type. Beyond that the comparison is exact:
+  `AgentToolModule` does not match `AgentToolModule<In, Out>`, and a rule that
+  accepts both says so with a list.
+- **`scaffold` gets better, not just stricter.** The declaration it hands over
+  becomes `export const AGENT_TOOL: AgentToolModule = /* ... */;` — a line that
+  passes the rule, which is a promise `signature_hint` could never make.
+
+**Cannot express**: whether the annotated value really is of that type, and
+anything about the type itself ("a function returning `UseCase<X>`"). That is
+type checking. Use `tsc` for that.
 
 ---
 
-## 3. Spec pairing (TDD gate)
+## 3. Presence
+
+**What it enforces**: named files must exist in each governed directory.
+
+**Scope**: directory-local. No parse, no resolve — a name against the walk.
+
+**Shape**:
+
+- `require` — filenames that must be there.
+- `require_any` — regexes at least one file must match, **one file per entry**.
+
+```json
+{
+  "type": "presence",
+  "id": "licao-completa",
+  "level": "error",
+  "roots": ["projetos/*"],
+  "require": ["projeto.md", "exercicios.md", "notas.md", "diagram.json"],
+  "require_any": ["\\.ino$"]
+}
+```
+
+**This is not the inverse of `filename_patterns`.** That field is a whitelist
+of what *may* exist and is satisfied by an empty directory, which is exactly
+the state this rule is about. A unit of work is incomplete until its companion
+files are there, and the companion is what a hurried pass leaves out — nothing
+errors, nothing fails to build, and the gap is found by whoever needed the
+file. `spec-pair` is the same argument for one specific pair.
+
+**`require` takes filenames, not paths.** An entry with a `/` is refused when
+the config compiles. The same requirement is already sayable, by the rule that
+is about that directory:
+
+```json
+{ "type": "presence", "id": "sketch-existe", "level": "error",
+  "roots": ["projetos/*/sketch"], "require_any": ["\\.ino$"] }
+```
+
+One rule answering for one directory is what lets `describe` and `scaffold`
+answer for a directory that does not exist yet, which is where this rule is
+worth most: `archwarden scaffold projetos/17-nova` prints the filenames, and a
+lesson gets started rather than corrected.
+
+**One finding per missing entry**, not one per directory. Each is a separate
+file to create — the shape `spec-pair` already reports a missing sibling in —
+so a brand-new empty directory earns four findings for four absent files.
+`--summary` is the answer to volume.
+
+**Cannot express**: "this file needs *that* file", where the second is named
+relative to the first rather than to the directory. That is a pairing question
+rather than a presence one; see issue #45.
+
+**Cannot express**: "this file needs *that* file", where the second is named
+relative to the first rather than to the directory. That is `pair`, next.
+
+---
+
+## 4. Pairing
+
+**What it enforces**: a file of one kind must have a companion of another.
+
+**Scope**: file-local. No parse; a path against the walk.
+
+**Shape**:
+
+- `file_pattern` — regex over the filename of the file that *needs* a companion.
+- `must_exist` — the companion, as a path relative to that file's directory.
+
+```json
+{
+  "type": "pair",
+  "id": "licao-tem-notas",
+  "level": "error",
+  "roots": ["projetos/*"],
+  "file_pattern": "^projeto\\.md$",
+  "must_exist": "notas.md"
+}
+```
+
+**The difference from `presence` is the anchor.** `presence` asks about a
+*directory* — these files must be here, whatever else is. `pair` asks about a
+*file* — because this one exists, that one must too. So an empty directory is a
+`presence` finding and not a `pair` one, and that is the whole of it: a lesson
+that exists must have notes; a folder nobody has started owes nothing.
+
+**The companion may leave the directory.** `../projeto.md` is the case this
+rule exists for alongside the flat one — a sketch needs the lesson one level up,
+the sketch may be called anything, and no directory-scoped rule can say that.
+A path that would climb above the repository root puts the file outside the
+rule rather than producing a finding nobody could act on.
+
+**Literal, never derived.** `<stem>.<marker>.<ext>` is `spec-pair`'s idea; it
+is a good convention for tests and generalises to nothing. Two fixed names in
+one directory is what the rest of the world has.
+
+**One direction, always.** The file matching `file_pattern` needs the
+companion, never the reverse. An orphan `notas.md` is a note taken before the
+lesson was written, which is fine and is not a finding. Write the second rule
+if you mean both.
+
+**Why not widen `spec-pair`.** Its default ignores exclude anything that is not
+a JS/TS source file, by construction and for a good reason — a PNG needs no
+test — and widening a rule until its name stops describing it is how a rule
+stops being consultable. Issue #45.
+
+---
+
+## 5. Frontmatter
+
+**What it enforces**: a document's YAML frontmatter carries the keys something
+depends on.
+
+**Scope**: file-local. Reads the document, not the code.
+
+**Shape**:
+
+- `file_pattern` — regex over the filename of the documents this is about.
+- `require` — keys the block must carry.
+- `one_of` — the closed vocabulary a key's value must come from.
+- `equals` — a key whose value must equal a template rendered from the path.
+
+```json
+{
+  "type": "frontmatter",
+  "id": "projeto-frontmatter",
+  "level": "error",
+  "roots": ["projetos/*"],
+  "file_pattern": "^projeto\\.md$",
+  "require": ["id", "nivel", "componentes"],
+  "one_of": { "nivel": ["1", "2", "3"] },
+  "equals": { "id": "{{raw(dirname)}}" }
+}
+```
+
+**The frontmatter is often not documentation.** It is the machine-readable half
+of the document — the part three scripts and an index page depend on — and
+nothing type-checks a markdown file. A `projeto.md` with no `componentes` does
+not fail to load; it reports as a lesson that needs no components, so "which
+projects use the DHT11?" returns an answer that is confidently short.
+
+**`one_of` is the one that earns the rule.** A missing key is at least an
+absence. A value *outside* the vocabulary is confidently wrong: `status:
+concluido` where the vocabulary is `feito` drops the document out of the
+generated table with no row and no error. Same failure shape as
+`must_export.annotation`, one file format over.
+
+**Values compare as text.** `"1"` in the config matches `nivel: 1` in the
+document, and a quoted value matches an unquoted one. That answers the question
+without archwarden growing a type system nothing else here needs.
+
+**`equals` is the `naming` question**, asked of a file with no exported symbol
+to ask it about: a name agreeing with a path. `{{raw(dirname)}}` is the name of
+the directory the document sits in, and it is the only group a document
+template may name. The form is `naming`'s, so the transforms come along —
+`{{kebab(dirname)}}` is spelled the same way here as there.
+
+**A document with no block is a finding, not a skip.** Skipping would make
+*deleting the block* the way out of the rule, which is the argument
+`skip_type_only` already makes about deleting the `export` keyword. A block
+that is not YAML is a *different* finding, because "write the block" and "what
+you wrote is not YAML" are different next steps.
+
+**One dialect.** `---`-fenced YAML. TOML `+++` and JSON frontmatter are
+guesses until somebody asks, and one dialect that is definitely right beats
+three that are probably.
+
+**Cannot express**: the shape of a value — `type`, `min_items`, a regex over a
+value, a nested path. That is a document schema, JSON Schema is one, and the
+line this rule keeps is the one every other rule here keeps: **archwarden
+asserts names and vocabularies, never the shape of a value.** Nor referential
+integrity between documents: "every `componentes[].id` exists in
+`inventario.yml`" is a cross-file lookup into a file archwarden knows nothing
+about, and `RULES.md` keeps cross-file questions out of file-local rules.
+
+---
+
+## 6. Spec pairing (TDD gate)
 
 **What it enforces**: every unit file under configured subfolders must
 have a `.spec.<ext>` sibling.
@@ -376,7 +682,7 @@ noisy and unreliable. `require_non_empty_spec` is the practical proxy.
 
 ---
 
-## 4. Import boundaries
+## 7. Import boundaries
 
 **What it enforces**: layer A may not import from layer B; or, layer C
 must import from layer D.
@@ -479,7 +785,7 @@ above, declined the same way.
 
 ---
 
-## 5. Call obligations
+## 8. Call obligations
 
 **What it enforces**: files matching a pattern must contain at least one
 call to a specific imported symbol.
@@ -518,7 +824,7 @@ into program analysis territory and are out of scope.
 
 ---
 
-## 6. No passthrough
+## 9. No passthrough
 
 **What it enforces**: a file must add something of its own. A file whose whole
 content is forwarding another module is an indirection wearing the name of a

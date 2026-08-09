@@ -82,7 +82,11 @@ pub fn respond(decision: &Decision) -> String {
 /// verbatim, and a bare `archwarden` is not a command in a repository where it
 /// is a dev dependency.
 #[must_use]
-pub fn explain(single: &archwarden_engine::single::Single, invocation: &str) -> String {
+pub fn explain(
+    single: &archwarden_engine::single::Single,
+    reasons: &crate::report::Reasons,
+    invocation: &str,
+) -> String {
     use std::fmt::Write as _;
 
     let mut message = format!("archwarden: `{}` would break these rules.\n", single.path);
@@ -96,6 +100,12 @@ pub fn explain(single: &archwarden_engine::single::Single, invocation: &str) -> 
             crate::report::describe_observed(&finding.observed),
             crate::report::describe_expectation(&finding.expected),
         );
+        // The highest-value place a reason can appear: this is the moment an
+        // agent decides between complying and working around, and a denial
+        // that says only what is forbidden is one it argues with. Issue #46.
+        if let Some(why) = reasons.of_rule(&finding.rule_id) {
+            let _ = writeln!(message, "  why: {why}");
+        }
     }
 
     let _ = write!(
@@ -108,6 +118,14 @@ pub fn explain(single: &archwarden_engine::single::Single, invocation: &str) -> 
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::{
+        facts::KindFilter,
+        finding::{Expectation, Finding, Observed},
+        ids::RuleId,
+        level::Level,
+        path::RepoRelPath,
+    };
+
     use super::*;
 
     /// The payload shape a `Write` produces.
@@ -120,6 +138,45 @@ mod tests {
             "content": "export const CreateClient = () => {};"
         }
     }"#;
+
+    /// Issue #46's highest-value surface: the moment an agent decides between
+    /// complying and working around. A denial that says only what is forbidden
+    /// is a denial an agent argues with.
+    #[test]
+    fn a_denial_carries_the_reason_the_rule_exists() {
+        let single = archwarden_engine::single::Single {
+            path: RepoRelPath::new("src/user/create-client.use-case.ts").expect("valid"),
+            findings: vec![Finding {
+                rule_id: RuleId::new("usecase-name").expect("valid"),
+                module_id: None,
+                level: Level::Error,
+                path: RepoRelPath::new("src/user/create-client.use-case.ts").expect("valid"),
+                span: None,
+                observed: Observed::ExportMissing {
+                    name: "CreateClient".to_owned(),
+                },
+                expected: Expectation::RequiredExport {
+                    kind: KindFilter::Any,
+                    name: "CreateClient".to_owned(),
+                    annotation: Vec::new(),
+                    signature_hint: None,
+                },
+            }],
+            skipped: Vec::new(),
+            unresolved_imports: Vec::new(),
+        };
+        let reasons = crate::report::Reasons::from([(
+            "usecase-name",
+            "the registry imports these by name, not by path",
+        )]);
+
+        let message = explain(&single, &reasons, "npx archwarden");
+
+        assert!(
+            message.contains("why: the registry imports these by name, not by path"),
+            "{message}"
+        );
+    }
 
     #[test]
     fn the_target_is_read_from_the_payload() {
@@ -204,6 +261,7 @@ mod tests {
                 expected: Expectation::RequiredExport {
                     kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
                     name: "CreateClient".to_owned(),
+                    annotation: Vec::new(),
                     signature_hint: None,
                 },
             }],
@@ -211,7 +269,7 @@ mod tests {
             unresolved_imports: Vec::new(),
         };
 
-        let message = explain(&single, "archwarden");
+        let message = explain(&single, &crate::report::Reasons::default(), "archwarden");
 
         assert!(message.contains("usecase-name"), "the rule: {message}");
         assert!(message.contains("CreateClient"), "the symbol: {message}");
@@ -251,6 +309,7 @@ mod tests {
                 expected: Expectation::RequiredExport {
                     kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
                     name: "CreateClient".to_owned(),
+                    annotation: Vec::new(),
                     signature_hint: None,
                 },
             }],
@@ -258,7 +317,11 @@ mod tests {
             unresolved_imports: Vec::new(),
         };
 
-        let message = explain(&single, "npx archwarden");
+        let message = explain(
+            &single,
+            &crate::report::Reasons::default(),
+            "npx archwarden",
+        );
 
         assert!(
             message.contains("npx archwarden scaffold src/user/create-client.use-case.ts"),

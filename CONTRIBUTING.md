@@ -26,23 +26,68 @@ cargo build
 compiler on first build and every contributor compiles with the same one.
 There is no separate MSRV job because there is no second version in play.
 
+### When the disk fills up
+
+```bash
+cargo xtask clean          # the caches that cost a rebuild nothing
+cargo xtask clean --deps   # plus the compiled dependencies; next build is cold
+cargo xtask clean --all    # what `cargo clean` does
+```
+
+`cargo clean` is all or nothing, and all is usually wrong: it takes the
+compiled dependencies for the sake of space that was not the problem. The space
+that *is* the problem is incremental compilation state, which grows without
+bound and buys a few seconds per rebuild. Measured here once, `target` was
+**59 GB** — 27 of it `debug/incremental` and 28 `debug/deps`. The default tier
+takes the 27.
+
+It also sweeps `cargo-mutants` build trees left in the temporary directory.
+The pre-push hook builds one every push and removes it when it finishes; when
+it is *killed* it does not, and each orphan is a whole build tree. One killed
+run here was holding 62 GB.
+
+`target/criterion` is never taken by any tier. Benchmark history is data, not
+cache, and a benchmark that cannot be compared against its own past is a number
+with nothing to say.
+
+### Looking at the HTML reports
+
+```bash
+cargo xtask preview
+```
+
+Writes both pages, in both languages, into `target/preview/`, by building a
+fixture repository and running the real binary against it. Open them.
+
+A page is for a human and a human has to *look* at it: judging one by reading
+its source is judging a drawing by reading its coordinates. Nothing there
+builds a fake report — a preview assembled from hand-made data drifts from what
+the tool emits, and a design signed off against a page the product does not
+produce is worth less than nothing.
+
+Re-run it after any change to a renderer, to the stylesheet, or to anything
+under `phrases/`.
+
 `cargo xtask hooks` is not optional in spirit. It installs two hooks:
 
 | Hook | Runs | Costs |
 | --- | --- | --- |
 | `pre-commit` | `cargo fmt --all --check`, `typos` | ~1.5s |
-| `pre-push` | `cargo mutants --in-diff` | ~10s floor, then ~1s per mutant |
+| `pre-push` | `cargo xtask ci`, then `cargo mutants --in-diff` | minutes |
 
-Both skip gracefully when their optional tool is not installed, and both honour
-`--no-verify`. A hook is here to catch mistakes, not to take the decision away
-from whoever is pushing.
+Both honour `--no-verify`. A hook is here to catch mistakes, not to take the
+decision away from whoever is pushing.
 
-The tools CI uses, none of which are required to build:
+The tools CI uses. They are not required to build, and they *are* required to
+push:
 
 ```bash
 cargo install cargo-nextest cargo-llvm-cov cargo-deny cargo-machete
 cargo install typos-cli cargo-mutants
+rustup component add llvm-tools-preview   # cargo-llvm-cov needs it
 ```
+
+`cargo xtask ci --doctor` lists them, says which are here, and runs nothing.
 
 `typos-cli` may not build on a small machine: its dictionary is one enormous
 generated table, and `rustc` holds the whole thing in memory whatever the
@@ -58,26 +103,34 @@ Node 22 and `python3` are needed only for the distribution tests
 
 ## Before you open a pull request
 
-Run what CI runs. In order of how likely each is to catch you:
-
 ```bash
-cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo nextest run --workspace --all-features
-cargo test --workspace --doc                    # nextest does not run doctests
-cargo xtask check-schema
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features
-typos
-cargo machete
-cargo deny check
+cargo xtask ci
 ```
 
-And, if you touched the distribution:
+Every gate `.github/workflows/ci.yml` runs, on your machine, in the order the
+workflow runs them. It reports all the failures rather than the first, because
+fixing one thing and pushing into the next teaches the same lesson twice.
 
-```bash
-cd npm/archwarden && node --test "test/*.test.mjs"
-python3 -m unittest discover -s scripts -p 'test_*.py'
-```
+**A gate whose tool is missing fails.** It does not skip. This is the whole
+reason the task exists: one pull request lost three rounds to checks that had
+never run locally — `typos` read a translation file, the coverage floor caught
+a function nothing called, and mutation testing found a table of untested
+strings — and every one of them had been reported as `skipped` in a message
+that read like a pass. A check that cannot run is a failure.
+
+The list of gates cannot drift from the workflow: a test in `xtask/src/ci.rs`
+reads `ci.yml` and fails if a command there is missing from the list, or if a
+command in the list is no longer in the workflow. The prose list that used to
+live here had quietly lost both coverage floors, which is how they came to be
+enforced on GitHub and nowhere else.
+
+A step CI runs that `cargo xtask ci` deliberately does not — the advisory
+toolchain job, the differential setup — is in the same list, marked with the
+reason.
+
+The distribution tests — the npm shim and the release scripts — are gates in
+that list too, so `node` and `python3` are needed to push whether or not you
+touched them.
 
 `RUSTFLAGS: -D warnings` is set for the whole CI run, so a warning is a failed
 build there even where it is not one locally.
@@ -146,12 +199,27 @@ all**, and so did four others. The suite was green. Coverage was green.
 Flipping one boolean would have removed the protection silently.
 
 Each survivor is an edit to your code that no test objected to. Either write
-the test, or decide the mutant is harmless and say why, in a comment where the
-next person will find it. `cargo-mutants` exits `2` when mutants survived and
-something else when it could not run at all — a build failure, a timeout, the
-linker being killed on a small machine. Only the first blocks; the second warns
-and lets the push through, because a hook that stops you pushing when your
-laptop ran out of memory is a hook you learn to bypass and never run again.
+the test, or decide the mutant is harmless and say why — in `mutants.toml`,
+where the next person will find both the exclusion and the argument for it.
+
+`cargo-mutants` exits `2` when mutants survived and something else when it
+could not run at all — a build failure, a timeout, the linker being killed on a
+small machine. Only the first blocks; the second warns and lets the push
+through, because a hook that stops you pushing when your laptop ran out of
+memory is a hook you learn to bypass and never run again.
+
+That second branch used to trust the exit code alone, and 190 survivors went
+out past it: the run was interrupted *after* it had already named them, and the
+hook read the interruption as "no opinion". It asks the survivor list now. A
+run that found something found it, however it ended.
+
+**What an exclusion has to argue.** Not that the mutant is hard to catch — that
+the test which would catch it is worse than the mutant. The translation tables
+are the current entry: every method returns a constant, so half the mutants are
+`""` (a real defect, caught by name in `no_language_leaves_a_phrase_blank`) and
+half are `"xyzzy"`, catchable only by asserting each phrase against its own
+literal. That test fails on every copy edit and proves that the string is the
+string.
 
 ### Taking a test case from another project
 

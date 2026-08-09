@@ -53,13 +53,98 @@ pub fn examine(config: &CompiledConfig) -> Vec<Concern> {
 
     walk_scope_with_boundaries(config, &mut concerns);
 
+    reasons_left_unsaid(config, &mut concerns);
+
     for rule in config.rules() {
         unreachable_scope(config, rule, &mut concerns);
+        constrains_nothing(rule, &mut concerns);
         spec_subfolder_not_allowed(config, rule, &mut concerns);
         hint_disagrees_with_kind(rule, &mut concerns);
     }
 
     concerns
+}
+
+/// Rules that do not say why they exist, counted rather than listed.
+///
+/// One line, not one per rule: a config with forty rules and no `why` anywhere
+/// would otherwise bury every other concern this command has, and burying them
+/// is the same as not reporting them.
+///
+/// And only once at least one rule *does* say why. A project that has never
+/// used the field has not adopted the practice, and nagging it about a
+/// convention it never chose is how a command that gives advice becomes one
+/// people stop running. Once one rule carries a reason, the ones that do not
+/// are an inconsistency worth naming. Issue #46.
+fn reasons_left_unsaid(config: &CompiledConfig, concerns: &mut Vec<Concern>) {
+    let (with, without): (Vec<_>, Vec<_>) = config.rules().partition(|rule| rule.why.is_some());
+
+    if with.is_empty() || without.is_empty() {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "rules-without-a-reason",
+        rule_id: None,
+        path: None,
+        message: format!(
+            "{} of {} rules say why they exist; {} {} not",
+            with.len(),
+            with.len() + without.len(),
+            without.len(),
+            if without.len() == 1 { "does" } else { "do" },
+        ),
+        fix: "add `why` to them, or accept the gap -- a rule whose reason is \
+              nowhere is one a reader can only obey"
+            .to_owned(),
+    });
+}
+
+/// A rule that has nothing to enforce, whatever its scope reaches.
+///
+/// `unreachable_scope` is about a rule that cannot see anything;
+/// this is about one that sees plenty and asks nothing of it. Both are
+/// invisible from the outside, which is the whole reason this command exists:
+/// a rule enforcing nothing looks exactly like a repository that satisfies it.
+///
+/// Only `structure` today, because it is the only kind whose fields are all
+/// optional — every other kind carries its constraint in a field that must be
+/// present for the config to parse at all.
+fn constrains_nothing(rule: &CompiledRule, concerns: &mut Vec<Concern>) {
+    let CompiledRuleKind::Structure {
+        allowed_subfolders,
+        warn_subfolders,
+        subfolder_patterns,
+        filename_patterns,
+        ..
+    } = &rule.kind
+    else {
+        return;
+    };
+
+    // An *empty* `allowed_subfolders` is a constraint -- "no subfolder may
+    // exist here" -- so what matters is whether the field was named at all.
+    // Issue #40.
+    if allowed_subfolders.is_some()
+        || !warn_subfolders.is_empty()
+        || !subfolder_patterns.is_empty()
+        || !filename_patterns.is_empty()
+    {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "rule-constrains-nothing",
+        rule_id: Some(rule.id.clone()),
+        path: None,
+        message: "it names no allowed subfolder, no warned subfolder and no \
+                  pattern for a folder or a filename, so there is nothing it \
+                  can report"
+            .to_owned(),
+        fix: "give it something to enforce — `allowed_subfolders: []` forbids \
+              every subfolder — or drop the rule"
+            .to_owned(),
+    });
 }
 
 /// Decision 5: a `skip_dirs` exemption that reaches the walk hides files from
@@ -165,12 +250,15 @@ fn spec_subfolder_not_allowed(
         else {
             continue;
         };
-        // A structure rule that names no folders constrains none of them.
-        if allowed_subfolders.is_empty() && warn_subfolders.is_empty() {
+        // A structure rule that names no list says nothing about folders. An
+        // *empty* list is not that: it permits none of them, so a spec folder
+        // is one it does not allow. Issue #40.
+        if allowed_subfolders.is_none() && warn_subfolders.is_empty() {
             continue;
         }
         if allowed_subfolders
             .iter()
+            .flatten()
             .chain(warn_subfolders)
             .any(|allowed| allowed == subfolder)
         {
@@ -679,6 +767,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -733,6 +823,7 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind,
+            annotation: Vec::new(),
             signature_hint: hint.map(str::to_owned),
         }
     }
@@ -745,15 +836,17 @@ mod tests {
             dir_pattern: Some(Pattern::compile(dir_pattern).expect("valid")),
             name_template: "{{pascal(entity)}}{{pascal(action)}}".to_owned(),
             kind: KindFilter::Any,
+            annotation: Vec::new(),
             signature_hint: None,
         }
     }
 
     fn structure(allowed: &[&str], warn: &[&str]) -> CompiledRuleKind {
         CompiledRuleKind::Structure {
-            allowed_subfolders: allowed.iter().map(|s| (*s).to_owned()).collect(),
+            allowed_subfolders: Some(allowed.iter().map(|s| (*s).to_owned()).collect()),
             warn_subfolders: warn.iter().map(|s| (*s).to_owned()).collect(),
             recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
             filename_patterns: Vec::new(),
         }
     }
@@ -945,15 +1038,198 @@ mod tests {
         assert!(examine(&alone).is_empty());
     }
 
-    /// A structure rule that names no folders constrains none of them.
+    /// Issue #41's other half. `explain` says it itself now, but this is the
+    /// command that audits a configuration, and a rule with nothing to enforce
+    /// is exactly what it is for — it is invisible from the outside, since a
+    /// rule enforcing nothing looks like a repository that satisfies it.
     #[test]
-    fn a_structure_rule_that_allows_nothing_constrains_nothing() {
+    fn a_structure_rule_with_no_constraint_at_all_is_a_concern() {
+        let toothless = config(vec![rule(
+            "toothless",
+            &["src/*"],
+            CompiledRuleKind::Structure {
+                allowed_subfolders: None,
+                warn_subfolders: Vec::new(),
+                recurse_into: Vec::new(),
+                subfolder_patterns: Vec::new(),
+                filename_patterns: Vec::new(),
+            },
+        )]);
+
+        let concerns = examine(&toothless);
+        assert_eq!(concerns.len(), 1, "{concerns:?}");
+        assert_eq!(
+            concerns.first().expect("one").code,
+            "rule-constrains-nothing"
+        );
+    }
+
+    /// Each of the three fields on its own is something to enforce, and an
+    /// empty `allowed_subfolders` counts — after issue #40 it is the rule
+    /// "no subfolder may exist here".
+    #[test]
+    fn any_one_constraint_is_enough_to_have_nothing_to_report() {
+        let cases = [
+            (Some(Vec::new()), Vec::new(), Vec::new()),
+            (Some(vec!["types".to_owned()]), Vec::new(), Vec::new()),
+            (None, vec!["legacy".to_owned()], Vec::new()),
+            (
+                None,
+                Vec::new(),
+                vec![Pattern::compile("^[a-z-]+\\.ts$").expect("valid")],
+            ),
+        ];
+
+        for (allowed, warn, filenames) in cases {
+            let configured = config(vec![rule(
+                "shape",
+                &["src/*"],
+                CompiledRuleKind::Structure {
+                    allowed_subfolders: allowed.clone(),
+                    warn_subfolders: warn.clone(),
+                    recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
+                    filename_patterns: filenames.clone(),
+                },
+            )]);
+
+            assert!(
+                examine(&configured).is_empty(),
+                "{allowed:?} {warn:?} {}",
+                filenames.len()
+            );
+        }
+    }
+
+    /// Counted, not listed: a config with forty rules and no `why` anywhere
+    /// would bury every other concern, and burying them is the same as not
+    /// reporting them.
+    #[test]
+    fn rules_without_a_reason_are_counted_once() {
+        let mut reasoned = rule("shape", &["src/*"], structure(&["types"], &[]));
+        reasoned.why = Some("entities are the only thing published".to_owned());
+        let mixed = config(vec![
+            reasoned,
+            rule("second", &["src/*"], structure(&["types"], &[])),
+            rule("third", &["src/*"], structure(&["types"], &[])),
+        ]);
+
+        let concerns = examine(&mixed);
+        let counted: Vec<&Concern> = concerns
+            .iter()
+            .filter(|c| c.code == "rules-without-a-reason")
+            .collect();
+
+        assert_eq!(counted.len(), 1, "{concerns:?}");
+        assert!(counted[0].message.contains("1 of 3"), "{:?}", counted[0]);
+        assert!(counted[0].message.contains("2 do not"), "{:?}", counted[0]);
+    }
+
+    /// A project that has never used the field has not adopted the practice,
+    /// and nagging it about a convention it never chose is how a command that
+    /// gives advice becomes one people stop running.
+    #[test]
+    fn a_config_that_never_says_why_is_not_nagged() {
+        let silent = config(vec![
+            rule("shape", &["src/*"], structure(&["types"], &[])),
+            rule("second", &["src/*"], structure(&["types"], &[])),
+        ]);
+
+        assert!(
+            examine(&silent)
+                .iter()
+                .all(|c| c.code != "rules-without-a-reason"),
+            "{:?}",
+            examine(&silent)
+        );
+    }
+
+    /// And a config where every rule says why has nothing to be told either.
+    #[test]
+    fn a_config_that_always_says_why_is_not_nagged() {
+        let mut first = rule("shape", &["src/*"], structure(&["types"], &[]));
+        first.why = Some("a".to_owned());
+        let mut second = rule("second", &["src/*"], structure(&["types"], &[]));
+        second.why = Some("b".to_owned());
+
+        let complete = config(vec![first, second]);
+
+        assert!(
+            examine(&complete)
+                .iter()
+                .all(|c| c.code != "rules-without-a-reason"),
+            "{:?}",
+            examine(&complete)
+        );
+    }
+
+    /// A rule that constrains subfolder names by shape has plenty to enforce,
+    /// and names none of the three fields this check started out looking at.
+    #[test]
+    fn a_subfolder_pattern_alone_is_something_to_enforce() {
+        let by_shape = config(vec![rule(
+            "licao-nome-da-pasta",
+            &["projetos"],
+            CompiledRuleKind::Structure {
+                allowed_subfolders: None,
+                warn_subfolders: Vec::new(),
+                recurse_into: Vec::new(),
+                subfolder_patterns: vec![Pattern::compile(r"^\d{2}-[a-z0-9-]+$").expect("valid")],
+                filename_patterns: Vec::new(),
+            },
+        )]);
+
+        assert!(examine(&by_shape).is_empty(), "{:?}", examine(&by_shape));
+    }
+
+    /// A structure rule that names no list says nothing about folders, so it
+    /// cannot contradict a `spec-pair` rule that looks in one.
+    #[test]
+    fn a_structure_rule_that_names_no_list_constrains_nothing() {
         let open = config(vec![
+            rule(
+                "shape",
+                &["src/*"],
+                CompiledRuleKind::Structure {
+                    allowed_subfolders: None,
+                    warn_subfolders: Vec::new(),
+                    recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
+                    filename_patterns: Vec::new(),
+                },
+            ),
+            rule("spec", &["src/*"], spec_pair(&["usecases"])),
+        ]);
+
+        // It does earn `rule-constrains-nothing`, which is a different
+        // complaint about the same rule; what it must not earn is a claim that
+        // it contradicts the spec folder.
+        assert!(
+            examine(&open)
+                .iter()
+                .all(|concern| concern.code != "spec-folder-not-allowed"),
+            "{:?}",
+            examine(&open)
+        );
+    }
+
+    /// An empty list is the opposite of that: it permits no subfolder at all,
+    /// so a `spec-pair` rule looking for specs in `usecases` is looking
+    /// somewhere the structure rule forbids. Issue #40 — the case that used to
+    /// be indistinguishable from the one above.
+    #[test]
+    fn an_empty_allowed_list_contradicts_a_spec_folder() {
+        let closed = config(vec![
             rule("shape", &["src/*"], structure(&[], &[])),
             rule("spec", &["src/*"], spec_pair(&["usecases"])),
         ]);
 
-        assert!(examine(&open).is_empty());
+        let concerns = examine(&closed);
+        assert_eq!(concerns.len(), 1, "{concerns:?}");
+        assert_eq!(
+            concerns.first().expect("one").code,
+            "spec-folder-not-allowed"
+        );
     }
 
     /// The structure rule that matters is the one over the *same* scope. With
@@ -1200,9 +1476,10 @@ mod tests {
                     "shape",
                     &["src/*"],
                     CompiledRuleKind::Structure {
-                        allowed_subfolders: Vec::new(),
+                        allowed_subfolders: Some(Vec::new()),
                         warn_subfolders: Vec::new(),
                         recurse_into: Vec::new(),
+                        subfolder_patterns: Vec::new(),
                         filename_patterns: vec![
                             Pattern::compile(r"^[a-z-]+\.use-case\.ts$").expect("valid"),
                         ],

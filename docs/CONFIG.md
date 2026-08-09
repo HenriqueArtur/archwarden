@@ -108,6 +108,11 @@ would refuse to complete.
 - `ignore` — extra ignore globs on top of `.gitignore` (which is always
   honoured). Ignore always wins over a rule's scope, however specific that
   scope is.
+- `language` — the language the HTML pages are written in: `en` (default) or
+  `pt-br`. Only the pages.
+- `languages` — which languages archwarden reads. Defaults to `["ts"]`, which
+  is JavaScript and TypeScript together. `["ts", "astro"]` adds the TypeScript
+  module inside an `.astro` file's `---` fence.
 - `skip_dirs` — the `_`-prefix escape hatch, see [`RULES.md`](RULES.md).
 - `modules` — logical groupings of rules. A "module" is just a name that
   scopes a set of rules to a set of paths. Naming things helps error
@@ -115,11 +120,70 @@ would refuse to complete.
 - `rules` — rules that belong to no particular module, typically import
   boundaries (which are cross-module by nature). They report as `[*]`.
 
+### The HTML pages, and their language
+
+```bash
+archwarden agent-guide --format html --lang pt-br > arquitetura.html
+archwarden check --html relatorio.html --lang pt-br
+```
+
+A repository decides this once, in the config, so nobody has to remember a
+flag to read their own report:
+
+```json
+{ "version": 0, "language": "pt-br" }
+```
+
+`--lang` overrides it for one run. Neither reaches **anything but the page**. The terminal, the JSON and the
+markdown digest stay in English whatever it says — a CI log is pasted into an
+issue, searched for and read by an agent, and one whose language depends on who
+ran it is worse than one somebody has to translate. The JSON was never in
+question: its `type` slugs are stable identifiers.
+
+`en` and `pt-br` today. The language is never detected from the environment: a
+report whose language depends on the machine that produced it cannot be diffed,
+and the guide page is meant to be committable.
+
+The sentences a *rule* produces are still English on both pages. Those are
+written once and shown in three places, so translating them is a change to the
+terminal too — which is the line above.
+
+### `languages` — what archwarden reads
+
+```json
+{ "version": 0, "languages": ["ts", "astro"] }
+```
+
+Opt-in, and **not because of cost** — a repository with no `.astro` file pays
+nothing either way. What the field buys is that widening what archwarden
+governs is a decision written in the config, rather than one that arrives with
+a dependency upgrade.
+
+**The un-opted state is loud, not silent.** A file in a language this config did
+not ask for still produces a *counted, named* skip, so a user who never read
+about the feature finds out:
+
+```
+note: `src/pages/blog.astro` was not read, so 1 check was skipped there: pages-forbid-domain
+0 errors, 0 warnings, 1 skipped · 3 files, 4 directories · 9ms
+```
+
+That distinction matters: a skip on a file archwarden *could not read* is a bug
+to investigate, and a skip on one it was never asked to read is a decision the
+project has not made. `1 skipped` could not tell them apart.
+
+A preset may not set `languages`, for the same reason it may not set `root`: it
+cannot know whether the repository including it has any `.astro` at all.
+
+Markdown is deliberately absent from the list. A `frontmatter` rule names the
+documents it is about, and asking for the same thing in two places would let
+them disagree.
+
 ## Rule categories
 
 Every rule has:
 
-- `type` — discriminator (`structure`, `naming`, `spec-pair`, `import-boundary`, `call-obligation`, `no-passthrough`).
+- `type` — discriminator (`structure`, `naming`, `presence`, `pair`, `frontmatter`, `spec-pair`, `import-boundary`, `call-obligation`, `no-passthrough`).
 - `id` — stable identifier used in output and in `explain`. Required, unique per config.
 - `level` — `error` or `warning`.
 - a **scope**: `roots` on every rule, except `import-boundary` where it is
@@ -128,6 +192,77 @@ Every rule has:
 
 Every glob field accepts a single string or an array of strings:
 `"roots": "src/**"` and `"roots": ["src/**"]` are the same.
+
+### `why` — the reason, which nothing else records
+
+Optional on every rule, and on every module. Free text.
+
+```json
+{
+  "type": "import-boundary",
+  "id": "domain-forbids-app",
+  "level": "error",
+  "why": "domain is published as its own package and the app is not; an import here makes the published artefact unbuildable outside this repo",
+  "from": ["packages/domain/**"],
+  "forbid_import_from": ["packages/app/**"]
+}
+```
+
+The config already says *what* a rule does, in a form that cannot drift from
+what it enforces; a prose restatement of that is a second source of truth that
+goes stale. The reason cannot drift, because nothing else records it — the
+format is JSON, so there are no comments, and a commit message is not in front
+of anybody at the moment a rule fires.
+
+It shows up where the rule is met: in the pre-write hook's denial, in
+`describe` and `scaffold`, in `agent-guide`, in `config explain`, and beside a
+finding. In text output a rule's reason is printed **once per run, at its first
+finding** — a repository with two hundred findings over six rules would
+otherwise print two hundred paragraphs. In JSON every finding carries it.
+
+Two things it is not:
+
+- **Not a message override.** `observed` and `expected` remain the whole
+  diagnosis. A `why` that restates them has duplicated the finding and will
+  contradict it the day the rule changes.
+- **Not part of a finding's identity.** Rewording one never touches
+  `.archwarden/baseline.json`.
+
+A module takes one too, and it is a separate answer rather than a fallback:
+"why is `domain` sealed" explains eight rules at once and is not an answer to
+"why this one".
+
+`config doctor` reports `rules-without-a-reason` as a count, and only once at
+least one rule in the config has a `why` — a project that never used the field
+has not adopted the practice, and being nagged about a convention you did not
+choose is how a command that gives advice becomes one nobody runs.
+
+### Frontmatter rule
+
+For a document whose YAML block is read by something.
+
+```json
+{
+  "type": "frontmatter",
+  "id": "projeto-frontmatter",
+  "level": "error",
+  "roots": ["projetos/*"],
+  "file_pattern": "^projeto\\.md$",
+  "require": ["id", "nivel", "componentes"],
+  "one_of": { "nivel": ["1", "2", "3"] },
+  "equals": { "id": "{{raw(dirname)}}" }
+}
+```
+
+Values compare as text, so `"1"` matches `nivel: 1` and a quoted value matches
+an unquoted one. `{{raw(dirname)}}` is the directory the document sits in, and
+it is the only group a document template may name — the form is `naming`'s, so
+`{{kebab(dirname)}}` works too.
+
+A document with no `---` block is a finding, not a skip; a block that is not
+YAML is a different finding. What this rule deliberately cannot say is anything
+about the *shape* of a value — no `type`, no `min_items`, no nested paths. That
+is a document schema and JSON Schema is one. See [`RULES.md`](RULES.md).
 
 ### A note on regexes
 
@@ -186,6 +321,13 @@ Ported from Flowmaatik's `check-structure.config.ts`:
 }
 ```
 
+**`allowed_subfolders: []` is not the same as leaving it out.** Omitted, the
+rule says nothing about subfolders. Written as an empty list, it is a list of
+what may exist holding nothing, so no subfolder may exist — the way to say
+"this directory is a leaf". A rule that names none of `allowed_subfolders`,
+`warn_subfolders` or `filename_patterns` enforces nothing, and `config doctor`
+says so as `rule-constrains-nothing`.
+
 `recurse_into` names a **container whose children** are entities of the same
 shape: `user/variants/nfe` is governed, `user/variants` is not, and `nfe` may
 be called anything. It is one level deeper than it reads, and it *removes*
@@ -232,6 +374,25 @@ which is how to see that you made it.
 Note the scope: `use-cases/*` selects each use-case *directory*, and
 `file_pattern` then matches files directly inside it. `signature_hint` is
 never verified — it only makes `scaffold` output realistic.
+
+`must_export.annotation` is the one field here that **is** verified. It names
+the type the export must be annotated with, as a template over the same capture
+groups:
+
+```json
+"must_export": {
+  "kind": ["const"],
+  "name": "AGENT_TOOL",
+  "annotation": "AgentToolModule"
+}
+```
+
+`export const AGENT_TOOL: AgentToolModule = {...}` passes;
+`export const AGENT_TOOL = {...}` does not. It is still not type checking —
+nothing is resolved and nothing is inferred, and whether the annotated value
+really is of that type stays `tsc`'s question. What it gates is whether the
+declaration is submitted to `tsc` at all, which is what a registry loses when
+it moves from a typed array to `readdir` and `import()`. See `docs/RULES.md`.
 
 `{{pascal(name)}}` is a small templating helper: the named capture group
 `name` from `file_pattern` gets fed to a case transformer. Supported:

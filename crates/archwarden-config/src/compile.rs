@@ -80,6 +80,51 @@ pub enum CompileError {
         available: String,
     },
 
+    /// `must_export` asks for an annotation on a form that cannot carry one.
+    ///
+    /// A rule with no satisfying input, which is worse than a wrong rule: it
+    /// looks exactly like a repository nobody has migrated yet, and every file
+    /// under it is reported forever.
+    #[error(
+        "rule `{rule}`: `annotation` cannot be satisfied by an export declared \
+         as {kinds}. Only a binding (`const`, `let`, `var`) or a `class`, \
+         through its `implements` clause, writes a type down beside its name; \
+         a function declares a *return* type, which is a different claim."
+    )]
+    UnannotatableKind {
+        /// The rule.
+        rule: RuleId,
+        /// The forms the rule accepts, none of which can be annotated.
+        kinds: String,
+    },
+
+    /// A `pair.must_exist` is absolute, or empty.
+    #[error(
+        "rule `{rule}`: `must_exist` is relative to the file that needs the \
+         companion, and `{path}` is not a relative path. Write `notas.md`, or \
+         `../projeto.md` to reach out of the directory."
+    )]
+    CompanionNotRelative {
+        /// The rule.
+        rule: RuleId,
+        /// The path as written.
+        path: String,
+    },
+
+    /// A `presence.require` entry names a path rather than a file.
+    #[error(
+        "rule `{rule}`: `require` takes filenames, and `{entry}` is a path. \
+         One rule answers for one directory, which is what lets `describe` \
+         answer for a directory that does not exist yet. Scope a second rule \
+         one level down instead."
+    )]
+    RequireIsAPath {
+        /// The rule.
+        rule: RuleId,
+        /// The entry as written.
+        entry: String,
+    },
+
     /// A `spec-pair` marker is not a single filename component.
     #[error(
         "rule `{rule}`: `{marker}` is not a spec marker. A marker is one \
@@ -144,8 +189,12 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
     let config = &merged.config;
 
     let mut rules = Vec::new();
-    for (module, rule) in config.rules() {
-        rules.push(compile_rule(rule, module.cloned())?);
+    for (module, module_why, rule) in config.rules() {
+        rules.push(compile_rule(
+            rule,
+            module.cloned(),
+            module_why.map(ToOwned::to_owned),
+        )?);
     }
 
     let ignore =
@@ -161,12 +210,13 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
         },
     };
 
-    Ok(CompiledConfig::new(
-        rules,
-        ignore,
-        skip_dirs,
-        rules_hash(config),
-    ))
+    Ok(
+        CompiledConfig::new(rules, ignore, skip_dirs, rules_hash(config)).with_languages(
+            archwarden_core::compiled::Languages {
+                astro: config.languages.contains(&config::Language::Astro),
+            },
+        ),
+    )
 }
 
 /// Hashes the effective rule set, for the `findings` cache key.
@@ -180,9 +230,16 @@ fn rules_hash(config: &Config) -> ContentHash {
     ContentHash::of(&serialised)
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per rule kind, each a literal. Splitting it would put the \
+              arms somewhere the exhaustive match no longer names them, which \
+              is what makes a kind added without lowering fail to build"
+)]
 fn compile_rule(
     rule: &Rule,
     module: Option<archwarden_core::ids::ModuleId>,
+    module_why: Option<String>,
 ) -> Result<CompiledRule, CompileError> {
     let id = rule.id().clone();
 
@@ -196,6 +253,11 @@ fn compile_rule(
             allowed_subfolders: r.allowed_subfolders.clone(),
             warn_subfolders: r.warn_subfolders.clone(),
             recurse_into: r.recurse_into.clone(),
+            subfolder_patterns: r
+                .subfolder_patterns
+                .iter()
+                .map(|p| pattern(&id, "subfolder_patterns", p))
+                .collect::<Result<_, _>>()?,
             filename_patterns: r
                 .filename_patterns
                 .iter()
@@ -212,9 +274,13 @@ fn compile_rule(
                 .transpose()?;
             check_template(&id, &file_pattern, dir_pattern.as_ref(), &r.must_export)?;
 
+            let kind = export_kind(&id, &r.must_export)?;
+            let annotation = annotation(&id, &kind, &r.must_export)?;
+
             CompiledRuleKind::Naming {
-                kind: export_kind(&id, &r.must_export)?,
+                kind,
                 name_template: r.must_export.name.clone(),
+                annotation,
                 signature_hint: r.must_export.signature_hint.clone(),
                 file_pattern,
                 dir_pattern,
@@ -249,6 +315,42 @@ fn compile_rule(
             include_type_only: r.include_type_only,
         },
 
+        Rule::Presence(r) => CompiledRuleKind::Presence {
+            require: r
+                .require
+                .iter()
+                .map(|name| require_name(&id, name))
+                .collect::<Result<_, _>>()?,
+            require_any: r
+                .require_any
+                .iter()
+                .map(|p| pattern(&id, "require_any", p))
+                .collect::<Result<_, _>>()?,
+        },
+
+        Rule::Pair(r) => CompiledRuleKind::Pair {
+            file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
+            must_exist: companion(&id, &r.must_exist)?,
+        },
+
+        Rule::Frontmatter(r) => CompiledRuleKind::Frontmatter {
+            file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
+            require: r.require.iter().cloned().collect(),
+            one_of: r
+                .one_of
+                .iter()
+                .map(|(key, values)| (key.clone(), values.iter().cloned().collect()))
+                .collect(),
+            equals: r
+                .equals
+                .iter()
+                .map(|(key, template)| {
+                    check_document_template(&id, template)?;
+                    Ok((key.clone(), template.clone()))
+                })
+                .collect::<Result<_, CompileError>>()?,
+        },
+
         Rule::CallObligation(r) => CompiledRuleKind::CallObligation {
             file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
             symbol: r.must_call.symbol.clone(),
@@ -259,10 +361,66 @@ fn compile_rule(
     Ok(CompiledRule {
         id,
         module,
+        why: rule.why().map(ToOwned::to_owned),
+        module_why,
         level: rule.level(),
         scope,
         kind,
     })
+}
+
+/// The only group a document template may name.
+///
+/// A `naming` template renders from the capture groups of a `file_pattern`; a
+/// document has one thing worth agreeing with, and it is the directory it sits
+/// in. Refused rather than rendered empty, because a template naming a group
+/// nobody defines is a rule that would quietly demand the wrong value.
+const DOCUMENT_GROUP: &str = "dirname";
+
+fn check_document_template(rule: &RuleId, source: &str) -> Result<(), CompileError> {
+    template::render(source, |group| {
+        (group == DOCUMENT_GROUP).then(|| "placeholder".to_owned())
+    })
+    .map(|_| ())
+    .map_err(|source| CompileError::Template {
+        rule: rule.clone(),
+        source,
+    })
+}
+
+/// A `must_exist` path, refused if it is absolute or empty.
+///
+/// Relative, always: the file the rule is about is the anchor, and an absolute
+/// path would make the rule say the same thing from every directory it covers
+/// -- which is a `presence` rule scoped there, written the confusing way.
+fn companion(rule: &RuleId, path: &str) -> Result<String, CompileError> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed.starts_with('/') || trimmed.starts_with('\\') {
+        return Err(CompileError::CompanionNotRelative {
+            rule: rule.clone(),
+            path: path.to_owned(),
+        });
+    }
+
+    Ok(trimmed.to_owned())
+}
+
+/// A `require` entry, refused if it is a path rather than a name.
+///
+/// A rule answers for one directory's contract, which is what lets `describe`
+/// answer for a directory that does not exist yet. An entry reaching into a
+/// subdirectory would make one rule answer for two, and the same requirement
+/// is already sayable by a second rule scoped one level down -- so this is a
+/// redirection, not a limitation.
+fn require_name(rule: &RuleId, name: &str) -> Result<String, CompileError> {
+    if name.contains('/') || name.contains('\\') {
+        return Err(CompileError::RequireIsAPath {
+            rule: rule.clone(),
+            entry: name.to_owned(),
+        });
+    }
+
+    Ok(name.to_owned())
 }
 
 fn pattern(rule: &RuleId, field: &'static str, source: &str) -> Result<Pattern, CompileError> {
@@ -327,6 +485,51 @@ fn export_kind(rule: &RuleId, must_export: &MustExport) -> Result<KindFilter, Co
     Ok(KindFilter::OneOf(tags))
 }
 
+/// The forms that have somewhere to write a type down beside the name.
+///
+/// A binding takes an annotation after the colon; a class names its contracts
+/// in `implements`. A function has a *return* type, an interface and a type
+/// alias *are* the type, an enum declares one, and a re-export's declaration is
+/// in another file — none of those is a place this rule could read.
+const ANNOTATABLE: [ExportKind; 5] = [
+    ExportKind::Const,
+    ExportKind::Let,
+    ExportKind::Var,
+    ExportKind::Arrow,
+    ExportKind::Class,
+];
+
+/// The required annotations, refusing a rule no file could satisfy.
+///
+/// `kind: "any"` passes: it accepts the annotatable forms among everything
+/// else, so a file that satisfies the rule exists.
+fn annotation(
+    rule: &RuleId,
+    kind: &KindFilter,
+    must_export: &MustExport,
+) -> Result<Vec<String>, CompileError> {
+    let Some(annotation) = must_export.annotation.as_ref() else {
+        return Ok(Vec::new());
+    };
+
+    if !ANNOTATABLE
+        .iter()
+        .any(|form| kind.accepts(ExportTags::only(*form)))
+    {
+        return Err(CompileError::UnannotatableKind {
+            rule: rule.clone(),
+            kinds: must_export
+                .kind
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        });
+    }
+
+    Ok(annotation.iter().cloned().collect())
+}
+
 /// Renders the export-name template against both patterns' capture groups.
 ///
 /// A rule whose template names a group no pattern defines is a config bug that
@@ -362,9 +565,15 @@ fn check_template(
             .then(|| "placeholder".to_owned())
     };
 
+    let annotations = must_export
+        .annotation
+        .iter()
+        .flat_map(|patterns| patterns.iter());
+
     for text in [Some(&must_export.name), must_export.signature_hint.as_ref()]
         .into_iter()
         .flatten()
+        .chain(annotations)
     {
         template::render(text, lookup).map_err(|source| CompileError::Template {
             rule: rule.clone(),
@@ -414,6 +623,132 @@ mod tests {
         match &compiled.rules().next()?.kind {
             CompiledRuleKind::Naming { kind, .. } => Some(kind),
             _ => None,
+        }
+    }
+
+    /// Issue #46. A module is a bigger decision than any rule inside it —
+    /// "why does `domain` exist and why is it sealed" is one sentence that
+    /// explains eight rules — so both are carried, and neither stands in for
+    /// the other.
+    #[test]
+    fn a_rules_reason_and_its_modules_both_reach_the_compiled_rule() {
+        let compiled = compile_json(
+            r#"{"version":0,"modules":[{
+                 "id":"domain",
+                 "why":"extracted so billing could depend on it without the API",
+                 "rules":[{"type":"structure","id":"shape","level":"error",
+                           "why":"entities are the only thing published",
+                           "roots":"packages/domain/src/*",
+                           "allowed_subfolders":["types"]}]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = compiled.rules().next().expect("one rule");
+        assert_eq!(
+            rule.why.as_deref(),
+            Some("entities are the only thing published")
+        );
+        assert_eq!(
+            rule.module_why.as_deref(),
+            Some("extracted so billing could depend on it without the API")
+        );
+    }
+
+    /// A rule outside a module, and one whose author said nothing.
+    #[test]
+    fn a_rule_with_no_reason_carries_none() {
+        let compiled = compile_json(
+            r#"{"version":0,"rules":[{"type":"structure","id":"shape","level":"error",
+                 "roots":"src/*","allowed_subfolders":["types"]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = compiled.rules().next().expect("one rule");
+        assert_eq!(rule.why, None);
+        assert_eq!(rule.module_why, None);
+    }
+
+    /// The compiled annotations of the config's single naming rule.
+    fn only_naming_annotation(compiled: &CompiledConfig) -> Option<&[String]> {
+        match &compiled.rules().next()?.kind {
+            CompiledRuleKind::Naming { annotation, .. } => Some(annotation),
+            _ => None,
+        }
+    }
+
+    fn tool_rule(must_export: &str) -> String {
+        format!(
+            r#"{{"version":0,"rules":[{{"type":"naming","id":"tools","level":"error",
+               "roots":"src/tools","file_pattern":"^(?<tool>[a-z-]+)\\.tool\\.ts$",
+               "must_export":{must_export}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn an_annotation_reaches_the_compiled_rule() {
+        let compiled = compile_json(&tool_rule(
+            r#"{"kind":["const"],"name":"AGENT_TOOL","annotation":"{{pascal(tool)}}Module"}"#,
+        ))
+        .expect("compiles");
+
+        assert_eq!(
+            only_naming_annotation(&compiled).expect("is a naming rule"),
+            ["{{pascal(tool)}}Module"]
+        );
+    }
+
+    #[test]
+    fn a_rule_without_an_annotation_compiles_to_an_empty_list() {
+        let compiled = compile_json(&tool_rule(r#"{"kind":["const"],"name":"AGENT_TOOL"}"#))
+            .expect("compiles");
+
+        assert!(
+            only_naming_annotation(&compiled)
+                .expect("is a naming rule")
+                .is_empty()
+        );
+    }
+
+    /// The annotation is a template over the same groups the name is, so a
+    /// group no pattern defines is the same config bug there -- and one that
+    /// would otherwise surface only when a file happened to match.
+    #[test]
+    fn an_annotation_naming_an_unknown_group_is_refused() {
+        let error = compile_json(&tool_rule(
+            r#"{"kind":["const"],"name":"AGENT_TOOL","annotation":"{{pascal(entity)}}Module"}"#,
+        ))
+        .expect_err("refused");
+
+        assert!(matches!(error, CompileError::Template { .. }), "{error:?}");
+    }
+
+    /// A function declares a return type, not an annotation, so a rule asking
+    /// for both can never be satisfied by any file. Refused at compile time
+    /// rather than left to `doctor`: `doctor` exits 0 and gives advice, and
+    /// this is not advice -- it is a rule with no satisfying input, which looks
+    /// exactly like a repository nobody has migrated yet.
+    #[test]
+    fn an_annotation_on_a_form_that_cannot_carry_one_is_refused() {
+        let error = compile_json(&tool_rule(
+            r#"{"kind":["function"],"name":"AGENT_TOOL","annotation":"AgentToolModule"}"#,
+        ))
+        .expect_err("refused");
+
+        assert!(
+            matches!(error, CompileError::UnannotatableKind { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// The forms that do have an annotation position, each accepted. `arrow`
+    /// is one: it only ever occurs with `const`, which is annotatable.
+    #[test]
+    fn every_annotatable_form_is_accepted_beside_an_annotation() {
+        for kind in ["const", "let", "var", "arrow", "class", "any"] {
+            let json = tool_rule(&format!(
+                r#"{{"kind":["{kind}"],"name":"AGENT_TOOL","annotation":"AgentToolModule"}}"#
+            ));
+            assert!(compile_json(&json).is_ok(), "{kind}");
         }
     }
 

@@ -16,9 +16,12 @@ pub mod filter;
 pub mod guide;
 pub mod hook;
 pub mod hooks;
+pub mod html;
 pub mod impact;
 pub mod locate;
+pub mod matrix;
 pub mod orphans;
+pub mod phrases;
 pub mod report;
 pub mod respecify;
 pub mod scaffold;
@@ -151,6 +154,25 @@ pub enum Command {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
 
+        /// The language the page is written in.
+        ///
+        /// Defaults to the config's `language`, and to English when it says
+        /// nothing. Only the page: the terminal, the JSON and the digest stay
+        /// in English whatever this says — a CI log is pasted into an issue,
+        /// searched for and read by an agent, and one whose language depends
+        /// on who ran it is worse than one somebody has to translate.
+        #[arg(long, value_enum)]
+        lang: Option<crate::phrases::Language>,
+
+        /// Also write a page for a human, at this path.
+        ///
+        /// A side artefact rather than a `--format`, because a browser cannot
+        /// read a pipe: the terminal keeps its summary and its exit code, and
+        /// the page is written beside them. Read-only, self-contained, and it
+        /// fetches nothing — it renders from a CI artefact years later.
+        #[arg(long, value_name = "PATH")]
+        html: Option<String>,
+
         /// Parse every file from source, reading and writing nothing.
         ///
         /// The escape hatch for a suspected cache bug: if a run disagrees with
@@ -272,6 +294,10 @@ pub enum Command {
         /// How to render the digest.
         #[arg(long, value_enum, default_value_t = crate::guide::GuideFormat::Markdown)]
         format: crate::guide::GuideFormat,
+
+        /// The language, for `--format html` only. See `check --lang`.
+        #[arg(long, value_enum)]
+        lang: Option<crate::phrases::Language>,
 
         /// Restrict the digest to rules that can fire under this directory.
         #[arg(long, value_name = "PATH")]
@@ -516,6 +542,8 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
         } => check_one(cli.location(), working_directory, file, *format, output),
         Command::Check {
             format,
+            html,
+            lang,
             no_cache,
             summary,
             rules,
@@ -530,6 +558,8 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             working_directory,
             &CheckOptions {
                 format: *format,
+                html: html.as_deref(),
+                language: *lang,
                 no_cache: *no_cache,
                 summary: *summary,
                 rules,
@@ -549,12 +579,14 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
         }
         Command::AgentGuide {
             format,
+            lang,
             scope,
             kind,
         } => agent_guide(
             cli.location(),
             working_directory,
             *format,
+            *lang,
             scope.as_deref(),
             kind,
             output,
@@ -1203,13 +1235,14 @@ fn hook(
     // where `node_modules` sits in a monorepo, and where the harness will be
     // when it runs what this message suggests.
     let invocation = crate::hooks::invocation(&merged.root);
+    let reasons = crate::report::Reasons::of(&compiled);
     let decision = if single.fails_build() {
-        crate::hook::Decision::Deny(crate::hook::explain(&single, &invocation))
+        crate::hook::Decision::Deny(crate::hook::explain(&single, &reasons, &invocation))
     } else if single.findings.is_empty() {
         crate::hook::Decision::Allow
     } else {
         // Decision 1: warnings are visible and do not gate.
-        crate::hook::Decision::Note(crate::hook::explain(&single, &invocation))
+        crate::hook::Decision::Note(crate::hook::explain(&single, &reasons, &invocation))
     };
 
     let _ = write!(output.out, "{}", crate::hook::respond(&decision));
@@ -1341,7 +1374,12 @@ fn check_one(
             return Exit::ConfigProblem;
         }
     }
-    crate::report::render_single(&single, format, output.out);
+    crate::report::render_single(
+        &single,
+        &crate::report::Reasons::of(&compiled),
+        format,
+        output.out,
+    );
 
     if single.fails_build() {
         Exit::Errors
@@ -1439,6 +1477,7 @@ fn agent_guide(
     location: Location<'_>,
     working_directory: &Utf8Path,
     format: crate::guide::GuideFormat,
+    language: Option<crate::phrases::Language>,
     scope: Option<&str>,
     kinds: &[String],
     output: &mut Output<'_>,
@@ -1465,7 +1504,10 @@ fn agent_guide(
     };
 
     let guide = crate::guide::guide(&compiled, scope.as_ref(), kinds);
-    crate::guide::render(&guide, format, output.out);
+    // The flag wins over the config; the config over English. A repository
+    // decides this once, and one run may want the other.
+    let language = language.unwrap_or_else(|| crate::phrases::Language::of(merged.config.language));
+    crate::guide::render(&guide, format, language, output.out);
     Exit::Clean
 }
 
@@ -1486,6 +1528,8 @@ const CACHE_FILE: &str = "cache.redb";
 /// arguments go to hide.
 struct CheckOptions<'a> {
     format: Format,
+    html: Option<&'a str>,
+    language: Option<crate::phrases::Language>,
     no_cache: bool,
     summary: bool,
     rules: &'a [String],
@@ -1496,6 +1540,13 @@ struct CheckOptions<'a> {
     by: Option<crate::report::Axis>,
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one command, in the order it happens: load, walk, run, filter \
+              against the baseline, render, write the page, decide the exit \
+              code. Splitting it would hide that the exit code is taken from \
+              what the baseline did not accept and never from what was shown"
+)]
 fn check(
     location: Location<'_>,
     working_directory: &Utf8Path,
@@ -1609,11 +1660,36 @@ fn check(
             root: &merged.root,
             report: &outcome,
             view: &view,
+            reasons: &crate::report::Reasons::of(&compiled),
             elapsed: started.elapsed(),
         },
         options.format,
         output.out,
     );
+
+    if let Some(destination) = options.html {
+        let page = crate::report::html_page(
+            &compiled,
+            &tree,
+            &outcome,
+            &unaccepted,
+            baseline.as_ref(),
+            options
+                .language
+                .unwrap_or_else(|| crate::phrases::Language::of(merged.config.language)),
+        );
+        match std::fs::write(destination, page) {
+            Ok(()) => {
+                let _ = writeln!(output.out, "page written to {destination}");
+            }
+            // Reported and not fatal: the gate already ran, and refusing its
+            // exit code because a side artefact could not be written would let
+            // a full disk turn a failing build green.
+            Err(error) => {
+                let _ = writeln!(output.err, "note: cannot write {destination}: {error}");
+            }
+        }
+    }
 
     if let Some(baseline) = &baseline {
         report_standing(baseline, &outcome.findings, output);

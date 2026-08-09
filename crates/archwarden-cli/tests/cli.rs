@@ -13,6 +13,7 @@
 #![allow(clippy::expect_used)]
 
 use assert_cmd::Command;
+use predicates::prelude::PredicateBooleanExt as _;
 use predicates::str::contains;
 
 /// Builds a temporary repository and returns it. The guard must be held:
@@ -204,6 +205,791 @@ fn scaffold_answers_through_the_binary() {
             "export function CreateClient(deps: Deps): UseCase",
         ))
         .stdout(contains("src/user/create-client.use-case.spec.ts"));
+}
+
+/// Issue #39, end to end: thirteen tool modules found by `readdir` and
+/// `import()`, one of which forgot its annotation. Every layer is real here —
+/// the parser reads the annotation off the declaration, the rule compares it,
+/// and the report names the file and the position. `tsc` is green on both
+/// files; the difference is that only one of them submitted itself to `tsc`.
+#[test]
+fn a_discovered_module_missing_its_annotation_fails_the_check() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"naming","id":"agent-tools-export-contract","level":"error",
+                 "roots":"src/tools",
+                 "file_pattern":"^(?<tool>[a-z0-9-]+)\\.tool\\.ts$",
+                 "must_export":{"kind":["const"],"name":"AGENT_TOOL",
+                                "annotation":"AgentToolModule"}}]}"#,
+        ),
+        (
+            "src/tools/lookup-cep.tool.ts",
+            "export const AGENT_TOOL = { spec: { name: 'lookup_cep' } };\n",
+        ),
+        (
+            "src/tools/send-email.tool.ts",
+            "import type { AgentToolModule } from '../types';\n\
+             export const AGENT_TOOL: AgentToolModule = { spec: {}, build: () => {} };\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("lookup-cep.tool.ts"))
+        .stdout(contains("`AGENT_TOOL` declares no type of its own"))
+        .stdout(contains("annotated `AgentToolModule`"))
+        // The one that wrote the type down is not mentioned at all.
+        .stdout(contains("send-email.tool.ts").not());
+}
+
+/// The other half of decision 9: the shape is answerable before the file
+/// exists, and the line it hands over is the line that passes the rule above.
+#[test]
+fn scaffold_hands_over_the_annotated_declaration() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"naming","id":"agent-tools-export-contract","level":"error",
+             "roots":"src/tools",
+             "file_pattern":"^(?<tool>[a-z0-9-]+)\\.tool\\.ts$",
+             "must_export":{"kind":["const"],"name":"AGENT_TOOL",
+                            "annotation":"AgentToolModule"}}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["scaffold", "src/tools/lookup-cep.tool.ts"])
+        .assert()
+        .success()
+        .stdout(contains(
+            "export const AGENT_TOOL: AgentToolModule = /* ... */;",
+        ));
+}
+
+/// Issue #40, the reporter's repository reduced: a directory that is a leaf by
+/// design, said the only way the config can say it. This used to be valid at
+/// `config validate`, silent at `config doctor` and skipped at `check` — three
+/// commands agreeing that a rule was fine while it enforced nothing.
+#[test]
+fn an_empty_allowed_subfolders_forbids_every_subfolder() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"referencia-sem-subpasta","level":"error",
+                 "roots":["referencia"],"allowed_subfolders":[]}]}"#,
+        ),
+        ("referencia/nota.md", "# nota\n"),
+        ("referencia/subpasta-que-nao-deveria-existir/x.md", "# x\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("subpasta-que-nao-deveria-existir"));
+}
+
+/// The other half of the same distinction, and the one that must not change:
+/// a rule that constrains filenames and never mentions subfolders is unchanged
+/// by all of it.
+#[test]
+fn a_rule_that_never_mentions_subfolders_still_allows_them() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"referencia-so-md","level":"error",
+                 "roots":["referencia"],"filename_patterns":["^[a-z-]+\\.md$"]}]}"#,
+        ),
+        ("referencia/nota.md", "# nota\n"),
+        ("referencia/qualquer-subpasta/x.md", "# x\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success();
+}
+
+/// The page speaks the language it was asked for; the terminal does not.
+///
+/// A CI log is pasted into an issue, searched for and read by an agent —
+/// `AGENTS.md` teaches one to read that output — so a log whose language
+/// depends on who ran it is worse than one somebody has to translate.
+#[test]
+fn only_the_page_is_translated() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"modules":[{"id":"domain",
+                "rules":[{"type":"structure","id":"domain-shape","level":"error",
+                 "roots":"packages/domain/src/*","allowed_subfolders":["calcs"]}]}]}"#,
+        ),
+        (
+            "packages/domain/src/order/nope/x.ts",
+            "export const x = 1;\n",
+        ),
+    ]);
+    let page = dir.path().join("relatorio.html");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "check",
+            "--lang",
+            "pt-br",
+            "--html",
+            page.to_str().expect("utf-8"),
+        ])
+        .assert()
+        .code(1)
+        // The terminal is English whatever the page is.
+        //
+        // Asserted on the English summary line rather than on the absence of a
+        // translated one. The obvious negative assertion is a trap twice over:
+        // the Portuguese word for an error is a substring of the English one,
+        // so it passes for the wrong reason — and writing it here would put
+        // Portuguese in a file the spell checker reads.
+        .stdout(contains("1 error, 0 warnings"));
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.contains(r#"<html lang="pt-BR">"#), "{html}");
+    assert!(html.contains("O que a config governa"), "{html}");
+    // The grid always renders; the pressure section only exists where a
+    // boundary rule does, and this fixture has none.
+    assert!(html.contains("Quem pode importar quem"), "{html}");
+    assert!(
+        !html.contains("What the config governs"),
+        "no English left over: {html}"
+    );
+}
+
+/// A repository decides its language once, in the config. Nobody should have
+/// to remember a flag to read their own report.
+#[test]
+fn the_config_can_choose_the_language() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"language":"pt-br","rules":[
+                {"type":"structure","id":"shape","level":"error",
+                 "roots":"src","allowed_subfolders":[]}]}"#,
+        ),
+        ("src/nope/x.ts", "export const x = 1;\n"),
+    ]);
+    let page = dir.path().join("relatorio.html");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        .code(1);
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.contains(r#"<html lang="pt-BR">"#), "{html}");
+}
+
+/// And the flag wins over it, for the one run that wants the other.
+#[test]
+fn the_flag_overrides_the_configs_language() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"language":"pt-br","rules":[
+                {"type":"structure","id":"shape","level":"error",
+                 "roots":"src","allowed_subfolders":[]}]}"#,
+        ),
+        ("src/nope/x.ts", "export const x = 1;\n"),
+    ]);
+    let page = dir.path().join("report.html");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args([
+            "check",
+            "--lang",
+            "en",
+            "--html",
+            page.to_str().expect("utf-8"),
+        ])
+        .assert()
+        .code(1);
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.contains(r#"<html lang="en">"#), "{html}");
+}
+
+/// The digest keeps its language too: markdown is a CLI output and JSON is a
+/// contract, so `--lang` reaches neither.
+#[test]
+fn the_markdown_digest_is_english_whatever_the_language_is() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[{"type":"structure","id":"shape","level":"error",
+            "roots":"src","allowed_subfolders":[]}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["agent-guide", "--lang", "pt-br"])
+        .assert()
+        .success()
+        .stdout(contains("Architecture rules"))
+        .stdout(contains("Regras de arquitetura").not());
+}
+
+/// The page is a side artefact, not a rendering: the terminal keeps its summary
+/// and its exit code, and the file is written beside them. A browser cannot
+/// read a pipe, so a `--format` that had to be redirected would be the wrong
+/// shape for this.
+#[test]
+fn check_writes_a_page_without_changing_what_the_terminal_says() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"modules":[{"id":"domain","why":"published on its own",
+                "rules":[{"type":"structure","id":"domain-shape","level":"error",
+                 "roots":"packages/domain/src/*","allowed_subfolders":["calcs"]}]}]}"#,
+        ),
+        (
+            "packages/domain/src/order/nope/x.ts",
+            "export const x = 1;
+",
+        ),
+    ]);
+    let page = dir.path().join("report.html");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        // The gate is untouched: a side artefact never decides an exit code.
+        .code(1)
+        .stdout(contains("1 error"))
+        .stdout(contains("page written to"));
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.starts_with("<!doctype html>"), "{html}");
+    assert!(html.contains("published on its own"), "the reason travels");
+    assert!(!html.contains("<script"), "read-only");
+    assert!(!html.contains("https://"), "nothing is fetched");
+}
+
+/// A page that could not be written is reported and does not fail the run.
+/// Letting a full disk turn a failing build green would be the worst possible
+/// trade for a side artefact.
+#[test]
+fn a_page_that_cannot_be_written_does_not_change_the_exit_code() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{"type":"structure","id":"shape","level":"error",
+                "roots":"src","allowed_subfolders":[]}]}"#,
+        ),
+        (
+            "src/nope/x.ts",
+            "export const x = 1;
+",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--html", "no/such/directory/report.html"])
+        .assert()
+        .code(1)
+        .stderr(contains("cannot write"));
+}
+
+/// Issue #13, the half that is a bug on its own. An Astro repository with a
+/// boundary rule got exit 0 while every page imported the domain directly, and
+/// nothing in the output said the rule had not been evaluated for those files.
+///
+/// It is loud now even without opting in — which is the point: a user who never
+/// read about the feature still finds out.
+#[test]
+fn astro_files_are_a_named_skip_until_the_config_asks_for_them() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"import-boundary","id":"pages-forbid-domain","level":"error",
+                 "from":["src/**"],"forbid_import_from":["src/domain/**"]}]}"#,
+        ),
+        ("src/domain/post.ts", "export const post = 1;\n"),
+        (
+            "src/pages/blog.astro",
+            "---\nimport { post } from '../domain/post';\n---\n\n<div />\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success()
+        .stdout(contains("skipped"))
+        .stdout(contains("src/pages/blog.astro"));
+}
+
+/// And with the opt-in, the boundary is actually held. The import lives in the
+/// `---` fence, which is where essentially every import in an Astro page is.
+#[test]
+fn an_astro_page_crossing_a_boundary_is_reported_once_astro_is_enabled() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"languages":["ts","astro"],"rules":[
+                {"type":"import-boundary","id":"pages-forbid-domain","level":"error",
+                 "from":["src/**"],"forbid_import_from":["src/domain/**"]}]}"#,
+        ),
+        ("src/domain/post.ts", "export const post = 1;\n"),
+        (
+            "src/pages/blog.astro",
+            "---\nimport { post } from '../domain/post';\n---\n\n<div />\n",
+        ),
+        ("src/pages/sobre.astro", "<h1>Sobre</h1>\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("src/pages/blog.astro"))
+        // A markup-only page has no imports, and is not a skip either.
+        .stdout(contains("sobre.astro").not())
+        .stdout(contains("skipped").not());
+}
+
+/// The rule issue #13 says earns its keep, and it falls out of reading the
+/// fence: an Astro page has no named component export, but it does export
+/// `getStaticPaths`.
+#[test]
+fn a_naming_rule_can_ask_an_astro_page_for_get_static_paths() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"languages":["ts","astro"],"rules":[
+                {"type":"naming","id":"pages-are-static","level":"error",
+                 "roots":["src/pages/blog"],
+                 "file_pattern":"^\\[.+\\]\\.astro$",
+                 "must_export":{"kind":["function"],"name":"getStaticPaths"}}]}"#,
+        ),
+        (
+            "src/pages/blog/[slug].astro",
+            "---\nconst x = 1;\n---\n<div />\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("no export named `getStaticPaths`"));
+}
+
+/// Issue #44, end to end and through every layer that is new: the walk
+/// classifies a `.md` as a document, the document front-end finds the fence and
+/// parses the block, the cache stores it in its own table, and the rule asks it
+/// questions.
+///
+/// The frontmatter here is not documentation. It is the schema three scripts
+/// read, and nothing else in this repository type-checks a markdown file.
+#[test]
+fn a_document_whose_frontmatter_is_wrong_fails_the_check() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"frontmatter","id":"projeto-frontmatter","level":"error",
+                 "why":"three scripts and the generated index read this block",
+                 "roots":["projetos/*"],
+                 "file_pattern":"^projeto\\.md$",
+                 "require":["id","nivel","componentes"],
+                 "one_of":{"nivel":["1","2","3"]},
+                 "equals":{"id":"{{raw(dirname)}}"}}]}"#,
+        ),
+        (
+            "projetos/01-blink/projeto.md",
+            "---\nid: 01-blink\nnivel: 1\ncomponentes:\n  - { id: led, qtd: 1 }\n---\n\n# Blink\n",
+        ),
+        (
+            "projetos/03-semaforo/projeto.md",
+            "---\nid: semaforo\nnivel: 9\n---\n\n# Semáforo\n",
+        ),
+        ("projetos/07-oled/projeto.md", "# OLED\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        // The key that is simply absent.
+        .stdout(contains("carries no `componentes`"))
+        // The value outside the vocabulary — quoted back, because it is almost
+        // always a spelling.
+        .stdout(contains("`nivel` is `9`"))
+        // The value that disagrees with the path.
+        .stdout(contains(
+            "`id` is `semaforo`, and the path says `03-semaforo`",
+        ))
+        // And no block at all is a finding, not a skip.
+        .stdout(contains("has no frontmatter block"))
+        // The complete document is not mentioned.
+        .stdout(contains("01-blink").not())
+        // The reason travels with it.
+        .stdout(contains("why: three scripts and the generated index"));
+}
+
+/// A number in the document and a number in the config are one question in two
+/// notations, and a quoted value is the same value.
+#[test]
+fn a_scalar_matches_however_yaml_spelled_it() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"frontmatter","id":"notas-status","level":"error",
+                 "roots":["projetos/*"],
+                 "file_pattern":"^notas\\.md$",
+                 "one_of":{"status":["feito","fazendo"],"nivel":["1"]}}]}"#,
+        ),
+        (
+            "projetos/01-blink/notas.md",
+            "---\nstatus: \"feito\"  # concluído ontem\nnivel: 1\n---\n\n# Notas\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success();
+}
+
+/// Issue #45, end to end. The separation exists so a lesson can be rewritten
+/// without destroying what was written while doing it, and it only works if the
+/// notes file is *there* — a directory with no `notas.md` is one a regeneration
+/// writes over, and the failure looks exactly like "I hadn't taken notes yet".
+#[test]
+fn a_file_whose_companion_is_missing_fails_the_check() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"pair","id":"licao-tem-notas","level":"error",
+                 "roots":["projetos/*"],
+                 "file_pattern":"^projeto\\.md$","must_exist":"notas.md"}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        ("projetos/01-blink/notas.md", "# notas\n"),
+        ("projetos/03-semaforo/projeto.md", "# semaforo\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("projetos/03-semaforo/notas.md` does not exist"))
+        .stdout(contains("01-blink").not());
+}
+
+/// One direction, always. An orphan companion is a note taken before the
+/// lesson was written, which is fine.
+#[test]
+fn an_orphan_companion_is_not_a_finding() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"pair","id":"licao-tem-notas","level":"error",
+                 "roots":["projetos/*"],
+                 "file_pattern":"^projeto\\.md$","must_exist":"notas.md"}]}"#,
+        ),
+        ("projetos/09-adiantada/notas.md", "# ideias\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success();
+}
+
+/// The half no directory-scoped rule can reach: the sketch needs the lesson
+/// one level up, and the sketch may be called anything.
+#[test]
+fn a_companion_outside_the_directory_is_found() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"pair","id":"sketch-tem-licao","level":"error",
+                 "roots":["projetos/*/sketch"],
+                 "file_pattern":"\\.ino$","must_exist":"../projeto.md"}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        ("projetos/01-blink/sketch/blink.ino", "void setup() {}\n"),
+        (
+            "projetos/03-semaforo/sketch/semaforo.ino",
+            "void setup() {}\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("projetos/03-semaforo/projeto.md` does not exist"))
+        .stdout(contains("01-blink").not());
+}
+
+/// Issue #42, end to end. A lesson missing `exercicios.md` still renders,
+/// still commits, still shows up in the index — and is found weeks later by
+/// the person who reaches the end of it. There is no build here at all, so
+/// nothing else was ever going to catch it.
+#[test]
+fn a_directory_missing_a_required_file_fails_the_check() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"licao-completa","level":"error",
+                 "roots":["projetos/*"],
+                 "require":["projeto.md","exercicios.md","notas.md"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        ("projetos/01-blink/exercicios.md", "# ex\n"),
+        ("projetos/01-blink/notas.md", "# notas\n"),
+        ("projetos/03-semaforo/projeto.md", "# semaforo\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("`exercicios.md` is not here"))
+        .stdout(contains("`notas.md` is not here"))
+        // The complete lesson is not mentioned.
+        .stdout(contains("01-blink").not());
+}
+
+/// The half the issue asks for by name: the filenames arrive *before* the
+/// directory does, which is how a unit of work gets started.
+#[test]
+fn scaffold_lists_the_files_a_new_directory_must_have() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"licao-completa","level":"error",
+                 "roots":["projetos/*"],
+                 "require":["projeto.md","notas.md"],
+                 "require_any":["\\.ino$"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["scaffold", "projetos/17-nova"])
+        .assert()
+        .success()
+        .stdout(contains("Files that must exist here:"))
+        .stdout(contains("projeto.md"))
+        .stdout(contains("notas.md"))
+        .stdout(contains(r"a file matching \.ino$"));
+}
+
+/// `require` takes filenames. A path is refused with the rule that says it
+/// instead, rather than silently reaching into a subdirectory or silently not.
+#[test]
+fn a_require_entry_that_is_a_path_is_refused() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"presence","id":"licao-completa","level":"error",
+             "roots":["projetos/*"],"require":["sketch/sketch.ino"]}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "validate"])
+        .assert()
+        .code(2)
+        .stderr(contains("takes filenames"));
+}
+
+/// Issue #46, through the real process. A finding says what the rule wanted
+/// and what the file did, and used to never say why the rule exists — so an
+/// agent reading one could comply and nothing else, which is how a config gets
+/// edited to make a check pass.
+///
+/// Once per rule, at its first occurrence: two findings, one paragraph.
+#[test]
+fn a_rules_reason_is_printed_once_beside_its_findings() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"referencia-sem-subpasta","level":"error",
+                 "why":"the generated index reads this folder flat; a nested one is invisible to it",
+                 "roots":["referencia"],"allowed_subfolders":[]}]}"#,
+        ),
+        ("referencia/uma/x.md", "# x\n"),
+        ("referencia/outra/y.md", "# y\n"),
+    ]);
+
+    let output = archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(output).expect("output is UTF-8");
+
+    assert_eq!(
+        text.matches("why: the generated index reads this folder flat")
+            .count(),
+        1,
+        "one paragraph per rule, not per finding: {text}"
+    );
+}
+
+/// And it reaches the commands an agent asks *before* writing, which is where
+/// a reason is worth most — a constraint that looks arbitrary is the one that
+/// gets worked around.
+#[test]
+fn a_rules_reason_reaches_describe_and_the_guide() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"modules":[{
+                 "id":"referencia",
+                 "why":"it is the only part of this repository another project consumes",
+                 "rules":[{"type":"structure","id":"referencia-sem-subpasta","level":"error",
+                           "why":"the generated index reads this folder flat",
+                           "roots":["referencia"],"allowed_subfolders":[]}]}]}"#,
+        ),
+        ("referencia/x.md", "# x\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["describe", "referencia", "--format", "json"])
+        .assert()
+        .success()
+        .stdout(contains("the generated index reads this folder flat"))
+        .stdout(contains("another project consumes"));
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("agent-guide")
+        .assert()
+        .success()
+        .stdout(contains(
+            "**Why**: the generated index reads this folder flat",
+        ));
+}
+
+/// Issue #43. Lesson folders are `NN-slug` and the two digits are the sort key
+/// for a generated index, so `semaforo` and `03_semaforo` break it silently.
+/// The regex-over-a-directory-name matcher existed on `naming.dir_pattern` and
+/// was reachable only through a door that requires a TypeScript parse — and
+/// there is no TypeScript anywhere near these folders.
+#[test]
+fn a_subfolder_pattern_constrains_directory_names_without_any_typescript() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"licao-nome-da-pasta","level":"error",
+                 "roots":["projetos"],
+                 "subfolder_patterns":["^\\d{2}-[a-z0-9-]+$"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        ("projetos/semaforo/projeto.md", "# semaforo\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("projetos/semaforo"))
+        .stdout(contains("projetos/01-blink").not());
+}
+
+/// And the half that pays: the answer arrives before the folder is created,
+/// which is where a naming convention is cheap to follow.
+#[test]
+fn scaffold_names_the_shape_a_subfolder_must_have() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"licao-nome-da-pasta","level":"error",
+                 "roots":["projetos"],
+                 "subfolder_patterns":["^\\d{2}-[a-z0-9-]+$"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["scaffold", "projetos"])
+        .assert()
+        .success()
+        .stdout(contains(r"any name matching ^\d{2}-[a-z0-9-]+$"));
+}
+
+/// Issue #41. `explain` used to end a "covers nothing" report by referring to
+/// `config doctor`, which then said nothing about that rule — a dead end at
+/// exactly the moment a user had been told the tool knew the answer.
+#[test]
+fn explain_says_why_a_rule_constrains_nothing_instead_of_referring_on() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"toothless","level":"error",
+                 "roots":["referencia"]}]}"#,
+        ),
+        ("referencia/nota.md", "# nota\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "explain", "toothless"])
+        .assert()
+        .success()
+        .stdout(contains("constrains nothing"))
+        .stdout(contains("config doctor").not());
+
+    // And the command that audits configurations does have it, so the class is
+    // visible from there too.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "doctor"])
+        .assert()
+        .success()
+        .stdout(contains("rule-constrains-nothing"));
 }
 
 /// Layer 4 through the real process, on the write a hook most needs to stop:

@@ -17,6 +17,390 @@ saying so.
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-08-08
+
+### Added
+
+- **`must_export.annotation`: a `naming` rule can require the export to write
+  its type down.** ([#39](https://github.com/HenriqueArtur/archwarden/issues/39))
+
+  ```json
+  "must_export": { "kind": ["const"], "name": "AGENT_TOOL", "annotation": "AgentToolModule" }
+  ```
+
+  `export const AGENT_TOOL: AgentToolModule = {...}` passes;
+  `export const AGENT_TOOL = {...}` does not. A registry that moves from a
+  typed static array to `readdir` plus `import()` loses its compile-time gate:
+  the name and the declaration form are still expressible, the shape is not,
+  and a module missing `build` is green in `check` and `tsc` and dies at boot.
+
+  Not type checking. Nothing is resolved and nothing is inferred — the
+  annotation is a token in the declaration whose `kind` the rule already reads.
+  Whether the annotated value really is of that type stays `tsc`'s question;
+  what this gates is whether the declaration is submitted to `tsc` at all.
+
+  A binding writes the type after the colon and a class writes it in
+  `implements`, so both are read; a class implementing several contracts
+  satisfies a rule asking for any of them. Whitespace is not significant on
+  either side. A list means "any of". `annotation` beside `kind: ["function"]`
+  is a rule no file could satisfy — a function declares a *return* type, which
+  is a different claim — so the config is refused rather than left to flag
+  every file forever.
+
+  `scaffold` renders the annotated declaration
+  (`export const AGENT_TOOL: AgentToolModule = /* ... */;`), which is a line
+  that passes — a promise `signature_hint` never made. `signature_hint` is
+  unchanged and still never verified.
+
+  Existing configs are unaffected: a rule that names no annotation ignores them
+  exactly as before.
+
+- **The pages speak English or Brazilian Portuguese.** `"language": "pt-br"` in
+  the config, or `--lang pt-br` for one run.
+
+  The page and nothing else. The terminal, the JSON and the digest stay in
+  English whatever it says: a CI log is pasted into an issue, searched for and
+  read by an agent, and one whose language depends on who ran it is worse than
+  one somebody has to translate.
+
+  A trait with one implementation per language, so a page cannot grow a heading
+  that exists in one of them only — the compiler refuses an implementation with
+  a method missing, which is the same property the exhaustive rule-kind match
+  gives. Adding a language is one file and the compiler lists what it needs.
+
+  Never detected from the environment: a report whose language depends on the
+  machine that produced it cannot be diffed. The sentences a *rule* produces are
+  still English on both pages, and the module docs say so.
+
+- **Two HTML pages, for the human the JSON was never for.**
+
+  ```bash
+  archwarden agent-guide --format html > architecture.html   # as declared
+  archwarden check --html .archwarden/report.html            # as it stands
+  ```
+
+  The JSON is a contract with agents and the text output is a gate. Neither is
+  what somebody about to *change* an architecture reads: that person is asking
+  where reality is pushing against the design, and gets there today by running
+  four commands and holding the results in their head.
+
+  So the pages are ordered for them. The centrepiece is a **module grid** —
+  rows import, columns are imported — and the one decision that carries it is
+  that **a forbidden edge is drawn, not alarmed**: a wall is the design working,
+  so it is hatched and colourless, and colour is spent only on a wall being
+  crossed. Hatching also means the two states differ by texture and not only by
+  hue.
+
+  Rows are numbered and columns carry only the number, which is what keeps the
+  grid readable past ten modules. Pressure is grouped **by wall rather than by
+  file**, because a wall crossed eleven times is a question about the wall; and
+  accepted debt is given the same weight as a current error, since it is where
+  somebody already decided the design was losing.
+
+  A cell is decided by asking the **same matchers the engines use** against the
+  directories the walk found. Nothing on a page is computed for the page.
+
+  Read-only, self-contained, no script and no network — a page that fetched
+  something would stop rendering from a CI artefact in two years. The section
+  naming what the run could not decide is bordered rather than tucked away: a
+  page that hid it would be worse than the JSON, because it would look more
+  trustworthy while knowing less.
+
+  `--html` on `check` is a side artefact rather than a `--format`: a browser
+  cannot read a pipe, so the terminal keeps its summary and its exit code and
+  the file is written beside them. A page that cannot be written is reported and
+  never changes the exit code.
+
+  `cargo xtask preview` writes both against a fixture repository, by running the
+  real binary — contributors judge the pages by looking at them.
+
+- **Astro support: the module inside the `---` fence is read.**
+  ([#13](https://github.com/HenriqueArtur/archwarden/issues/13))
+
+  ```json
+  { "version": 0, "languages": ["ts", "astro"] }
+  ```
+
+  `.astro` files were invisible to every fact-based rule, and silently so. An
+  Astro repository with `from: "src/**"` and `forbid_import_from:
+  ["src/domain/**"]` got exit 0 while every page imported the domain directly.
+
+  Stage 1 of the issue's own design: the `---` fence is a plain TypeScript
+  module and is where essentially every import in an Astro page lives, so the
+  front-end finds the fence and hands the slice to `oxc`. It owns no parser.
+  Spans are shifted back into the file, because a wrong `path:line:column` is
+  worse than none — it is one a reader opens.
+
+  The template and inline `<script>` are **not** read. That is stated rather
+  than discovered, and it is stage 2.
+
+  Opt-in through `languages`, and not because of cost: widening what archwarden
+  governs should be a decision written in the config rather than one that
+  arrives with a dependency upgrade. **The un-opted state is loud** — an
+  `.astro` file under a rule that needs facts is a counted, named skip.
+
+  `.astro` is its own file class rather than plain source, which is what keeps
+  `spec-pair` from demanding `Card.spec.astro` — the spec for an Astro
+  component is `Card.spec.ts`, and that override is issue #45's shape, not this
+  one's. `.vue` and `.svelte` land in the same class when they arrive.
+
+  The resolver learned `.astro`, so `import Layout from './Base.astro'` lands on
+  a path rather than resolving to nothing.
+
+- **`config explain` and `check` now name a skipped check nobody attempted.**
+  The text output said `1 skipped` and nothing else, which is
+  indistinguishable from a skip on a file that could not be read — and the two
+  are opposite decisions. Only the JSON carried the path.
+
+- **A `frontmatter` rule: a document's YAML block must carry these keys.**
+  ([#44](https://github.com/HenriqueArtur/archwarden/issues/44))
+
+  ```json
+  { "type": "frontmatter", "id": "projeto-frontmatter", "level": "error",
+    "roots": ["projetos/*"], "file_pattern": "^projeto\\.md$",
+    "require": ["id", "nivel", "componentes"],
+    "one_of": { "nivel": ["1", "2", "3"] },
+    "equals": { "id": "{{raw(dirname)}}" } }
+  ```
+
+  The first rule that reads a file which is not code. A `.md`'s frontmatter is
+  often not documentation at all — it is the machine-readable half of the
+  document — and nothing type-checks a markdown file. A `projeto.md` with no
+  `componentes` does not fail to load; it reports as a lesson that needs none.
+
+  `one_of` is the clause that earns the rule. A missing key is an absence; a
+  value *outside* the vocabulary is confidently wrong — `status: concluido`
+  where the vocabulary is `feito` drops the document out of the generated table
+  with no row and no error.
+
+  `equals` is the `naming` question asked of a file with no exported symbol:
+  a name agreeing with a path. Values compare as text, so `"1"` matches
+  `nivel: 1`.
+
+  Deliberately absent: `type`, `min_items`, nested paths, and anything about a
+  value's shape. That is a document schema and JSON Schema is one. The line
+  every rule here keeps is names and vocabularies, never shapes.
+
+  A document with no block is a finding, not a skip — otherwise deleting the
+  block would be the way out of the rule. A block that is not YAML is a
+  different finding, because the next steps differ.
+
+  `---`-fenced YAML only. Reading it takes `yaml-rust2`, the first parsing
+  dependency that is not `oxc`: `status: "feito"  # done`, a flow mapping and
+  an anchor are all things a line scanner reads wrong in silence.
+
+- **A `pair` rule: a file of one kind must have a companion of another.**
+  ([#45](https://github.com/HenriqueArtur/archwarden/issues/45))
+
+  ```json
+  { "type": "pair", "id": "licao-tem-notas", "level": "error",
+    "roots": ["projetos/*"],
+    "file_pattern": "^projeto\\.md$", "must_exist": "notas.md" }
+  ```
+
+  `spec-pair` is this rule for one specific pair and cannot be bent to any
+  other: its default ignores exclude anything that is not a JS/TS source file,
+  and its companion is *derived* — `<stem>.<marker>.<ext>` — which generalises
+  to nothing. Two fixed names in one directory is what the rest of the world
+  has.
+
+  **The difference from `presence` is the anchor.** `presence` asks about a
+  directory: these files must be here. `pair` asks about a file: because this
+  one exists, that one must too. An empty directory is a `presence` finding and
+  not a `pair` one.
+
+  The companion may leave the directory — `../projeto.md`, for a sketch that
+  needs the lesson one level up and may be called anything, which no
+  directory-scoped rule can reach. One direction, always: an orphan companion is
+  a note taken before the lesson was written, and is not a finding.
+
+  `FileContext` gained an existence predicate for it, supplied by the caller the
+  way `siblings` already is — `check` answers from the walk it has, `check
+  --file` answers from disk because it has none, and a rule still never touches
+  the filesystem itself.
+
+- **A `presence` rule: these files must exist in each governed directory.**
+  ([#42](https://github.com/HenriqueArtur/archwarden/issues/42))
+
+  ```json
+  { "type": "presence", "id": "licao-completa", "level": "error",
+    "roots": ["projetos/*"],
+    "require": ["projeto.md", "exercicios.md", "notas.md"],
+    "require_any": ["\\.ino$"] }
+  ```
+
+  The rule kind `RULES.md` has been deferring by name. `filename_patterns` is a
+  whitelist of what *may* exist and is satisfied by an empty directory, which is
+  exactly the state this is about: a unit of work is incomplete until its
+  companion files are there, nothing errors when one is missing, and the gap is
+  found by whoever needed the file.
+
+  The first rule that reasons about a path that is *not* there. It needs no
+  parse and no resolution — a name against the walk.
+
+  `require` takes **filenames, not paths**; an entry with a `/` is refused when
+  the config compiles, and the same requirement is sayable by a second rule
+  scoped one level down. One rule answering for one directory is what lets
+  `describe` and `scaffold` answer for a directory that does not exist yet,
+  which is where this rule is worth most: `scaffold projetos/17-nova` prints the
+  filenames, and a unit of work gets started rather than corrected.
+
+  One finding per missing entry, not one per directory — each is a separate file
+  to create, which is how `spec-pair` reports a missing sibling too.
+
+  It is also the cleanest rule `config verify-rules` has: a violation is a
+  directory with no files in it, so nothing has to be invented.
+
+- **`why`: a rule, or a module, can say why it exists.**
+  ([#46](https://github.com/HenriqueArtur/archwarden/issues/46))
+
+  ```json
+  { "type": "import-boundary", "id": "domain-forbids-app", "level": "error",
+    "why": "domain is published as its own package and the app is not",
+    "from": ["packages/domain/**"], "forbid_import_from": ["packages/app/**"] }
+  ```
+
+  A finding said what the rule wanted and what the file did, and never why the
+  rule exists. An agent reading one could comply, and that is all it could do —
+  which is the failure mode `AGENTS.md` already had three bare prohibitions
+  against ("do not edit `arch.config.json` to make a check pass", "a missing
+  spec file means write the test", "exit 2 is not your problem to route
+  around"). Each of those is a rule broken because the constraint looked
+  arbitrary, and a reason is what makes a constraint non-arbitrary.
+
+  There was nowhere to write one. The config is JSON, so it has no comments,
+  and the reason lived in a commit message or a wiki — neither in front of
+  anybody at the moment a rule fires.
+
+  It surfaces in the pre-write hook's denial, in `describe` and `scaffold`, in
+  `agent-guide`, in `config explain`, and beside a finding. In text a rule's
+  reason prints **once per run, at its first finding**; in JSON every finding
+  carries it. It is not part of a finding's identity, so rewording one never
+  touches `.archwarden/baseline.json`.
+
+  A module takes one too, as a separate answer rather than a fallback.
+
+  `config doctor` reports `rules-without-a-reason` as a count, and only once at
+  least one rule has a `why` — a project that never used the field has not
+  adopted the practice.
+
+- **`structure.subfolder_patterns`: a regex over directory names.**
+  ([#43](https://github.com/HenriqueArtur/archwarden/issues/43))
+
+  ```json
+  "subfolder_patterns": ["^\\d{2}-[a-z0-9-]+$"]
+  ```
+
+  `filename_patterns` one field over, for the other kind of directory entry.
+  `allowed_subfolders` constrains names by enumeration, which works for a fixed
+  vocabulary and cannot work for an open set where the *shape* is the rule —
+  sixteen lesson folders named `NN-slug` with more arriving, and nobody listing
+  them forever.
+
+  The same matcher already existed as `naming.dir_pattern` and was reachable
+  only through `must_export`, which needs a TypeScript parse of a file inside;
+  a directory with no `.ts` near it could not use it at all.
+
+  A union with the two lists: a name passes if a list names it *or* a pattern
+  matches it. The lists are read first, so a `warn_subfolders` entry whose name
+  happens to have the right shape still warns — the most specific declaration
+  wins, and a name written out is more specific than a regex.
+
+  `describe`, `scaffold` and `agent-guide` all carry it, so the shape is
+  answerable before the folder exists, which is where a folder-naming
+  convention is cheap to follow.
+
+### Fixed
+
+- **Source in a language archwarden cannot read is counted, instead of passing
+  in silence.**
+
+  A `.py` under an `import-boundary` rule was classified `Other` — the class
+  that exists so a PNG does not inflate `checks_skipped` — so the rule saw no
+  imports, reported nothing and counted nothing. A rule enforcing nothing looks
+  exactly like a repository that satisfies it.
+
+  `FileClass` now has four answers, and a missing fact counts as a lost answer
+  only when the file could have carried it: a boundary rule pointed at a `.md`
+  lost nothing, and pointed at a `.py` lost everything. `check --file` gained a
+  `no-front-end` reason distinct from `not-source` — one means the rule is
+  pointed at the wrong thing, the other means the rule is right and archwarden
+  cannot read the file.
+
+- **`allowed_subfolders: []` now forbids every subfolder, instead of enforcing
+  nothing.** ([#40](https://github.com/HenriqueArtur/archwarden/issues/40))
+
+  **This can make an existing, unchanged config report differently** — but only
+  one that wrote the empty list explicitly, which today enforces nothing and is
+  therefore a config whose author meant something by it. A rule that *omits*
+  the field is untouched, and that is every rule that constrains filenames
+  only.
+
+  The distinction is the fix: absent and `[]` used to arrive identical, so the
+  literal reading — a list of what may exist, holding nothing — could not be
+  given to one without giving it to the other. `allowed_subfolders` is now an
+  option. Omitted, the rule says nothing about subfolders; `[]` permits none of
+  them, which is how a directory says it is a leaf and was previously
+  unsayable.
+
+  `config doctor` gained `rule-constrains-nothing` for a `structure` rule that
+  names no allowed subfolder, no warned subfolder and no filename pattern —
+  the state that used to be valid at `validate`, silent at `doctor` and skipped
+  at `check`, all three agreeing a rule was fine while it enforced nothing.
+
+- **`config explain` no longer refers to `config doctor` for an answer `doctor`
+  does not have.** ([#41](https://github.com/HenriqueArtur/archwarden/issues/41))
+
+  "It covers nothing in this repository. Try `archwarden config doctor` for
+  why." merged two different faults and sent users to a command that had
+  nothing to say about one of them. They are now separate sentences:
+
+  - the scope matched no path — *"Its scope matches no path in this
+    repository"*, and the referral stays, because `doctor` does have that one;
+  - the scope matched and the rule asks nothing of what it matched — *"It
+    constrains nothing: its scope reaches 3 paths, and the rule has no
+    requirement about any of them"*, said by `explain` itself. It is the
+    command that decided, so it is the command that says why.
+
+### Changed
+
+- **A `naming` finding about an export that exists now carries a span**, so it
+  prints as `path:line:column` and opens in an editor. Findings about an export
+  that is *missing* still have none — there is no position to name.
+- **The cache format is at version 5**, from 3. `ExportFact` gained its
+  annotations, `FileClass` gained two answers, and documents got a table of
+  their own — an entry written by 0.9.2 would deserialise cleanly and be wrong
+  about all three. A cache from an older format is discarded rather than
+  misread, so the first run after upgrading is a cold one and nothing else
+  changes.
+- **`cargo xtask ci` runs every gate the workflow runs**, and the `pre-push`
+  hook runs it. A gate whose tool is not installed *fails* rather than
+  skipping: this release lost three rounds of CI to checks that had never run
+  locally, each one reported as `skipped` in a message that read like a pass.
+  A test reads `.github/workflows/ci.yml` and fails if the two lists disagree,
+  so a job added to CI cannot be one that only ever fails on GitHub. The prose
+  list in `CONTRIBUTING.md` that this replaces had silently lost both coverage
+  floors.
+
+  The environment is part of the gate, not decoration around it. CI's
+  `RUSTFLAGS: -D warnings` does not reach rustdoc — the toolchain action
+  exports `RUSTDOCFLAGS` as well — and a run carrying only the command
+  reproduced CI's compiler while missing its documentation build. A broken
+  intra-doc link passed all 13 gates locally and failed on GitHub before this
+  was fixed, and both halves of the environment are checked against the
+  workflow now.
+- **`cargo xtask clean` removes build caches in tiers.** The default takes
+  incremental compilation state and leaves the compiled dependencies, so the
+  next build is still warm; `--deps` and `--all` take more. Targets are named
+  rather than globbed, benchmark history is never removed, and `cargo-mutants`
+  build trees orphaned by a killed run are swept. Measured here once: 27 GB of
+  the 59 in `target` was incremental state.
+- **A `cargo-mutants` run that is interrupted after finding survivors now
+  blocks the push.** It used to read any exit code other than `2` as "the tool
+  could not form an opinion" and let the push through — which is right for a
+  build failure and wrong for a run that had already printed what it found.
+  190 survivors left through that gap.
+
 ## [0.9.2] — 2026-08-07
 
 ### Fixed

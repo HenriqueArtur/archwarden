@@ -15,7 +15,7 @@ use archwarden_core::{
     level::Level,
     path::{FileClass, RepoRelPath},
     scope::Scope,
-    traits::{FileContext, RuleEngine},
+    traits::{FactsNeeded, FileContext, RuleEngine},
 };
 
 /// Barrel files, which re-export and hold no behaviour of their own.
@@ -341,8 +341,12 @@ impl RuleEngine for SpecPairEngine {
         !self.is_exempt(path, name)
     }
 
-    fn needs_facts(&self) -> bool {
-        self.require_non_empty_spec || self.skip_type_only
+    fn needs_facts(&self) -> FactsNeeded {
+        if self.require_non_empty_spec || self.skip_type_only {
+            FactsNeeded::Code
+        } else {
+            FactsNeeded::Nothing
+        }
     }
 
     /// Reports a spec that exists but contains no test cases.
@@ -418,6 +422,8 @@ impl RuleEngine for SpecPairEngine {
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::traits::Exists;
+
     use super::*;
     use archwarden_core::facts::FileFacts;
 
@@ -433,6 +439,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("needs-spec").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind: CompiledRuleKind::SpecPair {
@@ -479,7 +487,9 @@ mod tests {
                 engine.check_file(FileContext {
                     path: &file,
                     facts: known,
+                    docs: None,
                     siblings: &siblings,
+                    exists: Exists::none(),
                 })
             })
             .collect()
@@ -502,6 +512,7 @@ mod tests {
                     is_default: false,
                     reexport_from: None,
                     forwards: None,
+                    annotations: Vec::new(),
                     span: Span::new(0, 0),
                 })
                 .collect(),
@@ -778,6 +789,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("needs-test").expect("valid"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Warning,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -871,6 +884,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("tdd-gate").expect("valid"),
             module: Some(ModuleId::new("domain").expect("valid")),
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -908,12 +923,15 @@ mod tests {
         let structure = CompiledRule {
             id: RuleId::new("shape").expect("valid"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::Structure {
-                allowed_subfolders: Vec::new(),
+                allowed_subfolders: Some(Vec::new()),
                 warn_subfolders: Vec::new(),
                 recurse_into: Vec::new(),
+                subfolder_patterns: Vec::new(),
                 filename_patterns: Vec::new(),
             },
         };
@@ -937,6 +955,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("tdd-gate").expect("valid"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -950,7 +970,7 @@ mod tests {
         let strict = SpecPairEngine::from_rule(&rule).expect("is a spec-pair rule");
 
         assert!(strict.applies_to(&path("src/user/thing.spec.ts")));
-        assert!(strict.needs_facts());
+        assert_eq!(strict.needs_facts(), FactsNeeded::Code);
     }
 
     /// The flag's whole purpose: a spec with a `describe` and no test cases
@@ -965,6 +985,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("tdd-gate").expect("valid"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -991,7 +1013,9 @@ mod tests {
             engine.check_file(FileContext {
                 path: &spec,
                 facts: Some(&facts),
+                docs: None,
                 siblings: &[],
+                exists: Exists::none(),
             })
         };
 
@@ -1014,6 +1038,8 @@ mod tests {
         let rule = CompiledRule {
             id: RuleId::new("needs-spec").expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind: CompiledRuleKind::SpecPair {
@@ -1129,8 +1155,14 @@ mod tests {
     /// is still the cheap one that only looks at names.
     #[test]
     fn the_flag_is_what_opens_the_file() {
-        assert!(type_only_engine(&["src/*"], &["."]).needs_facts());
-        assert!(!engine(&["src/*"], &["."], &[]).needs_facts());
+        assert_eq!(
+            type_only_engine(&["src/*"], &["."]).needs_facts(),
+            FactsNeeded::Code
+        );
+        assert_eq!(
+            engine(&["src/*"], &["."], &[]).needs_facts(),
+            FactsNeeded::Nothing
+        );
     }
 
     #[test]

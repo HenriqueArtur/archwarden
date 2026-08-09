@@ -40,6 +40,23 @@ pub struct Scaffold {
     pub filename_patterns: Vec<String>,
     /// When asked about a directory: what may live inside it.
     pub allowed_subfolders: Option<AllowedSubfolders>,
+    /// When asked about a directory: what must live inside it.
+    ///
+    /// Always present, even when empty, unlike `allowed_subfolders`. That one
+    /// distinguishes "nothing constrains this directory" from "these folders
+    /// are allowed"; here an empty list already says what there is to say, and
+    /// a consumer reading two lists should not have to unwrap one of them.
+    #[serde(default)]
+    pub required_files: RequiredFiles,
+}
+
+/// What a directory must contain.
+#[derive(Debug, Default, Serialize)]
+pub struct RequiredFiles {
+    /// Filenames that must be there.
+    pub names: Vec<String>,
+    /// Regexes at least one file must match, one file per entry.
+    pub patterns: Vec<String>,
 }
 
 /// One export the file must carry.
@@ -50,6 +67,14 @@ pub struct RequiredExport {
     /// The declaration forms that satisfy the rule, best first. Empty means
     /// any form will do.
     pub kinds: Vec<&'static str>,
+    /// The type annotations that satisfy the rule, any one of them. Absent
+    /// when the rule asks for none.
+    ///
+    /// Beside `signature_hint` rather than instead of it: this one is checked
+    /// and that one is not, and collapsing them would make the weaker promise
+    /// look like the stronger one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub annotation: Vec<String>,
     /// The signature the config author wrote. Never verified.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signature_hint: Option<String>,
@@ -91,6 +116,10 @@ pub struct AllowedSubfolders {
     pub allowed: Vec<String>,
     /// Names permitted but reported as warnings.
     pub warn: Vec<String>,
+    /// Regexes a name may match instead of being listed. Absent when the rule
+    /// constrains names by enumeration only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub patterns: Vec<String>,
 }
 
 /// Transposes every expectation that applies to `path` into one shape.
@@ -115,10 +144,12 @@ fn absorb(shape: &mut Scaffold, expectation: Expectation) {
         Expectation::RequiredExport {
             kind,
             name,
+            annotation,
             signature_hint,
         } => shape.required_exports.push(RequiredExport {
             name,
             kinds: kinds_of(&kind),
+            annotation,
             signature_hint,
         }),
         Expectation::RequiredSibling {
@@ -178,8 +209,27 @@ fn absorb(shape: &mut Scaffold, expectation: Expectation) {
             imported_from,
         }),
         Expectation::FilenamePattern { patterns } => shape.filename_patterns.extend(patterns),
-        Expectation::AllowedSubfolders { allowed, warn } => {
-            shape.allowed_subfolders = Some(AllowedSubfolders { allowed, warn });
+        // Into the same list as a spec sibling: for someone about to write the
+        // file the two are one instruction, "create this too", and the reason
+        // one of them is derived and the other literal is not their problem.
+        Expectation::RequiredCompanion { path } => shape.required_siblings.push(RequiredSibling {
+            path,
+            constraints: Vec::new(),
+        }),
+        Expectation::RequiredFiles { names, patterns } => {
+            shape.required_files.names.extend(names);
+            shape.required_files.patterns.extend(patterns);
+        }
+        Expectation::AllowedSubfolders {
+            allowed,
+            warn,
+            patterns,
+        } => {
+            shape.allowed_subfolders = Some(AllowedSubfolders {
+                allowed,
+                warn,
+                patterns,
+            });
         }
         // `Expectation` is non_exhaustive. A variant added later is not
         // something this shape can place, and guessing would be worse than the
@@ -261,6 +311,19 @@ fn render_text(path: &RepoRelPath, shape: &Scaffold, out: &mut dyn std::io::Writ
         for name in &subfolders.warn {
             let _ = writeln!(out, "    {name} (allowed, reported as a warning)");
         }
+        for pattern in &subfolders.patterns {
+            let _ = writeln!(out, "    any name matching {pattern}");
+        }
+    }
+
+    if !shape.required_files.names.is_empty() || !shape.required_files.patterns.is_empty() {
+        let _ = writeln!(out, "\n  Files that must exist here:");
+        for name in &shape.required_files.names {
+            let _ = writeln!(out, "    {name}");
+        }
+        for pattern in &shape.required_files.patterns {
+            let _ = writeln!(out, "    a file matching {pattern}");
+        }
     }
 
     if !shape.required_exports.is_empty() {
@@ -318,21 +381,34 @@ fn is_empty(shape: &Scaffold) -> bool {
         && shape.call_obligations.is_empty()
         && shape.filename_patterns.is_empty()
         && shape.allowed_subfolders.is_none()
+        && shape.required_files.names.is_empty()
+        && shape.required_files.patterns.is_empty()
 }
 
 /// The declaration line an agent can paste.
 ///
-/// The keyword is the rule's first accepted form, and the signature is the
-/// author's `signature_hint` verbatim. Both are best-effort by design: this
-/// emits requirements, and a hint archwarden never verifies cannot be promised
-/// to compile.
+/// The keyword is the rule's first accepted form. An `annotation` outranks a
+/// `signature_hint` in the same position, because it is the one of the two the
+/// checker will hold the file to: a line built from it is a line that passes,
+/// which is a promise a hint archwarden never verifies cannot make.
 fn declaration(export: &RequiredExport) -> String {
     let keyword = export.kinds.first().copied().unwrap_or("const");
     let name = &export.name;
 
+    if let Some(annotation) = export.annotation.first() {
+        // A class names its contract in `implements`; every other form writes
+        // it after a colon.
+        return if keyword == "class" {
+            format!("export class {name} implements {annotation} {{ ... }}")
+        } else {
+            format!("export {keyword} {name}: {annotation} = /* ... */;")
+        };
+    }
+
     match export.signature_hint.as_deref() {
         Some(hint) => format!("export {keyword} {name}{hint}"),
         None if keyword == "function" => format!("export function {name}(/* ... */) {{ ... }}"),
+        None if keyword == "class" => format!("export class {name} {{ ... }}"),
         None => format!("export {keyword} {name} = /* ... */;"),
     }
 }
@@ -372,6 +448,8 @@ mod tests {
         CompiledRule {
             id: RuleId::new(id).expect("valid id"),
             module: None,
+            why: None,
+            module_why: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -398,6 +476,7 @@ mod tests {
             dir_pattern: None,
             name_template: "{{pascal(name)}}".to_owned(),
             kind,
+            annotation: Vec::new(),
             signature_hint: hint.map(str::to_owned),
         }
     }
@@ -581,6 +660,155 @@ mod tests {
             text.contains("export function CreateClient(deps: Deps): UseCase<In, Out>"),
             "{text}"
         );
+    }
+
+    /// Issue #45. `scaffold projetos/17-nova/projeto.md` naming `notas.md` is
+    /// what stops the pair being half-written in the first place -- the whole
+    /// failure is that nobody notices the missing half.
+    #[test]
+    fn a_pair_rule_lists_the_companion_to_create() {
+        let shape = scaffold(
+            &config(vec![rule(
+                "licao-tem-notas",
+                &["projetos/*"],
+                CompiledRuleKind::Pair {
+                    file_pattern: Pattern::compile(r"^projeto\.md$").expect("valid"),
+                    must_exist: "notas.md".to_owned(),
+                },
+            )]),
+            &path("projetos/17-nova/projeto.md"),
+        );
+
+        assert_eq!(
+            shape
+                .required_siblings
+                .iter()
+                .map(|sibling| sibling.path.as_str())
+                .collect::<Vec<_>>(),
+            ["projetos/17-nova/notas.md"]
+        );
+    }
+
+    /// Issue #42 names this as the command that makes the rule worth having:
+    /// `scaffold projetos/17-nova` printing the filenames is how a unit of
+    /// work gets started, which puts archwarden before the writing rather than
+    /// after it.
+    #[test]
+    fn a_presence_rule_lists_the_files_to_create() {
+        let shape = scaffold(
+            &config(vec![rule(
+                "licao-completa",
+                &["projetos/*"],
+                CompiledRuleKind::Presence {
+                    require: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
+                    require_any: vec![Pattern::compile(r"\.ino$").expect("valid")],
+                },
+            )]),
+            &path("projetos/17-nova"),
+        );
+
+        assert_eq!(
+            shape.required_files.names,
+            ["projeto.md".to_owned(), "notas.md".to_owned()]
+        );
+        assert_eq!(shape.required_files.patterns, [r"\.ino$".to_owned()]);
+    }
+
+    /// A naming rule that fixes both the name and the annotation, which is the
+    /// shape a discovery-based registry needs (issue #39).
+    fn annotated_naming(annotation: &[&str], kind: KindFilter) -> CompiledRuleKind {
+        CompiledRuleKind::Naming {
+            file_pattern: Pattern::compile(r"^(?<name>[a-z0-9-]+)\.use-case\.ts$")
+                .expect("valid pattern"),
+            dir_pattern: None,
+            name_template: "{{pascal(name)}}".to_owned(),
+            kind,
+            annotation: annotation.iter().map(|a| (*a).to_owned()).collect(),
+            signature_hint: None,
+        }
+    }
+
+    /// The payoff of `annotation` being *checked* rather than suggested: the
+    /// line `scaffold` hands over compiles into a file that passes. A
+    /// `signature_hint` could never promise that.
+    #[test]
+    fn the_declaration_carries_the_required_annotation() {
+        let text = rendered(
+            vec![rule(
+                "contract",
+                &["src/*"],
+                annotated_naming(
+                    &["UseCaseModule"],
+                    KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
+                ),
+            )],
+            crate::report::Format::Text,
+        );
+
+        assert!(
+            text.contains("export const CreateClient: UseCaseModule = /* ... */;"),
+            "{text}"
+        );
+    }
+
+    /// A class writes the same contract in `implements`, and the skeleton has
+    /// to be the shape that satisfies the rule, not a `const` with a class
+    /// keyword in front of it.
+    #[test]
+    fn an_annotated_class_is_rendered_with_its_implements_clause() {
+        let text = rendered(
+            vec![rule(
+                "contract",
+                &["src/*"],
+                annotated_naming(
+                    &["UseCaseModule"],
+                    KindFilter::OneOf(ExportTags::only(ExportKind::Class)),
+                ),
+            )],
+            crate::report::Format::Text,
+        );
+
+        assert!(
+            text.contains("export class CreateClient implements UseCaseModule { ... }"),
+            "{text}"
+        );
+    }
+
+    /// An agent reads the JSON, so the requirement has to be in it -- and
+    /// beside `signature_hint`, not instead of it, because the two make
+    /// different promises.
+    #[test]
+    fn the_required_annotation_reaches_the_json() {
+        let text = rendered(
+            vec![rule(
+                "contract",
+                &["src/*"],
+                annotated_naming(
+                    &["UseCaseModule", "LegacyUseCase"],
+                    KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
+                ),
+            )],
+            crate::report::Format::Json,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        assert_eq!(
+            parsed["required_exports"][0]["annotation"],
+            serde_json::json!(["UseCaseModule", "LegacyUseCase"])
+        );
+    }
+
+    /// A rule that asks for no annotation must not grow an empty field in the
+    /// output an agent parses.
+    #[test]
+    fn a_rule_without_an_annotation_says_nothing_about_one() {
+        let text = rendered(
+            vec![rule("name", &["src/*"], naming(None, function_kind()))],
+            crate::report::Format::Json,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+
+        assert!(parsed["required_exports"][0].get("annotation").is_none());
     }
 
     /// Without a hint there is still something to write, and it says which
@@ -802,9 +1030,10 @@ mod tests {
                 "shape",
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: Vec::new(),
+                    allowed_subfolders: Some(Vec::new()),
                     warn_subfolders: Vec::new(),
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: vec![
                         Pattern::compile(r"^[a-z-]+\.use-case\.ts$").expect("valid"),
                     ],
@@ -832,9 +1061,10 @@ mod tests {
                 "shape",
                 &["src/*"],
                 CompiledRuleKind::Structure {
-                    allowed_subfolders: vec!["types".to_owned(), "calcs".to_owned()],
+                    allowed_subfolders: Some(vec!["types".to_owned(), "calcs".to_owned()]),
                     warn_subfolders: vec!["shared".to_owned()],
                     recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
                     filename_patterns: Vec::new(),
                 },
             )]),

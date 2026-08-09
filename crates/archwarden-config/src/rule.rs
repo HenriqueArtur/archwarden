@@ -38,6 +38,12 @@ pub enum Rule {
     CallObligation(CallObligationRule),
     /// A file whose whole content is forwarding another module.
     NoPassthrough(NoPassthroughRule),
+    /// These files must exist in each governed directory.
+    Presence(PresenceRule),
+    /// A file of one kind must have a companion of another.
+    Pair(PairRule),
+    /// A document's frontmatter must carry these keys.
+    Frontmatter(FrontmatterRule),
 }
 
 impl Rule {
@@ -51,6 +57,9 @@ impl Rule {
             Self::ImportBoundary(r) => &r.id,
             Self::CallObligation(r) => &r.id,
             Self::NoPassthrough(r) => &r.id,
+            Self::Presence(r) => &r.id,
+            Self::Pair(r) => &r.id,
+            Self::Frontmatter(r) => &r.id,
         }
     }
 
@@ -64,6 +73,25 @@ impl Rule {
             Self::ImportBoundary(r) => r.level,
             Self::CallObligation(r) => r.level,
             Self::NoPassthrough(r) => r.level,
+            Self::Presence(r) => r.level,
+            Self::Pair(r) => r.level,
+            Self::Frontmatter(r) => r.level,
+        }
+    }
+
+    /// Why this rule exists, when its author said.
+    #[must_use]
+    pub fn why(&self) -> Option<&str> {
+        match self {
+            Self::Structure(r) => r.why.as_deref(),
+            Self::Naming(r) => r.why.as_deref(),
+            Self::SpecPair(r) => r.why.as_deref(),
+            Self::ImportBoundary(r) => r.why.as_deref(),
+            Self::CallObligation(r) => r.why.as_deref(),
+            Self::NoPassthrough(r) => r.why.as_deref(),
+            Self::Presence(r) => r.why.as_deref(),
+            Self::Pair(r) => r.why.as_deref(),
+            Self::Frontmatter(r) => r.why.as_deref(),
         }
     }
 
@@ -81,6 +109,9 @@ impl Rule {
             Self::ImportBoundary(r) => &r.from,
             Self::CallObligation(r) => &r.roots,
             Self::NoPassthrough(r) => &r.roots,
+            Self::Presence(r) => &r.roots,
+            Self::Pair(r) => &r.roots,
+            Self::Frontmatter(r) => &r.roots,
         }
     }
 
@@ -94,6 +125,9 @@ impl Rule {
             Self::ImportBoundary(_) => "import-boundary",
             Self::CallObligation(_) => "call-obligation",
             Self::NoPassthrough(_) => "no-passthrough",
+            Self::Presence(_) => "presence",
+            Self::Pair(_) => "pair",
+            Self::Frontmatter(_) => "frontmatter",
         }
     }
 }
@@ -106,11 +140,33 @@ pub struct StructureRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Subdirectory names that are permitted.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_subfolders: Vec<String>,
+    ///
+    /// An **option, not a list**, because absent and `[]` are different rules
+    /// and a plain `Vec` cannot tell them apart. Absent means the rule says
+    /// nothing about subfolders — it may still constrain filenames. `[]` is a
+    /// list of what may exist holding nothing, so no subfolder is permitted,
+    /// which is how "this directory is a leaf" is said. Issue #40, where the
+    /// empty list validated, ran, and enforced nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_subfolders: Option<Vec<String>>,
     /// Subdirectory names that are permitted but reported as warnings,
     /// whatever `level` says. Naming a folder is more specific than the rule's
     /// blanket severity, and the more specific declaration wins.
@@ -136,9 +192,157 @@ pub struct StructureRule {
     /// is the answer to "did this mean what I think" for exactly this field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub recurse_into: Vec<String>,
+    /// Regexes a direct child *directory*'s name may match instead of being
+    /// named in `allowed_subfolders`.
+    ///
+    /// `filename_patterns` one entry over, for the other kind of directory
+    /// entry. `allowed_subfolders` constrains names by enumeration, which works
+    /// for a fixed vocabulary (`types`, `calcs`, `actions`) and cannot work for
+    /// an open set where the *shape* is the rule — sixteen lesson folders named
+    /// `NN-slug` and more arriving. Issue #43.
+    ///
+    /// A union with the two lists, the way `filename_patterns` is a union of
+    /// its own regexes: a name is permitted if a list names it *or* a pattern
+    /// matches it. The lists are consulted first, so a `warn_subfolders` entry
+    /// whose name happens to have the right shape still warns — the most
+    /// specific declaration wins, and a name written out is more specific than
+    /// a regex.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subfolder_patterns: Vec<String>,
     /// Regexes every direct child file's name must match at least one of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filename_patterns: Vec<String>,
+}
+
+/// Files that must exist in each governed directory.
+///
+/// `structure.filename_patterns` is a whitelist of what *may* exist, and the
+/// two are not each other's inverse — a `filename_patterns` rule is satisfied
+/// by an empty directory, which is exactly the state this one is about. A unit
+/// of work is incomplete until its companion files are there, and the
+/// companion is what a hurried pass leaves out. Issue #42.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PresenceRule {
+    /// Stable identifier.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Directory globs this rule applies to.
+    pub roots: Patterns,
+    /// Filenames that must exist directly inside each governed directory.
+    ///
+    /// **Names, not paths.** An entry with a `/` is refused when the config
+    /// compiles, and the message says what to write instead: a second rule
+    /// scoped one level down. `roots: ["projetos/*/sketch"]` with
+    /// `require: ["sketch.ino"]` is the same requirement, said by the rule that
+    /// is about that directory — and it keeps one rule answering for one
+    /// directory's contract, which is what makes `describe` able to answer for
+    /// a directory that does not exist yet.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub require: Patterns,
+    /// Regexes at least one file in each governed directory must match.
+    ///
+    /// For "there has to be a sketch and I do not care what it is called".
+    /// One entry, one requirement: two regexes mean two files must be found,
+    /// one for each.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub require_any: Patterns,
+}
+
+/// A file of one kind must have a companion of another.
+///
+/// `spec-pair` is this rule for one specific pair, and cannot be bent to any
+/// other: its default ignores exclude anything that is not a JS/TS source file,
+/// and its companion is *derived* — `<stem>.<marker>.<ext>` — which is a good
+/// convention for tests and generalises to nothing. Two fixed names in one
+/// directory is the common case everywhere else. Issue #45.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PairRule {
+    /// Stable identifier.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Directory globs this rule applies to.
+    pub roots: Patterns,
+    /// Regex over the filename of the file that *needs* a companion.
+    pub file_pattern: String,
+    /// The companion, as a path relative to the directory the file sits in.
+    ///
+    /// **Literal, never derived.** `<stem>.<marker>.<ext>` is `spec-pair`'s
+    /// idea and does not generalise; two fixed names in one directory is what
+    /// the rest of the world has.
+    ///
+    /// **May leave the directory.** `../projeto.md` is the case this rule
+    /// exists for alongside the flat one — a sketch needs the lesson one level
+    /// up, and no directory-scoped rule can say that. `presence` refuses paths
+    /// for exactly the opposite reason: it answers for a directory, and this
+    /// one answers for a file, which is what gives it an anchor to be relative
+    /// to.
+    ///
+    /// **One direction, always.** This rule says the file matching
+    /// `file_pattern` needs the companion, and never the reverse — an orphan
+    /// `notas.md` is a note taken before the lesson was written, which is fine.
+    pub must_exist: String,
+}
+
+/// A document's frontmatter must carry these keys.
+///
+/// The first rule that reads a file that is not code. The frontmatter of a
+/// `.md` is often not documentation at all — it is the machine-readable half
+/// of the document, and a missing or misspelled key fails *silently*: the
+/// project with no `componentes` reports as needing none, and the lesson whose
+/// `status` is outside the vocabulary drops out of the generated table with no
+/// row and no error. Nothing type-checks a markdown file. Issue #44.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FrontmatterRule {
+    /// Stable identifier.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Directory globs this rule applies to.
+    pub roots: Patterns,
+    /// Regex over the filename of the documents this rule is about.
+    pub file_pattern: String,
+    /// Keys the block must carry.
+    ///
+    /// Ninety per cent of the value, and the whole of it that is about *names*.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub require: Patterns,
+    /// The closed vocabulary a key's value must come from.
+    ///
+    /// The case that justifies the rule existing. A missing key is at least an
+    /// absence; a value outside the vocabulary is *confidently wrong* — the
+    /// generated table simply has no row for it — which is the same failure
+    /// shape `must_export.annotation` exists for.
+    ///
+    /// Values are compared as text, so `"1"` here matches `nivel: 1` in the
+    /// document. That is deliberate: it answers the question without archwarden
+    /// growing a type system nothing else here needs.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub one_of: std::collections::BTreeMap<String, Patterns>,
+    /// A key whose value must equal a template rendered from the path.
+    ///
+    /// `{{raw(dirname)}}` is the name of the directory the document sits in,
+    /// and it is the only group a document template may name. The form is the
+    /// one `naming` already uses, so the transforms come along:
+    /// `{{kebab(dirname)}}` is spelled the same way here as there.
+    ///
+    /// This is the `naming` rule's question — a name agreeing with a path —
+    /// asked of a file that has no exported symbol to ask it about.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub equals: std::collections::BTreeMap<String, String>,
 }
 
 /// The filename dictates the exported symbol's name.
@@ -149,6 +353,21 @@ pub struct NamingRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Regex over the filename, with a named capture group.
@@ -184,6 +403,24 @@ pub struct MustExport {
     pub kind: Patterns,
     /// The required name, as a template over `file_pattern`'s capture groups.
     pub name: String,
+    /// The type the export must be annotated with, as a template over the same
+    /// groups. One value, or several meaning "any of".
+    ///
+    /// **Checked**, and the one field here that is — which is why it is not
+    /// spelled into `signature_hint`. That field is documented as a suggestion
+    /// `scaffold` renders and `check` ignores, and code depends on that; a
+    /// separate field keeps the promise of each legible.
+    ///
+    /// Still not type checking. Nothing is resolved and nothing is inferred:
+    /// the annotation is a token in the same declaration whose `kind` this rule
+    /// already reads, and comparing it is the same class of work as comparing
+    /// the name. A file annotating `AgentToolModule` over an object that is not
+    /// one is `tsc`'s problem and stays that way. What this buys is that the
+    /// declaration is *submitted to* `tsc`'s judgement at all — the guarantee a
+    /// registry loses when it moves from a typed array to `readdir` and
+    /// `import()`. Issue #39.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotation: Option<Patterns>,
     /// A signature shown by `scaffold`. **Never verified** — constraining the
     /// type of an export is type checking, which is `tsc`'s job.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -198,6 +435,21 @@ pub struct SpecPairRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Subdirectories subject to the rule, each covering everything below it.
@@ -265,6 +517,21 @@ pub struct ImportBoundaryRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs selecting the importer. Same semantics as `roots`.
     pub from: Patterns,
     /// Globs matched against the *resolved* import path. Matching means the
@@ -322,6 +589,21 @@ pub struct CallObligationRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Regex over the filename.
@@ -451,7 +733,14 @@ mod tests {
         };
         assert_eq!(rule.id().as_str(), "domain-entity-shape");
         assert_eq!(rule.level(), Level::Error);
-        assert_eq!(structure.allowed_subfolders.len(), 8);
+        assert_eq!(
+            structure
+                .allowed_subfolders
+                .as_ref()
+                .expect("names a list")
+                .len(),
+            8
+        );
         assert_eq!(structure.warn_subfolders, ["shared", "adapters"]);
         assert_eq!(structure.recurse_into, ["variants"]);
         assert!(structure.filename_patterns.is_empty());
@@ -478,7 +767,9 @@ mod tests {
             panic!("expected a structure rule");
         };
         assert_eq!(structure.filename_patterns.len(), 3);
-        assert!(structure.allowed_subfolders.is_empty());
+        // Absent, not empty: this rule constrains filenames and says nothing
+        // about the directories beside them.
+        assert_eq!(structure.allowed_subfolders, None);
     }
 
     /// The `naming` example, with the scope corrected to `use-cases/*` when
@@ -524,6 +815,245 @@ mod tests {
         };
         assert_eq!(naming.must_export.kind.as_slice(), ["function", "arrow"]);
         assert_eq!(naming.must_export.signature_hint, None);
+    }
+
+    /// Issue #44. The frontmatter is not documentation — it is the schema
+    /// three scripts and one index page depend on, and nothing type-checks a
+    /// markdown file.
+    #[test]
+    fn a_frontmatter_rule_names_keys_a_vocabulary_and_an_agreement() {
+        let rule = parse(
+            r#"{"type":"frontmatter","id":"projeto-frontmatter","level":"error",
+                "roots":["projetos/*"],
+                "file_pattern":"^projeto\\.md$",
+                "require":["id","nivel","componentes"],
+                "one_of":{"nivel":["1","2","3"]},
+                "equals":{"id":"{{raw(dirname)}}"}}"#,
+        );
+
+        let Rule::Frontmatter(front) = &rule else {
+            panic!("expected a frontmatter rule, got {}", rule.type_name());
+        };
+        assert_eq!(front.require.as_slice(), ["id", "nivel", "componentes"]);
+        assert_eq!(front.one_of["nivel"].as_slice(), ["1", "2", "3"]);
+        assert_eq!(front.equals["id"], "{{raw(dirname)}}");
+        assert_eq!(rule.type_name(), "frontmatter");
+    }
+
+    /// Issue #45. `spec-pair` is the rule for this and its baked-in ignores
+    /// exclude every file involved by construction; and `projeto.md` →
+    /// `notas.md` is not a `<stem>.<marker>.<ext>` relationship at all, so
+    /// nothing about that rule would have helped.
+    #[test]
+    fn a_pair_rule_names_its_companion_literally() {
+        let rule = parse(
+            r#"{"type":"pair","id":"licao-tem-notas","level":"error",
+                "roots":["projetos/*"],
+                "file_pattern":"^projeto\\.md$",
+                "must_exist":"notas.md"}"#,
+        );
+
+        let Rule::Pair(pair) = &rule else {
+            panic!("expected a pair rule, got {}", rule.type_name());
+        };
+        assert_eq!(pair.file_pattern, r"^projeto\.md$");
+        assert_eq!(pair.must_exist, "notas.md");
+        assert_eq!(rule.type_name(), "pair");
+    }
+
+    /// The other half of the issue: the companion may sit outside the
+    /// directory. `sketch/semaforo.ino` needs the `projeto.md` one level up,
+    /// and there is no directory-scoped rule that can say that.
+    #[test]
+    fn a_companion_may_leave_the_directory() {
+        let rule = parse(
+            r#"{"type":"pair","id":"sketch-tem-licao","level":"error",
+                "roots":["projetos/*/sketch"],
+                "file_pattern":"\\.ino$",
+                "must_exist":"../projeto.md"}"#,
+        );
+
+        let Rule::Pair(pair) = &rule else {
+            panic!("expected a pair rule");
+        };
+        assert_eq!(pair.must_exist, "../projeto.md");
+    }
+
+    /// Issue #42. A unit of work is incomplete until its companion files are
+    /// there, and `filename_patterns` is a whitelist of what *may* exist —
+    /// satisfied by an empty directory, which is the state this rule is about.
+    #[test]
+    fn a_presence_rule_lists_what_must_exist() {
+        let rule = parse(
+            r#"{"type":"presence","id":"licao-completa","level":"error",
+                "roots":["projetos/*"],
+                "require":["projeto.md","exercicios.md","notas.md"],
+                "require_any":["\\.ino$"]}"#,
+        );
+
+        let Rule::Presence(presence) = &rule else {
+            panic!("expected a presence rule, got {}", rule.type_name());
+        };
+        assert_eq!(
+            presence.require.as_slice(),
+            ["projeto.md", "exercicios.md", "notas.md"]
+        );
+        assert_eq!(presence.require_any.as_slice(), [r"\.ino$"]);
+        assert_eq!(rule.type_name(), "presence");
+    }
+
+    /// Issue #46. Decision 5 chose JSON over YAML and JSON5, so a config has
+    /// no comments and the reason a rule exists has nowhere to live. It ends
+    /// up in a commit message or a wiki, neither of which is in front of
+    /// anybody at the moment the rule fires.
+    #[test]
+    fn a_rule_may_say_why_it_exists() {
+        let rule = parse(
+            r#"{"type":"import-boundary","id":"domain-forbids-app","level":"error",
+                "why":"domain is published as its own package and the app is not",
+                "from":["packages/domain/**"],
+                "forbid_import_from":["packages/app/**"]}"#,
+        );
+
+        assert_eq!(
+            rule.why(),
+            Some("domain is published as its own package and the app is not")
+        );
+    }
+
+    /// Every kind, because a reason is not a property of one of them. A rule
+    /// that could not say why would be the one nobody could argue with.
+    #[test]
+    fn every_rule_kind_can_say_why() {
+        let cases = [
+            r#"{"type":"structure","id":"r","level":"error","roots":"src","why":"w",
+                "allowed_subfolders":[]}"#,
+            r#"{"type":"naming","id":"r","level":"error","roots":"src","why":"w",
+                "file_pattern":"^(?<n>.+)$","must_export":{"kind":"any","name":"{{pascal(n)}}"}}"#,
+            r#"{"type":"spec-pair","id":"r","level":"error","roots":"src","why":"w",
+                "subfolders":"."}"#,
+            r#"{"type":"import-boundary","id":"r","level":"error","from":"src","why":"w",
+                "forbid_import_from":["x/**"]}"#,
+            r#"{"type":"call-obligation","id":"r","level":"error","roots":"src","why":"w",
+                "file_pattern":"^x$","must_call":{"symbol":"s","imported_from":"m"}}"#,
+            r#"{"type":"no-passthrough","id":"r","level":"error","roots":"src","why":"w"}"#,
+        ];
+
+        for json in cases {
+            assert_eq!(parse(json).why(), Some("w"), "{json}");
+        }
+    }
+
+    /// Issue #43. The regex-over-a-directory-name capability existed on
+    /// `naming.dir_pattern` and was reachable only through a door that requires
+    /// a TypeScript parse, so a repository with no `.ts` near its folders could
+    /// not use it at all.
+    #[test]
+    fn subfolder_patterns_parse_beside_the_lists() {
+        let rule = parse(
+            r#"{"type":"structure","id":"licao-nome-da-pasta","level":"error",
+                "roots":["projetos"],
+                "subfolder_patterns":["^\\d{2}-[a-z0-9-]+$"]}"#,
+        );
+        let Rule::Structure(structure) = &rule else {
+            panic!("expected a structure rule");
+        };
+
+        assert_eq!(structure.subfolder_patterns, [r"^\d{2}-[a-z0-9-]+$"]);
+        assert_eq!(structure.allowed_subfolders, None);
+    }
+
+    /// Issue #40. `[]` is a list of what may exist holding nothing, and the
+    /// rule that says "this directory is a leaf" has no other spelling. The
+    /// field has to be an option for that to be sayable at all: with a plain
+    /// `Vec` an omitted field and an empty one arrive identical, so giving `[]`
+    /// a meaning would give it to every config that never mentioned subfolders.
+    #[test]
+    fn an_absent_allowed_subfolders_is_not_an_empty_one() {
+        let absent = parse(
+            r#"{"type":"structure","id":"s","level":"error","roots":"referencia",
+                "filename_patterns":["^[a-z-]+\\.md$"]}"#,
+        );
+        let Rule::Structure(absent) = &absent else {
+            panic!("expected a structure rule");
+        };
+        assert_eq!(absent.allowed_subfolders, None);
+
+        let empty = parse(
+            r#"{"type":"structure","id":"s","level":"error","roots":"referencia",
+                "allowed_subfolders":[]}"#,
+        );
+        let Rule::Structure(empty) = &empty else {
+            panic!("expected a structure rule");
+        };
+        assert_eq!(empty.allowed_subfolders, Some(Vec::new()));
+    }
+
+    /// The field issue #39 asks for, in the shape the issue writes it.
+    #[test]
+    fn an_annotation_parses_as_one_value_or_a_list() {
+        let one = parse(
+            r#"{
+              "type": "naming", "id": "n", "level": "error", "roots": "src/*",
+              "file_pattern": "^(?<tool>.+)\\.tool\\.ts$",
+              "must_export": {
+                "kind": ["const"], "name": "AGENT_TOOL",
+                "annotation": "AgentToolModule"
+              }
+            }"#,
+        );
+        let Rule::Naming(naming) = &one else {
+            panic!("expected a naming rule");
+        };
+        assert_eq!(
+            naming
+                .must_export
+                .annotation
+                .as_ref()
+                .expect("an annotation")
+                .as_slice(),
+            ["AgentToolModule"]
+        );
+
+        let many = parse(
+            r#"{
+              "type": "naming", "id": "n", "level": "error", "roots": "src/*",
+              "file_pattern": "^(?<tool>.+)\\.tool\\.ts$",
+              "must_export": {
+                "kind": ["const"], "name": "AGENT_TOOL",
+                "annotation": ["AgentToolModule", "LegacyToolModule"]
+              }
+            }"#,
+        );
+        let Rule::Naming(naming) = &many else {
+            panic!("expected a naming rule");
+        };
+        assert_eq!(
+            naming
+                .must_export
+                .annotation
+                .as_ref()
+                .expect("an annotation")
+                .as_slice(),
+            ["AgentToolModule", "LegacyToolModule"]
+        );
+    }
+
+    /// Every rule written before the field existed asks for no annotation, and
+    /// keeps meaning exactly what it meant.
+    #[test]
+    fn a_rule_that_omits_the_annotation_asks_for_none() {
+        let rule = parse(
+            r#"{
+              "type": "naming", "id": "n", "level": "error", "roots": "src/*",
+              "file_pattern": "^(?<name>.+)\\.ts$",
+              "must_export": { "kind": "any", "name": "{{pascal(name)}}" }
+            }"#,
+        );
+        let Rule::Naming(naming) = &rule else {
+            panic!("expected a naming rule");
+        };
+        assert_eq!(naming.must_export.annotation, None);
     }
 
     #[test]
@@ -734,6 +1264,21 @@ pub struct NoPassthroughRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
+    /// Why this rule exists, in the author's words.
+    ///
+    /// The config already says *what* a rule does, in a form that cannot drift
+    /// from what it enforces; a prose restatement of that would be a second
+    /// source of truth going stale. The reason cannot drift, because nothing
+    /// else records it — decision 5 chose JSON, so there are no comments, and
+    /// a commit message is not in front of anybody at the moment a rule fires.
+    ///
+    /// Shown by the pre-write hook when it denies a write, by `describe`,
+    /// `scaffold`, `agent-guide` and `config explain`, and beside a finding.
+    /// Not a message override: `observed` and `expected` remain the whole
+    /// diagnosis, and a `why` restating them will contradict them the day the
+    /// rule changes. Issue #46.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Which shapes count. Defaults to all three.
