@@ -1643,12 +1643,49 @@ fn describe_subfolders(allowed: &[String], warn: &[String], patterns: &[String])
         parts.push(format!("or {} as a warning", join_or(warn, "")));
     }
     if !patterns.is_empty() {
-        let clause = format!("a name matching {}", join_or(patterns, ""));
+        // "a folder name", not "a name". The same sentence served
+        // `filename_patterns` and `subfolder_patterns`, which are siblings
+        // constraining different kinds of entry, so a reader could not tell
+        // which was meant. `check` had always distinguished them — "folder
+        // `x` is not allowed here" — and `describe` had not.
+        let clause = format!("a folder name matching {}", join_or(patterns, ""));
         parts.push(if parts.is_empty() {
             clause
         } else {
             format!("or {clause}")
         });
+    }
+
+    parts.join(", ")
+}
+
+/// What a directory's own name may be, said to that directory.
+///
+/// The same lists as [`describe_subfolders`], in the second person: that one
+/// tells a parent what may appear inside it, this one tells a child what it
+/// may be called.
+fn describe_folder_name(allowed: &[String], warn: &[String], patterns: &[String]) -> String {
+    let mut parts = Vec::new();
+
+    if !allowed.is_empty() {
+        parts.push(format!("named one of {}", join_or(allowed, "")));
+    }
+    if !warn.is_empty() {
+        parts.push(format!("or {} as a warning", join_or(warn, "")));
+    }
+    if !patterns.is_empty() {
+        let clause = format!("a folder name matching {}", join_or(patterns, ""));
+        parts.push(if parts.is_empty() {
+            clause
+        } else {
+            format!("or {clause}")
+        });
+    }
+
+    if parts.is_empty() {
+        // A parent that permits no subfolder at all. Said plainly, because the
+        // alternative reads as a rule with nothing to say.
+        return "no folder here at all: its parent allows none".to_owned();
     }
 
     parts.join(", ")
@@ -1669,8 +1706,13 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
             agreements,
         } => describe_frontmatter(keys, vocabularies, agreements),
         Expectation::FilenamePattern { patterns } => {
-            format!("a name matching {}", join_or(patterns, "no pattern"))
+            format!("a file name matching {}", join_or(patterns, "no pattern"))
         }
+        Expectation::FolderName {
+            allowed,
+            warn,
+            patterns,
+        } => describe_folder_name(allowed, warn, patterns),
         Expectation::RequiredExport {
             name,
             annotation,
@@ -2921,6 +2963,52 @@ mod tests {
         assert_eq!(parsed["findings"][1]["why"], "it is published");
     }
 
+    /// What a folder may be *called*, said to that folder.
+    ///
+    /// The mirror of `describe_subfolders`, and its three shapes are three
+    /// sentences. Mutation testing found each branch untested: the pattern
+    /// path was exercised through the CLI and the literal lists were not.
+    #[test]
+    fn a_folder_name_reads_in_the_second_person() {
+        let by_list = describe_expectation(&Expectation::FolderName {
+            allowed: vec!["sketch".to_owned(), "minha-solucao".to_owned()],
+            warn: Vec::new(),
+            patterns: Vec::new(),
+        });
+        assert_eq!(by_list, "named one of `sketch` or `minha-solucao`");
+
+        let with_warning = describe_expectation(&Expectation::FolderName {
+            allowed: vec!["sketch".to_owned()],
+            warn: vec!["rascunho".to_owned()],
+            patterns: Vec::new(),
+        });
+        assert_eq!(
+            with_warning,
+            "named one of `sketch`, or `rascunho` as a warning"
+        );
+
+        let by_shape = describe_expectation(&Expectation::FolderName {
+            allowed: Vec::new(),
+            warn: Vec::new(),
+            patterns: vec![r"^\d{2}-[a-z0-9-]+$".to_owned()],
+        });
+        assert_eq!(by_shape, r"a folder name matching `^\d{2}-[a-z0-9-]+$`");
+    }
+
+    /// A parent permitting no subfolder at all: the folder is not misnamed,
+    /// it should not be there. Said plainly, because an empty list of
+    /// permitted names otherwise reads as a rule with nothing to say.
+    #[test]
+    fn a_folder_whose_parent_permits_none_is_told_that() {
+        let sentence = describe_expectation(&Expectation::FolderName {
+            allowed: Vec::new(),
+            warn: Vec::new(),
+            patterns: Vec::new(),
+        });
+
+        assert_eq!(sentence, "no folder here at all: its parent allows none");
+    }
+
     /// Issue #43: a rule whose subfolder names are a *shape* rather than a
     /// list. "one of no folders" was the old sentence for that, which describes
     /// the opposite of the rule.
@@ -2931,7 +3019,10 @@ mod tests {
             warn: Vec::new(),
             patterns: vec![r"^\d{2}-[a-z0-9-]+$".to_owned()],
         });
-        assert_eq!(by_shape, r"a name matching `^\d{2}-[a-z0-9-]+$`");
+        // "a folder name", not "a name": `filename_patterns` and
+        // `subfolder_patterns` are siblings over different kinds of entry, and
+        // one sentence for both left a reader unable to tell which. Issue #53.
+        assert_eq!(by_shape, r"a folder name matching `^\d{2}-[a-z0-9-]+$`");
 
         let both = describe_expectation(&Expectation::AllowedSubfolders {
             allowed: vec!["_template".to_owned()],
@@ -2940,7 +3031,7 @@ mod tests {
         });
         assert_eq!(
             both,
-            r"one of `_template`, or a name matching `^\d{2}-[a-z0-9-]+$`"
+            r"one of `_template`, or a folder name matching `^\d{2}-[a-z0-9-]+$`"
         );
     }
 

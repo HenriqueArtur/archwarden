@@ -428,7 +428,14 @@ mod tests {
     }
 
     /// A directory rule covers directories, which is what it has requirements
-    /// about.
+    /// about — both the directory whose contents it constrains and the ones
+    /// whose *names* it constrains.
+    ///
+    /// `src/user` is covered because the rule says what may live inside it;
+    /// `src/user/types` because the rule says its name must be one of the
+    /// allowed ones. It satisfies that today, and being governed is not the
+    /// same as being in breach. Issue #53 was the other side of this: the
+    /// child was governed by `check` and invisible to `describe`.
     #[test]
     fn a_directory_rule_covers_directories() {
         let (guard, root) = tree_at(&[("src/user/types/user.ts", "")]);
@@ -448,7 +455,7 @@ mod tests {
         drop(guard);
 
         let covered: Vec<_> = explanation.covers.iter().map(RepoRelPath::as_str).collect();
-        assert_eq!(covered, ["src/user"]);
+        assert_eq!(covered, ["src/user", "src/user/types"]);
     }
 
     /// A rule whose scope reaches no path says so, and points at the command

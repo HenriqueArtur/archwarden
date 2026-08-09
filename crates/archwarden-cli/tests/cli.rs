@@ -859,6 +859,92 @@ fn a_must_exist_that_reaches_for_a_template_is_refused() {
         .stderr(contains("literal"));
 }
 
+/// Issue #53. `describe` answered "no rule applies" about a folder name that
+/// `check` refuses, and `scaffold` handed back a shape to build there.
+///
+/// `describe --help` says *"what the rules require of a path, which need not
+/// exist yet"* — and the path that does not exist yet is precisely where the
+/// name is still a choice. Answering after the folder is created is answering
+/// too late.
+#[test]
+fn a_folder_is_told_that_its_own_name_is_constrained() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"projeto-nome-de-pasta","level":"error",
+                 "roots":["projetos"],
+                 "subfolder_patterns":["^\\d{2}-[a-z0-9]+(-[a-z0-9]+)*$"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["describe", "projetos/sensor-sem-numero"])
+        .assert()
+        .success()
+        .stdout(contains("projeto-nome-de-pasta"))
+        .stdout(contains("a folder name matching"));
+}
+
+/// And `scaffold` leads with the fact that nothing built there can pass,
+/// before listing the shape.
+///
+/// Its whole answer is a thing to go and build, so an unbuildable location has
+/// to come first. Correction C11 made this argument for filenames — *"an agent
+/// scaffolding a path whose name is already wrong would be told everything
+/// except the thing it has to fix first"* — and it was never carried to
+/// folders.
+#[test]
+fn scaffold_leads_with_a_path_that_cannot_pass() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"projeto-nome-de-pasta","level":"error",
+                 "roots":["projetos"],
+                 "subfolder_patterns":["^\\d{2}-[a-z0-9]+(-[a-z0-9]+)*$"]},
+                {"type":"presence","id":"projeto-tem-os-tres","level":"error",
+                 "roots":["projetos/*"],"require":["projeto.md"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["scaffold", "projetos/sensor-sem-numero"])
+        .assert()
+        .success()
+        .stdout(contains("is not a path these rules allow"))
+        .stdout(contains("Nothing built here can pass"));
+}
+
+/// A name the rules do permit gets the shape and no refusal.
+#[test]
+fn scaffold_does_not_refuse_a_name_the_rules_allow() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"structure","id":"projeto-nome-de-pasta","level":"error",
+                 "roots":["projetos"],
+                 "subfolder_patterns":["^\\d{2}-[a-z0-9]+(-[a-z0-9]+)*$"]},
+                {"type":"presence","id":"projeto-tem-os-tres","level":"error",
+                 "roots":["projetos/*"],"require":["projeto.md"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["scaffold", "projetos/02-sensor"])
+        .assert()
+        .success()
+        .stdout(contains("Expected shape for"))
+        .stdout(contains("projeto.md"));
+}
+
 /// Issue #46, through the real process. A finding says what the rule wanted
 /// and what the file did, and used to never say why the rule exists — so an
 /// agent reading one could comply and nothing else, which is how a config gets

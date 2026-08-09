@@ -52,6 +52,26 @@ pub enum Expectation {
         /// The patterns, as written in the config.
         patterns: Vec<String>,
     },
+    /// This directory's *own* name is constrained by the rule governing its
+    /// parent.
+    ///
+    /// The sibling of [`FilenamePattern`](Self::FilenamePattern), and it was
+    /// missing. `filename_patterns` is attributed to the file it governs;
+    /// `subfolder_patterns` was attributed only to the parent, so `describe`
+    /// answered "no rule applies" about a folder `check` refuses and
+    /// `scaffold` handed back a shape to build at a path that cannot pass.
+    ///
+    /// A path that does not exist yet is exactly where the name is still a
+    /// choice, which is what `describe` is for.
+    FolderName {
+        /// Names that are permitted outright.
+        allowed: Vec<String>,
+        /// Names permitted but reported as warnings.
+        warn: Vec<String>,
+        /// Regexes the name may match instead of being listed.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        patterns: Vec<String>,
+    },
     /// The file must export a symbol of this shape.
     RequiredExport {
         /// The declaration forms that satisfy the rule.
