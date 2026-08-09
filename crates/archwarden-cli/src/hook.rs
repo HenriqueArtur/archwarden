@@ -32,19 +32,45 @@ pub enum Decision {
     Deny(String),
 }
 
-/// The path the tool is about to write, when the payload names one.
+/// What the payload had to say about a file.
 ///
-/// `None` for a tool that writes no file, which is most of them: the matcher
-/// narrows the event, but a harness is free to call the hook for anything and
-/// a hook that guessed would block writes it never understood.
+/// Three answers rather than two, because [`NoFile`](Target::NoFile) and
+/// [`Unreadable`](Target::Unreadable) were one `Option::None` once and are not
+/// the same thing at all. One is "this tool writes nothing, carry on"; the
+/// other is "I could not read what you sent me". Both let the write through,
+/// and only the first should do it without saying a word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// The path the tool is about to write.
+    Path(String),
+    /// A readable event for a tool that writes no file, which is most of them:
+    /// the matcher narrows what arrives, but a harness is free to call the hook
+    /// for anything and a hook that guessed would block writes it never
+    /// understood.
+    NoFile,
+    /// Not an event this hook can read. A misconfigured harness, a protocol
+    /// that moved, a wrapper sending something else — the hook cannot tell
+    /// those apart, and every one of them means it is judging nothing.
+    Unreadable,
+}
+
+/// Reads the payload the harness sent.
 #[must_use]
-pub fn target(payload: &str) -> Option<String> {
-    let event: Value = serde_json::from_str(payload).ok()?;
+pub fn target(payload: &str) -> Target {
+    let Ok(event) = serde_json::from_str::<Value>(payload) else {
+        return Target::Unreadable;
+    };
+    // An event is an object. A bare array or string is valid JSON and is not
+    // this protocol, which is the same "I cannot read this" as a syntax error.
+    if !event.is_object() {
+        return Target::Unreadable;
+    }
+
     event
-        .get("tool_input")?
-        .get("file_path")?
-        .as_str()
-        .map(str::to_owned)
+        .get("tool_input")
+        .and_then(|input| input.get("file_path"))
+        .and_then(Value::as_str)
+        .map_or(Target::NoFile, |path| Target::Path(path.to_owned()))
 }
 
 /// Renders a decision in Claude Code's hook protocol.
@@ -181,23 +207,38 @@ mod tests {
     #[test]
     fn the_target_is_read_from_the_payload() {
         assert_eq!(
-            target(WRITE).as_deref(),
-            Some("/repo/src/user/create-client.use-case.ts")
+            target(WRITE),
+            Target::Path("/repo/src/user/create-client.use-case.ts".to_owned())
         );
     }
 
     /// A tool that writes no file has no target, and a hook that guessed one
     /// would block writes it never understood.
+    ///
+    /// Silence is the right answer here and only here: with a broader matcher
+    /// this is every `Bash`, every `Read`, every `Grep`. A message on each one
+    /// is a hook somebody uninstalls by lunchtime.
     #[test]
-    fn a_payload_without_a_path_has_no_target() {
+    fn a_tool_that_writes_no_file_is_passed_over_in_silence() {
         for payload in [
             r#"{"tool_name":"Bash","tool_input":{"command":"ls"}}"#,
             r#"{"tool_name":"Write"}"#,
             r#"{"tool_input":{"file_path":42}}"#,
-            "not json at all",
-            "",
         ] {
-            assert_eq!(target(payload), None, "{payload}");
+            assert_eq!(target(payload), Target::NoFile, "{payload}");
+        }
+    }
+
+    /// And a payload that is not an event at all is a different answer.
+    ///
+    /// "This tool writes nothing" and "I could not read what you sent me" were
+    /// the same `None` once, and both permitted in silence — so a misconfigured
+    /// hook looked exactly like a working one. Only one of those two is safe to
+    /// pass over without a word.
+    #[test]
+    fn an_unreadable_payload_is_not_the_same_as_nothing_to_do() {
+        for payload in ["not json at all", "", "[1, 2, 3]", "\"a string\""] {
+            assert_eq!(target(payload), Target::Unreadable, "{payload}");
         }
     }
 

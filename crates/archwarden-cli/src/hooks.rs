@@ -23,24 +23,42 @@
 //! its own process, not through npm. The hook would have failed with "command
 //! not found" on every write.
 //!
-//! So a project with a `package.json` gets `npx archwarden hook claude-code`.
-//! `npx` resolves `node_modules/.bin` itself, walks up for a hoisted install,
-//! and works the same on Windows, where `.bin` holds `.cmd` shims a bare path
-//! would miss. An absolute path to the binary would have been faster and
-//! unshareable: `.claude/settings.json` is committed, and that path names this
-//! machine and this platform's package.
+//! Three answers, in this order, and none of them needs configuring:
 //!
-//! A project with no `package.json` did not install archwarden from npm, so
-//! the binary is on the PATH already and the bare command is right. Prefixing
-//! `npx` there would ask npm to fetch a package the user never installed.
+//! 1. **`./node_modules/.bin/archwarden`, when it is there.** The relative path
+//!    survives being committed, where an absolute one names this machine and
+//!    this platform's package. It starts a process rather than a package
+//!    manager, and — the reason to prefer it rather than merely allow it — it
+//!    cannot reach the registry. `npx archwarden` with nothing installed
+//!    locally *fetches* archwarden, so a project that dropped the dependency
+//!    keeps a hook that works, quietly, at a version nobody chose.
+//! 2. **`npx archwarden`, for a `package.json` with nothing installed yet.**
+//!    The dependency may arrive later and `npx` finds it then. It also walks up
+//!    for a hoisted install.
+//! 3. **`archwarden`, otherwise.** No `package.json` means the binary came from
+//!    a release archive and is on the PATH already; prefixing `npx` there would
+//!    ask npm to fetch a package the user never installed.
+//!
+//! Detected rather than chosen, because a flag is a thing to get wrong and the
+//! filesystem already knows the answer.
 //!
 //! # Editing a file that is not ours
 //!
-//! `.claude/settings.json` belongs to the user. Everything here is
-//! string-to-string so it can be tested without touching a disk, the edit is
-//! keyed on the command so a second run updates rather than duplicates, and
-//! `serde_json` carries the `preserve_order` feature so a round-trip does not
-//! alphabetise keys the user wrote in an order they chose.
+//! `.claude/settings.json` belongs to the user, and "belongs to" is meant
+//! strictly: the `hooks` key is replaced inside their own bytes and every other
+//! byte is left alone.
+//!
+//! It used to round-trip the document through `serde_json`, which produced
+//! valid JSON and *a different file*. One repository groups about 180
+//! permission entries into sections with blank lines; a serialiser cannot know
+//! that and re-flowed the lot, so adding one hook arrived as a diff nobody
+//! could review. `preserve_order` had already been reached for to stop keys
+//! being alphabetised — the same problem, one size smaller, solved one case at
+//! a time until the general answer was to stop rewriting the file.
+//!
+//! Everything here is still string-to-string so it can be tested without
+//! touching a disk, and the edit is keyed on the command so a second run
+//! updates rather than duplicates.
 
 use serde_json::{Map, Value, json};
 
@@ -64,11 +82,34 @@ pub const HOOK_COMMAND: &str = "archwarden hook claude-code";
 /// run is the same defect, one layer further out.
 #[must_use]
 pub fn invocation(root: &camino::Utf8Path) -> String {
+    // Installed: call it where it is. Relative, so the settings file stays
+    // shareable; a process rather than a package manager; and it cannot reach
+    // the registry, which is the part that matters — `npx archwarden` with
+    // nothing installed locally *fetches* archwarden, so a project that
+    // dropped the dependency keeps a working hook at a version nobody chose.
+    //
+    // The leading `./` is not decoration. Without it a shell with `.` off the
+    // PATH — which is every shell — still resolves this, but the form with it
+    // is unambiguous about naming a file rather than a command, and that is
+    // what it is.
+    if root.join(LOCAL_BINARY).is_file() {
+        return format!("./{LOCAL_BINARY}");
+    }
+    // A `package.json` with nothing installed yet: the dependency may arrive
+    // later and `npx` will find it then.
     if root.join("package.json").is_file() {
         return "npx archwarden".to_owned();
     }
     "archwarden".to_owned()
 }
+
+/// Where npm puts an installed archwarden, relative to the project root.
+///
+/// Forward slashes on every platform: this string goes into a shell command,
+/// and Windows accepts them there. The extensionless name is the right one to
+/// write on Windows too — `.bin` holds `archwarden.cmd` and `PATHEXT` is what
+/// finds it.
+const LOCAL_BINARY: &str = "node_modules/.bin/archwarden";
 
 /// The command to install in `root`.
 #[must_use]
@@ -111,7 +152,12 @@ pub fn install(settings: Option<&str>, command: &str) -> Result<(String, Outcome
     let entries = array_at(hooks, EVENT)?;
 
     if entries.iter().any(has_our_command) {
-        return Ok((render(&root), Outcome::AlreadyInstalled));
+        // Unchanged means unchanged: hand back the bytes that came in rather
+        // than a re-rendering of them.
+        return Ok((
+            settings.map_or_else(|| render(&root), str::to_owned),
+            Outcome::AlreadyInstalled,
+        ));
     }
 
     entries.push(json!({
@@ -119,7 +165,7 @@ pub fn install(settings: Option<&str>, command: &str) -> Result<(String, Outcome
         "hooks": [{ "type": "command", "command": command }],
     }));
 
-    Ok((render(&root), Outcome::Installed))
+    Ok((written(settings, &root), Outcome::Installed))
 }
 
 /// Takes archwarden's hook back out, leaving everything else alone.
@@ -130,16 +176,25 @@ pub fn remove(settings: Option<&str>) -> Result<(String, Outcome), String> {
     let mut root = parse(settings)?;
 
     let Some(hooks) = root.get_mut("hooks").and_then(Value::as_object_mut) else {
-        return Ok((render(&root), Outcome::NotInstalled));
+        return Ok((
+            settings.map_or_else(|| render(&root), str::to_owned),
+            Outcome::NotInstalled,
+        ));
     };
     let Some(entries) = hooks.get_mut(EVENT).and_then(Value::as_array_mut) else {
-        return Ok((render(&root), Outcome::NotInstalled));
+        return Ok((
+            settings.map_or_else(|| render(&root), str::to_owned),
+            Outcome::NotInstalled,
+        ));
     };
 
     let before = entries.len();
     entries.retain(|entry| !has_our_command(entry));
     if entries.len() == before {
-        return Ok((render(&root), Outcome::NotInstalled));
+        return Ok((
+            settings.map_or_else(|| render(&root), str::to_owned),
+            Outcome::NotInstalled,
+        ));
     }
 
     // Leaving `"PreToolUse": []` behind would be litter in someone else's
@@ -151,7 +206,7 @@ pub fn remove(settings: Option<&str>) -> Result<(String, Outcome), String> {
         root.remove("hooks");
     }
 
-    Ok((render(&root), Outcome::Removed))
+    Ok((written(settings, &root), Outcome::Removed))
 }
 
 /// Whether an entry is one archwarden installed.
@@ -207,6 +262,187 @@ fn array_at<'a>(
         .ok_or_else(|| format!("`hooks.{key}` in `{CLAUDE_SETTINGS}` is not an array"))
 }
 
+/// The contents to write: the user's file with one key changed, when that is
+/// possible, and a fresh rendering when it is not.
+///
+/// A file that did not exist has no formatting to keep, so it is rendered. A
+/// file that does gets [`weave`], and falls back to rendering only if the text
+/// turns out to be a shape that cannot be edited in place — which loses the
+/// user's layout and is still better than refusing to install.
+fn written(settings: Option<&str>, root: &Map<String, Value>) -> String {
+    let Some(source) = settings.filter(|text| !text.trim().is_empty()) else {
+        return render(root);
+    };
+
+    weave(source, root.get("hooks")).unwrap_or_else(|| render(root))
+}
+
+/// Puts `hooks` back into the user's own text, touching nothing else.
+///
+/// `render` produces valid JSON and *a different file*: a serialiser has no
+/// idea which blank lines were load-bearing. One repository groups about 180
+/// permission entries into sections that way, and adding a hook re-flowed the
+/// lot — a diff nobody can review, in a file a team maintains by hand.
+///
+/// So the whole document is left as bytes and only the `hooks` value is
+/// replaced. `None` removes the key.
+///
+/// Returns `None` when the text is not a shape this can edit safely, and the
+/// caller falls back to rendering the whole document — which is worse and
+/// still correct.
+fn weave(source: &str, hooks: Option<&Value>) -> Option<String> {
+    let parsed = jsonc_parser::parse_to_ast(
+        source,
+        &jsonc_parser::CollectOptions::default(),
+        &jsonc_parser::ParseOptions::default(),
+    )
+    .ok()?;
+
+    let jsonc_parser::ast::Value::Object(root) = parsed.value.as_ref()? else {
+        return None;
+    };
+    let existing = root
+        .properties
+        .iter()
+        .find(|property| property.name.as_str() == "hooks");
+
+    match (existing, hooks) {
+        (Some(property), Some(value)) => {
+            let range = value_range(&property.value);
+            let indent = indent_of(source, property.range.start);
+            let mut edited = String::with_capacity(source.len());
+            edited.push_str(source.get(..range.0)?);
+            edited.push_str(&reindented(value, &indent));
+            edited.push_str(source.get(range.1..)?);
+            Some(edited)
+        }
+
+        // The key goes away, and so does the comma that joined it to its
+        // neighbour — otherwise the file is left with `,,` or a trailing one.
+        (Some(property), None) => {
+            let (start, end) = swallow_comma(source, property.range.start, property.range.end)?;
+            let mut edited = String::with_capacity(source.len());
+            edited.push_str(source.get(..start)?);
+            edited.push_str(source.get(end..)?);
+            Some(edited)
+        }
+
+        (None, Some(value)) => {
+            // Before the closing brace, so the keys the user put first stay
+            // first. A new key at the end is the smallest possible diff.
+            let close = source.get(..root.range.end)?.rfind('}')?;
+            let body = source.get(..close)?;
+            let indent = root.properties.first().map_or_else(
+                || "  ".to_owned(),
+                |first| indent_of(source, first.range.start),
+            );
+
+            let trimmed = body.trim_end();
+            let separator = if root.properties.is_empty() { "" } else { "," };
+            let mut edited = String::with_capacity(source.len() + 64);
+            edited.push_str(trimmed);
+            edited.push_str(separator);
+            edited.push('\n');
+            edited.push_str(&indent);
+            edited.push_str("\"hooks\": ");
+            edited.push_str(&reindented(value, &indent));
+            edited.push('\n');
+            edited.push_str(source.get(close..)?);
+            Some(edited)
+        }
+
+        (None, None) => Some(source.to_owned()),
+    }
+}
+
+/// The byte range of a value node.
+fn value_range(node: &jsonc_parser::ast::Value<'_>) -> (usize, usize) {
+    use jsonc_parser::ast::Value as Node;
+    let range = match node {
+        Node::StringLit(literal) => literal.range,
+        Node::NumberLit(literal) => literal.range,
+        Node::BooleanLit(literal) => literal.range,
+        Node::Object(object) => object.range,
+        Node::Array(array) => array.range,
+        Node::NullKeyword(keyword) => keyword.range,
+    };
+    (range.start, range.end)
+}
+
+/// The whitespace at the start of the line `offset` falls on.
+///
+/// The file's own indentation, whatever it is: a serialiser's two spaces would
+/// be one more thing changed without being asked.
+fn indent_of(source: &str, offset: usize) -> String {
+    let line_start = source
+        .get(..offset)
+        .and_then(|before| before.rfind('\n').map(|index| index + 1))
+        .unwrap_or(0);
+
+    source
+        .get(line_start..offset)
+        .unwrap_or_default()
+        .chars()
+        .take_while(|character| character.is_whitespace())
+        .collect()
+}
+
+/// The value, pretty-printed and shifted to sit at `indent`.
+///
+/// `to_string_pretty` writes as if the value were the whole document, so every
+/// line after the first needs the surrounding depth added back.
+fn reindented(value: &Value, indent: &str) -> String {
+    let rendered = serde_json::to_string_pretty(value).unwrap_or_else(|_| "{}".to_owned());
+
+    rendered
+        .lines()
+        .enumerate()
+        .map(|(n, line)| {
+            if n == 0 || line.is_empty() {
+                line.to_owned()
+            } else {
+                format!("{indent}{line}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Widens a property's range to take the comma that attached it, and the blank
+/// line space it sat on.
+///
+/// The comma after it when there is one, the comma before it otherwise — a
+/// last property has its comma on the left.
+fn swallow_comma(source: &str, start: usize, end: usize) -> Option<(usize, usize)> {
+    let after = source.get(end..)?;
+    let trailing = after.len() - after.trim_start().len();
+    if after.trim_start().starts_with(',') {
+        let mut cut = end + trailing + 1;
+        // And the newline it ended, so no blank line is left behind.
+        if source.get(cut..)?.starts_with('\n') {
+            cut += 1;
+        }
+        return Some((line_start_of(source, start), cut));
+    }
+
+    let before = source.get(..start)?;
+    let comma = before.rfind(',')?;
+    // Only if nothing but whitespace stands between: a comma further back
+    // belongs to a different property.
+    if !before.get(comma + 1..)?.trim().is_empty() {
+        return None;
+    }
+    Some((comma, end))
+}
+
+/// Where the line containing `offset` begins.
+fn line_start_of(source: &str, offset: usize) -> usize {
+    source
+        .get(..offset)
+        .and_then(|before| before.rfind('\n').map(|index| index + 1))
+        .unwrap_or(offset)
+}
+
 /// Two-space JSON with a trailing newline, which is what the file already
 /// looks like and what an editor will not immediately reformat.
 fn render(root: &Map<String, Value>) -> String {
@@ -230,7 +466,11 @@ mod tests {
         let root = camino::Utf8PathBuf::from_path_buf(dir.path().to_path_buf())
             .expect("temp path is UTF-8");
         for entry in entries {
-            std::fs::write(root.join(entry), "{}").expect("write");
+            let path = root.join(entry);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("create");
+            }
+            std::fs::write(path, "{}").expect("write");
         }
         (dir, root)
     }
@@ -255,6 +495,38 @@ mod tests {
         let (_guard, root) = project(&[]);
 
         assert_eq!(hook_command(&root), HOOK_COMMAND);
+    }
+
+    /// An installed archwarden is called where it is, not through `npx`.
+    ///
+    /// `npx` was chosen when the only alternatives were a bare command that
+    /// does not resolve and an absolute path that names one machine. The
+    /// installed binary is a third answer and a better one wherever it exists:
+    /// the path is relative, so it survives being committed; it starts a
+    /// process instead of a package manager; and it cannot reach the registry.
+    ///
+    /// That last one is the reason to prefer it rather than merely allow it.
+    /// `npx archwarden` with nothing installed locally *fetches* archwarden —
+    /// so a hook whose dev dependency was dropped keeps working, quietly, at a
+    /// version nobody chose.
+    #[test]
+    fn an_installed_binary_is_called_where_it_lives() {
+        let (_guard, root) = project(&["package.json", "node_modules/.bin/archwarden"]);
+
+        assert_eq!(
+            hook_command(&root),
+            "./node_modules/.bin/archwarden hook claude-code"
+        );
+    }
+
+    /// A `package.json` with nothing installed yet still gets `npx`: the
+    /// dependency may arrive later, and `npx` finds it then. This is the case
+    /// the previous rule was written for and it keeps its answer.
+    #[test]
+    fn a_node_project_with_nothing_installed_still_gets_npx() {
+        let (_guard, root) = project(&["package.json"]);
+
+        assert_eq!(hook_command(&root), "npx archwarden hook claude-code");
     }
 
     /// Both forms have to be recognised as ours, or the next `install-hooks`
@@ -320,6 +592,64 @@ mod tests {
         assert_eq!(outcome, Outcome::AlreadyInstalled);
         assert_eq!(twice, once, "byte-identical");
         assert_eq!(entries(&twice).len(), 1);
+    }
+
+    /// Every byte outside the `hooks` key is the byte the user wrote.
+    ///
+    /// Round-tripping the file through a serialiser produced valid JSON that
+    /// was not their file: it dropped the blank lines grouping ~180 permission
+    /// entries into readable sections, and re-indented whatever they had. A
+    /// tool that reformats a hand-maintained file to add one entry is a tool
+    /// whose diff nobody can review.
+    ///
+    /// Asserted on the text rather than on the parsed value, because a parsed
+    /// value is exactly what cannot see the difference.
+    #[test]
+    fn nothing_outside_the_hooks_key_is_rewritten() {
+        let theirs = "{\n  \"permissions\": {\n    \"allow\": [\n      \
+             \"Bash(ls:*)\",\n\n      \"Bash(cat:*)\",\n\n\n      \"Read(//tmp/**)\"\n    ],\n\n\
+             \n    \"deny\": [\"Bash(npx:*)\"]\n  },\n\n  \"model\":\"opus\"\n}";
+
+        let written = installed(Some(theirs));
+
+        let (before, _) = theirs.split_once("\n\n  \"model\"").expect("split");
+        assert!(
+            written.starts_with(before),
+            "the text before `hooks` changed:\n{written}"
+        );
+        assert!(
+            written.contains("\"Bash(ls:*)\",\n\n      \"Bash(cat:*)\",\n\n\n      \"Read"),
+            "the blank lines grouping the entries were dropped:\n{written}"
+        );
+        assert!(
+            written.contains("\"model\":\"opus\""),
+            "a key the user wrote unspaced was reformatted:\n{written}"
+        );
+        assert_eq!(entries(&written).len(), 1, "and ours was added");
+    }
+
+    /// Taking it back out leaves the file as it was found, too.
+    #[test]
+    fn removing_leaves_the_rest_of_the_file_alone() {
+        let theirs = "{\n  \"permissions\": {\n    \"allow\": [\n      \"Bash(ls:*)\",\n\n      \
+             \"Bash(cat:*)\"\n    ]\n  },\n  \"model\":\"opus\"\n}";
+
+        let installed_text = installed(Some(theirs));
+        let (removed, outcome) = remove(Some(&installed_text)).expect("removes");
+
+        assert_eq!(outcome, Outcome::Removed);
+        assert!(
+            removed.contains("\"Bash(ls:*)\",\n\n      \"Bash(cat:*)\""),
+            "the blank line was dropped on the way out:\n{removed}"
+        );
+        assert!(
+            removed.contains("\"model\":\"opus\""),
+            "a key the user wrote unspaced was reformatted:\n{removed}"
+        );
+        assert!(
+            !removed.contains("archwarden"),
+            "our entry is still there:\n{removed}"
+        );
     }
 
     /// The file belongs to the user. Their other settings, their other hooks,

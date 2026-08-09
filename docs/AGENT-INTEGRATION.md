@@ -192,26 +192,57 @@ One-shot installer that writes the appropriate harness hook file.
   in `.claude/settings.json`, running `archwarden hook claude-code`.
 - Future flags for other harnesses as their hook APIs stabilise.
 
+How archwarden is invoked is detected, not configured — a flag is a thing to get
+wrong and the filesystem already knows. `./node_modules/.bin/archwarden` when it
+is installed; `npx archwarden` for a `package.json` with nothing installed yet;
+the bare command otherwise. The installed binary is preferred because `npx`
+*fetches* what it cannot find locally, so a project that dropped the dependency
+would keep a working hook at a version nobody chose.
+
 The command is `archwarden hook claude-code`, not
 `archwarden check --file $CLAUDE_FILE_PATH`. Claude Code does not pass the path
 in the environment: the hook is handed the event as JSON on stdin, with the
 target under `tool_input.file_path`. archwarden reads that itself, so the
 installed line needs no `jq` and no shell quoting.
 
-**The hook never blocks by failing.** An unreadable payload, a tool that writes
-no file, a broken configuration — each allows the write. Blocking is a decision
-carried in the response (`hookSpecificOutput.permissionDecision: "deny"`), never
-a side effect of something going wrong. A hook that took a user's write down
-with it would be uninstalled the same day.
+**The hook never blocks by failing.** An unreadable payload, a broken
+configuration, a path outside the repository — each allows the write. Blocking
+is a decision carried in the response
+(`hookSpecificOutput.permissionDecision: "deny"`), never a side effect of
+something going wrong. A hook that took a user's write down with it would be
+uninstalled the same day.
+
+**And it says when it permitted a write it never examined.** Those cases return
+a `systemMessage` beginning *"archwarden did not check this write"*, because
+*"I have no objection"* and *"I could not tell"* are different answers and only
+one of them is safe to ignore. They were the same empty `{}` until 0.11.0, which
+made a gate that could not run indistinguishable from one that ran and approved
+— the failure `CONFIG.md` names as the worst a linter has, one layer up.
+
+The one silence that remains is a tool writing no file, which with a broad
+matcher is every `Bash` and every `Read`. A remark on each of those is a hook
+somebody removes.
 
 A warning-level finding is shown without blocking, per decision 1.
 
+**A path is compared by what it points at, not how it is spelled.** A symlinked
+checkout, a bind-mounted worktree, `/tmp` → `/private/tmp` on macOS, a container
+whose mount path differs from the host's: each gives one repository two absolute
+paths, and a harness hands over whichever its own `cwd` resolved to. Before
+0.11.0 the other spelling read as "outside the repository" and every write on
+such a machine sailed through.
+
 The installer is idempotent: a second run reports the hook is already there and
-does not rewrite the file, so it does not appear in `git status` for nothing. It
-recognises its own entry by the command, so a user who narrowed the matcher or
-added a timeout keeps that edit. Other hooks, other settings, and the order the
-user wrote their keys in all survive. Uninstall with `archwarden install-hooks
---claude-code --remove`, which is also safe to run when nothing is installed.
+returns the file's own bytes, so it does not appear in `git status` for nothing.
+It recognises its own entry by the command, so a user who narrowed the matcher
+or added a timeout keeps that edit.
+
+**It edits the `hooks` key and nothing else** — not a re-serialisation of the
+document, which is valid JSON and a different file. Blank lines grouping a long
+`permissions.allow` list into sections, an unusual indent, a key written without
+a space after its colon: all of it is the user's, and all of it survives both
+installing and removing. Uninstall with `archwarden install-hooks --claude-code
+--remove`, which is also safe to run when nothing is installed.
 
 ### `archwarden check --file <path>`
 

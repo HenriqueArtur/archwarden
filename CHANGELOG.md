@@ -17,6 +17,66 @@ saying so.
 
 ## [Unreleased]
 
+## [0.11.0] — 2026-08-09
+
+Four faults in the pre-write hook, reported together against 0.10.0
+([#48](https://github.com/HenriqueArtur/archwarden/issues/48)). Three of them
+are the same fault: **the hook permitted writes it had never examined, in
+silence.**
+
+A minor rather than a patch, by the question `RELEASING.md` asks — *does this
+change what an existing, unchanged config reports?* On a machine with a
+symlinked checkout it changes it completely: writes that sailed through are now
+refused, which is what the hook was installed to do and never did.
+
+### Fixed
+
+- **A path that reaches the repository by another route is inside the
+  repository.** A symlinked checkout, a bind-mounted worktree, `/tmp` →
+  `/private/tmp` on macOS, a container whose mount path differs from the
+  host's: each gives one directory two absolute spellings, and a harness hands
+  over whichever its own `cwd` resolved to. The two were compared as text, so
+  the other spelling read as "outside the repository" — and the hook permitted
+  every write on such a machine while reporting success. The only symptom was
+  CI failing later, on files a pre-write gate was installed to refuse.
+
+  The parent directory is resolved rather than the whole path: a pre-write hook
+  is asked *before* the write, so the file it names usually does not exist yet.
+  `check --file` gets the same fix, because two spellings of one directory
+  should mean one thing everywhere.
+
+- **A gate that could not judge a write now says so.** An unreadable event, a
+  missing config, a config that does not compile, a path genuinely elsewhere —
+  each returned `{}`, which is *"no objection"*. They carry a `systemMessage`
+  beginning *"archwarden did not check this write"* now, and still permit: a
+  hook that blocked because it could not do its job would be worse than no
+  hook.
+
+  A tool that writes no file stays silent, and it is the only thing that does.
+  With a matcher broader than `Write|Edit|MultiEdit` that is every `Bash` and
+  every `Read`, and a remark on each is a hook somebody removes.
+
+- **A config declaring an unsupported version no longer disables the hook
+  silently.** `check` refuses one; the hook parsed it into a config with no
+  rules, which compiled, matched nothing and permitted everything. Found by a
+  test written for the fault above, in the one place it had not been looked
+  for.
+
+### Changed
+
+- **`install-hooks` edits the `hooks` key and nothing else.** It used to
+  round-trip `.claude/settings.json` through a serialiser, which produces valid
+  JSON and *a different file*: blank lines grouping a long `permissions.allow`
+  list into sections were dropped, and everything re-indented. Installing and
+  then removing now returns the file byte-identical.
+
+- **The installed command is detected, not configured.**
+  `./node_modules/.bin/archwarden` when it is installed, `npx archwarden` for a
+  `package.json` with nothing installed yet, the bare command otherwise. The
+  local binary is preferred because `npx` *fetches* what it cannot find, so a
+  project that dropped the dependency would keep a working hook at a version
+  nobody chose — and because some repositories ban `npx` outright.
+
 ## [0.10.0] — 2026-08-08
 
 ### Added
