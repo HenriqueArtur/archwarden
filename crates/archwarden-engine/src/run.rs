@@ -474,6 +474,18 @@ pub fn facts_of(root: &Utf8Path, path: &RepoRelPath) -> Result<FileFacts, String
     parse(path, &source, content)
 }
 
+/// The facts a source text would yield at `path`, without reading the disk.
+///
+/// What a pre-write hook needs: the write it is asked about has not landed, so
+/// the bytes that matter are the ones in the event rather than the ones in the
+/// working tree. See [`crate::single::check_write`].
+///
+/// # Errors
+/// The parser's message, when the text does not parse.
+pub fn facts_from(path: &RepoRelPath, source: &str) -> Result<FileFacts, String> {
+    parse(path, source, ContentHash::of(source.as_bytes()))
+}
+
 /// Reads one file as code, through whichever front-end its class names.
 ///
 /// The dispatch is by class rather than by extension: `FileClass` already

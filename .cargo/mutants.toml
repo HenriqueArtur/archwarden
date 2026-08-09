@@ -1,48 +1,68 @@
-# What mutation testing is not asked to have an opinion about.
+# What mutation testing is not asked to prove.
 #
-# One entry, and it took an argument to earn. `.githooks/pre-push` offers two
-# answers to a survivor — write the test, or say why the mutant is harmless —
-# and this file is where the second answer is written down, so that it is a
-# reviewed decision rather than a `--no-verify` nobody sees.
+# # Where this file goes
+#
+# `.cargo/mutants.toml`, not `mutants.toml` at the root. It lived at the root
+# for two releases and was read by nothing: the exclusions below were written,
+# documented at length, believed, and inert. `cargo mutants --list` still
+# offered 102 mutants from a file this says to skip.
+#
+# It never blocked a push, which is why it went unnoticed — the hook runs
+# `--in-diff`, and those files stopped appearing in diffs. A configuration that
+# is doing nothing looks exactly like one whose rules are satisfied, which is
+# the failure `CONFIG.md` names as the worst a linter has, arrived at from the
+# other side.
+#
+# `cargo mutants --list` is how to check: if a path named here still appears,
+# this file is not being read.
+#
+# `cargo-mutants` runs on the push hook, over the diff being pushed. It earns
+# its place on logic: a comparison flipped, a branch inverted, a count off by
+# one. Everything below is a place where the tool can generate a mutant that no
+# honest test would catch, and the test that would catch it is worse than the
+# mutant.
 
-# `install_hooks` is what is left of the task after its logic moved into
-# `point_git_at_hooks`, which is tested against a throwaway repository. What
-# remains is: call that, then print four lines. Replacing it with `Ok(())`
-# survives, and always will — the only test that could kill it would set
-# `core.hooksPath` on the working copy running the suite, which is a test that
-# reaches out of its own process to change the machine.
-#
-# The behaviour that matters is covered. This is the announcement around it.
+exclude_globs = [
+    # The translation tables.
+    #
+    # Every method in these files returns a constant string, so the tool offers
+    # two mutants each: `""` and `"xyzzy"`.
+    #
+    # The `""` half is a real defect -- a section with no heading, a legend with
+    # no label -- and `phrases::tests::no_language_leaves_a_phrase_blank`
+    # catches all of it, in both languages, by name.
+    #
+    # The `"xyzzy"` half can only be caught by asserting each phrase against its
+    # own literal. That test would fail on every copy edit, would be updated by
+    # pasting the new string in, and would prove exactly one thing: that the
+    # string is the string. It is a change detector wearing a test's clothes,
+    # and 190 of them would teach a contributor that a red hook means "paste it
+    # again".
+    #
+    # These files are data. The trait they implement is not: `phrases/mod.rs`
+    # holds `plural`, `Language::of` and `tag`, and stays mutated.
+    "crates/archwarden-cli/src/phrases/en.rs",
+    "crates/archwarden-cli/src/phrases/pt_br.rs",
+]
 
-# The invariant guard in `apply.rs` is a check for a state nothing can reach:
-# every specifier that cannot be recomputed already pushes a refusal of its
-# own. That is the point of it — its own doc comment says so, and decision 16
-# is why it exists anyway, because the failure it would hide is a repository
-# that compiles nowhere reported as success. A test that killed this mutant
-# would have to construct the unreachable state, which means reaching past the
-# code that makes it unreachable.
+# One mutant, named exactly, because no test can kill it and the reason is
+# worth more written down than worked out again.
 #
-# The refusals it defers to are each tested. This is the net under them.
+# `single.rs` guards its parse with `needs_facts && is_source`. Widen that to
+# `||` and both new paths reach the same answer: with `needs_facts` false the
+# facts are computed and never read, and with `is_source` false the parser
+# refuses the extension and returns `None` — which is what the guard would have
+# produced. The `Single` that comes out is identical either way, so a test
+# distinguishing them would have to assert on work done rather than on an
+# answer, and that is a test of the implementation.
 #
-# Two more, both in `PathAliases::read`, and both about the `extends` chain:
+# The guard stays because reading a file to be told it is the wrong kind is
+# work with no reason, and on a binary that happened to match a `file_pattern`
+# it is a large one. The argument is at the line itself; this entry is the same
+# argument in the form the hook can act on.
 #
-# - the depth bound (`depth > MAX_EXTENDS_DEPTH`) mutated to `>=` or `==`.
-#   That is a difference of one level of `extends` nesting at a bound of
-#   sixteen. No repository distinguishes them, and a test asserting "seventeen
-#   deep refuses and sixteen does not" would be testing the constant rather
-#   than a behaviour. That the bound exists at all *is* tested —
-#   `an_extends_cycle_does_not_loop_forever` is what stands between a broken
-#   config and a hang.
-#
-# - `depth == 0`, passed as `TsConfig::parse`'s `root` argument. That flag only
-#   changes what `build()` does, and `build()` is `pub(crate)` in
-#   `oxc_resolver` and never called here. Mutating it is invisible because the
-#   value is genuinely unused by anything this module does; it is passed
-#   honestly rather than hard-coded, because a later reader should see which
-#   config is the caller's.
+# Second instance of this shape in the project — see M4 in `docs/PLAN-V0.md`
+# for the first. A third would be worth a rethink rather than a third entry.
 exclude_re = [
-    "replace install_hooks",
-    "replace every_importer_was_rewritten",
-    "replace > with (==|>=) in PathAliases::read",
-    "replace == with != in PathAliases::read",
+    "single\\.rs:\\d+:\\d+: replace && with \\|\\| in check",
 ]

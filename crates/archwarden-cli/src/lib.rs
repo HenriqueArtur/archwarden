@@ -1264,7 +1264,25 @@ fn hook(
         Err(reason) => return unable(output, &reason),
     };
 
-    let mut single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
+    // The write, not the file. A `PreToolUse` hook is asked whether something
+    // that has not happened would be legal, and answering from disk answers
+    // about the previous version — so a new file went unchecked, and an edit
+    // that *fixed* a violation was refused for the violation it was fixing.
+    // Issue #55.
+    //
+    // The disk is still read, because `Edit` sends a replacement rather than a
+    // document and the result has to be reconstructed. A file that is not there
+    // reads as empty, which is the case this most exists for.
+    let on_disk = std::fs::read_to_string(merged.root.join(path.as_str())).unwrap_or_default();
+    let mut single = match crate::hook::pending(&payload, &on_disk) {
+        Some(content) => {
+            archwarden_engine::single::check_write(&merged.root, &compiled, &path, &content)
+        }
+        // A tool this cannot replay, or an edit that will not apply. Judging
+        // the file as it stands is the honest answer, and it is what the hook
+        // did for everything before this.
+        None => archwarden_engine::single::check_file(&merged.root, &compiled, &path),
+    };
     // Debt the project already accepted must not block a write. An agent asked
     // to edit a legacy file would otherwise be refused for something that is
     // not its doing, and the hook would be uninstalled by lunchtime.
