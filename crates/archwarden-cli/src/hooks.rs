@@ -436,11 +436,16 @@ fn swallow_comma(source: &str, start: usize, end: usize) -> Option<(usize, usize
 }
 
 /// Where the line containing `offset` begins.
+///
+/// Zero when there is no newline before it, not `offset`: a property on the
+/// first line of a single-line file starts its line at the beginning of the
+/// file. The wrong fallback was here until mutation testing pointed out that
+/// nothing said what this should return.
 fn line_start_of(source: &str, offset: usize) -> usize {
     source
         .get(..offset)
         .and_then(|before| before.rfind('\n').map(|index| index + 1))
-        .unwrap_or(offset)
+        .unwrap_or(0)
 }
 
 /// Two-space JSON with a trailing newline, which is what the file already
@@ -567,6 +572,120 @@ mod tests {
     fn entries(settings: &str) -> Vec<Value> {
         let root: Value = serde_json::from_str(settings).expect("valid JSON");
         root["hooks"][EVENT].as_array().cloned().unwrap_or_default()
+    }
+
+    /// The file's own indentation, not a serialiser's.
+    ///
+    /// Every one of these offsets edits a file somebody maintains by hand, and
+    /// an off-by-one in them writes a `settings.json` that is subtly not what
+    /// they had. Mutation testing asked for these by name: seventeen arithmetic
+    /// and boundary mutants lived through the end-to-end tests, which assert
+    /// what *survives* the edit and never look at the shape of what is added.
+    #[test]
+    fn the_indent_is_the_one_on_that_line() {
+        assert_eq!(indent_of("{\n    \"a\": 1\n}", 6), "    ");
+        assert_eq!(indent_of("{\n\t\"a\": 1\n}", 3), "\t");
+        assert_eq!(indent_of("{\"a\": 1}", 1), "", "no line to indent from");
+        assert_eq!(
+            indent_of("{\n  \"a\": 1\n}", 4),
+            "  ",
+            "the newline itself is not indentation"
+        );
+    }
+
+    /// A value is printed as if it were the whole document, so every line after
+    /// the first needs the surrounding depth added back — and only those.
+    #[test]
+    fn a_value_is_shifted_to_the_depth_it_sits_at() {
+        let value = json!({ "a": [1] });
+
+        assert_eq!(
+            reindented(&value, "  "),
+            "{\n    \"a\": [\n      1\n    ]\n  }",
+            "the first line is already in place and the rest are not"
+        );
+        assert_eq!(
+            reindented(&json!({}), "    "),
+            "{}",
+            "a single line needs nothing"
+        );
+    }
+
+    /// Where the line containing an offset begins.
+    #[test]
+    fn a_line_starts_after_the_newline_before_it() {
+        assert_eq!(line_start_of("ab\ncd", 4), 3);
+        assert_eq!(line_start_of("ab\ncd", 3), 3, "at the start of the line");
+        assert_eq!(line_start_of("abcd", 2), 0, "the first line starts at zero");
+    }
+
+    /// The comma that joined the key to its neighbour goes with it.
+    ///
+    /// Leaving it produces `,,` or a trailing comma — either of which turns the
+    /// user's settings file into something that will not parse, from a command
+    /// whose whole promise is to leave it alone.
+    #[test]
+    fn removing_a_key_takes_the_comma_that_attached_it() {
+        // `"a": 1, "b": 2` — taking `"a"` takes the comma after it.
+        let source = "{\n  \"a\": 1,\n  \"b\": 2\n}";
+        let (start, end) = swallow_comma(source, 4, 10).expect("range");
+        assert_eq!(&source[start..end], "  \"a\": 1,\n");
+
+        // A last property has its comma on the left.
+        let (start, end) = swallow_comma(source, 14, 20).expect("range");
+        assert_eq!(&source[start..end], ",\n  \"b\": 2");
+    }
+
+    /// A lone property has no comma either side, and nothing to swallow.
+    #[test]
+    fn removing_the_only_key_swallows_no_comma() {
+        let source = "{\n  \"a\": 1\n}";
+        assert_eq!(swallow_comma(source, 4, 10), None);
+    }
+
+    /// JSON allows whitespace before a comma, and somebody's file has it.
+    ///
+    /// The distance from the end of the value to the comma is counted, and
+    /// every test above had that distance be zero — so the counting was
+    /// exercised and never checked. Mutation testing is what noticed: two
+    /// arithmetic mutants lived because `0` is `0` however you compute it.
+    #[test]
+    fn a_comma_set_apart_from_its_value_is_still_its_comma() {
+        let source = "{\n  \"a\": 1  ,\n  \"b\": 2\n}";
+        let (start, end) = swallow_comma(source, 4, 10).expect("range");
+        assert_eq!(&source[start..end], "  \"a\": 1  ,\n");
+
+        // And across a line break, which is a formatting nobody writes by hand
+        // and a serialiser somewhere certainly does.
+        let source = "{\n  \"a\": 1\n  ,\n  \"b\": 2\n}";
+        let (start, end) = swallow_comma(source, 4, 10).expect("range");
+        assert_eq!(&source[start..end], "  \"a\": 1\n  ,\n");
+    }
+
+    /// The added block sits at the depth the file's other keys sit at.
+    ///
+    /// Its *internal* nesting stays two-space, which is what a JSON serialiser
+    /// and Claude Code both write. Re-flowing the new block into a file's own
+    /// indent unit would be nicer and is not what this promises: the promise is
+    /// that nothing already in the file moves.
+    #[test]
+    fn the_added_block_sits_at_the_files_own_depth() {
+        let theirs = "{\n    \"model\": \"opus\"\n}";
+
+        let written = installed(Some(theirs));
+
+        assert!(
+            written.contains("\n    \"hooks\": {"),
+            "the key was not written at the depth its neighbours sit at:\n{written}"
+        );
+        assert!(
+            written.contains("\n      \"PreToolUse\""),
+            "the block's contents are not inside it:\n{written}"
+        );
+        assert!(
+            written.contains("\n    \"model\": \"opus\","),
+            "the key that was already there moved:\n{written}"
+        );
     }
 
     /// The first install, into a project that has no settings file at all.
