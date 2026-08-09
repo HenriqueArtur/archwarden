@@ -17,6 +17,66 @@ saying so.
 
 ## [Unreleased]
 
+## [0.13.0] — 2026-08-09
+
+**The pre-write hook judges the write. It used to judge the file on disk**
+([#55](https://github.com/HenriqueArtur/archwarden/issues/55)) — which, for a
+`PreToolUse` hook, is the previous version of the file. A minor rather than a
+patch by the question `RELEASING.md` asks: writes that sailed through are now
+refused, which is what the hook was installed to do.
+
+The path fix in 0.11.0 was masking this. Both were live at once, and a
+repository weighted toward `structure` rules looked like a working hook.
+
+### Fixed
+
+- **A new file was never checked.** Nothing on disk meant no facts, so every
+  `naming`, `must_export`, `no-passthrough` and `import-boundary` violation
+  passed on creation — the case a pre-write gate most exists for.
+
+- **An edit that introduced a violation was permitted**, because the disk was
+  still clean at the moment of the question.
+
+- **An edit that *fixed* a violation was refused**, and this one had no way out
+  from inside an agent loop: the agent is told to fix the file and denied
+  permission to fix it, against a rule the pending write already satisfies. An
+  agent that trusts the hook tries variations of a write that was right the
+  first time.
+
+  Path-based rules were unaffected — `structure`, and `spec-pair`'s missing
+  sibling — because they read the path and the directory rather than the file.
+
+### Changed
+
+- **`Write`, `Edit` and `MultiEdit` are all replayed.** `Write` carries the
+  document; the other two carry replacements, so the result is reconstructed
+  from disk before it is judged. `replace_all` is honoured. An edit whose
+  `old_string` is not in the file is not replayed at all — the harness will
+  refuse it, and judging a write that will not happen is the same fault by
+  another route.
+
+  Only the target's own facts come from the event. Siblings, importers and
+  directory listings still come from disk: those are what the write is not
+  about, and the harness does not send them.
+
+- **`AGENT-INTEGRATION.md` states the invariant** the report asked for: the
+  hook answers about the file *as it would be after this write*.
+
+### Added
+
+- **`archwarden_engine::single::check_write`**, beside `check_file`. One judges
+  what would be there, the other what is.
+
+### Internal
+
+- **The `cargo-mutants` config moved to `.cargo/mutants.toml`.** It had been at
+  the repository root since 0.10.0, where the tool does not look for it, so
+  every exclusion in it was written, documented and inert — `cargo mutants
+  --list` still offered 102 mutants from a file it says to skip. It never
+  blocked a push, because the hook runs `--in-diff` and those files stopped
+  appearing in diffs. A configuration doing nothing looks exactly like one
+  whose rules are satisfied.
+
 ## [0.12.0] — 2026-08-09
 
 ### Fixed
