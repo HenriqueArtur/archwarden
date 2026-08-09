@@ -287,7 +287,19 @@ fn a_directory_holding_nothing(
     }
 }
 
-/// A directory this rule covers, with a subfolder it should not allow.
+/// A directory this rule covers, offered a violation of each axis it
+/// constrains.
+///
+/// A `structure` rule constrains two independent things: which subfolders a
+/// directory may hold, and what its files may be called. It may constrain
+/// either, both, or — the case the command exists to catch — neither.
+///
+/// Probing only the subfolder axis reported every filename-only rule as
+/// enforcing nothing, which is a false negative on the one line a reader acts
+/// on: *"5 enforce nothing"* invites deleting five rules that work. So each
+/// axis the rule actually constrains gets a probe, and the rule is verified if
+/// any of them fires. Only a rule that constrains neither is silent, and that
+/// one really does enforce nothing.
 fn forbidden_subfolder(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) -> Verdict {
     let Some(directory) = a_directory_in_scope(rule, tree) else {
         return Verdict::Unverified {
@@ -298,19 +310,109 @@ fn forbidden_subfolder(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &Repo
         };
     };
 
-    let probe = unclaimed_name(&rule.kind);
-    let findings = engine.check_directory(DirectoryContext {
-        path: directory,
-        subdirectories: std::slice::from_ref(&probe),
-        files: &[],
-    });
+    let mut attempted = Vec::new();
 
-    let on = format!("an unlisted `{probe}/` folder in `{directory}`");
-    if findings.is_empty() {
-        Verdict::Silent { on }
-    } else {
-        Verdict::Fires { on }
+    if constrains_subfolders(&rule.kind) {
+        let probe = unclaimed_name(&rule.kind);
+        let on = format!("an unlisted `{probe}/` folder in `{directory}`");
+        let findings = engine.check_directory(DirectoryContext {
+            path: directory,
+            subdirectories: std::slice::from_ref(&probe),
+            files: &[],
+        });
+        if !findings.is_empty() {
+            return Verdict::Fires { on };
+        }
+        attempted.push(on);
     }
+
+    if constrains_filenames(&rule.kind) {
+        // A name no `filename_patterns` regex in this repository accepts: the
+        // probe marker, with capitals and an extension the patterns are written
+        // against. `unclaimed_filename` checks it rather than assuming.
+        let probe = unclaimed_filename(&rule.kind);
+        let on = format!("a file named `{probe}` in `{directory}`");
+        let findings = engine.check_directory(DirectoryContext {
+            path: directory,
+            subdirectories: &[],
+            files: std::slice::from_ref(&probe),
+        });
+        if !findings.is_empty() {
+            return Verdict::Fires { on };
+        }
+        attempted.push(on);
+    }
+
+    // Neither axis is constrained: the rule asks nothing of the directories it
+    // covers, which is exactly the state this command was written to name.
+    if attempted.is_empty() {
+        return Verdict::Silent {
+            on: format!("`{directory}`, which it constrains in no way at all"),
+        };
+    }
+
+    Verdict::Silent {
+        on: attempted.join(", and "),
+    }
+}
+
+/// Whether the rule says anything about which subfolders may be there.
+fn constrains_subfolders(kind: &CompiledRuleKind) -> bool {
+    matches!(
+        kind,
+        CompiledRuleKind::Structure {
+            allowed_subfolders: Some(_),
+            ..
+        }
+    ) || matches!(
+        kind,
+        CompiledRuleKind::Structure {
+            subfolder_patterns,
+            ..
+        } if !subfolder_patterns.is_empty()
+    )
+}
+
+/// Whether the rule says anything about what the files may be called.
+fn constrains_filenames(kind: &CompiledRuleKind) -> bool {
+    matches!(
+        kind,
+        CompiledRuleKind::Structure {
+            filename_patterns,
+            ..
+        } if !filename_patterns.is_empty()
+    )
+}
+
+/// A filename none of the rule's patterns accept.
+///
+/// Tried rather than assumed: a rule whose pattern happens to accept the probe
+/// would be reported silent for a name it was right to allow, which is the
+/// same false negative one layer down.
+fn unclaimed_filename(kind: &CompiledRuleKind) -> String {
+    let CompiledRuleKind::Structure {
+        filename_patterns, ..
+    } = kind
+    else {
+        return PROBE.to_owned();
+    };
+
+    // Capitals and an unlikely extension, because the patterns these rules
+    // carry are overwhelmingly lower-case-with-dashes over a known suffix.
+    for candidate in [
+        format!("{PROBE}-INVALID-Name.probe"),
+        format!("{PROBE}-INVALID-Name"),
+        format!("__{PROBE}__"),
+    ] {
+        if !filename_patterns
+            .iter()
+            .any(|pattern| pattern.is_match(&candidate))
+        {
+            return candidate;
+        }
+    }
+
+    format!("{PROBE}-INVALID-Name.probe")
 }
 
 /// A source file this rule covers, with no spec beside it.
@@ -743,6 +845,189 @@ mod tests {
         );
 
         assert!(matches!(verdict, Verdict::Fires { .. }), "{verdict:?}");
+    }
+
+    /// A `structure` rule that constrains filenames is probed with a filename.
+    ///
+    /// Issue #49: every `structure` rule was probed by offering it an unlisted
+    /// folder. A rule that says nothing about subfolders is correctly silent on
+    /// that, and was reported as enforcing nothing — five of fourteen rules in
+    /// one repository, all five of which fire on the axis they actually
+    /// constrain.
+    ///
+    /// Worse than a wrong tick, because of what the command is for. `#24` asked
+    /// for it precisely because `explain` shows coverage and not efficacy, so
+    /// *"5 enforce nothing"* is the line somebody acts on — and acting on it
+    /// here means deleting five rules that work. A verifier that reports a
+    /// false negative is worse than no verifier, for the reason the docs give
+    /// about silent rules: it is indistinguishable from the real thing.
+    #[test]
+    fn a_structure_rule_that_only_constrains_filenames_is_probed_with_a_filename() {
+        let verdict = verdict(
+            &["scripts/build.ts"],
+            vec![rule(
+                "scripts-kebab-case",
+                &["scripts"],
+                CompiledRuleKind::Structure {
+                    allowed_subfolders: None,
+                    warn_subfolders: Vec::new(),
+                    recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
+                    filename_patterns: vec![Pattern::compile(r"^[a-z0-9-]+\.ts$").expect("valid")],
+                },
+            )],
+        );
+
+        assert!(
+            matches!(verdict, Verdict::Fires { .. }),
+            "it refuses `NomeErrado.ts` and should be probed with one: {verdict:?}"
+        );
+    }
+
+    /// A rule constraining both axes is verified if either one fires.
+    #[test]
+    fn a_structure_rule_constraining_both_axes_is_probed_on_both() {
+        let verdict = verdict(
+            &["src/order/types/x.ts"],
+            vec![rule(
+                "entity-shape",
+                &["src/*"],
+                CompiledRuleKind::Structure {
+                    allowed_subfolders: Some(vec!["types".to_owned()]),
+                    warn_subfolders: Vec::new(),
+                    recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
+                    filename_patterns: vec![Pattern::compile(r"^[a-z0-9-]+\.ts$").expect("valid")],
+                },
+            )],
+        );
+
+        assert!(matches!(verdict, Verdict::Fires { .. }), "{verdict:?}");
+    }
+
+    /// And a `structure` rule that constrains neither axis really does enforce
+    /// nothing, which is the answer the command exists to give.
+    #[test]
+    fn a_structure_rule_constraining_nothing_is_still_reported_silent() {
+        let verdict = verdict(
+            &["src/order/x.ts"],
+            vec![rule(
+                "says-nothing",
+                &["src/*"],
+                CompiledRuleKind::Structure {
+                    allowed_subfolders: None,
+                    warn_subfolders: Vec::new(),
+                    recurse_into: Vec::new(),
+                    subfolder_patterns: Vec::new(),
+                    filename_patterns: Vec::new(),
+                },
+            )],
+        );
+
+        assert!(
+            matches!(verdict, Verdict::Silent { .. }),
+            "a rule with no requirement at all should still be caught: {verdict:?}"
+        );
+    }
+
+    /// Which axes a rule constrains, asked directly.
+    ///
+    /// The two probes are chosen by these, so a function that answered `true`
+    /// for everything would put every rule through both — and one that
+    /// answered `false` for everything would put it through neither and call
+    /// it silent, which is the bug this replaced.
+    #[test]
+    fn each_axis_is_recognised_on_its_own() {
+        let none = CompiledRuleKind::Structure {
+            allowed_subfolders: None,
+            warn_subfolders: Vec::new(),
+            recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
+            filename_patterns: Vec::new(),
+        };
+        assert!(!constrains_subfolders(&none));
+        assert!(!constrains_filenames(&none));
+
+        let folders = CompiledRuleKind::Structure {
+            allowed_subfolders: Some(Vec::new()),
+            warn_subfolders: Vec::new(),
+            recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
+            filename_patterns: Vec::new(),
+        };
+        assert!(
+            constrains_subfolders(&folders),
+            "an empty allow-list forbids every subfolder, which is a constraint"
+        );
+        assert!(!constrains_filenames(&folders));
+
+        let names = CompiledRuleKind::Structure {
+            allowed_subfolders: None,
+            warn_subfolders: Vec::new(),
+            recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
+            filename_patterns: vec![Pattern::compile("^a$").expect("valid")],
+        };
+        assert!(!constrains_subfolders(&names));
+        assert!(constrains_filenames(&names));
+
+        let patterned = CompiledRuleKind::Structure {
+            allowed_subfolders: None,
+            warn_subfolders: Vec::new(),
+            recurse_into: Vec::new(),
+            subfolder_patterns: vec![Pattern::compile("^a$").expect("valid")],
+            filename_patterns: Vec::new(),
+        };
+        assert!(
+            constrains_subfolders(&patterned),
+            "a subfolder regex is a constraint on subfolders"
+        );
+    }
+
+    /// The probe filename has to be one the rule refuses.
+    ///
+    /// A name the pattern happens to accept would be reported silent for a
+    /// file the rule was right to allow — the same false negative one layer
+    /// down, and the one this whole change is about.
+    #[test]
+    fn the_probe_filename_is_one_the_patterns_reject() {
+        // Written against the patterns themselves rather than against a
+        // spelling: the contract is "this rule rejects the probe", and a test
+        // that checked a suffix would pass for a probe the rule accepts.
+        for source in [r"\.probe$", r"^[a-z0-9-]+\.ts$", r"^archwarden-.*$"] {
+            let pattern = Pattern::compile(source).expect("valid");
+            let kind = CompiledRuleKind::Structure {
+                allowed_subfolders: None,
+                warn_subfolders: Vec::new(),
+                recurse_into: Vec::new(),
+                subfolder_patterns: Vec::new(),
+                filename_patterns: vec![pattern],
+            };
+
+            let probe = unclaimed_filename(&kind);
+            // The name is printed back — "a file named `X` in `Y`" — so it has
+            // to read as archwarden's, not as a file the reader might go
+            // looking for in their own repository.
+            assert!(
+                probe.contains(PROBE),
+                "`{probe}` does not name itself as a probe, and it is shown to \
+                 a reader as the thing the rule was handed"
+            );
+
+            let CompiledRuleKind::Structure {
+                filename_patterns, ..
+            } = &kind
+            else {
+                unreachable!("built as a structure rule")
+            };
+            assert!(
+                !filename_patterns
+                    .iter()
+                    .any(|pattern| pattern.is_match(&probe)),
+                "`{probe}` is a name `{source}` accepts, so the rule is right to \
+                 stay silent about it and would be called idle for doing so"
+            );
+        }
     }
 
     /// The case the issue called impossible. `spec-pair` reports through

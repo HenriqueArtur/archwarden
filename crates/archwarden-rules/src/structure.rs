@@ -266,6 +266,14 @@ impl RuleEngine for StructureEngine {
         path.parent().is_some_and(|parent| self.governs(&parent))
     }
 
+    fn answers_for_directories(&self) -> bool {
+        // Its subfolder findings are about the directory. `doctor` used to
+        // exempt this kind by name; saying it here is what lets the exemption
+        // be about the property rather than about a list someone has to
+        // remember to extend.
+        true
+    }
+
     fn check_directory(&self, ctx: DirectoryContext<'_>) -> Vec<Finding> {
         if !self.governs(ctx.path) {
             return Vec::new();
@@ -1031,5 +1039,13 @@ mod tests {
                 .map(ModuleId::as_str),
             Some("domain")
         );
+    }
+    /// Its subfolder findings are about the directory, which is why `doctor`
+    /// does not ask whether files are subject to it.
+    #[test]
+    fn it_answers_for_a_directory_rather_than_for_the_files_in_it() {
+        let engine = engine(&["src/*"], &["types"], &[], &[], &[]);
+
+        assert!(engine.answers_for_directories());
     }
 }

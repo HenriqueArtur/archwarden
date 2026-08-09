@@ -62,6 +62,43 @@ refused, which is what the hook was installed to do and never did.
   test written for the fault above, in the one place it had not been looked
   for.
 
+- **`config verify-rules` probes the axis a rule constrains**
+  ([#49](https://github.com/HenriqueArtur/archwarden/issues/49)). Every
+  `structure` rule was offered an unlisted folder. A rule that constrains
+  `filename_patterns` and says nothing about subfolders is correctly silent on
+  that, and was reported as enforcing nothing — 5 of 14 rules in one
+  repository, all 5 of which fire.
+
+  Worse than a wrong tick, because *"5 enforce nothing"* is the line a reader
+  acts on, and acting on it means deleting five working rules. A verifier that
+  reports a false negative is worse than no verifier, for the reason the docs
+  give about silent rules: it is indistinguishable from the real thing. Each
+  constrained axis is probed now, and a rule that constrains neither is still
+  reported silent — that one really does enforce nothing.
+
+- **`config doctor` no longer calls every `presence` rule idle**
+  ([#51](https://github.com/HenriqueArtur/archwarden/issues/51)).
+  `rule-evaluates-nothing` asks whether any file is subject to a rule, which is
+  a good question about a rule concerning files and a meaningless one about a
+  rule concerning directories. `structure` was exempt by name; `presence`
+  arrived answering the same way and was not, so `doctor` reported it as idle
+  while `check` was firing it on the same repository.
+
+  The suggested fix made it worse: widening `roots` from `projetos/*` to
+  `projetos/**` would have asked every subdirectory to hold the required files,
+  turning a working rule into a wall of false errors. The engine is asked now,
+  through `RuleEngine::answers_for_directories`, so the third directory rule
+  has to answer rather than be remembered.
+
+- **`pair.must_exist` refuses a template instead of hunting for braces**
+  ([#50](https://github.com/HenriqueArtur/archwarden/issues/50)). The field is
+  documented as literal, and a config reaching for `{{raw(dirname)}}` anyway
+  validated, ran, and reported every governed file as missing a companion with
+  braces in its name — sixteen confident findings about a file nothing could
+  create. The template form is what `naming` and `frontmatter.equals` accept,
+  so writing one here is the obvious mistake; it is refused when the config
+  compiles, the way `presence.require` refuses a path separator.
+
 ### Changed
 
 - **`install-hooks` edits the `hooks` key and nothing else.** It used to

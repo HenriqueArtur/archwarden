@@ -834,6 +834,31 @@ fn a_require_entry_that_is_a_path_is_refused() {
         .stderr(contains("takes filenames"));
 }
 
+/// `must_exist` is literal, and a config that reaches for a template is told
+/// so rather than hunting for a file with braces in its name.
+///
+/// Issue #50: the template form is what `naming` and `frontmatter.equals`
+/// accept, so writing one here is the obvious mistake. It validated, ran, and
+/// reported every governed file as missing `meu/{{raw(dirname)}}.md` —
+/// sixteen confident findings about a file nothing could create.
+#[test]
+fn a_must_exist_that_reaches_for_a_template_is_refused() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"pair","id":"projeto-tem-nota","level":"error",
+             "roots":["projetos/*"],"file_pattern":"^projeto\\.md$",
+             "must_exist":"../../meu/{{raw(dirname)}}.md"}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "validate"])
+        .assert()
+        .code(2)
+        .stderr(contains("literal"));
+}
+
 /// Issue #46, through the real process. A finding says what the rule wanted
 /// and what the file did, and used to never say why the rule exists — so an
 /// agent reading one could comply and nothing else, which is how a config gets
@@ -1670,6 +1695,63 @@ fn doctor_reports_a_rule_that_reaches_no_file() {
         .success()
         .stdout(contains("rule-evaluates-nothing"))
         .stdout(contains("no file inside them is subject to this rule"));
+}
+
+/// A `presence` rule answers for the directory, so no file being subject to it
+/// is its ordinary state and not a symptom.
+///
+/// Issue #51: `doctor` reported `rule-evaluates-nothing` for every `presence`
+/// rule in a config, while `check` fired those same rules on the same state.
+/// Two commands in one binary disagreeing about whether a rule does anything.
+///
+/// The advice made it worse than the false positive did. Widening `roots` from
+/// `projetos/*` to `projetos/**` as suggested would ask every subdirectory of
+/// every lesson to hold the three required files — turning a working rule into
+/// sixteen false errors.
+#[test]
+fn doctor_does_not_call_a_directory_rule_idle() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"projeto-tem-os-tres","level":"error",
+                 "roots":["projetos/*"],
+                 "require":["projeto.md","exercicios.md","diagram.json"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        ("projetos/01-blink/exercicios.md", "# exercicios\n"),
+        ("projetos/01-blink/diagram.json", "{}\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "doctor"])
+        .assert()
+        .success()
+        .stdout(contains("No concerns."));
+}
+
+/// And it still bites, which is the other half of the same claim.
+#[test]
+fn a_directory_rule_doctor_stays_quiet_about_still_fires() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"projeto-tem-os-tres","level":"error",
+                 "roots":["projetos/*"],
+                 "require":["projeto.md","exercicios.md","diagram.json"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        ("projetos/01-blink/diagram.json", "{}\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check"])
+        .assert()
+        .code(1)
+        .stdout(contains("exercicios.md"));
 }
 
 /// And the same config with a scope that does reach the files says nothing.
