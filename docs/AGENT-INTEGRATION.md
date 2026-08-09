@@ -205,6 +205,23 @@ in the environment: the hook is handed the event as JSON on stdin, with the
 target under `tool_input.file_path`. archwarden reads that itself, so the
 installed line needs no `jq` and no shell quoting.
 
+**The hook answers about the file as it would be after this write.** Not as it
+is on disk — that is the previous version, and answering from it means a new
+file is never checked, an edit introducing a violation is permitted, and an edit
+*fixing* one is refused for the violation it fixes. The last of those has no way
+out from inside an agent loop: it is told to fix the file and denied permission
+to do so, against a rule the pending write already satisfies.
+
+`Write` carries the whole document. `Edit` and `MultiEdit` carry replacements,
+so the result is reconstructed from what is on disk before it is judged. An edit
+whose `old_string` is not in the file is not replayed at all — the harness will
+refuse it, and judging a write that will not happen is the same fault by another
+route.
+
+Only the target's own facts come from the event. Siblings, importers and
+directory listings still come from disk, because those are what the write is not
+about and the harness does not send them.
+
 **The hook never blocks by failing.** An unreadable payload, a broken
 configuration, a path outside the repository — each allows the write. Blocking
 is a decision carried in the response

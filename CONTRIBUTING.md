@@ -199,8 +199,13 @@ all**, and so did four others. The suite was green. Coverage was green.
 Flipping one boolean would have removed the protection silently.
 
 Each survivor is an edit to your code that no test objected to. Either write
-the test, or decide the mutant is harmless and say why — in `mutants.toml`,
+the test, or decide the mutant is harmless and say why — in `.cargo/mutants.toml`,
 where the next person will find both the exclusion and the argument for it.
+
+**`.cargo/mutants.toml`, not `mutants.toml`.** It sat at the repository root
+for two releases and was read by nothing, so every exclusion in it was written,
+documented and inert. `cargo mutants --list` is the check: if a path the file
+excludes still appears there, the file is not being read.
 
 `cargo-mutants` exits `2` when mutants survived and something else when it
 could not run at all — a build failure, a timeout, the linker being killed on a

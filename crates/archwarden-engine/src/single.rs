@@ -126,6 +126,38 @@ impl Reason {
 /// rather than passing quietly.
 #[must_use]
 pub fn check_file(root: &Utf8Path, config: &CompiledConfig, path: &RepoRelPath) -> Single {
+    check(root, config, path, None)
+}
+
+/// Checks what a pending write *would* leave at `path`.
+///
+/// The question a `PreToolUse` hook is actually asked. [`check_file`] answers
+/// about the bytes on disk, which for a hook is the previous version of the
+/// file — so a new file was never checked at all, an edit introducing a
+/// violation was permitted, and an edit *fixing* one was refused while naming
+/// a rule the pending write already satisfied. That last one has no way out
+/// from inside an agent loop: it is told to fix the file and denied permission
+/// to fix it. Issue #55.
+///
+/// Only this path's own facts come from `content`. Siblings, importers and
+/// every directory listing still come from disk, because those are what the
+/// write is *not* about and the harness does not send them.
+#[must_use]
+pub fn check_write(
+    root: &Utf8Path,
+    config: &CompiledConfig,
+    path: &RepoRelPath,
+    content: &str,
+) -> Single {
+    check(root, config, path, Some(content))
+}
+
+fn check(
+    root: &Utf8Path,
+    config: &CompiledConfig,
+    path: &RepoRelPath,
+    pending: Option<&str>,
+) -> Single {
     let engines = archwarden_rules::engines_for(config);
     let mut findings = Vec::new();
     let mut skipped = Vec::new();
@@ -162,7 +194,13 @@ pub fn check_file(root: &Utf8Path, config: &CompiledConfig, path: &RepoRelPath) 
     // binary that happened to match a `file_pattern` it is a large one. Second
     // instance of this shape -- see M4 in `docs/PLAN-V0.md` for the first.
     let facts = if needs_facts && is_source {
-        match crate::run::facts_of(root, path) {
+        // The pending text when there is one, the file otherwise. A write that
+        // has not landed is still the thing being judged.
+        let parsed = match pending {
+            Some(content) => crate::run::facts_from(path, content),
+            None => crate::run::facts_of(root, path),
+        };
+        match parsed {
             Ok(mut facts) => {
                 // Resolution is what a boundary rule needs, and it is a
                 // handful of filesystem probes rather than the cross-file
@@ -932,5 +970,65 @@ mod tests {
         drop(guard);
 
         assert!(paired.findings.is_empty(), "{:?}", paired.findings);
+    }
+    /// Issue #55. A `PreToolUse` hook is asked whether a write *would* be
+    /// legal, and the answer was coming from the bytes already on disk — so it
+    /// answered about the past.
+    ///
+    /// Three consequences, and the third has no way out from inside an agent
+    /// loop: a new file was never checked, an edit introducing a violation was
+    /// permitted, and an edit *fixing* one was refused, naming a rule the
+    /// pending write already satisfied.
+    #[test]
+    fn a_pending_write_is_judged_by_what_it_would_leave_behind() {
+        let (guard, root) = tree_at(&[(
+            "src/user/create-client.use-case.ts",
+            "export function Wrong() {}",
+        )]);
+        let config = config(vec![rule("usecase", &["src/*"], naming())], &[]);
+        let target = path("src/user/create-client.use-case.ts");
+
+        // On disk the export is wrong, and that is what `check_file` says.
+        let on_disk = check_file(&root, &config, &target);
+        assert!(!on_disk.findings.is_empty(), "the file on disk is wrong");
+
+        // The write that fixes it is judged by its own content.
+        let fixed = check_write(&root, &config, &target, "export function CreateClient() {}");
+        drop(guard);
+
+        assert!(
+            fixed.findings.is_empty(),
+            "the write that fixes the file was refused: {:?}",
+            fixed.findings
+        );
+    }
+
+    /// And a file that is not on disk at all is checked, rather than skipped
+    /// for want of anything to read. This is the case a pre-write gate most
+    /// exists for: every content rule sailed through on creation.
+    #[test]
+    fn a_file_that_does_not_exist_yet_is_checked_against_the_write() {
+        let (guard, root) = tree_at(&[("src/user/other.ts", "export const a = 1;")]);
+        let config = config(vec![rule("usecase", &["src/*"], naming())], &[]);
+        let target = path("src/user/create-client.use-case.ts");
+
+        let absent = check_file(&root, &config, &target);
+        assert!(
+            absent.findings.is_empty() && !absent.skipped.is_empty(),
+            "nothing on disk means nothing to judge: {absent:?}"
+        );
+
+        let written = check_write(&root, &config, &target, "export function Wrong() {}");
+        drop(guard);
+
+        assert!(
+            !written.findings.is_empty(),
+            "a new file's content was not checked: {written:?}"
+        );
+        assert!(
+            written.skipped.is_empty(),
+            "it had the content, so nothing was skipped: {:?}",
+            written.skipped
+        );
     }
 }

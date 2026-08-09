@@ -945,6 +945,89 @@ fn scaffold_does_not_refuse_a_name_the_rules_allow() {
         .stdout(contains("projeto.md"));
 }
 
+/// Issue #55, through the real process: the hook judges the write, not the
+/// file.
+///
+/// Three failures in one, and the third had no way out from inside an agent
+/// loop — it was told to fix the file and refused permission to fix it, with a
+/// message naming a rule the pending write already satisfied.
+#[test]
+fn the_hook_judges_the_write_and_not_the_file_on_disk() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"naming","id":"usecase-name","level":"error",
+                 "roots":["src/*"],
+                 "file_pattern":"^(?<n>[a-z0-9-]+)\\.use-case\\.ts$",
+                 "must_export":{"kind":["function"],"name":"{{pascal(n)}}"}}]}"#,
+        ),
+        ("src/user/other.ts", "export const a = 1;\n"),
+    ]);
+    let target = dir.path().join("src/user/create-client.use-case.ts");
+    let target = target.to_str().expect("utf-8");
+
+    // A new file, nothing on disk. This is the case a pre-write gate most
+    // exists for, and every content rule used to sail through it.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{target}",
+               "content":"export function Wrong() {{}}"}}}}"#
+        ))
+        .assert()
+        .success()
+        .stdout(contains("permissionDecision"));
+
+    // And the write that satisfies the rule is permitted, with the violating
+    // version still on disk — the deadlock.
+    std::fs::write(target, "export function Wrong() {}\n").expect("write");
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{target}",
+               "content":"export function CreateClient() {{}}"}}}}"#
+        ))
+        .assert()
+        .success()
+        .stdout("{}\n");
+}
+
+/// An `Edit` sends a replacement rather than a document, so the result has to
+/// be reconstructed before it can be judged.
+#[test]
+fn the_hook_replays_an_edit_before_judging_it() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"naming","id":"usecase-name","level":"error",
+                 "roots":["src/*"],
+                 "file_pattern":"^(?<n>[a-z0-9-]+)\\.use-case\\.ts$",
+                 "must_export":{"kind":["function"],"name":"{{pascal(n)}}"}}]}"#,
+        ),
+        (
+            "src/user/create-client.use-case.ts",
+            "export function Wrong() {}\n",
+        ),
+    ]);
+    let target = dir.path().join("src/user/create-client.use-case.ts");
+    let target = target.to_str().expect("utf-8");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(format!(
+            r#"{{"tool_name":"Edit","tool_input":{{"file_path":"{target}",
+               "old_string":"Wrong","new_string":"CreateClient"}}}}"#
+        ))
+        .assert()
+        .success()
+        .stdout("{}\n");
+}
+
 /// Issue #46, through the real process. A finding says what the rule wanted
 /// and what the file did, and used to never say why the rule exists — so an
 /// agent reading one could comply and nothing else, which is how a config gets
