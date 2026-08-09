@@ -38,6 +38,16 @@ pub struct Scaffold {
     /// scaffolding a path whose *name* is already wrong would be told
     /// everything except the thing it has to fix first. Correction C11.
     pub filename_patterns: Vec<String>,
+    /// When asked about a directory: what *this* directory may be called.
+    ///
+    /// The same argument as [`filename_patterns`](Self::filename_patterns),
+    /// which was correction C11: an agent scaffolding a path whose name is
+    /// already wrong would be told everything except the thing it has to fix
+    /// first. That argument was made for files and not carried to folders, so
+    /// `scaffold` handed back a shape to build at a path `check` refuses —
+    /// and following the answer produced a directory that failed on the next
+    /// run.
+    pub folder_name: Option<AllowedSubfolders>,
     /// When asked about a directory: what may live inside it.
     pub allowed_subfolders: Option<AllowedSubfolders>,
     /// When asked about a directory: what must live inside it.
@@ -231,6 +241,17 @@ fn absorb(shape: &mut Scaffold, expectation: Expectation) {
                 patterns,
             });
         }
+        Expectation::FolderName {
+            allowed,
+            warn,
+            patterns,
+        } => {
+            shape.folder_name = Some(AllowedSubfolders {
+                allowed,
+                warn,
+                patterns,
+            });
+        }
         // `Expectation` is non_exhaustive. A variant added later is not
         // something this shape can place, and guessing would be worse than the
         // omission -- `describe` still reports it in full.
@@ -288,13 +309,81 @@ fn render_json(path: &RepoRelPath, shape: &Scaffold, out: &mut dyn std::io::Writ
     }
 }
 
+/// Why this path's own last component is not one the rules permit, if it is
+/// not.
+///
+/// Only the folder half is decided here. A filename is judged by regexes the
+/// same way, but `scaffold` is asked about files that are about to be written
+/// under a name the writer chose from the patterns it prints — and the folder
+/// case is the one that arrived as a bug report, with `scaffold` describing a
+/// shape to build at a path `check` rejects.
+fn name_is_not_permitted(path: &RepoRelPath, shape: &Scaffold) -> Option<String> {
+    let name = shape.folder_name.as_ref()?;
+    let own = path.as_str().rsplit('/').next()?;
+
+    if name.allowed.iter().any(|allowed| allowed == own) || name.warn.iter().any(|warn| warn == own)
+    {
+        return None;
+    }
+    // Recompiled with the engine that compiled it in the first place, so this
+    // cannot disagree with `check` about whether a name matches. A second regex
+    // implementation answering the same question differently would be a worse
+    // bug than the one being fixed.
+    if name.patterns.iter().any(|pattern| {
+        archwarden_core::pattern::Pattern::compile(pattern)
+            .is_ok_and(|compiled| compiled.is_match(own))
+    }) {
+        return None;
+    }
+
+    // Nothing is permitted at all, which is a rule saying this directory should
+    // not be here rather than one saying it is misnamed.
+    if name.allowed.is_empty() && name.warn.is_empty() && name.patterns.is_empty() {
+        return Some(format!("`{own}` — its parent allows no subfolder at all"));
+    }
+
+    Some(format!("`{own}` is not one of the names allowed here"))
+}
+
 fn render_text(path: &RepoRelPath, shape: &Scaffold, out: &mut dyn std::io::Write) {
     if is_empty(shape) {
         let _ = writeln!(out, "No rule constrains `{path}`.");
         return;
     }
 
+    // Before the shape, and deliberately: if the path's own name is not one the
+    // rules permit, no shape built there can pass, and a reader who starts
+    // building is following an answer to the wrong question. `scaffold` says
+    // what to go and make, so leading with an unbuildable location is the one
+    // thing it must not do.
+    if let Some(refusal) = name_is_not_permitted(path, shape) {
+        let _ = writeln!(out, "`{path}` is not a path these rules allow.\n");
+        let _ = writeln!(out, "  {refusal}\n");
+        let _ = writeln!(
+            out,
+            "Nothing built here can pass. Rename it first; the shape below is \
+             what would be expected at a permitted name."
+        );
+        let _ = writeln!(out);
+    }
+
     let _ = writeln!(out, "Expected shape for `{path}`:");
+
+    if let Some(name) = &shape.folder_name {
+        let _ = writeln!(out, "\n  This folder's name must be:");
+        for allowed in &name.allowed {
+            let _ = writeln!(out, "    {allowed}");
+        }
+        for warn in &name.warn {
+            let _ = writeln!(out, "    {warn} (allowed, reported as a warning)");
+        }
+        for pattern in &name.patterns {
+            let _ = writeln!(out, "    any name matching {pattern}");
+        }
+        if name.allowed.is_empty() && name.warn.is_empty() && name.patterns.is_empty() {
+            let _ = writeln!(out, "    (its parent allows no subfolder at all)");
+        }
+    }
 
     if !shape.filename_patterns.is_empty() {
         let _ = writeln!(out, "\n  Filename must match:");
@@ -381,6 +470,12 @@ fn is_empty(shape: &Scaffold) -> bool {
         && shape.call_obligations.is_empty()
         && shape.filename_patterns.is_empty()
         && shape.allowed_subfolders.is_none()
+        // A rule constraining only the folder's own name is the whole of #53,
+        // and leaving it out here reproduced the reported bug in miniature:
+        // `scaffold` answered "No rule constrains" about a path that rule
+        // refuses. It was visible in a manual run and read past, because the
+        // fixture beside it had a second rule that filled the shape.
+        && shape.folder_name.is_none()
         && shape.required_files.names.is_empty()
         && shape.required_files.patterns.is_empty()
 }
@@ -1111,5 +1206,131 @@ mod tests {
         render(&target, &shape, crate::report::Format::Text, &mut out);
         let text = String::from_utf8(out).expect("UTF-8");
         assert!(text.contains("type-only imports are exempt"), "{text}");
+    }
+    /// The literal lists, which the pattern tests never reached.
+    ///
+    /// A rule may permit folders by name, by regex, or by both, and the three
+    /// answers are different sentences. Mutation testing found every one of
+    /// these branches untested: the pattern path was exercised end to end and
+    /// the `allowed_subfolders` path was not.
+    #[test]
+    fn a_name_on_the_allowed_list_is_permitted() {
+        let shape = Scaffold {
+            folder_name: Some(AllowedSubfolders {
+                allowed: vec!["sketch".to_owned(), "minha-solucao".to_owned()],
+                warn: Vec::new(),
+                patterns: Vec::new(),
+            }),
+            ..Scaffold::default()
+        };
+
+        assert_eq!(
+            name_is_not_permitted(&path("projetos/01/sketch"), &shape),
+            None
+        );
+        assert!(
+            name_is_not_permitted(&path("projetos/01/outra"), &shape)
+                .is_some_and(|why| why.contains("not one of the names allowed here")),
+            "a name off the list should be refused"
+        );
+    }
+
+    /// A warn-listed name is permitted. It reports as a warning when the folder
+    /// exists, and `scaffold` must not tell someone the path is impossible when
+    /// the project has said it is merely discouraged.
+    #[test]
+    fn a_warn_listed_name_is_permitted() {
+        let shape = Scaffold {
+            folder_name: Some(AllowedSubfolders {
+                allowed: vec!["sketch".to_owned()],
+                warn: vec!["rascunho".to_owned()],
+                patterns: Vec::new(),
+            }),
+            ..Scaffold::default()
+        };
+
+        assert_eq!(
+            name_is_not_permitted(&path("projetos/01/rascunho"), &shape),
+            None
+        );
+    }
+
+    /// A parent that permits no subfolder at all is a different message: the
+    /// folder is not misnamed, it should not be there.
+    #[test]
+    fn a_parent_that_allows_no_subfolder_says_that_instead() {
+        let shape = Scaffold {
+            folder_name: Some(AllowedSubfolders {
+                allowed: Vec::new(),
+                warn: Vec::new(),
+                patterns: Vec::new(),
+            }),
+            ..Scaffold::default()
+        };
+
+        assert!(
+            name_is_not_permitted(&path("src/user/anything"), &shape)
+                .is_some_and(|why| why.contains("allows no subfolder at all")),
+            "a rule forbidding every subfolder should say so"
+        );
+    }
+
+    /// And a shape with no folder constraint refuses nothing.
+    #[test]
+    fn a_shape_that_says_nothing_about_folder_names_refuses_nothing() {
+        assert_eq!(
+            name_is_not_permitted(&path("src/user/anything"), &Scaffold::default()),
+            None
+        );
+    }
+    /// The rendered line for a parent that permits no subfolder.
+    ///
+    /// Without it the section prints its heading and then nothing, which reads
+    /// as a rule that forgot to say what it wanted rather than one saying this
+    /// folder should not exist.
+    #[test]
+    fn a_folder_section_with_nothing_permitted_still_says_something() {
+        let target = path("projetos/qualquer");
+        let shape = Scaffold {
+            folder_name: Some(AllowedSubfolders {
+                allowed: Vec::new(),
+                warn: Vec::new(),
+                patterns: Vec::new(),
+            }),
+            ..Scaffold::default()
+        };
+
+        let mut out = Vec::new();
+        render_text(&target, &shape, &mut out);
+        let text = String::from_utf8(out).expect("UTF-8");
+
+        assert!(
+            text.contains("its parent allows no subfolder at all"),
+            "the section was left empty:\n{text}"
+        );
+    }
+
+    /// And a folder section that *does* permit something does not print it.
+    #[test]
+    fn a_folder_section_with_names_does_not_claim_none_are_allowed() {
+        let target = path("projetos/01-blink");
+        let shape = Scaffold {
+            folder_name: Some(AllowedSubfolders {
+                allowed: vec!["01-blink".to_owned()],
+                warn: Vec::new(),
+                patterns: Vec::new(),
+            }),
+            ..Scaffold::default()
+        };
+
+        let mut out = Vec::new();
+        render_text(&target, &shape, &mut out);
+        let text = String::from_utf8(out).expect("UTF-8");
+
+        assert!(
+            !text.contains("allows no subfolder at all"),
+            "it claimed nothing is allowed while listing a name:\n{text}"
+        );
+        assert!(text.contains("01-blink"), "{text}");
     }
 }

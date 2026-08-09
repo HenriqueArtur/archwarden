@@ -146,6 +146,18 @@ A rule that names none of `allowed_subfolders`, `warn_subfolders`,
   than a regex. Reading the patterns first would silence the one list that
   exists to be heard.
 
+  **The constraint is reported to the folder as well as to its parent.**
+  `describe projetos` says what may live inside; `describe projetos/03-servo`
+  says what *that folder* may be called. They are one contract read from two
+  sides, and until 0.12.0 only the parent was told — so `describe` answered
+  "no rule applies" about a name `check` refuses, and `scaffold` returned a
+  shape to build at a path that could never pass.
+
+  A path with no extension is taken to be a folder, which is the evidence
+  available about a path that does not exist yet. An extensionless *file* —
+  `Makefile`, `LICENSE` — therefore hears one sentence that does not govern it.
+  `check` is unaffected: it walked the tree and knows what is a directory.
+
   Purely lexical, like the rest of `structure`: no parse, no disk beyond the
   walk. `naming.dir_pattern` is the same matcher and reaches it only through
   `must_export`, which needs a TypeScript parse of a file inside — so a

@@ -236,6 +236,24 @@ impl StructureEngine {
         }
     }
 
+    /// What this directory's *own* name may be, said to the directory rather
+    /// than to its parent.
+    ///
+    /// The same three lists as [`subfolder_expectation`](Self::subfolder_expectation),
+    /// pointed the other way. They are one contract read from two sides, and
+    /// only one side was being told.
+    fn folder_name_expectation(&self) -> Expectation {
+        Expectation::FolderName {
+            allowed: self.allowed_subfolders.clone().unwrap_or_default(),
+            warn: self.warn_subfolders.clone(),
+            patterns: self
+                .subfolder_patterns
+                .iter()
+                .map(|pattern| pattern.as_str().to_owned())
+                .collect(),
+        }
+    }
+
     fn filename_expectation(&self) -> Expectation {
         Expectation::FilenamePattern {
             patterns: self
@@ -331,9 +349,34 @@ impl RuleEngine for StructureEngine {
             expectations.push(self.subfolder_expectation());
         }
 
-        // Asked about a file: what its name must look like.
-        if !self.filename_patterns.is_empty() && self.applies_to(path) {
+        // Asked about an entry inside a governed directory. The parent's
+        // contract has two halves — what its files may be called and what its
+        // folders may be called — and only the file half was ever reported, so
+        // `describe` said "no rule applies" about a folder name `check`
+        // refuses and `scaffold` answered with a shape to build at a path that
+        // cannot pass.
+        let inside_a_governed_directory = path.parent().is_some_and(|parent| self.governs(&parent));
+
+        if !self.filename_patterns.is_empty() && inside_a_governed_directory {
             expectations.push(self.filename_expectation());
+        }
+
+        // Which half applies depends on whether the path names a file or a
+        // folder, and a path that does not exist yet does not say. An
+        // extension is the evidence available: `01-blink` is a folder someone
+        // is about to create, `x.ts` is not.
+        //
+        // It is a heuristic and it is wrong for an extensionless file —
+        // `Makefile`, `LICENSE` — which then hears about a folder rule that
+        // does not govern it. That is a sentence too many, in a command whose
+        // job is to list what applies; the alternative was answering "no rule
+        // applies" about a name that is refused, which is the failure this
+        // whole change is about. The `check` side is not affected either way:
+        // it knows what is a directory because it walked the tree.
+        let could_be_a_directory = path.file_name().is_some_and(|name| !name.contains('.'));
+
+        if self.constrains_subfolders() && inside_a_governed_directory && could_be_a_directory {
+            expectations.push(self.folder_name_expectation());
         }
 
         expectations
@@ -1047,5 +1090,75 @@ mod tests {
         let engine = engine(&["src/*"], &["types"], &[], &[], &[]);
 
         assert!(engine.answers_for_directories());
+    }
+    /// Issue #53. `subfolder_patterns` was attributed to the parent and never
+    /// to the child it governs, so `describe` answered "no rule applies" about
+    /// a folder name `check` refuses — and `scaffold`, whose whole answer is a
+    /// shape to go and build, described one for a path that cannot pass.
+    ///
+    /// `describe` exists for a path that does not exist yet, which is exactly
+    /// where the name is still a choice. Answering after the folder is created
+    /// is answering too late.
+    #[test]
+    fn a_folder_hears_that_its_own_name_is_constrained() {
+        let engine = engine(&["projetos"], &[], &[], &[], &[]);
+        let engine = StructureEngine {
+            subfolder_patterns: patterns(&[r"^\d{2}-[a-z0-9]+$"]),
+            ..engine
+        };
+
+        let expectations = engine.describe_expectation(&path("projetos/sensor-sem-numero"));
+
+        assert_eq!(
+            expectations.len(),
+            1,
+            "the child was told nothing: {expectations:?}"
+        );
+        assert!(
+            matches!(&expectations[0], Expectation::FolderName { patterns, .. }
+                     if patterns.len() == 1),
+            "{expectations:?}"
+        );
+    }
+
+    /// And the parent still hears what may live inside it. The two are one
+    /// contract read from two sides, and both sides are told.
+    #[test]
+    fn the_parent_still_hears_what_may_live_inside_it() {
+        let engine = engine(&["projetos"], &[], &[], &[], &[]);
+        let engine = StructureEngine {
+            subfolder_patterns: patterns(&[r"^\d{2}-[a-z0-9]+$"]),
+            ..engine
+        };
+
+        let expectations = engine.describe_expectation(&path("projetos"));
+
+        assert!(
+            matches!(&expectations[0], Expectation::AllowedSubfolders { .. }),
+            "{expectations:?}"
+        );
+    }
+
+    /// A path that carries an extension is a file, and a file is not told what
+    /// folder names are allowed.
+    ///
+    /// The heuristic is stated in `describe_expectation` along with what it
+    /// costs: an extensionless file hears one sentence too many. `impact`
+    /// caught this — a rule "starting to apply" to a moved `.ts` file because
+    /// the folder half was being offered to everything.
+    #[test]
+    fn a_file_is_not_told_what_a_folder_may_be_called() {
+        let engine = engine(&["projetos"], &[], &[], &[], &[]);
+        let engine = StructureEngine {
+            subfolder_patterns: patterns(&[r"^\d{2}-[a-z0-9]+$"]),
+            ..engine
+        };
+
+        assert!(
+            engine
+                .describe_expectation(&path("projetos/notas.md"))
+                .is_empty(),
+            "a markdown file was told about folder names"
+        );
     }
 }

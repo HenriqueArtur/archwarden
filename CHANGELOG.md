@@ -17,6 +17,55 @@ saying so.
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-08-09
+
+### Fixed
+
+- **`subfolder_patterns` is reported to the folder it governs, not only to its
+  parent** ([#53](https://github.com/HenriqueArtur/archwarden/issues/53)).
+  `filename_patterns` and `subfolder_patterns` are siblings over the two kinds
+  of directory entry, and they were attributed on opposite sides. So
+  `describe projetos/sensor-sem-numero` answered *"No rule applies"* about a
+  name `check` refuses — and `scaffold`, whose entire answer is a shape to go
+  and build, returned one for a path that could never pass. Following it
+  produced a directory that failed on the next run.
+
+  `describe --help` says *"what the rules require of a path, which need not
+  exist yet"*, and the path that does not exist yet is precisely where the name
+  is still a choice. Answering after the folder is created is answering too
+  late.
+
+  A path with no extension is taken to be a folder — the only evidence there is
+  about a path that does not exist. An extensionless *file* therefore hears one
+  sentence that does not govern it, which is a sentence too many in a command
+  that lists what applies; the alternative was staying silent about a name that
+  is refused. `check` is unaffected: it walked the tree and knows.
+
+- **`scaffold` leads with a path that cannot pass**, before listing the shape.
+  Correction C11 made this argument for filenames — *"an agent scaffolding a
+  path whose name is already wrong would be told everything except the thing it
+  has to fix first"* — and it had never been carried to folders.
+
+- **`describe` distinguishes a file name from a folder name.** Both rendered as
+  *"a name matching …"*, so a reader could not tell which kind of entry was
+  constrained. `check` had always distinguished them.
+
+### Added
+
+- **`Expectation::FolderName`**, and `folder_name` on the `scaffold` JSON
+  shape. Additive: `Expectation` is `#[non_exhaustive]` and consumers already
+  ignore kinds they do not know, so `DESCRIBE_VERSION` and `SCAFFOLD_VERSION`
+  are unchanged.
+
+### Changed
+
+- **`config explain` lists the directories whose names a rule constrains**
+  among what it covers. It reads the same `describe_expectation` the fix above
+  changed, so a `structure` rule now covers both the directory whose contents
+  it governs and the ones whose names it governs. Being governed is not the
+  same as being in breach: a folder with a permitted name is covered and
+  clean.
+
 ## [0.11.0] — 2026-08-09
 
 Four faults in the pre-write hook, reported together against 0.10.0
