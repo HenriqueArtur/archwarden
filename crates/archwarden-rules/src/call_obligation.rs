@@ -110,7 +110,7 @@ impl CallObligationEngine {
     /// Anywhere, and not "on a path reachable from an export". A helper
     /// defined in this file *is* in this file, which is what the plan's
     /// acceptance criterion asks for, and `RULES.md` already declines to
-    /// filter unreachable branches. Correction C10 in `docs/PLAN-V0.md`.
+    /// filter unreachable branches.
     fn calls_the_symbol(&self, facts: &FileFacts) -> bool {
         facts.calls.iter().any(|call| call.callee == self.symbol)
     }

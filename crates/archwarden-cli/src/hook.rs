@@ -12,9 +12,9 @@
 //! write and says why. Blocking is a decision expressed in the response, never
 //! a side effect of something going wrong.
 //!
-//! **It says what to do, not just what is wrong.** `ROADMAP.md:57` asks for a
-//! message that identifies the rule *and the fix*. The message carries the
-//! same prose `check` prints, expectation included.
+//! **It says what to do, not just what is wrong.** A denial names the rule
+//! *and the fix*: the message carries the same prose `check` prints,
+//! expectation included.
 
 use serde_json::{Value, json};
 
@@ -350,7 +350,7 @@ mod tests {
         );
     }
 
-    /// `ROADMAP.md:57` asks for a message identifying the rule *and the fix*.
+    /// A denial identifies the rule *and the fix*, or an agent can only guess.
     #[test]
     fn the_message_names_the_rule_and_the_expectation() {
         use archwarden_core::{

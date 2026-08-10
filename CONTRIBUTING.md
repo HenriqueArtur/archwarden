@@ -186,6 +186,16 @@ with none configured the test says why it did nothing and passes.
 Write the test first. `cargo nextest` treats "zero tests ran" as an error,
 which on this project is exactly right.
 
+**Never `let ... else { panic!() }` to unwrap an error in a test.** That arm
+never runs while the test passes, so it is a line no execution reaches, and it
+drags the coverage floor down. It cost four separate fixes before it became a
+rule. Two alternatives, both better than the thing they replace:
+
+- `assert_eq!` against the whole error value — which also pins the exact
+  sentence a user reads, instead of checking `contains`;
+- a helper returning `Option`, with a test that exercises the `None` arm. Then
+  the negative path is tested behaviour rather than dead code.
+
 ### Mutation testing, and how to read a survivor
 
 The `pre-push` hook runs `cargo-mutants` over your diff. It is the only check

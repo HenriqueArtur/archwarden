@@ -686,8 +686,8 @@ mod tests {
         RepoRelPath::new(p).expect("valid path")
     }
 
-    /// Extracts a `Pattern` error, or `None`. See the convention note in
-    /// docs/PLAN-V0.md about not using `let ... else { panic!() }` here.
+    /// Extracts a `Pattern` error, or `None`. See the convention in
+    /// CONTRIBUTING.md about not using `let ... else { panic!() }` in a test.
     fn pattern_error(error: &CompileError) -> Option<(&RuleId, &'static str)> {
         match error {
             CompileError::Pattern { rule, field, .. } => Some((rule, field)),

@@ -196,9 +196,11 @@ Cross-file dependencies (import boundaries) require a small reverse-index:
 "if file A's exports changed, which files import A?" This index is rebuilt
 lazily from the cache on startup.
 
-In v1, watch mode subscribes to filesystem events via `notify` and re-runs
-only the affected files against this same cache. It is not in v0
-(see [`ROADMAP.md`](ROADMAP.md)).
+A watch mode would subscribe to filesystem events via `notify` and re-run
+only the affected files against this same cache. It is not built, and
+currently not planned: the LSP covers the editor loop it was meant for, and
+whether it is needed at all depends on a warm-run measurement nobody has
+taken. Tracked in the issues.
 
 ## Concurrency
 

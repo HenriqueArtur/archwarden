@@ -1201,8 +1201,7 @@ mod tests {
     /// Every engine today also refuses non-source files on its own, so the
     /// runner's guard is defence in depth and `cargo-mutants` cannot kill it.
     /// It stays because the invariant belongs at the one place that calls the
-    /// parser, not spread across every rule that will ever exist. See M4 in
-    /// `docs/PLAN-V0.md`.
+    /// parser, not spread across every rule that will ever exist.
     #[test]
     fn a_rule_that_needs_facts_still_does_not_parse_a_non_source_file() {
         let report = run(
