@@ -61,8 +61,38 @@ exclude_globs = [
 # it is a large one. The argument is at the line itself; this entry is the same
 # argument in the form the hook can act on.
 #
-# Second instance of this shape in the project — see M4 in `docs/PLAN-V0.md`
-# for the first. A third would be worth a rethink rather than a third entry.
+# The same shape appears once more in the project, at the parser guard in
+# `run.rs`, and the argument there is written at the line.
+# # Three entries, and whether that is a pattern
+#
+# A note above once said a third exclusion would be worth a rethink rather than
+# a third entry. This is the third, so: the reasons are three different ones,
+# and none of them is "mutation testing is inconvenient here".
+#
+#   the phrase tables   data rather than logic; the test that kills those
+#                       mutants asserts a string is itself
+#   the parser guard    unobservable; both paths reach the same answer, so no
+#                       test can tell them apart
+#   `ci::run`           untestable by recursion; the test would run the suite
+#                       that contains it
+#
+# A fourth sharing one of those reasons would be fine. A fourth with a new
+# reason is worth stopping for.
+
 exclude_re = [
     "single\\.rs:\\d+:\\d+: replace && with \\|\\| in check",
+    # `ci::run` replaced by `Ok(())`, which is a gate runner reporting success
+    # without running anything -- the exact failure that task exists to refuse,
+    # and not harmless at all.
+    #
+    # It is here because the test that kills it cannot exist. `run` executes
+    # this repository's thirteen gates, and one of them is `cargo nextest run
+    # --workspace`. A test calling `run` would run the suite that contains it.
+    #
+    # What is left inside `run` after that is wiring over three pieces that are
+    # each tested on their own: `Mode::parse`, the missing-tool refusal, and
+    # `run_gates`, which is separate precisely so a test can hand it gates that
+    # are not this repository's. The mutant survives the wiring, not the
+    # behaviour.
+    "ci\\.rs:\\d+:\\d+: replace run -> Result<\\(\\), String> with Ok\\(\\(\\)\\)",
 ]

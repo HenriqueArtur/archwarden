@@ -379,6 +379,16 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<(), String> {
         ));
     }
 
+    run_gates(root, &gates)
+}
+
+/// Runs the gates it is given, and reports every failure rather than the first.
+///
+/// Separate from [`run`] so a test can hand it gates that are not this
+/// repository's. The mutants that survived without it were the ones that
+/// matter most: a runner reporting success without running anything is the
+/// exact failure this module exists to refuse, and nothing said otherwise.
+fn run_gates(root: &Path, gates: &[&Step]) -> Result<(), String> {
     let mut failed: Vec<(&str, Vec<String>)> = Vec::new();
     for (n, step) in gates.iter().enumerate() {
         println!("[{}/{}] {}", n + 1, gates.len(), step.command);
@@ -1018,5 +1028,74 @@ jobs:
         tail.push("only this".to_owned());
 
         assert_eq!(tail.lines(), vec!["only this".to_owned()]);
+    }
+    /// A step whose command is a real, tiny program, so the runner can be
+    /// tested without running this repository's gates.
+    fn step(command: &'static str) -> Step {
+        Step {
+            command,
+            dir: None,
+            needs: None,
+            role: Role::Gate,
+        }
+    }
+
+    /// The runner has to actually run things. A `run` that returns `Ok(())`
+    /// without executing anything is the precise failure this module exists to
+    /// refuse — a check that reports success without looking — and it survived
+    /// every test until this one.
+    #[test]
+    fn a_failing_gate_fails_the_run() {
+        let passing = step("true");
+        let failing = step("false");
+
+        assert!(
+            run_gates(Path::new("."), &[&passing]).is_ok(),
+            "a gate that succeeds must not fail the run"
+        );
+        assert!(
+            run_gates(Path::new("."), &[&failing]).is_err(),
+            "a gate that fails must fail the run"
+        );
+        assert!(
+            run_gates(Path::new("."), &[&passing, &failing]).is_err(),
+            "and one failure among many is still a failure"
+        );
+    }
+
+    /// A command that exits non-zero is a failure and one that exits zero is
+    /// not. Both directions, because a runner that inverted them would pass
+    /// every test that only ever checked one.
+    #[test]
+    fn a_gate_reports_the_exit_code_it_got() {
+        let (ok, _) = step("true").succeeds(Path::new("."));
+        assert!(ok);
+
+        let (ok, _) = step("false").succeeds(Path::new("."));
+        assert!(!ok);
+    }
+
+    /// What a gate printed is kept, so the summary can repeat it. Issue #80:
+    /// a gate that fails intermittently is diagnosed from the run that failed,
+    /// and by then the output has scrolled past.
+    #[test]
+    fn what_a_gate_printed_is_kept() {
+        let (_, tail) = step("echo archwarden-probe-line").succeeds(Path::new("."));
+
+        assert!(
+            tail.iter()
+                .any(|line| line.contains("archwarden-probe-line")),
+            "the output was not kept: {tail:?}"
+        );
+    }
+
+    /// A command that does not exist is a failure, not a pass. The tool check
+    /// above catches the ones this task knows it needs; this is the backstop
+    /// for everything else.
+    #[test]
+    fn a_command_that_cannot_start_is_a_failure() {
+        let (ok, _) = step("archwarden-no-such-command").succeeds(Path::new("."));
+
+        assert!(!ok);
     }
 }
