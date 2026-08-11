@@ -10,9 +10,12 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+archwarden-api = { workspace = true }
 archwarden-config = { workspace = true }
 archwarden-core = { workspace = true }
-archwarden-cache = { workspace = true }
+# archwarden-cache is not here: the CLI no longer opens a cache, decides
+# whether one is worth opening, or knows where it lives. archwarden-api does
+# all three and hands back a note when it could not. Issue #63.
 archwarden-engine = { workspace = true }
 archwarden-rules = { workspace = true }
 archwarden-resolver = { workspace = true }

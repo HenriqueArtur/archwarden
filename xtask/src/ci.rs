@@ -159,6 +159,15 @@ pub(crate) const STEPS: &[Step] = &[
         needs: Some(LLVM_COV),
         role: Role::Gate,
     },
+    // 99 functions rather than 100, for one named function: see the argument
+    // beside this step in `.github/workflows/ci.yml`.
+    Step {
+        command: "cargo llvm-cov -p archwarden-api --all-features --fail-under-lines 99 \
+                  --fail-under-functions 99",
+        dir: None,
+        needs: Some(LLVM_COV),
+        role: Role::Gate,
+    },
     Step {
         command: "cargo llvm-cov --workspace --all-features --ignore-filename-regex 'xtask/' \
                   --fail-under-lines 95",

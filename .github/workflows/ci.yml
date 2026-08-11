@@ -93,6 +93,34 @@ jobs:
           --fail-under-lines 99
           --fail-under-functions 100
 
+      # archwarden-api is held to the same pair, and it is the one crate here
+      # that touches the filesystem under that bar. Deliberate: it is the
+      # boundary every surface goes through, so a branch nothing tests is a
+      # branch the CLI, the hook and MCP all inherit at once. Issue #63 moved
+      # this code out of archwarden-cli, where the 95 floor would have let a
+      # whole error variant arrive untested.
+      #
+      # It is affordable because nothing in the crate writes: every stage
+      # returns a value, so reaching a branch means constructing an input, not
+      # arranging a terminal.
+      #
+      # The function floor is 99 here and 100 for the core, and the one
+      # function is named rather than left as slack. `Baseline::write` maps the
+      # error of `serde_json::to_string_pretty(self)`, and `Baseline` is a
+      # `Vec<Entry>` of three `String`s: serde_json fails on non-string map
+      # keys, on non-finite floats, and on a `Serialize` that errors, and this
+      # type has none of the three. It is not a missing test, it is a branch no
+      # input reaches, and `?` cannot be written without handling it.
+      # `#[coverage(off)]` would say exactly that, and is nightly-only.
+      #
+      # The cost, stated: one more uncovered function could hide behind this.
+      # The exception is that function and no other, so if the gate ever fails
+      # at 99, the answer is to find the second one -- never to lower it again.
+      - run: >
+          cargo llvm-cov -p archwarden-api --all-features
+          --fail-under-lines 99
+          --fail-under-functions 99
+
       # Everything else: 95% is the floor, 100% the aim. The crates that touch
       # the filesystem, the terminal and node_modules have edges that cost more
       # to reach than they are worth.

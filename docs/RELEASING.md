@@ -44,18 +44,22 @@ NEW=0.6.0
 ```
 
 **`Cargo.toml`, `[workspace.package]`** — the single source of truth for the
-eight crates:
+nine crates:
 
 ```toml
 [workspace.package]
 version = "0.6.0"
 ```
 
-**`Cargo.toml`, `[workspace.dependencies]`** — the seven internal crates each
+**`Cargo.toml`, `[workspace.dependencies]`** — the eight internal crates each
 pin a version alongside their path. A path dependency without a version cannot
-be published to crates.io, and these must move together:
+be published to crates.io, and these must move together. Miss one and
+`cargo build --locked` below refuses it — the pin becomes a requirement the
+workspace version no longer satisfies — so this fails loudly rather than
+shipping a wrong number:
 
 ```toml
+archwarden-api = { path = "crates/archwarden-api", version = "0.6.0" }
 archwarden-cache = { path = "crates/archwarden-cache", version = "0.6.0" }
 archwarden-config = { path = "crates/archwarden-config", version = "0.6.0" }
 archwarden-core = { path = "crates/archwarden-core", version = "0.6.0" }

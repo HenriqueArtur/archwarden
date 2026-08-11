@@ -168,13 +168,33 @@ reads better than the alternative. `dbg!` stays denied even there.
 outside the binary crates. Libraries return values; the CLI decides how to say
 them.
 
-**Coverage floors are floors.** `archwarden-core` is held at 99% lines / 100%
-functions, everything else at 95% lines. Never lower one to make a red build
-green. It is pure logic with no I/O, so an uncovered line there means either a
-missing test or a branch no input can take — and both deserve to fail the
-build. The line floor is 99 rather than 100 only because `cargo-llvm-cov`'s
-summary reports one phantom miss inside macro-expanded code in `glob.rs` that
-its own lcov, JSON and HTML reports all show as covered.
+**Coverage floors are floors.** `archwarden-core` and `archwarden-api` are held
+at 99% lines / 100% functions, everything else at 95% lines. Never lower one to
+make a red build green.
+
+`archwarden-core` is pure logic with no I/O, so an uncovered line there means
+either a missing test or a branch no input can take — and both deserve to fail
+the build. The line floor is 99 rather than 100 only because
+`cargo-llvm-cov`'s summary reports one phantom miss inside macro-expanded code
+in `glob.rs` that its own lcov, JSON and HTML reports all show as covered.
+
+`archwarden-api` does touch the filesystem, and is held at 99/99. It is the
+boundary every surface goes through, so a branch nothing tests is a branch the
+CLI, the agent hook and MCP all inherit at once. That is affordable because
+nothing in the crate writes: every stage returns its failure as a value, so
+reaching a branch means constructing an input rather than arranging a terminal.
+
+Its function floor is 99 rather than 100 for exactly one function, named
+rather than left as slack: `Baseline::write` maps the error of
+`serde_json::to_string_pretty(self)`, and `Baseline` is a `Vec<Entry>` of
+three `String`s. serde_json fails on non-string map keys, on non-finite
+floats, and on a `Serialize` that errors; this type has none of the three, so
+no input reaches that arm — and `?` cannot be written without handling it.
+`#[coverage(off)]` would say so precisely and is nightly-only.
+
+One more uncovered function could hide behind that. The exception is that
+function and no other: if the gate ever fails at 99, the answer is to find the
+second one, never to lower it again.
 
 ## Tests
 

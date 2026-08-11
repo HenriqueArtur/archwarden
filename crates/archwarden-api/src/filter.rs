@@ -18,27 +18,6 @@ use archwarden_core::{
     compiled::CompiledConfig, finding::Finding, glob::PathSet, ids::RuleId, level::Level,
 };
 
-/// Which level to show, as a command-line value.
-///
-/// A CLI-side enum because `Level` lives in the core, which does not know
-/// about clap and should not learn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum LevelFilter {
-    /// Only errors.
-    Error,
-    /// Only warnings.
-    Warning,
-}
-
-impl LevelFilter {
-    fn level(self) -> Level {
-        match self {
-            Self::Error => Level::Error,
-            Self::Warning => Level::Warning,
-        }
-    }
-}
-
 /// What the user asked to see.
 ///
 /// Every field absent means "everything", which is what an unfiltered run is.
@@ -70,8 +49,12 @@ pub struct Arguments<'a> {
     /// The files `--changed` found, when it was given. `Some(empty)` means it
     /// was asked for and nothing had changed.
     pub changed: Option<Vec<String>>,
-    /// `--level`.
-    pub level: Option<LevelFilter>,
+    /// `--level`, as the core's own severity.
+    ///
+    /// [`Level`] rather than a command-line vocabulary: the enum with clap's
+    /// `ValueEnum` on it stays in the surface that has a command line, for
+    /// the same reason it stayed out of the core. Issue #63.
+    pub level: Option<Level>,
 }
 
 impl Filters {
@@ -112,7 +95,7 @@ impl Filters {
             rules: compiled_rules,
             paths: compiled_paths,
             changed: compiled_changed,
-            level: level.map(LevelFilter::level),
+            level,
         })
     }
 
@@ -318,7 +301,7 @@ mod tests {
         }
     }
 
-    fn compile(rules: &[&str], paths: &[&str], level: Option<LevelFilter>) -> Filters {
+    fn compile(rules: &[&str], paths: &[&str], level: Option<Level>) -> Filters {
         let owned_rules: Vec<String> = rules.iter().map(|id| (*id).to_owned()).collect();
         let owned_paths: Vec<String> = paths.iter().map(|glob| (*glob).to_owned()).collect();
         Filters::compile(
@@ -543,11 +526,11 @@ mod tests {
 
     #[test]
     fn a_level_keeps_only_that_level() {
-        let errors = compile(&[], &[], Some(LevelFilter::Error));
+        let errors = compile(&[], &[], Some(Level::Error));
         assert!(errors.keep(&finding("shape", "src/a.ts", Level::Error)));
         assert!(!errors.keep(&finding("shape", "src/a.ts", Level::Warning)));
 
-        let warnings = compile(&[], &[], Some(LevelFilter::Warning));
+        let warnings = compile(&[], &[], Some(Level::Warning));
         assert!(!warnings.keep(&finding("shape", "src/a.ts", Level::Error)));
         assert!(warnings.keep(&finding("shape", "src/a.ts", Level::Warning)));
     }
@@ -556,11 +539,7 @@ mod tests {
     /// which is what makes `--rules X --paths Y` mean what a reader assumes.
     #[test]
     fn filters_compose_with_and() {
-        let filters = compile(
-            &["shape"],
-            &["packages/domain/**"],
-            Some(LevelFilter::Error),
-        );
+        let filters = compile(&["shape"], &["packages/domain/**"], Some(Level::Error));
 
         assert!(filters.keep(&finding("shape", "packages/domain/a.ts", Level::Error)));
 
@@ -591,6 +570,61 @@ mod tests {
             message,
             "no rule is called `shpe`; there is `shape` or `spec`"
         );
+    }
+
+    /// `--changed` takes its paths from git rather than from a user, and is
+    /// still refused when one will not compile. A path git can produce and
+    /// `globset` cannot read would otherwise switch the filter off silently,
+    /// which is the failure this module's whole doc comment is about: a filter
+    /// that matches nothing looks exactly like a repository with nothing wrong.
+    #[test]
+    fn a_changed_path_that_will_not_compile_is_refused_like_any_other() {
+        let error = Filters::compile(
+            Arguments {
+                changed: Some(vec!["src/[".to_owned()]),
+                ..Arguments::default()
+            },
+            &config(&["shape"]),
+        )
+        .expect_err("an unclosed class is not a glob");
+
+        assert!(!error.is_empty(), "the refusal has to say something");
+    }
+
+    /// A configuration with one rule reads "there is `shape`" rather than
+    /// "there is  or `shape`". The comma rule has to answer for a list of one,
+    /// and a repository that has adopted archwarden with a single rule is the
+    /// commonest configuration there is.
+    #[test]
+    fn with_one_rule_the_message_names_it_without_a_conjunction() {
+        let message = Filters::compile(
+            Arguments {
+                rules: &["shpe".to_owned()],
+                ..Arguments::default()
+            },
+            &config(&["shape"]),
+        )
+        .expect_err("no such rule");
+
+        assert_eq!(message, "no rule is called `shpe`; there is `shape`");
+    }
+
+    /// `orphans` narrows the same way `check --paths` does, through this. One
+    /// convention for narrowing is worth more than a second matcher that
+    /// almost agrees with the first — so the shared entry point is exercised
+    /// on its own rather than only through the command that calls it.
+    #[test]
+    fn a_path_set_narrows_the_way_the_paths_filter_does() {
+        let set = path_set(&["src/domain".to_owned()]).expect("compiles");
+
+        assert!(set.is_match(camino::Utf8Path::new("src/domain")));
+        assert!(set.is_match(camino::Utf8Path::new("src/domain/order.ts")));
+        assert!(!set.is_match(camino::Utf8Path::new("src/infra/db.ts")));
+    }
+
+    #[test]
+    fn a_path_set_refuses_a_pattern_that_will_not_compile() {
+        assert!(path_set(&["src/[".to_owned()]).is_err());
     }
 
     /// With many rules, listing them all would be a wall. The count is what a

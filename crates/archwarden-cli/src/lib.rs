@@ -4,15 +4,20 @@
 //! anything lives here so it can be tested without spawning a process.
 
 pub mod apply;
-pub mod baseline;
 pub mod batch;
 pub mod changed;
+// The baseline and the filters are operations, not presentation: a committed
+// record of accepted debt and a decision about what to print are both things
+// MCP and an LSP have to make the same way `check` does. Issue #63 moved them
+// to archwarden-api; re-exported here so `crate::baseline` and `crate::filter`
+// still name them at the fifty-odd call sites that use them.
+pub use archwarden_api::{baseline, filter};
+
 pub mod describe;
 pub mod diagnostic;
 pub mod doctor;
 pub mod exit;
 pub mod explain;
-pub mod filter;
 pub mod guide;
 pub mod hook;
 pub mod hooks;
@@ -28,13 +33,11 @@ pub mod scaffold;
 pub mod schema;
 pub mod verify;
 
-use archwarden_cache::store::Cache;
-use archwarden_config::{
-    compile,
-    discovery::{self, LoadedConfig},
-    extends::{self, MergedConfig},
-};
-use archwarden_resolver::preset::PresetResolver;
+// A type this passes through and a filename `init` writes, where this once
+// reached for `compile`, `extends` and `PresetResolver` to assemble a
+// configuration by hand. Issue #63 moved the assembly into archwarden-api;
+// the shrinking import list is the boundary holding.
+use archwarden_config::{discovery, extends::MergedConfig};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 
@@ -68,16 +71,10 @@ pub struct Cli {
 
 /// Where a command reads its rules from, and what it reads them against.
 ///
-/// Two questions `--config` used to answer at once. Separating them is what
-/// lets a configuration live outside the repository it describes.
-#[derive(Debug, Clone, Copy)]
-pub struct Location<'a> {
-    /// An explicit config path, or `None` to search upwards from the working
-    /// directory.
-    pub config: Option<&'a Utf8Path>,
-    /// An explicit repository root, or `None` to take the config's answer.
-    pub root: Option<&'a Utf8Path>,
-}
+/// Defined by [`archwarden_api`] and re-exported, not restated. It is an
+/// argument to the operations, so the crate that owns the operations owns it;
+/// a second copy here would be a type to keep in step for no gain.
+pub use archwarden_api::Location;
 
 impl Cli {
     /// Where this invocation says to look.
@@ -219,7 +216,7 @@ pub enum Command {
         /// known debt. They are still evaluated, still counted in
         /// `--summary`, and still not what fails the build.
         #[arg(long, value_enum, value_name = "LEVEL")]
-        level: Option<crate::filter::LevelFilter>,
+        level: Option<LevelFilter>,
 
         /// Show only findings in files that differ from this ref.
         ///
@@ -245,7 +242,7 @@ pub enum Command {
         /// config saying `roots: packages/domain/src/*` gets one row per
         /// module without anyone choosing a depth.
         #[arg(long, value_enum, value_name = "AXIS")]
-        by: Option<crate::report::Axis>,
+        by: Option<By>,
 
         /// Report every finding, including the ones the baseline accepts.
         ///
@@ -496,6 +493,59 @@ pub enum ConfigCommand {
     },
 }
 
+/// What `--summary` counts by, as a command-line value.
+///
+/// Here for the same reason [`LevelFilter`] is: this is the enum carrying
+/// clap's `ValueEnum`, and `archwarden_api::present` takes its own
+/// [`archwarden_api::Axis`]. One step between the word and the decision, in
+/// the surface that has the word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum By {
+    /// One row per rule: what is dominating this output.
+    #[default]
+    Rule,
+    /// One row per area of the repository: where to start.
+    Path,
+}
+
+impl By {
+    /// The axis this names.
+    #[must_use]
+    pub fn axis(self) -> archwarden_api::Axis {
+        match self {
+            Self::Rule => archwarden_api::Axis::Rule,
+            Self::Path => archwarden_api::Axis::Path,
+        }
+    }
+}
+
+/// Which level to show, as a command-line value.
+///
+/// Here rather than beside the filter it feeds, and for the reason that kept
+/// it out of `archwarden-core` before: this is the enum with clap's
+/// `ValueEnum` on it, and the crate holding the operations should no more
+/// learn about a command line than the core should. `archwarden_api::filter`
+/// takes the core's own [`archwarden_core::level::Level`]; this is the word
+/// a user types, and [`LevelFilter::level`] is the one step between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum LevelFilter {
+    /// Only errors.
+    Error,
+    /// Only warnings.
+    Warning,
+}
+
+impl LevelFilter {
+    /// The severity this names.
+    #[must_use]
+    pub fn level(self) -> archwarden_core::level::Level {
+        match self {
+            Self::Error => archwarden_core::level::Level::Error,
+            Self::Warning => archwarden_core::level::Level::Warning,
+        }
+    }
+}
+
 /// A harness archwarden can speak the hook protocol of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Harness {
@@ -661,48 +711,26 @@ fn run_config(
 
 /// Loads, merges and compiles a configuration, rendering any failure.
 ///
-/// Shared by `check` and `config validate` so the two can never disagree about
-/// whether a configuration is usable.
+/// The orchestration itself lives in [`archwarden_api`] and returns its
+/// failures as values. What is left here is the half that is genuinely the
+/// CLI's: turning one of those values into a miette report on stderr and exit
+/// code 2. That split is issue #63 — before it, the two were one function, and
+/// every surface that reports failure differently had to re-implement the path
+/// to change the shape of an error rather than reuse it.
+///
+/// Keeps its tuple return so the eleven callers below are unchanged.
 fn prepare(
     location: Location<'_>,
     working_directory: &Utf8Path,
     output: &mut Output<'_>,
 ) -> Result<(MergedConfig, archwarden_core::compiled::CompiledConfig), Exit> {
-    let loaded = load(location, working_directory).map_err(|error| {
-        let report = miette::Report::new(ConfigDiagnostic::from_load_error(&error));
+    let prepared = archwarden_api::prepare(location, working_directory).map_err(|error| {
+        let report = miette::Report::new(ConfigDiagnostic::from_api_error(&error));
         let _ = writeln!(output.err, "{report:?}");
         Exit::ConfigProblem
     })?;
 
-    // Checked before merging: an unsupported version means this build cannot
-    // be trusted to interpret the file at all, presets included.
-    if !loaded.config.version_is_supported() {
-        let _ = writeln!(
-            output.err,
-            "{}: config declares version {}, but this build understands version {}",
-            loaded.path,
-            loaded.config.version,
-            archwarden_config::config::SCHEMA_VERSION,
-        );
-        return Err(Exit::ConfigProblem);
-    }
-
-    let merged = extends::merge(loaded, &PresetResolver::new()).map_err(|error| {
-        let report = miette::Report::new(ConfigDiagnostic::from_extends_error(&error));
-        let _ = writeln!(output.err, "{report:?}");
-        Exit::ConfigProblem
-    })?;
-
-    // Compiling is what makes validation mean something beyond "the JSON
-    // parsed": every glob is built, every regex is compiled, and every export
-    // template is checked against the capture groups its pattern defines.
-    let compiled = compile::compile(&merged).map_err(|error| {
-        let report = miette::Report::new(ConfigDiagnostic::from_compile_error(&error));
-        let _ = writeln!(output.err, "{report:?}");
-        Exit::ConfigProblem
-    })?;
-
-    Ok((merged, compiled))
+    Ok((prepared.merged, prepared.compiled))
 }
 
 /// Says what the rules require of one path.
@@ -937,20 +965,22 @@ fn write_baseline(
         Err(exit) => return exit,
     };
 
-    let mut cache = if archwarden_engine::run::reads_files(&compiled) {
-        open_cache(&merged.root, output)
-    } else {
-        None
-    };
-    let outcome = archwarden_engine::run::check(archwarden_engine::run::Run {
+    let evaluated = archwarden_api::evaluate(&archwarden_api::Evaluation {
         root: &merged.root,
-        config: &compiled,
+        compiled: &compiled,
         tree: &tree,
-        cache: cache.as_mut(),
+        cache: archwarden_api::CachePolicy::Use,
     });
-    if let Some(cache) = cache.as_mut() {
-        let _ = cache.flush();
+
+    // Said out loud here too. This used to discard the flush failure with
+    // `let _ = cache.flush()` while `check` reported it — two copies of one
+    // orchestration disagreeing about whether a user hears that their next run
+    // will be slow. Now the operation returns the note and both surfaces have
+    // to decide, which is the decision this makes the same way.
+    for note in &evaluated.notes {
+        let _ = writeln!(output.err, "note: {note}");
     }
+    let outcome = evaluated.report;
 
     let baseline = crate::baseline::Baseline::of(&outcome.findings);
     let path = merged.root.join(crate::baseline::BASELINE_PATH);
@@ -1222,54 +1252,32 @@ fn hook(
         crate::hook::Target::Unreadable => {
             return unable(
                 output,
-                "the hook event was not in a shape archwarden could read, so this write \
-                 was not checked against any rule",
+                "the hook event was not in a shape archwarden could read",
             );
         }
     };
 
-    // A broken or absent configuration is the user's problem to fix at their
-    // own pace, not a reason to stop them writing a file. It is, however, a
-    // reason to say so: an unconfigured gate that permits in silence is
-    // indistinguishable from one that examined the write and approved it.
-    let Ok(loaded) = load(location, working_directory) else {
-        return unable(
-            output,
-            "no archwarden config was found from here, so this write was not checked \
-             against any rule",
-        );
-    };
-    // Checked here as well as on the `check` path, and for a sharper reason: a
-    // version this build cannot interpret parses into a config with no rules,
-    // which compiles, matches nothing and permits every write. The gate does
-    // not fail — it evaporates. Found by a test that expected the silence to
-    // have been fixed everywhere and discovered one more place it had not.
-    if !loaded.config.version_is_supported() {
-        return unable(
-            output,
-            &format!(
-                "the config declares version {}, which this build does not understand (it \
-                 reads version {}), so this write was not checked against any rule",
-                loaded.config.version,
-                archwarden_config::config::SCHEMA_VERSION,
-            ),
-        );
-    }
+    // The same operation `check` and `config validate` run, and that is the
+    // whole of issue #63. This used to be four steps written out again here,
+    // because the shared `prepare()` reported failure by writing a miette
+    // report to stderr and returning exit 2, and a hook must answer in JSON
+    // and exit clean. So the difference in how a failure is *said* forced the
+    // path to be duplicated — and the copy was missing the version guard,
+    // which shipped as issue #55: a config from a future version parsed into
+    // one with no rules, compiled, matched nothing, and permitted every write.
+    // The gate did not fail; it evaporated.
+    //
+    // Now the operation returns its failure and this decides how to say it. A
+    // broken or absent configuration is the user's problem to fix at their own
+    // pace, not a reason to stop them writing a file. It is a reason to say
+    // so: a gate that permits in silence is indistinguishable from one that
+    // examined the write and approved it.
+    let archwarden_api::Prepared { merged, compiled } =
+        match archwarden_api::prepare(location, working_directory) {
+            Ok(prepared) => prepared,
+            Err(error) => return unable(output, &crate::hook::unexamined(&error)),
+        };
 
-    let Ok(merged) = extends::merge(loaded, &PresetResolver::new()) else {
-        return unable(
-            output,
-            "the config could not be assembled (a preset it extends is missing or \
-             invalid), so this write was not checked against any rule",
-        );
-    };
-    let Ok(compiled) = compile::compile(&merged) else {
-        return unable(
-            output,
-            "the config did not compile, so this write was not checked against any \
-             rule. `archwarden config validate` names the problem",
-        );
-    };
     let path = match crate::describe::repo_relative(&merged.root, working_directory, &argument) {
         Ok(path) => path,
         // `repo_relative` resolves a second route to the same directory, so
@@ -1369,20 +1377,18 @@ fn hook(
 /// seconds on a large repository and say the same thing about files nobody
 /// touched.
 fn stopped(location: Location<'_>, working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
-    let Ok(loaded) = load(location, working_directory) else {
-        // Silence here, unlike the pre-write hook. There, saying nothing is
-        // indistinguishable from approving a write; here nothing was gated, so
-        // a message on every turn about a config the user has not written yet
-        // is noise they would remove the hook to stop.
-        return allow(output);
-    };
-    if !loaded.config.version_is_supported() {
-        return allow(output);
-    }
-    let Ok(merged) = extends::merge(loaded, &PresetResolver::new()) else {
-        return allow(output);
-    };
-    let Ok(compiled) = compile::compile(&merged) else {
+    // The third surface, and the third shape a failure takes: silence.
+    //
+    // Unlike the pre-write hook, saying nothing here is honest. There, silence
+    // is indistinguishable from approving a write; here nothing was gated, so
+    // a message on every turn about a config the user has not written yet is
+    // noise they would remove the hook to stop.
+    //
+    // That this is one `else` rather than four is the point of issue #63. It
+    // was four, and every one of them was an opportunity to leave a guard out.
+    let Ok(archwarden_api::Prepared { merged, compiled }) =
+        archwarden_api::prepare(location, working_directory)
+    else {
         return allow(output);
     };
 
@@ -1714,16 +1720,6 @@ fn agent_guide(
     Exit::Clean
 }
 
-/// archwarden's own directory in the repository, and the cache inside it.
-///
-/// Decision 4 in `DECISIONS.md`: archwarden owns `.archwarden/` for generated
-/// artefacts and never writes anywhere else in the user's tree.
-const CACHE_DIRECTORY: &str = ".archwarden/cache";
-
-/// The database file itself. Its format version lives inside it, so this name
-/// does not change when the shape does.
-const CACHE_FILE: &str = "cache.redb";
-
 /// What `check` was asked to do.
 ///
 /// A struct because the four filters plus the two switches are six arguments,
@@ -1738,9 +1734,9 @@ struct CheckOptions<'a> {
     rules: &'a [String],
     paths: &'a [String],
     changed: Option<&'a str>,
-    level: Option<crate::filter::LevelFilter>,
+    level: Option<LevelFilter>,
     no_baseline: bool,
-    by: Option<crate::report::Axis>,
+    by: Option<By>,
 }
 
 #[allow(
@@ -1799,7 +1795,9 @@ fn check(
             rules: options.rules,
             paths: options.paths,
             changed,
-            level: options.level,
+            // The one step from the word a user typed to the severity the
+            // filter matches on.
+            level: options.level.map(LevelFilter::level),
         },
         &compiled,
     ) {
@@ -1815,54 +1813,51 @@ fn check(
         Err(exit) => return exit,
     };
 
-    // Opened only when a rule will actually look inside a file. A purely
-    // structural configuration reads no bytes, and a cache it never consults
-    // would just be a file someone has to wonder about.
-    let mut cache = if options.no_cache || !archwarden_engine::run::reads_files(&compiled) {
-        None
-    } else {
-        open_cache(&merged.root, output)
-    };
-
-    let outcome = archwarden_engine::run::check(archwarden_engine::run::Run {
+    let evaluated = archwarden_api::evaluate(&archwarden_api::Evaluation {
         root: &merged.root,
-        config: &compiled,
+        compiled: &compiled,
         tree: &tree,
-        cache: cache.as_mut(),
+        cache: if options.no_cache {
+            archwarden_api::CachePolicy::Ignore
+        } else {
+            archwarden_api::CachePolicy::Use
+        },
     });
 
-    // A cache that did not persist costs the next run its speed and nothing
-    // else, so it is a note on stderr rather than a failure.
-    if let Some(cache) = cache.as_mut()
-        && let Err(error) = cache.flush()
-    {
-        let _ = writeln!(output.err, "note: the cache was not written — {error}");
+    // A cache that would not open, or would not persist, costs the next run
+    // its speed and nothing else — so it is a note on stderr rather than a
+    // failure. Which of those it is, the operation decided; that it is worth
+    // saying out loud, this decides.
+    for note in &evaluated.notes {
+        let _ = writeln!(output.err, "note: {note}");
     }
+    let outcome = evaluated.report;
 
-    // The baseline first, and not as a filter: what it accepts is gone from
-    // this run entirely, including from the exit code. That is the one thing
-    // a filter may never do, and the reason this is a committed file rather
-    // than a flag -- see `crate::baseline`.
-    let unaccepted: Vec<&archwarden_core::finding::Finding> = outcome
-        .findings
-        .iter()
-        .filter(|finding| baseline.as_ref().is_none_or(|b| !b.accepts(finding)))
-        .collect();
-
-    let shown: Vec<&archwarden_core::finding::Finding> = unaccepted
-        .iter()
-        .copied()
-        .filter(|finding| filters.keep(finding))
-        .collect();
-    let hidden = unaccepted.len() - shown.len();
-
-    let view = view_of(&shown, hidden, options, &filters, &compiled);
+    // The baseline, then the filters, then the shape. The order is not a
+    // preference and no surface decides it: `archwarden_api::present` does,
+    // because reversing the first two would let a reading preference decide
+    // whether a build passes.
+    let presented = archwarden_api::present(
+        &outcome,
+        baseline.as_ref(),
+        &filters,
+        archwarden_api::Shape {
+            // `--by` implies `--summary`: counting by area only means anything
+            // as counts, and making someone pass both to say one thing is
+            // friction with no reading behind it.
+            axis: options
+                .by
+                .map(By::axis)
+                .or(options.summary.then_some(archwarden_api::Axis::Rule)),
+        },
+        &compiled,
+    );
 
     crate::report::render(
         &crate::report::Rendered {
             root: &merged.root,
             report: &outcome,
-            view: &view,
+            view: &presented.view,
             reasons: &crate::report::Reasons::of(&compiled),
             elapsed: started.elapsed(),
         },
@@ -1875,7 +1870,7 @@ fn check(
             &compiled,
             &tree,
             &outcome,
-            &unaccepted,
+            &presented.unaccepted,
             baseline.as_ref(),
             options
                 .language
@@ -1898,10 +1893,11 @@ fn check(
         report_standing(baseline, &outcome.findings, output);
     }
 
-    // From what the baseline did not accept, never from the view. A filter
-    // narrows what is printed and nothing else -- otherwise `--rules` in a CI
-    // command would quietly turn a failing build green.
-    if unaccepted.iter().any(|finding| finding.level.fails_build()) {
+    // One question, asked of the thing that knows the rule. `fails_build` reads
+    // what the baseline did not accept and never the view, and there is no
+    // other way to ask it -- which is what stops a surface deciding for itself
+    // that a narrowed run is a passing one.
+    if presented.fails_build() {
         Exit::Errors
     } else {
         Exit::Clean
@@ -1938,141 +1934,23 @@ fn report_standing(
     let _ = writeln!(output.out);
 }
 
-/// What to show, once the baseline and the filters have had their say.
+/// Walks the repository, rendering a refusal as this surface says it.
 ///
-/// Extracted from `check` because it is a decision of its own: whether the
-/// reader asked for a listing or for counts, and which rules keep a row.
-fn view_of<'a>(
-    shown: &[&'a archwarden_core::finding::Finding],
-    hidden: usize,
-    options: &CheckOptions<'_>,
-    filters: &crate::filter::Filters,
-    compiled: &archwarden_core::compiled::CompiledConfig,
-) -> crate::report::View<'a> {
-    // `--by` implies `--summary`: counting by area only means anything as
-    // counts, and making someone pass both to say one thing is friction with
-    // no reading behind it.
-    let axis = options
-        .by
-        .or(options.summary.then_some(crate::report::Axis::Rule));
-    let Some(axis) = axis else {
-        return crate::report::View::filtered(shown, hidden);
-    };
-
-    if axis == crate::report::Axis::Path {
-        let scopes: Vec<archwarden_core::scope::Scope> =
-            compiled.rules().map(|rule| rule.scope.clone()).collect();
-        return crate::report::View::summarised(
-            shown,
-            crate::report::Breakdown::by_path(&scopes, shown),
-            hidden,
-        );
-    }
-
-    // Rows come from the config, not from what fired. `--rules` is the one
-    // filter that names *rules*, so it is the one that narrows the rows;
-    // `--paths` and `--level` leave every row in place, because "this rule
-    // found nothing here" is the answer the reader wanted.
-    let ids: Vec<String> = filters.named_rules().map_or_else(
-        || {
-            compiled
-                .rules()
-                .map(|rule| rule.id.as_str().to_owned())
-                .collect()
-        },
-        |named| named.iter().map(|id| id.as_str().to_owned()).collect(),
-    );
-
-    crate::report::View::summarised(shown, crate::report::Breakdown::over(ids, shown), hidden)
-}
-
-/// Opens the repository's cache, or explains why it is running without one.
-///
-/// A cache is a rebuildable artefact. Refusing to lint because one is damaged
-/// would be the wrong trade, so a failure here degrades the run instead of
-/// ending it.
-fn open_cache(root: &Utf8Path, output: &mut Output<'_>) -> Option<Cache> {
-    match Cache::open(&root.join(CACHE_DIRECTORY).join(CACHE_FILE)) {
-        Ok(cache) => Some(cache),
-        Err(error) => {
-            let _ = writeln!(output.err, "note: running without a cache — {error}");
-            None
-        }
-    }
-}
-
-/// Walks the repository, refusing a root nobody chose.
-///
-/// The walk itself rarely fails. What this exists for is the case that
-/// succeeds and means nothing: `--config /tmp/stricter.json` takes `/tmp` to be
-/// the repository, because a config file's directory is where globs resolve
-/// from. It walks `/tmp`, finds no TypeScript, and reports a clean run. Exit 0,
-/// no findings — and the question that was asked, "how many findings would this
-/// stricter rule produce?", answered with the one wrong answer a reader takes
-/// as good news.
-///
-/// The refusal is narrow on purpose, because "no source files" on its own is a
-/// legitimate state: a repository that has just run `archwarden init` and has
-/// not been written yet is empty, and exiting 2 on it would make the tool look
-/// broken on its first run. What is never legitimate is an empty root that the
-/// caller is not standing in. Standing somewhere is choosing it; a root reached
-/// only through a config file's own location was chosen by nobody.
+/// The walk and the refusal itself are [`archwarden_api::walk`], including why
+/// the refusal is narrow. What is left here is the rendering — and the help,
+/// which is the CLI's alone: it names `--root`, and a surface with no command
+/// line needs a different sentence for the same fact.
 fn walked(
     root: &Utf8Path,
     working_directory: &Utf8Path,
     compiled: &archwarden_core::compiled::CompiledConfig,
     output: &mut Output<'_>,
 ) -> Result<archwarden_engine::walk::RepoTree, Exit> {
-    let tree = archwarden_engine::walk::walk(root, compiled).map_err(|error| {
-        let _ = writeln!(output.err, "{error}");
+    archwarden_api::walk(root, working_directory, compiled).map_err(|error| {
+        let report = miette::Report::new(ConfigDiagnostic::from_api_error(&error));
+        let _ = writeln!(output.err, "{report:?}");
         Exit::ConfigProblem
-    })?;
-
-    let stood_in = working_directory.starts_with(root);
-    let has_source = tree
-        .files()
-        .any(|file| file.class == archwarden_core::path::FileClass::Source);
-
-    if !stood_in && !has_source {
-        let _ = writeln!(
-            output.err,
-            "× `{root}` holds no JavaScript or TypeScript, and is not where you are standing.\n\
-             \x20 archwarden took it to be the repository because that is where the config file \
-             is.\n\
-             \x20 If the config describes a repository somewhere else, say which: `--root <PATH>`.",
-        );
-        return Err(Exit::ConfigProblem);
-    }
-
-    Ok(tree)
-}
-
-/// Loads the config, either from an explicit path or by searching upwards.
-///
-/// A relative `--config` resolves against the working directory rather than
-/// against the process's own, so nothing here depends on ambient state and
-/// `run` behaves identically in a test and in a shell.
-fn load(
-    location: Location<'_>,
-    working_directory: &Utf8Path,
-) -> Result<LoadedConfig, discovery::LoadError> {
-    let mut loaded = match location.config {
-        Some(path) if path.is_absolute() => discovery::load_file(path),
-        Some(path) => discovery::load_file(&working_directory.join(path)),
-        None => discovery::load_from(working_directory),
-    }?;
-
-    // Last, so it beats both the config's own `root` and the default. Someone
-    // who passed `--root` is answering the question those two guess at.
-    if let Some(root) = location.root {
-        loaded.root = if root.is_absolute() {
-            root.to_owned()
-        } else {
-            working_directory.join(root)
-        };
-    }
-
-    Ok(loaded)
+    })
 }
 
 /// Looks for a configuration that parses and is still wrong.
@@ -2998,7 +2876,7 @@ mod tests {
         );
 
         assert_eq!(result.exit, Exit::Clean);
-        let cache = guard.path().join(CACHE_DIRECTORY);
+        let cache = guard.path().join(archwarden_api::CACHE_DIRECTORY);
         assert!(cache.is_dir(), "no cache at {}", cache.display());
     }
 
@@ -3058,7 +2936,7 @@ mod tests {
         let (guard, first) = run_in(&files, &["check", "--format", "json", "--no-cache"]);
         assert_eq!(cache_split(&first), (1, 0));
         assert!(
-            !guard.path().join(CACHE_DIRECTORY).exists(),
+            !guard.path().join(archwarden_api::CACHE_DIRECTORY).exists(),
             "nothing should have been written"
         );
 
@@ -3114,7 +2992,9 @@ mod tests {
         let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
         // A directory where the database file should be: unopenable, and not
         // something the cache may delete its way out of.
-        let database = root.join(CACHE_DIRECTORY).join(CACHE_FILE);
+        let database = root
+            .join(archwarden_api::CACHE_DIRECTORY)
+            .join(archwarden_api::CACHE_FILE);
         std::fs::remove_file(&database).expect("remove the database");
         std::fs::create_dir(&database).expect("put a directory in its place");
 
@@ -3751,6 +3631,84 @@ mod tests {
         }
     }
 
+    /// The invariant issue #55 broke, stated where it can fail the build.
+    ///
+    /// Two surfaces read the same config and answer in different shapes —
+    /// `validate` with a miette report and exit 2, the hook with JSON and exit
+    /// 0. What they must never disagree about is the *question underneath*:
+    /// whether this configuration can gate anything at all.
+    ///
+    /// They did disagree. The hook carried its own copy of the orchestration,
+    /// because the shared one wrote to stderr and the hook cannot answer that
+    /// way, and the copy had no version guard. `{"version": 99}` made
+    /// `validate` exit 2 and the hook reply `{}` — a gate that had evaporated,
+    /// reporting the same silence as a gate that examined the write and
+    /// approved it.
+    ///
+    /// Neither the exact prose nor the exit code is asserted here. Those are
+    /// each surface's own business and are pinned elsewhere. This is about the
+    /// one thing they may not decide separately.
+    #[test]
+    fn the_hook_and_validate_never_disagree_about_whether_a_config_is_usable() {
+        let unusable: [(&str, &str); 5] = [
+            ("a syntax error", r#"{"version": 0,,}"#),
+            ("a future version", r#"{"version": 99}"#),
+            ("an unknown field", r#"{"version":0,"rulez":[]}"#),
+            (
+                "an unresolvable preset",
+                r#"{"version":0,"extends":"@org/not-installed"}"#,
+            ),
+            (
+                "an uncompilable rule",
+                r#"{"version":0,"rules":[{"type":"structure",
+                 "id":"a","level":"error","roots":"["}]}"#,
+            ),
+        ];
+
+        for (what, config) in unusable {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                .expect("UTF-8");
+            std::fs::write(root.join("arch.config.json"), config).expect("write");
+
+            let validated = run_at(&root, &["config", "validate"]);
+            let hooked = run_with(&root, &["hook", "claude-code"], WRITE_EVENT);
+
+            assert_eq!(
+                validated.exit,
+                Exit::ConfigProblem,
+                "{what}: validate should refuse it"
+            );
+            assert!(
+                hooked.out.contains("did not check this write"),
+                "{what}: validate refused this config and the hook gated a write with it \
+                 anyway: {}",
+                hooked.out
+            );
+        }
+    }
+
+    /// And the other direction, which is the half that makes the test above
+    /// mean something: a config both accept is one the hook actually used.
+    /// Without this, a hook that reported every write unchecked would pass.
+    #[test]
+    fn a_config_both_accept_is_one_the_hook_gated_with() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::write(root.join("arch.config.json"), NAMING).expect("write");
+
+        let validated = run_at(&root, &["config", "validate"]);
+        let hooked = run_with(&root, &["hook", "claude-code"], WRITE_EVENT);
+
+        assert_eq!(validated.exit, Exit::Clean);
+        assert!(
+            !hooked.out.contains("did not check this write"),
+            "validate accepted this config and the hook refused to use it: {}",
+            hooked.out
+        );
+    }
+
     /// A config that constrains nothing still *checked* the write.
     ///
     /// The line this whole change is drawn along: "I examined it and had no
@@ -4203,8 +4161,39 @@ mod tests {
         assert_eq!(result.exit, Exit::Clean);
         assert_eq!(cache_split(&result), (0, 0));
         assert!(
-            !guard.path().join(CACHE_DIRECTORY).exists(),
+            !guard.path().join(archwarden_api::CACHE_DIRECTORY).exists(),
             "an empty cache is still a file someone has to gitignore"
+        );
+    }
+
+    /// `--by` names an axis, and the two are not interchangeable: one counts
+    /// by rule and answers "what is dominating this output", the other counts
+    /// by area and answers "where do I start". Mapping both to the default
+    /// would leave `--by path` silently answering the first question.
+    #[test]
+    fn each_by_value_names_its_own_axis() {
+        assert_eq!(
+            LevelFilter::Error.level(),
+            archwarden_core::level::Level::Error
+        );
+        assert_eq!(
+            LevelFilter::Warning.level(),
+            archwarden_core::level::Level::Warning
+        );
+        assert_eq!(By::Rule.axis(), archwarden_api::Axis::Rule);
+        assert_eq!(By::Path.axis(), archwarden_api::Axis::Path);
+    }
+
+    /// And end to end, because the mapping is only worth anything if the flag
+    /// reaches it: `--by path` produces a table of directories, not of rules.
+    #[test]
+    fn counting_by_path_names_areas_rather_than_rules() {
+        let (_guard, result) = run_in(&filterable(), &["check", "--by", "path"]);
+
+        assert!(
+            result.out.contains("packages/"),
+            "expected areas, got: {}",
+            result.out
         );
     }
 }

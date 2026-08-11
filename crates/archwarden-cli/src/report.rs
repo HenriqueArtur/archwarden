@@ -11,73 +11,37 @@
 use std::fmt::Write as _;
 
 use archwarden_core::{
-    facts::ExportKind,
-    finding::{Expectation, Finding, Observed},
+    finding::{Expectation, Finding},
     path::RepoRelPath,
 };
 use archwarden_engine::run::Report;
 use camino::Utf8Path;
-use serde::Serialize;
 
-/// The version of the JSON report shape.
-///
-/// Bumped when a consumer would have to change to keep reading it. Adding a
-/// field is not a bump; removing or repurposing one is.
-///
-/// Not bumped when `unimplemented_rules` was removed in M6, and the exception
-/// is worth stating: the field was omitted from every clean report anyway, it
-/// could only ever appear in a state no released build could reach, and
-/// archwarden has not been released. Version 0 is still the first shape any
-/// consumer will see. A field removal after release is a bump.
-///
-/// Not bumped for `summary.duration_ms` either: a consumer that ignores it
-/// reads the report exactly as before.
-pub const REPORT_VERSION: u32 = 0;
+// The sentence a finding is described by, and the comma rule it is built
+// with. Both moved to archwarden-api in issue #63: the baseline writes
+// `describe_observed`'s output into a committed file, so it is part of a
+// format rather than terminal output — and a format cannot live in a
+// renderer that the operations would have to reach back into.
+//
+// Re-exported, not just imported: `crate::report::describe_observed` is what
+// four modules already call it, and renaming a path at five call sites is a
+// diff about nothing.
+pub use archwarden_api::describe::{describe_observed, join_or};
 
-/// The standing reason behind each rule, by rule id.
-///
-/// Looked up when a report is rendered rather than carried on a [`Finding`],
-/// deliberately. A `why` is prose about a *rule*; a finding is about a file,
-/// and copying the prose onto every one of them would put it in the baseline's
-/// path -- `.archwarden/baseline.json` must not churn because somebody
-/// reworded a sentence -- and would make every rule engine take a field it
-/// never reads. Issue #46.
-#[derive(Debug, Default)]
-pub struct Reasons(std::collections::BTreeMap<String, String>);
+// What of a run to show is a decision, not a rendering: which findings the
+// baseline left, which the filters kept, and whether the reader asked for a
+// listing or for counts. All three are answers MCP and an LSP need in exactly
+// the form `check` gets them, so `View` and `Breakdown` moved to
+// archwarden-api with the rest of Present. What stayed here is the part that
+// turns one into bytes.
+pub use archwarden_api::present::{Breakdown, View};
 
-impl Reasons {
-    /// Reads the reasons a compiled configuration carries.
-    #[must_use]
-    pub fn of(config: &archwarden_core::compiled::CompiledConfig) -> Self {
-        Self(
-            config
-                .rules()
-                .filter_map(|rule| {
-                    rule.why
-                        .as_ref()
-                        .map(|why| (rule.id.as_str().to_owned(), why.clone()))
-                })
-                .collect(),
-        )
-    }
-
-    /// Why this rule exists, when its author said.
-    #[must_use]
-    pub fn of_rule(&self, rule: &archwarden_core::ids::RuleId) -> Option<&str> {
-        self.0.get(rule.as_str()).map(String::as_str)
-    }
-}
-
-impl<const N: usize> From<[(&str, &str); N]> for Reasons {
-    fn from(pairs: [(&str, &str); N]) -> Self {
-        Self(
-            pairs
-                .into_iter()
-                .map(|(rule, why)| (rule.to_owned(), why.to_owned()))
-                .collect(),
-        )
-    }
-}
+// The JSON report and everything it needs. MCP has to emit the same object
+// `check --format json` does, so the contract lives where the operations are
+// rather than in a surface a server would have to depend on. What stayed here
+// is the human text and the HTML page: both implement `Renderer` from this
+// side, which is what the trait is for.
+pub use archwarden_api::render::{REPORT_VERSION, Reasons, Rendered, Renderer, Summary};
 
 /// How to render a report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
@@ -89,429 +53,49 @@ pub enum Format {
     Json,
 }
 
-/// What `--summary` counts by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
-pub enum Axis {
-    /// One row per rule: what is dominating this output.
-    #[default]
-    Rule,
-    /// One row per area of the repository: where to start.
-    Path,
-}
-
-/// What of a report to show.
+/// The human-readable format: grouped prose for somebody at a terminal.
 ///
-/// A run always evaluates every rule and computes every finding. This is the
-/// part the user asked to look at, and nothing in it can change the exit code
-/// — see [`crate::filter`].
-#[derive(Debug)]
-pub struct View<'a> {
-    /// The findings that survived the filters, in the report's own order.
-    findings: Vec<&'a Finding>,
-    /// The per-rule counts, when `--summary` was asked for.
-    breakdown: Option<Breakdown>,
-    /// How many findings the filters removed.
-    hidden: usize,
-}
+/// A [`Renderer`] like the others. It stays in this crate rather than in
+/// `archwarden-api` because it is this surface's own — it resolves a finding's
+/// byte offset into `line:column` by reading source files off disk, which is a
+/// thing to do for a terminal and not a thing an MCP response wants.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Text;
 
-impl<'a> View<'a> {
-    /// Everything, which is what an unfiltered run shows.
-    #[must_use]
-    pub fn everything(report: &'a Report) -> Self {
-        Self {
-            findings: report.findings.iter().collect(),
-            breakdown: None,
-            hidden: 0,
-        }
+impl Renderer for Text {
+    fn render(&self, rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
+        render_text(rendered, out);
     }
 
-    /// A filtered listing.
-    #[must_use]
-    pub fn filtered(findings: &[&'a Finding], hidden: usize) -> Self {
-        Self {
-            findings: findings.to_vec(),
-            breakdown: None,
-            hidden,
-        }
-    }
-
-    /// Counts instead of a listing.
-    #[must_use]
-    pub fn summarised(findings: &[&'a Finding], breakdown: Breakdown, hidden: usize) -> Self {
-        Self {
-            findings: findings.to_vec(),
-            breakdown: Some(breakdown),
-            hidden,
-        }
-    }
-
-    fn count(&self, level: archwarden_core::level::Level) -> usize {
-        self.findings
-            .iter()
-            .filter(|finding| finding.level == level)
-            .count()
+    fn render_single(
+        &self,
+        single: &archwarden_engine::single::Single,
+        reasons: &Reasons,
+        out: &mut dyn std::io::Write,
+    ) {
+        render_single_text(single, reasons, out);
     }
 }
 
-/// How many findings each rule produced.
+/// The renderer a format names.
 ///
-/// Rows come from the configuration, counts from the findings being shown. A
-/// rule that fired nothing keeps its row: that it was evaluated is an answer,
-/// and a missing row reads as a rule someone disabled.
-#[derive(Debug)]
-pub struct Breakdown {
-    rows: Vec<Row>,
-}
-
-#[derive(Debug, Serialize)]
-struct Row {
-    /// A rule id, or a directory -- whichever axis the reader asked for. The
-    /// table is the same either way; only what the first column names changes.
-    #[serde(skip)]
-    rule_id: String,
-    errors: usize,
-    warnings: usize,
-}
-
-impl Breakdown {
-    /// Counts `findings` against every rule in `ids`.
-    ///
-    /// Ordered worst-first: errors descending, then warnings descending, then
-    /// by id. The same order the findings themselves are in — two orderings
-    /// for one report is a thing someone eventually reports as a bug.
-    #[must_use]
-    pub fn over<I, S>(ids: I, findings: &[&Finding]) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let mut rows: Vec<Row> = ids
-            .into_iter()
-            .map(|id| {
-                let id = id.as_ref();
-                let mine = findings.iter().filter(|f| f.rule_id.as_str() == id);
-                let (errors, warnings) =
-                    mine.fold((0, 0), |(errors, warnings), finding| match finding.level {
-                        archwarden_core::level::Level::Error => (errors + 1, warnings),
-                        archwarden_core::level::Level::Warning => (errors, warnings + 1),
-                    });
-                Row {
-                    rule_id: id.to_owned(),
-                    errors,
-                    warnings,
-                }
-            })
-            .collect();
-
-        rows.sort_by(|a, b| {
-            b.errors
-                .cmp(&a.errors)
-                .then_with(|| b.warnings.cmp(&a.warnings))
-                .then_with(|| a.rule_id.cmp(&b.rule_id))
-        });
-
-        Self { rows }
+/// The one place the choice is made. SARIF (#64) is one more implementation
+/// and one more arm here — not a fourth branch in `render`, another in
+/// `render_single`, and a third wherever the page is written.
+fn renderer(format: Format) -> &'static dyn Renderer {
+    match format {
+        Format::Text => &Text,
+        Format::Json => &archwarden_api::render::Json,
     }
-
-    /// Counts `findings` by the area of the repository they are in.
-    ///
-    /// "Which rule dominates this output" and "which part of the repository is
-    /// furthest from the rules" are different questions, and only the second
-    /// says where to start a refactor.
-    ///
-    /// The areas are the directories the rules' own scopes select. Nothing
-    /// here invents a depth: a config saying `roots: packages/domain/src/*`
-    /// has already declared that `packages/domain/src/order` is a unit, and
-    /// rolling a finding up to the nearest ancestor a scope matches is reading
-    /// that back rather than guessing.
-    ///
-    /// Unlike the rule breakdown, only areas with findings get a row. That a
-    /// rule was evaluated is an answer worth a zero; there is no comparable
-    /// list of directories, and printing every clean one in a monorepo would
-    /// bury the ones that are not.
-    #[must_use]
-    pub fn by_path(scopes: &[archwarden_core::scope::Scope], findings: &[&Finding]) -> Self {
-        let mut counts: std::collections::BTreeMap<String, (usize, usize)> =
-            std::collections::BTreeMap::new();
-
-        for finding in findings {
-            let area = area_of(scopes, &finding.path);
-            let entry = counts.entry(area).or_default();
-            match finding.level {
-                archwarden_core::level::Level::Error => entry.0 += 1,
-                archwarden_core::level::Level::Warning => entry.1 += 1,
-            }
-        }
-
-        let mut rows: Vec<Row> = counts
-            .into_iter()
-            .map(|(rule_id, (errors, warnings))| Row {
-                rule_id,
-                errors,
-                warnings,
-            })
-            .collect();
-
-        rows.sort_by(|a, b| {
-            b.errors
-                .cmp(&a.errors)
-                .then_with(|| b.warnings.cmp(&a.warnings))
-                .then_with(|| a.rule_id.cmp(&b.rule_id))
-        });
-
-        Self { rows }
-    }
-
-    /// The map the JSON carries, in the order the text uses.
-    fn as_map(&self) -> serde_json::Map<String, serde_json::Value> {
-        self.rows
-            .iter()
-            .map(|row| {
-                (
-                    row.rule_id.clone(),
-                    serde_json::json!({ "errors": row.errors, "warnings": row.warnings }),
-                )
-            })
-            .collect()
-    }
-
-    #[cfg(test)]
-    fn ids(&self) -> Vec<&str> {
-        self.rows.iter().map(|row| row.rule_id.as_str()).collect()
-    }
-
-    #[cfg(test)]
-    fn rows_for_test(&self) -> Vec<(&str, usize, usize)> {
-        self.rows
-            .iter()
-            .map(|row| (row.rule_id.as_str(), row.errors, row.warnings))
-            .collect()
-    }
-}
-
-/// The nearest ancestor of `path` that some rule's scope selects.
-///
-/// The path itself when a scope selects it, and the path itself again when
-/// none does -- a finding outside every scope keeps its own name rather than
-/// being dropped from a summary that claims to count everything, or filed
-/// under a heading that means nothing.
-fn area_of(scopes: &[archwarden_core::scope::Scope], path: &RepoRelPath) -> String {
-    let mut candidate = Some(path.as_path());
-
-    while let Some(directory) = candidate {
-        if !directory.as_str().is_empty() && scopes.iter().any(|scope| scope.matches_dir(directory))
-        {
-            return directory.to_string();
-        }
-        candidate = directory.parent();
-    }
-
-    path.as_str().to_owned()
-}
-
-/// The JSON envelope.
-#[derive(Debug, Serialize)]
-struct JsonReport<'a> {
-    version: u32,
-    summary: Summary,
-    /// Absent under `--summary`, which is the point of the flag: a summary
-    /// that still emitted every finding would give a piping consumer no size
-    /// benefit at all. Absence is opt-in — a consumer that never passes the
-    /// flag sees the field it always saw.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    findings: Option<Vec<JsonFinding<'a>>>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    unreadable_files: Vec<UnreadableFile<'a>>,
-}
-
-/// A finding, plus the standing reason its rule exists.
-///
-/// `why` is flattened in beside the finding's own fields rather than nested,
-/// because a consumer reading a finding is reading one object. It is absent
-/// when the rule's author said nothing, which is every rule in every config
-/// written before the field existed.
-#[derive(Debug, Serialize)]
-struct JsonFinding<'a> {
-    #[serde(flatten)]
-    finding: &'a Finding,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    why: Option<&'a str>,
-}
-
-impl<'a> JsonFinding<'a> {
-    fn new(finding: &'a Finding, reasons: &'a Reasons) -> Self {
-        Self {
-            finding,
-            why: reasons.of_rule(&finding.rule_id),
-        }
-    }
-}
-
-/// One check nobody could make.
-#[derive(Debug, Serialize)]
-struct SkippedCheck {
-    rule_id: String,
-    path: String,
-}
-
-#[derive(Debug, Serialize)]
-struct UnreadableFile<'a> {
-    path: &'a archwarden_core::path::RepoRelPath,
-    reason: &'a str,
-}
-
-#[derive(Debug, Serialize)]
-struct Summary {
-    errors: usize,
-    warnings: usize,
-    files_scanned: usize,
-    directories_scanned: usize,
-    files_parsed: usize,
-    facts_reused: usize,
-    /// Checks no rule could make, because the file's facts were unavailable.
-    ///
-    /// Always present, including as zero. A consumer branching on it needs the
-    /// field to exist; the text format leaves it out when it is zero, because
-    /// a human reading `0 skipped` on every run only wonders why it is there.
-    checks_skipped: usize,
-    /// Which rule wanted which file, for every skipped check.
-    ///
-    /// The count on its own says a run decided less than it looks like and
-    /// gives nobody a place to look. Absent when nothing was skipped, which is
-    /// nearly always.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    skipped_checks: Vec<SkippedCheck>,
-    /// How long the whole run took, in milliseconds.
-    ///
-    /// The raw number rather than the prose the text format prints: a consumer
-    /// comparing two runs needs to subtract them.
-    duration_ms: u128,
-    /// How many findings the filters removed from this report.
-    ///
-    /// Zero unless a filter was given. A consumer comparing `errors` against
-    /// the exit code needs this: the gate counts what was evaluated, and these
-    /// counts describe what was asked for.
-    #[serde(skip_serializing_if = "is_zero")]
-    hidden: usize,
-    /// Per-rule counts, present only under `--summary`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    by_rule: Option<serde_json::Map<String, serde_json::Value>>,
-    /// Absent when no rule needed resolution, so a consumer can tell "no
-    /// boundary rule ran" from "every import resolved".
-    #[serde(skip_serializing_if = "Option::is_none")]
-    imports: Option<Imports>,
-}
-
-/// Whether to leave `hidden` out of a report nothing was hidden from.
-///
-/// By reference because that is the signature `skip_serializing_if` calls,
-/// not because a `usize` wants one.
-#[allow(
-    clippy::trivially_copy_pass_by_ref,
-    reason = "serde's `skip_serializing_if` takes `&T`"
-)]
-fn is_zero(value: &usize) -> bool {
-    *value == 0
-}
-
-/// Where a run's imports went.
-#[allow(
-    clippy::struct_field_names,
-    reason = "`unresolved_imports` is a JSON key a consumer reads, not a name this struct is free to shorten"
-)]
-#[derive(Debug, Serialize)]
-struct Imports {
-    in_repo: usize,
-    external: usize,
-    builtin: usize,
-    unresolved: usize,
-    /// Which file wrote each import that did not resolve.
-    ///
-    /// Every one of them, where the text format shows the first few: a CI job
-    /// gating on "no import escapes the boundary rules" needs the whole list,
-    /// and nothing is scrolling past it. Absent when everything resolved.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    unresolved_imports: Vec<UnresolvedImport>,
-}
-
-/// One import no boundary rule could see.
-#[derive(Debug, Serialize)]
-struct UnresolvedImport {
-    path: String,
-    specifier: String,
-}
-
-impl Summary {
-    /// Counts come from the view, everything else from the report.
-    ///
-    /// Deliberately: the counts describe what the user asked to see, and the
-    /// rest describes the run that happened. `hidden` is what keeps the two
-    /// reconcilable.
-    fn of(report: &Report, view: &View<'_>, elapsed: std::time::Duration) -> Self {
-        Self {
-            errors: view.count(archwarden_core::level::Level::Error),
-            warnings: view.count(archwarden_core::level::Level::Warning),
-            files_scanned: report.files_scanned,
-            directories_scanned: report.directories_scanned,
-            files_parsed: report.files_parsed,
-            facts_reused: report.facts_reused,
-            checks_skipped: report.checks_skipped,
-            skipped_checks: report
-                .skipped_checks
-                .iter()
-                .map(|(rule_id, path)| SkippedCheck {
-                    rule_id: rule_id.clone(),
-                    path: path.as_str().to_owned(),
-                })
-                .collect(),
-            duration_ms: elapsed.as_millis(),
-            hidden: view.hidden,
-            by_rule: view.breakdown.as_ref().map(Breakdown::as_map),
-            imports: (report.imports.total() > 0).then_some(Imports {
-                in_repo: report.imports.in_repo,
-                external: report.imports.external,
-                builtin: report.imports.builtin,
-                unresolved: report.imports.unresolved,
-                unresolved_imports: report
-                    .imports
-                    .unresolved_imports
-                    .iter()
-                    .map(|(path, specifier)| UnresolvedImport {
-                        path: path.as_str().to_owned(),
-                        specifier: specifier.clone(),
-                    })
-                    .collect(),
-            }),
-        }
-    }
-}
-
-/// Everything the renderer needs about one run.
-///
-/// A struct because four of these arrived one at a time, and four positional
-/// references of similar type at a call site is where a transposition hides.
-pub struct Rendered<'a> {
-    /// The repository, for turning a finding's byte span into a position.
-    pub root: &'a Utf8Path,
-    /// What the run found.
-    pub report: &'a Report,
-    /// What of it to show.
-    pub view: &'a View<'a>,
-    /// Why each rule exists, for the line under its first finding.
-    pub reasons: &'a Reasons,
-    /// How long the whole run took -- config load, walk, check and cache
-    /// flush. Passed in rather than measured here because wall-clock belongs
-    /// to the invocation, and a test that could not fix it could not assert on
-    /// the format.
-    pub elapsed: std::time::Duration,
 }
 
 /// Writes a report in the requested format.
+///
+/// One place decides which renderer, so SARIF (#64) is one more
+/// implementation and one more arm here rather than a branch in several
+/// functions. That is what the trait bought.
 pub fn render(rendered: &Rendered<'_>, format: Format, out: &mut dyn std::io::Write) {
-    match format {
-        Format::Text => render_text(rendered, out),
-        Format::Json => render_json(rendered, out),
-    }
+    renderer(format).render(rendered, out);
 }
 
 /// Turns a finding's byte offset into `line:column`, reading each file once.
@@ -590,46 +174,6 @@ fn human_duration(elapsed: std::time::Duration) -> String {
     format!("{}m {}s", whole / 60, whole % 60)
 }
 
-fn render_json(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
-    let Rendered {
-        report,
-        view,
-        reasons,
-        elapsed,
-        ..
-    } = *rendered;
-    let envelope = JsonReport {
-        version: REPORT_VERSION,
-        summary: Summary::of(report, view, elapsed),
-        findings: view.breakdown.is_none().then(|| {
-            view.findings
-                .iter()
-                .map(|finding| JsonFinding::new(finding, reasons))
-                .collect()
-        }),
-        unreadable_files: report
-            .unreadable_files
-            .iter()
-            .map(|(path, reason)| UnreadableFile {
-                path,
-                reason: reason.as_str(),
-            })
-            .collect(),
-    };
-
-    // A report that cannot be serialised is a bug in these types, not
-    // something a user can act on, so it is reported as itself rather than
-    // silently producing nothing.
-    match serde_json::to_string_pretty(&envelope) {
-        Ok(json) => {
-            let _ = writeln!(out, "{json}");
-        }
-        Err(error) => {
-            let _ = writeln!(out, r#"{{"error":"cannot serialise report: {error}"}}"#);
-        }
-    }
-}
-
 /// One finding, in the shape a reader has learned to scan.
 ///
 /// Shared by the full report and the single-file check, so a hook and a
@@ -662,32 +206,23 @@ fn render_finding(finding: &Finding, at: &str, why: Option<&str>, out: &mut dyn 
     let _ = writeln!(out);
 }
 
-/// The per-rule listing `--summary` prints in place of the findings.
-///
-/// The rule id sets the left column and the count is right-aligned inside it,
-/// so the numbers read as a column rather than as prose to scan.
 fn render_breakdown(breakdown: &Breakdown, out: &mut dyn std::io::Write) {
     // A configuration with no rules has nothing to break down, and a blank
     // line above the totals would be the only thing `--summary` contributed.
-    if breakdown.rows.is_empty() {
+    let rows: Vec<(&str, usize, usize)> = breakdown.rows().collect();
+    if rows.is_empty() {
         return;
     }
 
-    let id_width = breakdown
-        .rows
+    let id_width = rows.iter().map(|(id, _, _)| id.len()).max().unwrap_or(0);
+    let count_width = rows
         .iter()
-        .map(|row| row.rule_id.len())
-        .max()
-        .unwrap_or(0);
-    let count_width = breakdown
-        .rows
-        .iter()
-        .map(|row| row.errors.max(row.warnings).to_string().len())
+        .map(|(_, errors, warnings)| errors.max(warnings).to_string().len())
         .max()
         .unwrap_or(1);
 
-    for row in &breakdown.rows {
-        let (count, tail) = match (row.errors, row.warnings) {
+    for &(rule_id, errors, warnings) in &rows {
+        let (count, tail) = match (errors, warnings) {
             (0, 0) => (0, String::new()),
             (errors, 0) => (errors, format!(" {}", plural(errors, "error", "errors"))),
             (0, warnings) => (
@@ -704,11 +239,7 @@ fn render_breakdown(breakdown: &Breakdown, out: &mut dyn std::io::Write) {
             ),
         };
 
-        let _ = writeln!(
-            out,
-            "{:<id_width$}  {count:>count_width$}{tail}",
-            row.rule_id
-        );
+        let _ = writeln!(out, "{rule_id:<id_width$}  {count:>count_width$}{tail}");
     }
 
     let _ = writeln!(out);
@@ -723,7 +254,7 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         elapsed,
     } = *rendered;
 
-    if let Some(breakdown) = &view.breakdown {
+    if let Some(breakdown) = view.breakdown() {
         render_breakdown(breakdown, out);
     } else {
         let mut positions = Positions::default();
@@ -731,7 +262,7 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         // two hundred paragraphs. Six, at the point each rule first comes up,
         // is where a reader is already looking. Issue #46.
         let mut explained = std::collections::BTreeSet::new();
-        for finding in &view.findings {
+        for finding in view.findings() {
             let at = positions.label(root, finding);
             let why = reasons
                 .of_rule(&finding.rule_id)
@@ -782,12 +313,12 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
     // Without this, `0 errors` beside exit 1 is a contradiction the reader
     // cannot resolve: the gate counts what was evaluated, and the line above
     // counts what was asked for.
-    if view.hidden > 0 {
+    if view.hidden() > 0 {
         let _ = writeln!(
             out,
             "note: {} {} hidden by the filters given",
-            view.hidden,
-            plural(view.hidden, "finding", "findings")
+            view.hidden(),
+            plural(view.hidden(), "finding", "findings")
         );
     }
 
@@ -896,31 +427,6 @@ fn render_unresolved_imports(unresolved: &[(RepoRelPath, String)], out: &mut dyn
     }
 }
 
-/// The JSON envelope for a single-file check.
-#[derive(Debug, Serialize)]
-struct JsonSingle<'a> {
-    version: u32,
-    path: &'a archwarden_core::path::RepoRelPath,
-    findings: Vec<JsonFinding<'a>>,
-    /// Always present, even when empty. A caller needs to see that the list is
-    /// empty rather than infer it from absence -- that is the whole point of
-    /// reporting skips (correction C6).
-    skipped: Vec<JsonSkipped<'a>>,
-    /// Imports of this file that nothing could resolve, so no boundary rule
-    /// saw them.
-    ///
-    /// Always present for the same reason as `skipped`: a caller has to be
-    /// able to tell "this file has no blind spot" from "this build does not
-    /// report them". Issue #18.
-    unresolved_imports: &'a [String],
-}
-
-#[derive(Debug, Serialize)]
-struct JsonSkipped<'a> {
-    rule_id: &'a str,
-    reason: &'static str,
-}
-
 /// Writes a single-file check in the requested format.
 pub fn render_single(
     single: &archwarden_engine::single::Single,
@@ -928,44 +434,7 @@ pub fn render_single(
     format: Format,
     out: &mut dyn std::io::Write,
 ) {
-    match format {
-        Format::Text => render_single_text(single, reasons, out),
-        Format::Json => render_single_json(single, reasons, out),
-    }
-}
-
-fn render_single_json(
-    single: &archwarden_engine::single::Single,
-    reasons: &Reasons,
-    out: &mut dyn std::io::Write,
-) {
-    let envelope = JsonSingle {
-        version: REPORT_VERSION,
-        path: &single.path,
-        findings: single
-            .findings
-            .iter()
-            .map(|finding| JsonFinding::new(finding, reasons))
-            .collect(),
-        skipped: single
-            .skipped
-            .iter()
-            .map(|skipped| JsonSkipped {
-                rule_id: skipped.rule_id.as_str(),
-                reason: skipped.reason.as_str(),
-            })
-            .collect(),
-        unresolved_imports: &single.unresolved_imports,
-    };
-
-    match serde_json::to_string_pretty(&envelope) {
-        Ok(json) => {
-            let _ = writeln!(out, "{json}");
-        }
-        Err(error) => {
-            let _ = writeln!(out, r#"{{"error":"cannot serialise report: {error}"}}"#);
-        }
-    }
+    renderer(format).render_single(single, reasons, out);
 }
 
 fn render_single_text(
@@ -1009,124 +478,6 @@ fn render_single_text(
 
 fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
     if count == 1 { one } else { many }
-}
-
-/// One sentence for what was found.
-///
-/// Shared with the hook, so a blocked write and a failing `check` describe the
-/// same problem in the same words.
-pub(crate) fn describe_observed(observed: &Observed) -> String {
-    match observed {
-        Observed::UnexpectedSubfolder { name } => {
-            format!("folder `{name}` is not allowed here")
-        }
-        Observed::DiscouragedSubfolder { name } => {
-            format!("folder `{name}` is allowed for now, as documented debt")
-        }
-        Observed::UnexpectedFilename { name } => {
-            format!("filename `{name}` matches none of the allowed patterns")
-        }
-        Observed::ExportMissing { name } => format!("no export named `{name}`"),
-        Observed::ExportWrongKind { name, found } => {
-            let kinds: Vec<_> = found.iter().map(ExportKind::as_str).collect();
-            format!("`{name}` is declared as {}", join_or(&kinds, "nothing"))
-        }
-        // "declares no type of its own" rather than "has no annotation": the
-        // reader's next action is to write one, and the sentence that names
-        // the absence names the fix.
-        Observed::ExportMissingAnnotation { name } => {
-            format!("`{name}` declares no type of its own")
-        }
-        Observed::ExportWrongAnnotation { name, found } => {
-            let written: Vec<&str> = found.iter().map(String::as_str).collect();
-            format!("`{name}` is declared as {}", join_or(&written, "nothing"))
-        }
-        Observed::OnlyDefaultExport => {
-            "the only export is a default, whose name does not bind importers".to_owned()
-        }
-        Observed::ReexportOfUnknownKind { name, from } => {
-            format!("`{name}` is re-exported from `{from}`, so its kind is not determinable here")
-        }
-        Observed::Passthrough {
-            exports,
-            whole_file,
-        } => {
-            let names = exports
-                .iter()
-                .map(|name| format!("`{name}`"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let forwards = if exports.len() == 1 {
-                "only forwards"
-            } else {
-                "only forward"
-            };
-            if *whole_file {
-                format!("adds nothing of its own: {names} {forwards} another module")
-            } else {
-                // A different sentence, because it is a different decision:
-                // the file is real and part of it is an indirection.
-                format!("{names} {forwards} another module; the rest of the file is its own")
-            }
-        }
-        // "is not here" rather than "does not exist": the finding is on the
-        // directory, and what the reader has to do is create the file *in it*.
-        Observed::RequiredFileMissing { name } => format!("`{name}` is not here"),
-        Observed::NoFileMatching { pattern } => format!("no file here matches `{pattern}`"),
-        Observed::FrontmatterAbsent => "has no frontmatter block".to_owned(),
-        Observed::FrontmatterMalformed { reason } => {
-            format!("its frontmatter block is not YAML: {reason}")
-        }
-        Observed::FrontmatterKeyMissing { key } => {
-            format!("its frontmatter carries no `{key}`")
-        }
-        // The value is quoted back rather than merely called wrong: a
-        // vocabulary miss is almost always a spelling, and seeing the spelling
-        // is the fix.
-        Observed::FrontmatterValueOutsideVocabulary { key, found } => {
-            format!("`{key}` is `{found}`, which is not one of the accepted values")
-        }
-        Observed::FrontmatterValueDisagrees { key, found, wanted } => {
-            format!("`{key}` is `{found}`, and the path says `{wanted}`")
-        }
-        Observed::FrontmatterValueNotScalar { key } => {
-            format!("`{key}` is not a single value, so there is nothing to compare")
-        }
-        Observed::CompanionMissing { path } | Observed::SiblingMissing { path } => {
-            format!("`{path}` does not exist")
-        }
-        Observed::SpecIsEmpty { path } => format!("`{path}` contains no test cases"),
-        Observed::ForbiddenImport {
-            specifier,
-            resolved,
-        } => format!("imports `{specifier}`, which resolves to `{resolved}`"),
-        Observed::ForbiddenPackageImport { specifier, package } => {
-            // Named separately only when they differ, because for a deep import
-            // they do and reading "imports `three/examples/jsm/loaders/
-            // GLTFLoader.js`" without being told the rule is about `three`
-            // leaves the reader to work out which package they hit.
-            //
-            // `node:` is stripped from both first: `fs` is not *part of*
-            // `node:fs`, it is the same module spelled the other way, and
-            // saying otherwise reads as a bug in the rule.
-            let bare = |name: &str| name.strip_prefix("node:").unwrap_or(name).to_owned();
-            if bare(specifier) == bare(package) {
-                format!("imports the package `{package}`")
-            } else {
-                format!("imports `{specifier}`, which is part of the package `{package}`")
-            }
-        }
-        Observed::RequiredImportMissing => "no import satisfies the requirement".to_owned(),
-        Observed::RequiredCallMissing { symbol } => {
-            format!("`{symbol}` is imported but never called")
-        }
-        Observed::RequiredImportForCallMissing { symbol, module } => {
-            format!("`{symbol}` is not imported from `{module}`")
-        }
-        // `Observed` is non_exhaustive; a variant added later says what it is
-        // rather than failing to compile here.
-        other => format!("{other:?}"),
-    }
 }
 
 /// One sentence for what was required.
@@ -1793,25 +1144,12 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
     }
 }
 
-/// Renders a list as `` `a`, `b` or `c` ``.
-fn join_or(items: &[impl AsRef<str>], empty: &str) -> String {
-    let quoted: Vec<String> = items
-        .iter()
-        .map(|item| format!("`{}`", item.as_ref()))
-        .collect();
-
-    match quoted.split_last() {
-        None => empty.to_owned(),
-        Some((last, [])) => last.clone(),
-        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use archwarden_core::{
-        facts::{ExportTags, KindFilter},
+        facts::{ExportKind, ExportTags, KindFilter},
+        finding::Observed,
         ids::{ModuleId, RuleId},
         level::Level,
         path::RepoRelPath,
@@ -1962,122 +1300,6 @@ mod tests {
         }
     }
 
-    /// A breakdown over four rules, of which two fired.
-    fn four_rules() -> (Report, Breakdown) {
-        let findings = vec![
-            from("domain-entity-shape", Level::Error, "packages/domain/a"),
-            from("domain-entity-shape", Level::Error, "packages/domain/b"),
-            from("actions-need-spec", Level::Warning, "packages/domain/c"),
-        ];
-        let report = report(findings);
-        let breakdown = Breakdown::over(
-            [
-                "domain-entity-shape",
-                "actions-need-spec",
-                "calcs-need-spec",
-                "variants-need-spec",
-            ],
-            &report.findings.iter().collect::<Vec<_>>(),
-        );
-        (report, breakdown)
-    }
-
-    /// The breakdown answers "what rule is dominating this output?", so the
-    /// worst rule is the first line. Errors outrank warnings however many
-    /// warnings there are: it is the same worst-first order the findings
-    /// themselves are in, and two orderings for one report would be a bug
-    /// someone eventually reports as one.
-    #[test]
-    fn the_breakdown_puts_the_worst_rule_first() {
-        let (_report, breakdown) = four_rules();
-
-        assert_eq!(
-            breakdown.ids(),
-            [
-                "domain-entity-shape", // 2 errors
-                "actions-need-spec",   // 1 warning
-                "calcs-need-spec",     // nothing, and then by id
-                "variants-need-spec",
-            ]
-        );
-    }
-
-    // --- the other axis --------------------------------------------------
-
-    /// A scope selecting each module directory, as a real config does.
-    fn module_scope() -> archwarden_core::scope::Scope {
-        archwarden_core::scope::Scope::compile(["packages/domain/src/*"]).expect("valid scope")
-    }
-
-    /// "Which rule dominates" and "which part of the repository is furthest"
-    /// are different questions. The second is the one that says where to start
-    /// a refactor, and rolling up to the directories the *rules* select is what
-    /// makes the rows mean something: the config already says what the units
-    /// are, so nothing here has to invent a depth.
-    #[test]
-    fn findings_roll_up_to_the_directory_a_rule_scope_selects() {
-        let findings = [
-            from("shape", Level::Error, "packages/domain/src/order/handlers"),
-            from("shape", Level::Error, "packages/domain/src/order/services"),
-            from(
-                "spec",
-                Level::Warning,
-                "packages/domain/src/invoice/calcs/a.ts",
-            ),
-        ];
-        let shown: Vec<&Finding> = findings.iter().collect();
-
-        let breakdown = Breakdown::by_path(&[module_scope()], &shown);
-
-        assert_eq!(
-            breakdown.rows_for_test(),
-            [
-                ("packages/domain/src/order", 2, 0),
-                ("packages/domain/src/invoice", 0, 1),
-            ]
-        );
-    }
-
-    /// Worst first, then by path -- the same order the rule breakdown uses,
-    /// because two orderings in one report is something someone eventually
-    /// reports as a bug.
-    #[test]
-    fn the_path_breakdown_puts_the_worst_area_first() {
-        let findings = [
-            from("spec", Level::Warning, "packages/domain/src/aaa/x.ts"),
-            from("shape", Level::Error, "packages/domain/src/zzz/handlers"),
-        ];
-        let shown: Vec<&Finding> = findings.iter().collect();
-
-        assert_eq!(
-            Breakdown::by_path(&[module_scope()], &shown).ids(),
-            ["packages/domain/src/zzz", "packages/domain/src/aaa"]
-        );
-    }
-
-    /// A finding no scope reaches keeps its own path. Dropping it would lose a
-    /// finding from a summary that claims to count everything, and inventing a
-    /// parent for it would put it under a heading that means nothing.
-    #[test]
-    fn a_finding_outside_every_scope_stands_alone() {
-        let findings = [from("shape", Level::Error, "scripts/build.ts")];
-        let shown: Vec<&Finding> = findings.iter().collect();
-
-        assert_eq!(
-            Breakdown::by_path(&[module_scope()], &shown).rows_for_test(),
-            [("scripts/build.ts", 1, 0)]
-        );
-    }
-
-    /// Only areas that have something to say. A rule breakdown lists every
-    /// rule including the quiet ones -- that a rule was evaluated is an
-    /// answer. There is no equivalent list of directories, and printing every
-    /// clean directory in a monorepo would bury the ones that are not.
-    #[test]
-    fn the_path_breakdown_lists_only_what_fired() {
-        assert!(Breakdown::by_path(&[module_scope()], &[]).ids().is_empty());
-    }
-
     /// It renders like the rule breakdown, because it is the same table with a
     /// different first column.
     #[test]
@@ -2147,75 +1369,6 @@ mod tests {
 
         assert!(!text.contains("expected:"), "{text}");
         assert!(!text.contains("packages/domain/a"), "{text}");
-    }
-
-    /// A rule with both is described with both, rather than the reader having
-    /// to run it again the other way round.
-    #[test]
-    fn a_rule_with_errors_and_warnings_says_so() {
-        let findings = vec![
-            from("mixed", Level::Error, "a"),
-            from("mixed", Level::Warning, "b"),
-            from("mixed", Level::Warning, "c"),
-        ];
-        let report = report(findings);
-        let breakdown = Breakdown::over(["mixed"], &report.findings.iter().collect::<Vec<_>>());
-
-        assert_eq!(breakdown.rows_for_test(), [("mixed", 1, 2)]);
-        let text = rendered_view(
-            &report,
-            &View::summarised(&report.findings.iter().collect::<Vec<_>>(), breakdown, 0),
-            Format::Text,
-            TOOK,
-        );
-        assert!(text.starts_with("mixed  1 error, 2 warnings\n"), "{text}");
-    }
-
-    /// The JSON half of `--summary`: a map beside the counts, and no
-    /// `findings` array. Omitting it is the point -- a `--summary` that still
-    /// emitted every finding would give a piping user no size benefit at all.
-    #[test]
-    fn a_json_summary_carries_the_breakdown_and_drops_the_findings() {
-        let (report, breakdown) = four_rules();
-        let json = rendered_view(
-            &report,
-            &View::summarised(&report.findings.iter().collect::<Vec<_>>(), breakdown, 0),
-            Format::Json,
-            TOOK,
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-
-        assert!(parsed.get("findings").is_none(), "{json}");
-        assert_eq!(
-            parsed["summary"]["by_rule"]["domain-entity-shape"]["errors"],
-            2
-        );
-        assert_eq!(
-            parsed["summary"]["by_rule"]["domain-entity-shape"]["warnings"],
-            0
-        );
-        assert_eq!(parsed["summary"]["by_rule"]["calcs-need-spec"]["errors"], 0);
-
-        // The order the text uses, kept: a consumer that iterates the map gets
-        // the worst rule first, like a reader does.
-        let order: Vec<&str> = parsed["summary"]["by_rule"]
-            .as_object()
-            .expect("an object")
-            .keys()
-            .map(String::as_str)
-            .collect();
-        assert_eq!(order[0], "domain-entity-shape");
-    }
-
-    /// Without `--summary` the findings array is there, as it always was. A
-    /// consumer that never passes the flag sees no change at all.
-    #[test]
-    fn an_unfiltered_json_report_still_carries_its_findings() {
-        let json = rendered(&report(vec![finding(Level::Error, None)]), Format::Json);
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-
-        assert!(parsed["findings"].is_array(), "{json}");
-        assert!(parsed["summary"].get("by_rule").is_none(), "{json}");
     }
 
     /// The line that stops "0 errors" and exit 1 from being a contradiction
@@ -2331,23 +1484,6 @@ mod tests {
         }
     }
 
-    /// The JSON is untouched. It carries the byte span, which is what a tool
-    /// wants; `line:col` is a rendering for a human and a terminal.
-    #[test]
-    fn the_json_still_carries_the_byte_span() {
-        let finding = Finding {
-            path: path("src/a.ts"),
-            span: Some(archwarden_core::facts::Span::new(25, 32)),
-            ..finding(Level::Error, None)
-        };
-        let parsed: serde_json::Value =
-            serde_json::from_str(&rendered(&report(vec![finding]), Format::Json))
-                .expect("valid JSON");
-
-        assert_eq!(parsed["findings"][0]["span"]["start"], 25);
-        assert_eq!(parsed["findings"][0]["path"], "src/a.ts");
-    }
-
     /// A check nobody could make belongs on the line a reader checks first.
     ///
     /// `check --file` has refused to drop one silently since C6. The full run
@@ -2459,23 +1595,6 @@ mod tests {
         assert!(!text.contains("skipped"), "{text}");
     }
 
-    /// The JSON carries it always, including as zero: a consumer branching on
-    /// it needs the field to exist, and unlike a human it is not distracted by
-    /// one.
-    #[test]
-    fn the_json_always_carries_the_skipped_count() {
-        for skipped in [0, 3] {
-            let report = Report {
-                checks_skipped: skipped,
-                ..report(Vec::new())
-            };
-            let parsed: serde_json::Value =
-                serde_json::from_str(&rendered(&report, Format::Json)).expect("valid JSON");
-
-            assert_eq!(parsed["summary"]["checks_skipped"], skipped);
-        }
-    }
-
     /// A configuration with no rules has nothing to break down, and a stray
     /// blank line above the totals would be the only thing `--summary` added.
     #[test]
@@ -2504,25 +1623,6 @@ mod tests {
         let text = rendered_view(&report, &View::filtered(&shown, 0), Format::Text, TOOK);
 
         assert!(!text.contains("hidden"), "{text}");
-    }
-
-    /// The counts describe what is shown, and the JSON says how many were
-    /// not: a consumer comparing `errors` against the exit code needs the
-    /// number, not the prose.
-    #[test]
-    fn the_json_reports_what_the_filters_hid() {
-        let report = report(vec![
-            from("shape", Level::Error, "a"),
-            from("spec", Level::Warning, "b"),
-        ]);
-        let shown: Vec<&Finding> = report.findings.iter().take(1).collect();
-
-        let json = rendered_view(&report, &View::filtered(&shown, 1), Format::Json, TOOK);
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-
-        assert_eq!(parsed["summary"]["errors"], 1);
-        assert_eq!(parsed["summary"]["warnings"], 0, "the warning was filtered");
-        assert_eq!(parsed["summary"]["hidden"], 1);
     }
 
     /// A run that says nothing about how long it took invites the question,
@@ -2571,20 +1671,6 @@ mod tests {
 
         assert!(text.ends_with("· <1ms\n"), "{text}");
         assert!(!text.contains("0ms"), "{text}");
-    }
-
-    /// The machine-readable half gets the raw number, not the prose. A
-    /// consumer comparing two runs needs to subtract them.
-    #[test]
-    fn the_json_carries_the_duration_as_a_number() {
-        let parsed: serde_json::Value = serde_json::from_str(&rendered_after(
-            &report(Vec::new()),
-            Format::Json,
-            std::time::Duration::from_millis(1450),
-        ))
-        .expect("valid JSON");
-
-        assert_eq!(parsed["summary"]["duration_ms"], 1450);
     }
 
     /// The text a user actually reads. Written out by hand rather than
@@ -2650,116 +1736,6 @@ mod tests {
         );
     }
 
-    /// A file that was not checked is said out loud, in both formats. A
-    /// clean-looking report that quietly skipped a file is worse than no
-    /// report -- and this is now the only way a run can admit it saw less than
-    /// everything, since every rule kind reaches an engine.
-    #[test]
-    fn an_unchecked_file_is_announced_in_both_formats() {
-        let report = Report {
-            unreadable_files: vec![(
-                path("src/user/broken.ts"),
-                "stream did not contain valid UTF-8".to_owned(),
-            )],
-            ..report(Vec::new())
-        };
-
-        let text = rendered(&report, Format::Text);
-        assert!(text.contains("src/user/broken.ts"), "{text}");
-        assert!(text.contains("was not checked"), "{text}");
-
-        let json = rendered(&report, Format::Json);
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-        assert_eq!(parsed["unreadable_files"][0]["path"], "src/user/broken.ts");
-        assert_eq!(
-            parsed["unreadable_files"][0]["reason"],
-            "stream did not contain valid UTF-8"
-        );
-    }
-
-    /// The JSON shape is a contract with agents, so its envelope is asserted
-    /// field by field rather than by eyeballing a dump.
-    #[test]
-    fn the_json_envelope_is_versioned_and_summarised() {
-        let json = rendered(
-            &report(vec![finding(Level::Error, Some("domain"))]),
-            Format::Json,
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-
-        assert_eq!(parsed["version"], 0);
-        assert_eq!(parsed["summary"]["errors"], 1);
-        assert_eq!(parsed["summary"]["warnings"], 0);
-        assert_eq!(parsed["summary"]["files_scanned"], 34);
-        assert_eq!(parsed["summary"]["directories_scanned"], 12);
-        assert_eq!(parsed["summary"]["files_parsed"], 0);
-        assert_eq!(parsed["summary"]["facts_reused"], 0);
-
-        let first = &parsed["findings"][0];
-        assert_eq!(first["rule_id"], "domain-entity-shape");
-        assert_eq!(first["module_id"], "domain");
-        assert_eq!(first["level"], "error");
-        assert_eq!(first["path"], "packages/domain/src/user/wrong-folder");
-        assert_eq!(first["observed"]["type"], "unexpected-subfolder");
-        assert_eq!(first["expected"]["type"], "allowed-subfolders");
-    }
-
-    /// An empty `unreadable_files` is absent rather than an empty array, so
-    /// the common report stays small.
-    #[test]
-    fn a_clean_json_report_omits_the_empty_list() {
-        let json = rendered(&report(Vec::new()), Format::Json);
-        assert!(!json.contains("unreadable_files"), "{json}");
-    }
-
-    /// The prose comes from the same values the JSON carries, so the two can
-    /// never describe one finding differently.
-    #[test]
-    fn every_observation_has_a_sentence() {
-        let cases = [
-            (
-                Observed::UnexpectedFilename {
-                    name: "helpers.ts".to_owned(),
-                },
-                "helpers.ts",
-            ),
-            (
-                Observed::ExportMissing {
-                    name: "Foo".to_owned(),
-                },
-                "no export named",
-            ),
-            (
-                Observed::ExportWrongKind {
-                    name: "Foo".to_owned(),
-                    found: ExportTags::only(ExportKind::Const).with(ExportKind::Arrow),
-                },
-                "`arrow` or `const`",
-            ),
-            (Observed::OnlyDefaultExport, "does not bind importers"),
-            (
-                Observed::SiblingMissing {
-                    path: path("a.spec.ts"),
-                },
-                "does not exist",
-            ),
-            (
-                Observed::RequiredCallMissing {
-                    symbol: "Event.save".to_owned(),
-                },
-                "never called",
-            ),
-        ];
-
-        for (observed, expected_fragment) in cases {
-            let sentence = describe_observed(&observed);
-            assert!(
-                sentence.contains(expected_fragment),
-                "{observed:?} rendered as {sentence}"
-            );
-        }
-    }
-
     /// Issue #13's reporting half. `1 skipped` is indistinguishable from a
     /// skip on an unreadable file and one on a rule nobody could evaluate, and
     /// the two mean opposite things: one is a bug to investigate, the other is
@@ -2797,56 +1773,6 @@ mod tests {
         assert_eq!(text.matches("src/broken.ts").count(), 1, "{text}");
     }
 
-    /// Issue #44. Six ways a frontmatter block can disappoint a rule, and six
-    /// sentences, because they are six different edits.
-    #[test]
-    fn a_frontmatter_fault_reads_as_a_sentence() {
-        let cases = [
-            (Observed::FrontmatterAbsent, "has no frontmatter block"),
-            (
-                Observed::FrontmatterMalformed {
-                    reason: "mapping values are not allowed here".to_owned(),
-                },
-                "is not YAML",
-            ),
-            (
-                Observed::FrontmatterKeyMissing {
-                    key: "componentes".to_owned(),
-                },
-                "carries no `componentes`",
-            ),
-            (
-                Observed::FrontmatterValueOutsideVocabulary {
-                    key: "status".to_owned(),
-                    found: "concluido".to_owned(),
-                },
-                "`status` is `concluido`",
-            ),
-            (
-                Observed::FrontmatterValueDisagrees {
-                    key: "id".to_owned(),
-                    found: "semaforo".to_owned(),
-                    wanted: "03-semaforo".to_owned(),
-                },
-                "`id` is `semaforo`, and the path says `03-semaforo`",
-            ),
-            (
-                Observed::FrontmatterValueNotScalar {
-                    key: "nivel".to_owned(),
-                },
-                "`nivel` is not a single value",
-            ),
-        ];
-
-        for (observed, fragment) in cases {
-            let sentence = describe_observed(&observed);
-            assert!(
-                sentence.contains(fragment),
-                "{observed:?} rendered as {sentence}"
-            );
-        }
-    }
-
     /// What the rule wants, for someone who has not read the config.
     #[test]
     fn a_required_frontmatter_reads_as_a_sentence() {
@@ -2860,50 +1786,6 @@ mod tests {
             expected,
             "frontmatter carrying `id` and `nivel`, \
              with `nivel` one of `1` or `2`, and `id` equal to `03-semaforo`"
-        );
-    }
-
-    /// Issue #45. The finding is on the file that needs the companion, so the
-    /// sentence has to name the companion rather than repeat the file.
-    #[test]
-    fn a_missing_companion_reads_as_a_sentence() {
-        assert_eq!(
-            describe_observed(&Observed::CompanionMissing {
-                path: path("projetos/03-semaforo/notas.md")
-            }),
-            "`projetos/03-semaforo/notas.md` does not exist"
-        );
-        assert_eq!(
-            describe_expectation(&Expectation::RequiredCompanion {
-                path: path("projetos/03-semaforo/notas.md")
-            }),
-            "`projetos/03-semaforo/notas.md` beside it"
-        );
-    }
-
-    /// Issue #42. The first observation about a path that is *not* there, so
-    /// the sentence has to read as an absence rather than as a disagreement
-    /// with something on disk.
-    #[test]
-    fn a_missing_required_file_reads_as_a_sentence() {
-        assert_eq!(
-            describe_observed(&Observed::RequiredFileMissing {
-                name: "notas.md".to_owned()
-            }),
-            "`notas.md` is not here"
-        );
-        assert_eq!(
-            describe_observed(&Observed::NoFileMatching {
-                pattern: r"\.ino$".to_owned()
-            }),
-            r"no file here matches `\.ino$`"
-        );
-        assert_eq!(
-            describe_expectation(&Expectation::RequiredFiles {
-                names: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
-                patterns: vec![r"\.ino$".to_owned()],
-            }),
-            r"`projeto.md` and `notas.md`, and a file matching `\.ino$`"
         );
     }
 
@@ -2944,23 +1826,6 @@ mod tests {
         let text = rendered_with(&report, &Reasons::default(), Format::Text);
 
         assert!(!text.contains("why:"), "{text}");
-    }
-
-    /// A consumer renders it itself, so every finding carries it -- the
-    /// once-per-rule economy is a property of the text output, not of the data.
-    #[test]
-    fn every_finding_carries_the_reason_in_json() {
-        let report = report(vec![
-            finding(Level::Error, None),
-            finding(Level::Error, None),
-        ]);
-        let reasons = Reasons::from([("domain-entity-shape", "it is published")]);
-
-        let text = rendered_with(&report, &reasons, Format::Json);
-        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-
-        assert_eq!(parsed["findings"][0]["why"], "it is published");
-        assert_eq!(parsed["findings"][1]["why"], "it is published");
     }
 
     /// What a folder may be *called*, said to that folder.
@@ -3035,36 +1900,6 @@ mod tests {
         );
     }
 
-    /// The two annotation faults are different sentences because they are
-    /// different fixes. Both would otherwise fall through to the
-    /// `non_exhaustive` arm and reach a user as a Rust `Debug` dump, which is
-    /// the failure mode that arm exists to soften and not one to ship.
-    #[test]
-    fn an_annotation_fault_reads_as_a_sentence() {
-        let missing = describe_observed(&Observed::ExportMissingAnnotation {
-            name: "AGENT_TOOL".to_owned(),
-        });
-        assert_eq!(missing, "`AGENT_TOOL` declares no type of its own");
-
-        let wrong = describe_observed(&Observed::ExportWrongAnnotation {
-            name: "AGENT_TOOL".to_owned(),
-            found: vec!["LegacyToolModule".to_owned()],
-        });
-        assert_eq!(wrong, "`AGENT_TOOL` is declared as `LegacyToolModule`");
-
-        // A class names one contract per `implements` clause, and a sentence
-        // that showed only the first would be describing a file that is not
-        // there.
-        let several = describe_observed(&Observed::ExportWrongAnnotation {
-            name: "Tool".to_owned(),
-            found: vec!["Disposable".to_owned(), "Serializable".to_owned()],
-        });
-        assert_eq!(
-            several,
-            "`Tool` is declared as `Disposable` or `Serializable`"
-        );
-    }
-
     /// What the rule wants, worded for someone who has not read the config.
     #[test]
     fn a_required_annotation_reads_as_a_sentence() {
@@ -3079,34 +1914,6 @@ mod tests {
             expected,
             "an export named `AGENT_TOOL`, annotated `AgentToolModule`"
         );
-    }
-
-    /// A deep import names a package the specifier does not spell, so the
-    /// sentence has to carry both; a bare one would read "imports `three`,
-    /// which is part of the package `three`". And `fs` is not *part of*
-    /// `node:fs` — it is the same module, spelled the other way.
-    #[test]
-    fn a_forbidden_package_names_the_package_only_when_it_differs() {
-        let observed = |specifier: &str, package: &str| {
-            describe_observed(&Observed::ForbiddenPackageImport {
-                specifier: specifier.to_owned(),
-                package: package.to_owned(),
-            })
-        };
-
-        assert_eq!(observed("three", "three"), "imports the package `three`");
-        assert_eq!(
-            observed("three/examples/jsm/loaders/GLTFLoader.js", "three"),
-            "imports `three/examples/jsm/loaders/GLTFLoader.js`, which is part \
-             of the package `three`"
-        );
-        for (written, configured) in [("fs", "node:fs"), ("node:fs", "fs")] {
-            assert_eq!(
-                observed(written, configured),
-                format!("imports the package `{configured}`"),
-                "`{written}` and `{configured}` are one module"
-            );
-        }
     }
 
     #[test]
@@ -3199,40 +2006,6 @@ mod tests {
         assert!(warm.ends_with("· 0 parsed, 34 reused · 12ms\n"), "{warm}");
     }
 
-    /// The counts reach JSON too, where a tool can chart them.
-    #[test]
-    fn the_json_summary_carries_the_cache_split() {
-        let json = rendered(
-            &Report {
-                files_parsed: 2,
-                facts_reused: 32,
-                ..report(Vec::new())
-            },
-            Format::Json,
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-
-        assert_eq!(parsed["summary"]["files_parsed"], 2);
-        assert_eq!(parsed["summary"]["facts_reused"], 32);
-    }
-
-    /// An import a boundary rule could not place is an import it did not
-    /// check. A clean report that stayed quiet about it would be lying about
-    /// its own coverage, which is the same reason unreadable files are named.
-    #[test]
-    fn imports_that_did_not_resolve_are_announced() {
-        let text = rendered(&outcomes(40, 12, 3, 7), Format::Text);
-        assert!(text.contains("7 imports"), "{text}");
-        assert!(text.contains("not resolve"), "{text}");
-
-        let json = rendered(&outcomes(40, 12, 3, 7), Format::Json);
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-        assert_eq!(parsed["summary"]["imports"]["in_repo"], 40);
-        assert_eq!(parsed["summary"]["imports"]["external"], 12);
-        assert_eq!(parsed["summary"]["imports"]["builtin"], 3);
-        assert_eq!(parsed["summary"]["imports"]["unresolved"], 7);
-    }
-
     /// And the count alone is not enough. It says an import is unprotected and
     /// leaves the reader nowhere to look; issue #18 found its own by deleting
     /// imports until the number moved.
@@ -3257,32 +2030,6 @@ mod tests {
         assert!(
             text.contains("      `packages/domain/seed.ts`: `@Shared/clock`\n"),
             "{text}"
-        );
-    }
-
-    /// Every one of them in the JSON, where the text shows the first few: a CI
-    /// job gating on "no import escapes the boundary rules" reads the whole
-    /// list, and nothing is scrolling past it.
-    #[test]
-    fn the_json_carries_every_import_that_did_not_resolve() {
-        let json = rendered(
-            &blind_spots(&[
-                ("packages/domain/row.ts", "@Domain/Order/id"),
-                ("packages/domain/seed.ts", "@Shared/clock"),
-            ]),
-            Format::Json,
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-
-        let named = &parsed["summary"]["imports"]["unresolved_imports"];
-        assert_eq!(named[0]["path"], "packages/domain/row.ts");
-        assert_eq!(named[0]["specifier"], "@Domain/Order/id");
-        assert_eq!(named[1]["path"], "packages/domain/seed.ts");
-        assert_eq!(named[1]["specifier"], "@Shared/clock");
-        assert_eq!(
-            named.as_array().map(Vec::len),
-            Some(2),
-            "as many as the count: {json}"
         );
     }
 
@@ -3353,14 +2100,6 @@ mod tests {
         assert!(!rendered(&report(Vec::new()), Format::Text).contains("resolve"));
     }
 
-    /// A run that resolved nothing carries no `imports` object at all, so a
-    /// consumer can tell "no boundary rule" from "everything resolved".
-    #[test]
-    fn a_run_that_resolved_nothing_omits_the_import_summary() {
-        let json = rendered(&report(Vec::new()), Format::Json);
-        assert!(!json.contains("\"imports\""), "{json}");
-    }
-
     /// Lists read as prose rather than as a debug dump, at every length.
     #[test]
     fn lists_are_joined_as_english() {
@@ -3368,5 +2107,163 @@ mod tests {
         assert_eq!(join_or(&["a", "b"], "none"), "`a` or `b`");
         assert_eq!(join_or(&["a", "b", "c"], "none"), "`a`, `b` or `c`");
         assert_eq!(join_or(&Vec::<String>::new(), "none"), "none");
+    }
+    /// Issue #45. The finding is on the file that needs the companion, so the
+    /// sentence has to name the companion rather than repeat the file.
+    #[test]
+    fn a_missing_companion_reads_as_a_sentence() {
+        assert_eq!(
+            describe_observed(&Observed::CompanionMissing {
+                path: path("projetos/03-semaforo/notas.md")
+            }),
+            "`projetos/03-semaforo/notas.md` does not exist"
+        );
+        assert_eq!(
+            describe_expectation(&Expectation::RequiredCompanion {
+                path: path("projetos/03-semaforo/notas.md")
+            }),
+            "`projetos/03-semaforo/notas.md` beside it"
+        );
+    }
+    /// Issue #42. The first observation about a path that is *not* there, so
+    /// the sentence has to read as an absence rather than as a disagreement
+    /// with something on disk.
+    #[test]
+    fn a_missing_required_file_reads_as_a_sentence() {
+        assert_eq!(
+            describe_observed(&Observed::RequiredFileMissing {
+                name: "notas.md".to_owned()
+            }),
+            "`notas.md` is not here"
+        );
+        assert_eq!(
+            describe_observed(&Observed::NoFileMatching {
+                pattern: r"\.ino$".to_owned()
+            }),
+            r"no file here matches `\.ino$`"
+        );
+        assert_eq!(
+            describe_expectation(&Expectation::RequiredFiles {
+                names: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
+                patterns: vec![r"\.ino$".to_owned()],
+            }),
+            r"`projeto.md` and `notas.md`, and a file matching `\.ino$`"
+        );
+    }
+    /// A rule with both is described with both, rather than the reader having
+    /// to run it again the other way round.
+    #[test]
+    fn a_rule_with_errors_and_warnings_says_so() {
+        let findings = vec![
+            from("mixed", Level::Error, "a"),
+            from("mixed", Level::Warning, "b"),
+            from("mixed", Level::Warning, "c"),
+        ];
+        let report = report(findings);
+        let breakdown = Breakdown::over(["mixed"], &report.findings.iter().collect::<Vec<_>>());
+
+        assert_eq!(breakdown.rows().collect::<Vec<_>>(), [("mixed", 1, 2)]);
+        let text = rendered_view(
+            &report,
+            &View::summarised(&report.findings.iter().collect::<Vec<_>>(), breakdown, 0),
+            Format::Text,
+            TOOK,
+        );
+        assert!(text.starts_with("mixed  1 error, 2 warnings\n"), "{text}");
+    }
+
+    /// A scope selecting each module directory, as a real config does.
+    fn module_scope() -> archwarden_core::scope::Scope {
+        archwarden_core::scope::Scope::compile(["packages/domain/src/*"]).expect("valid scope")
+    }
+
+    /// A breakdown over four rules, of which two fired.
+    ///
+    /// The counting is `archwarden_api::present`'s and is tested there. What
+    /// these need it for is a table with something in it to render.
+    fn four_rules() -> (Report, Breakdown) {
+        let findings = vec![
+            from("domain-entity-shape", Level::Error, "packages/domain/a"),
+            from("domain-entity-shape", Level::Error, "packages/domain/b"),
+            from("actions-need-spec", Level::Warning, "packages/domain/c"),
+        ];
+        let report = report(findings);
+        let breakdown = Breakdown::over(
+            [
+                "domain-entity-shape",
+                "actions-need-spec",
+                "calcs-need-spec",
+                "variants-need-spec",
+            ],
+            &report.findings.iter().collect::<Vec<_>>(),
+        );
+        (report, breakdown)
+    }
+    /// A file that was not checked is said out loud, in both formats. A
+    /// clean-looking report that quietly skipped a file is worse than no
+    /// report -- and this is now the only way a run can admit it saw less than
+    /// everything, since every rule kind reaches an engine.
+    #[test]
+    fn an_unchecked_file_is_announced_in_both_formats() {
+        let report = Report {
+            unreadable_files: vec![(
+                path("src/user/broken.ts"),
+                "stream did not contain valid UTF-8".to_owned(),
+            )],
+            ..report(Vec::new())
+        };
+
+        let text = rendered(&report, Format::Text);
+        assert!(text.contains("src/user/broken.ts"), "{text}");
+        assert!(text.contains("was not checked"), "{text}");
+
+        let json = rendered(&report, Format::Json);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed["unreadable_files"][0]["path"], "src/user/broken.ts");
+        assert_eq!(
+            parsed["unreadable_files"][0]["reason"],
+            "stream did not contain valid UTF-8"
+        );
+    }
+    /// An import a boundary rule could not place is an import it did not
+    /// check. A clean report that stayed quiet about it would be lying about
+    /// its own coverage, which is the same reason unreadable files are named.
+    #[test]
+    fn imports_that_did_not_resolve_are_announced() {
+        let text = rendered(&outcomes(40, 12, 3, 7), Format::Text);
+        assert!(text.contains("7 imports"), "{text}");
+        assert!(text.contains("not resolve"), "{text}");
+
+        let json = rendered(&outcomes(40, 12, 3, 7), Format::Json);
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(parsed["summary"]["imports"]["in_repo"], 40);
+        assert_eq!(parsed["summary"]["imports"]["external"], 12);
+        assert_eq!(parsed["summary"]["imports"]["builtin"], 3);
+        assert_eq!(parsed["summary"]["imports"]["unresolved"], 7);
+    }
+    /// Every one of them in the JSON, where the text shows the first few: a CI
+    /// job gating on "no import escapes the boundary rules" reads the whole
+    /// list, and nothing is scrolling past it.
+    #[test]
+    fn the_json_carries_every_import_that_did_not_resolve() {
+        let json = rendered(
+            &blind_spots(&[
+                ("packages/domain/row.ts", "@Domain/Order/id"),
+                ("packages/domain/seed.ts", "@Shared/clock"),
+            ]),
+            Format::Json,
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        let named = &parsed["summary"]["imports"]["unresolved_imports"];
+        assert_eq!(named[0]["path"], "packages/domain/row.ts");
+        assert_eq!(named[0]["specifier"], "@Domain/Order/id");
+        assert_eq!(named[1]["path"], "packages/domain/seed.ts");
+        assert_eq!(named[1]["specifier"], "@Shared/clock");
+        assert_eq!(
+            named.as_array().map(Vec::len),
+            Some(2),
+            "as many as the count: {json}"
+        );
     }
 }

@@ -98,6 +98,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "archwarden-api"
+version = "0.14.0"
+dependencies = [
+ "archwarden-cache",
+ "archwarden-config",
+ "archwarden-core",
+ "archwarden-engine",
+ "archwarden-resolver",
+ "camino",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "archwarden-cache"
 version = "0.14.0"
 dependencies = [
@@ -114,7 +130,7 @@ dependencies = [
 name = "archwarden-cli"
 version = "0.14.0"
 dependencies = [
- "archwarden-cache",
+ "archwarden-api",
  "archwarden-config",
  "archwarden-core",
  "archwarden-engine",
