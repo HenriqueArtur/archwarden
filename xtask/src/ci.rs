@@ -676,6 +676,95 @@ mod tests {
         found
     }
 
+    /// Every released version in `CHANGELOG.md` is a link, in both directions.
+    ///
+    /// Keep a Changelog puts each heading in brackets and defines the compare
+    /// URL at the foot of the file. Miss the definition and the heading
+    /// renders as literal `[0.15.0]` — the release is in the file and is not
+    /// *in* it, which is the only thing a reader wanted from the brackets.
+    ///
+    /// This is here because writing the step down was tried and did not work.
+    /// The definitions stopped at 0.9.2 and six releases were cut past that
+    /// without one, each of them adding a heading nobody could click and an
+    /// `[Unreleased]` line comparing against a tag five versions old. Nothing
+    /// failed, because nothing was checking — which is the sentence this
+    /// project keeps applying to rules, applied to its own changelog.
+    ///
+    /// Both directions: a definition with no heading is a version that was
+    /// renamed or removed and left a dangling compare URL behind.
+    #[test]
+    fn every_version_in_the_changelog_is_a_link_that_resolves() {
+        let changelog = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("CHANGELOG.md"),
+        )
+        .expect("the changelog is in the repository");
+
+        let headings: Vec<&str> = changelog
+            .lines()
+            .filter_map(|line| line.strip_prefix("## ["))
+            .filter_map(|rest| rest.split(']').next())
+            .collect();
+        let defined: Vec<&str> = changelog
+            .lines()
+            .filter(|line| line.starts_with('[') && line.contains("]: https"))
+            .filter_map(|line| line.strip_prefix('['))
+            .filter_map(|rest| rest.split(']').next())
+            .collect();
+
+        for version in &headings {
+            assert!(
+                defined.contains(version),
+                "CHANGELOG.md has a `## [{version}]` heading and no `[{version}]: …` \
+                 definition at the foot of the file, so it renders as literal brackets.\n\
+                 Add: [{version}]: https://github.com/HenriqueArtur/archwarden/compare/\
+                 vPREVIOUS...v{version}"
+            );
+        }
+        for version in &defined {
+            assert!(
+                headings.contains(version),
+                "CHANGELOG.md defines `[{version}]` and has no `## [{version}]` heading \
+                 for it to link"
+            );
+        }
+    }
+
+    /// And `[Unreleased]` compares against the newest release, not against
+    /// whichever one it was written at.
+    ///
+    /// The half that rots silently: a stale `[Unreleased]` still renders as a
+    /// link and still resolves, so it looks right while showing five releases
+    /// of history as though none of it had shipped.
+    #[test]
+    fn unreleased_compares_against_the_newest_release() {
+        let changelog = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("CHANGELOG.md"),
+        )
+        .expect("the changelog is in the repository");
+
+        let newest = changelog
+            .lines()
+            .filter_map(|line| line.strip_prefix("## ["))
+            .filter_map(|rest| rest.split(']').next())
+            .find(|version| *version != "Unreleased")
+            .expect("the changelog has at least one release");
+
+        let unreleased = changelog
+            .lines()
+            .find(|line| line.starts_with("[Unreleased]: "))
+            .expect("`[Unreleased]` is defined");
+
+        assert!(
+            unreleased.contains(&format!("/compare/v{newest}...HEAD")),
+            "`[Unreleased]` should compare against v{newest}, the newest release in this \
+             file, and reads:\n  {unreleased}"
+        );
+    }
+
     /// The one that stops this list from rotting.
     ///
     /// A job added to CI and not here is a check that only ever fails on
