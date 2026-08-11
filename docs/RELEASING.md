@@ -37,6 +37,27 @@ Move everything under `## [Unreleased]` into a new version section with today's
 date. If a `Changed` entry alters what an existing config reports, it goes
 first and says so.
 
+Then the two link lines at the foot of the file — the new version's, and
+`[Unreleased]` repointed at it:
+
+```
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.14.0...v0.15.0
+```
+
+Without the second line the heading renders as literal `[0.15.0]`: the release
+is in the file and is not *in* it, which is the only thing a reader wanted from
+the brackets. That is not a hypothetical — the definitions stopped at 0.9.2 and
+six releases were cut past it, each adding a heading nobody could click while
+`[Unreleased]` went on comparing against a tag five versions old.
+
+This step is now checked rather than remembered.
+`ci::tests::every_version_in_the_changelog_is_a_link_that_resolves` fails on a
+heading with no definition and on a definition with no heading, and
+`unreleased_compares_against_the_newest_release` on the other half. A written
+step nobody checks is indistinguishable from one that is followed, and this one
+had six releases of evidence.
+
 ### 2. The version, in three places
 
 ```bash
