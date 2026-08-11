@@ -687,6 +687,74 @@ mod tests {
         }
     }
 
+    /// A `spec_dirs` entry is a directory name, and the names survive.
+    ///
+    /// Tested here rather than only through the CLI: a validator returning an
+    /// empty list would drop every entry, the feature would stop working, and
+    /// the CLI test — which only asserts that a *path* is refused — would keep
+    /// passing.
+    #[test]
+    fn a_spec_dir_is_a_directory_name_and_it_survives() {
+        let id = RuleId::new("r").expect("valid id");
+        let spec = |dirs: &[&str]| SpecPairRule {
+            id: id.clone(),
+            level: Level::Error,
+            why: None,
+            roots: crate::one_or_many::OneOrMany::One("src/*".to_owned()),
+            subfolders: crate::one_or_many::OneOrMany::One(".".to_owned()),
+            spec_markers: crate::one_or_many::OneOrMany::One("spec".to_owned()),
+            spec_dirs: crate::one_or_many::OneOrMany::Many(
+                dirs.iter().map(|d| (*d).to_owned()).collect(),
+            ),
+            ignore_files: crate::one_or_many::OneOrMany::Many(Vec::new()),
+            require_non_empty_spec: false,
+            skip_type_only: false,
+        };
+
+        assert_eq!(
+            spec_dirs(&id, &spec(&["__tests__", "tests"])).expect("valid"),
+            vec!["__tests__".to_owned(), "tests".to_owned()],
+            "the names the author wrote are the names the rule gets"
+        );
+        assert_eq!(
+            spec_dirs(&id, &spec(&["  __tests__  "])).expect("valid"),
+            vec!["__tests__".to_owned()],
+            "and they are trimmed"
+        );
+        assert!(
+            spec_dirs(&id, &spec(&[])).expect("valid").is_empty(),
+            "naming none is sibling-only, not an error"
+        );
+    }
+
+    /// An entry that is a path asks the rule to reach a level deeper than it
+    /// says. Accepting it would let a spec anywhere below satisfy the rule, and
+    /// a `spec-pair` rule that reports nothing looks exactly like a repository
+    /// that is fully tested. Issue #67.
+    #[test]
+    fn a_spec_dir_that_is_a_path_or_empty_is_refused() {
+        let id = RuleId::new("r").expect("valid id");
+        let spec = |dir: &str| SpecPairRule {
+            id: id.clone(),
+            level: Level::Error,
+            why: None,
+            roots: crate::one_or_many::OneOrMany::One("src/*".to_owned()),
+            subfolders: crate::one_or_many::OneOrMany::One(".".to_owned()),
+            spec_markers: crate::one_or_many::OneOrMany::One("spec".to_owned()),
+            spec_dirs: crate::one_or_many::OneOrMany::One(dir.to_owned()),
+            ignore_files: crate::one_or_many::OneOrMany::Many(Vec::new()),
+            require_non_empty_spec: false,
+            skip_type_only: false,
+        };
+
+        for entry in ["__tests__/unit", "a\\b", "", "   "] {
+            assert!(
+                spec_dirs(&id, &spec(entry)).is_err(),
+                "`{entry}` was accepted as a directory name"
+            );
+        }
+    }
+
     /// Issue #50. The template form is what `naming.must_export` and
     /// `frontmatter.equals` accept, so reaching for it here is the obvious
     /// mistake -- and it used to compile, then report every governed file as

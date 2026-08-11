@@ -260,7 +260,15 @@ pub fn check(run: Run<'_>) -> Report {
             // content hash covers -- `tsconfig`, lockfiles -- so caching a
             // resolved fact would need the epoch in the key and would serve
             // stale paths the day someone edits an alias.
-            if let (Some(resolver), Some(facts)) = (resolver.as_ref(), facts.as_mut()) {
+            //
+            // Asked of the rules that apply to *this* file, not of the run. A
+            // global "some rule needs resolution" resolved every file that had
+            // facts for any reason -- so a `naming` rule over `apps/**` paid
+            // for resolving all of it because a boundary rule somewhere else
+            // wanted resolution for one file.
+            if let (Some(resolver), Some(facts)) = (resolver.as_ref(), facts.as_mut())
+                && wanted_by.iter().any(|engine| engine.needs_resolution())
+            {
                 imports.absorb(crate::resolve::resolve_imports(resolver, facts));
             }
 
@@ -1563,5 +1571,63 @@ mod tests {
 
         assert_eq!(offenders(&report), ["src/user/nope"]);
         assert_eq!(report.files_scanned, 2, "the exempt file is still counted");
+    }
+    /// Resolution is asked of the rules that apply to *this* file, not of the
+    /// run as a whole.
+    ///
+    /// It used to be global: if any rule anywhere needed resolution, every file
+    /// that had facts for any reason had its imports resolved. Measured on a
+    /// real repository, adding a boundary rule governing **one file** cost
+    /// about 0.2 s, because every file a `no-passthrough` rule covered was then
+    /// resolved for nothing. Issue #79.
+    #[test]
+    fn a_file_no_resolving_rule_covers_is_not_resolved() {
+        let (guard, root) = tree_at(&[
+            ("apps/web/page.ts", "import { a } from './helper';\n"),
+            ("apps/web/helper.ts", "export const a = 1;\n"),
+            ("packages/domain/x.ts", "import { a } from './y';\n"),
+            ("packages/domain/y.ts", "export const a = 1;\n"),
+        ]);
+
+        // A boundary rule over `packages/*` only, and a `no-passthrough` rule
+        // over everything — so `apps/web` has facts and nothing that needs its
+        // imports placed.
+        let config = config(vec![
+            rule(
+                "domain-boundary",
+                None,
+                &["packages/*"],
+                boundary(&["nowhere/**"], &[], &[]),
+            ),
+            rule(
+                "no-barrels",
+                None,
+                &["apps/*"],
+                CompiledRuleKind::NoPassthrough {
+                    forms: archwarden_core::compiled::PassthroughForms {
+                        reexport: true,
+                        alias: true,
+                        wrapper: true,
+                    },
+                    except: PathSet::default(),
+                    allow_package_entrypoints: false,
+                    allow_partial: false,
+                },
+            ),
+        ]);
+
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let report = check(Run {
+            root: &root,
+            config: &config,
+            tree: &tree,
+            cache: None,
+        });
+        drop(guard);
+
+        assert_eq!(
+            report.imports.in_repo, 1,
+            "only the file a boundary rule covers should have been resolved"
+        );
     }
 }

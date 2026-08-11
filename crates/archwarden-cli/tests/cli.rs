@@ -1140,6 +1140,19 @@ fn a_module_can_be_created_one_file_at_a_time() {
             .success()
             .stdout(contains("permissionDecision").not());
 
+        // Allowed *and* told what is still missing. Silence here would let the
+        // agent believe the directory was done.
+        if name != "diagram.json" {
+            archwarden()
+                .current_dir(dir.path())
+                .args(["hook", "claude-code"])
+                .write_stdin(format!(
+                    r#"{{"tool_name":"Write","tool_input":{{"file_path":"{target}","content":"x"}}}}"#
+                ))
+                .assert()
+                .stdout(contains("not done yet"));
+        }
+
         std::fs::write(target, "x").expect("write");
     }
 }
@@ -1202,6 +1215,37 @@ fn the_stop_hook_reports_what_landed() {
         .success()
         .stdout(contains("landed in this turn"))
         .stdout(contains("exercicios.md"));
+}
+
+/// A finding the project already accepted is not reported at the end of a
+/// turn either. `baseline` is debt the repository decided to carry, and a hook
+/// that read it out every turn would be a hook somebody removes.
+#[test]
+fn the_stop_hook_honours_the_baseline() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"tem-os-tres","level":"error",
+                 "roots":["projetos/*"],"require":["projeto.md","exercicios.md"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        (
+            ".archwarden/baseline.json",
+            r#"{"version":0,"accepted":[
+                {"rule":"tem-os-tres","path":"projetos/01-blink",
+                 "note":"pre-existing"}]}"#,
+        ),
+    ]);
+    git_init(dir.path());
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"Stop"}"#)
+        .assert()
+        .success()
+        .stdout("{}\n");
 }
 
 /// A turn that broke nothing says nothing. A hook that spoke every turn is one

@@ -825,4 +825,61 @@ mod tests {
 
         assert!(!is_progress(&finding, "create.use-case.ts"));
     }
+    /// The note a progress write carries says what is still missing, which is
+    /// what the agent has to write next. "would break these rules" is false
+    /// about a write that is fixing the directory. Issue #57.
+    #[test]
+    fn the_progress_note_names_what_is_still_missing() {
+        let missing = |name: &str| Finding {
+            rule_id: RuleId::new("tem-os-tres").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("projetos/02-novo").expect("valid"),
+            span: None,
+            observed: Observed::RequiredFileMissing {
+                name: name.to_owned(),
+            },
+            expected: Expectation::RequiredFiles {
+                names: vec!["exercicios.md".to_owned()],
+                patterns: Vec::new(),
+            },
+        };
+
+        let message = still_needs(&[missing("exercicios.md"), missing("diagram.json")]);
+
+        assert!(
+            message.contains("this write is fine"),
+            "it must not read as a complaint about the write: {message}"
+        );
+        assert!(message.contains("exercicios.md"), "{message}");
+        assert!(message.contains("diagram.json"), "{message}");
+        assert!(
+            !message.contains("would break"),
+            "the write breaks nothing: {message}"
+        );
+    }
+
+    /// The same file named twice is said once. A directory missing one file
+    /// under two rules would otherwise repeat itself.
+    #[test]
+    fn the_progress_note_does_not_repeat_itself() {
+        let same = || Finding {
+            rule_id: RuleId::new("tem-os-tres").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("projetos/02-novo").expect("valid"),
+            span: None,
+            observed: Observed::RequiredFileMissing {
+                name: "exercicios.md".to_owned(),
+            },
+            expected: Expectation::RequiredFiles {
+                names: vec!["exercicios.md".to_owned()],
+                patterns: Vec::new(),
+            },
+        };
+
+        let message = still_needs(&[same(), same()]);
+
+        assert_eq!(message.matches("exercicios.md").count(), 1, "{message}");
+    }
 }
