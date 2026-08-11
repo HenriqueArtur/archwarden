@@ -4165,4 +4165,35 @@ mod tests {
             "an empty cache is still a file someone has to gitignore"
         );
     }
+
+    /// `--by` names an axis, and the two are not interchangeable: one counts
+    /// by rule and answers "what is dominating this output", the other counts
+    /// by area and answers "where do I start". Mapping both to the default
+    /// would leave `--by path` silently answering the first question.
+    #[test]
+    fn each_by_value_names_its_own_axis() {
+        assert_eq!(
+            LevelFilter::Error.level(),
+            archwarden_core::level::Level::Error
+        );
+        assert_eq!(
+            LevelFilter::Warning.level(),
+            archwarden_core::level::Level::Warning
+        );
+        assert_eq!(By::Rule.axis(), archwarden_api::Axis::Rule);
+        assert_eq!(By::Path.axis(), archwarden_api::Axis::Path);
+    }
+
+    /// And end to end, because the mapping is only worth anything if the flag
+    /// reaches it: `--by path` produces a table of directories, not of rules.
+    #[test]
+    fn counting_by_path_names_areas_rather_than_rules() {
+        let (_guard, result) = run_in(&filterable(), &["check", "--by", "path"]);
+
+        assert!(
+            result.out.contains("packages/"),
+            "expected areas, got: {}",
+            result.out
+        );
+    }
 }

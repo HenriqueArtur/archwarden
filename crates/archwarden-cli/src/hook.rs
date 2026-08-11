@@ -502,6 +502,26 @@ mod unexamined_tests {
         );
     }
 
+    /// A config that parsed and will not compile sends the reader to the
+    /// command that names the offending rule, because the error itself is
+    /// about a glob or a pattern and the hook has one line to spend.
+    #[test]
+    fn a_config_that_did_not_compile_names_the_command_that_explains_it() {
+        let uncompilable = Error::Compile(archwarden_config::compile::CompileError::Pattern {
+            rule: archwarden_core::ids::RuleId::new("lookahead").expect("valid id"),
+            field: "file_pattern",
+            source: Box::new(
+                archwarden_core::pattern::Pattern::compile("^(?!test).*$")
+                    .expect_err("a lookahead is not linear-time"),
+            ),
+        });
+
+        assert_eq!(
+            unexamined(&uncompilable),
+            "the config did not compile — `archwarden config validate` names the problem"
+        );
+    }
+
     #[test]
     fn a_preset_problem_says_which_half_of_the_config_failed() {
         let unresolvable = Error::Extends(archwarden_config::extends::ExtendsError::Cycle {

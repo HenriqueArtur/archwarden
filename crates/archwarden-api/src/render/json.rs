@@ -99,6 +99,7 @@ struct JsonReport<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     unreadable_files: Vec<UnreadableFile<'a>>,
 }
+
 /// A finding, plus the standing reason its rule exists.
 ///
 /// `why` is flattened in beside the finding's own fields rather than nested,
@@ -120,6 +121,7 @@ impl<'a> JsonFinding<'a> {
         }
     }
 }
+
 #[derive(Debug, Serialize)]
 struct UnreadableFile<'a> {
     path: &'a archwarden_core::path::RepoRelPath,
@@ -144,6 +146,7 @@ struct JsonSingle<'a> {
     /// report them". Issue #18.
     unresolved_imports: &'a [String],
 }
+
 #[derive(Debug, Serialize)]
 struct JsonSkipped<'a> {
     rule_id: &'a str,
@@ -627,5 +630,34 @@ mod tests {
             Some(2),
             "as many as the count says"
         );
+    }
+
+    /// `hidden` is absent when nothing was hidden, not zero.
+    ///
+    /// A consumer reading a report from an unfiltered run should see the
+    /// object it always saw; a field that appeared on every run as `0` is one
+    /// more thing to explain, and the flag that produces it is the exception
+    /// rather than the rule. When a filter *did* hide something the number is
+    /// there, because a consumer comparing `errors` against the exit code
+    /// needs it.
+    #[test]
+    fn nothing_hidden_leaves_the_field_out_and_something_hidden_puts_it_in() {
+        let report = report(vec![
+            finding(Level::Error, None),
+            finding(Level::Warning, None),
+        ]);
+
+        let unfiltered: serde_json::Value =
+            serde_json::from_str(&rendered(&report)).expect("valid JSON");
+        assert!(
+            unfiltered["summary"].get("hidden").is_none(),
+            "{unfiltered}"
+        );
+
+        let shown: Vec<&Finding> = report.findings.iter().take(1).collect();
+        let filtered: serde_json::Value =
+            serde_json::from_str(&rendered_view(&report, &View::filtered(&shown, 1)))
+                .expect("valid JSON");
+        assert_eq!(filtered["summary"]["hidden"], 1);
     }
 }

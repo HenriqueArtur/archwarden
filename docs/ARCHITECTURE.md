@@ -65,23 +65,55 @@ crates/
   archwarden-rules/      # rule engines (one module per category)
   archwarden-cache/      # on-disk cache (redb, content-hash keyed)
   archwarden-engine/     # pipeline orchestration: walk → parse → resolve → rules
-  archwarden-cli/        # binary crate, arg parsing, output formats
-                         # archwarden-lsp/ arrives in v1 and depends on engine
+  archwarden-api/        # the operations every surface goes through
+  archwarden-cli/        # binary crate, arg parsing, terminal and HTML output
+                         # archwarden-mcp/ and archwarden-lsp/ arrive later
+                         # and depend on api, not on cli
 ```
 
 Dependency direction:
 
 ```
-core   ← config ← engine ← cli
-  ↑        ↑        ↑
+core   ← config ← engine ← api ← cli
+  ↑        ↑        ↑        ↑
   └── parser, resolver, rules, cache
 ```
 
 `archwarden-core` has no internal dependencies. Everything else depends on it.
 
 `archwarden-engine` exists so that the pipeline is not owned by the binary
-crate: `archwarden-lsp` (v1) needs the same pipeline, and depending on a
-binary crate to get it would be backwards.
+crate: `archwarden-lsp` needs the same pipeline, and depending on a binary
+crate to get it would be backwards.
+
+`archwarden-api` exists for the layer above that, and issue #63 is the
+argument. The engine runs the rules; assembling a configuration, walking the
+repository, applying a baseline and deciding what to show were all in
+`archwarden-cli` — entangled with how *that* surface reports failure.
+`prepare()` wrote a miette report to stderr and returned an exit code, so any
+surface that reports failure differently could not reuse it. Two did not: the
+pre-write hook answers in JSON and exits clean, the end-of-turn hook says
+nothing, and both re-implemented the path. The version guard was missing from
+one of the copies, which shipped as issue #55 — a config from a future version
+parsed into one with no rules, compiled, matched nothing, and permitted every
+write.
+
+So the rule the crate exists to enforce, and the one to break before anything
+else in it is worth reading:
+
+> **Nothing in `archwarden-api` writes, and no function in it takes a writer.**
+> Every failure is a value the caller renders.
+
+The workspace already denies `print_stdout` and `print_stderr` outside the
+binaries, and that lint never caught `prepare()`, which wrote through a
+`&mut dyn Write` it was handed. The enforcement here is structural instead: the
+crate does not depend on `archwarden-cli`, and no signature in it mentions an
+output sink. The one exception is `render`, where a `Renderer` writes only
+where the caller pointed it and reports no failure by writing.
+
+Its stages are named — `Resolve → Load → Walk → Evaluate → Present` — even
+where there is only one implementation of each, because that is what lets a
+future surface say *"the LSP reuses through Evaluate and brings its own
+Present"* instead of negotiating the boundary from scratch.
 
 `archwarden-config` depends on `archwarden-resolver` because `extends`
 accepts npm package names (`"@myorg/arch-preset"`), and turning one into a

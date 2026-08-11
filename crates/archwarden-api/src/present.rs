@@ -35,6 +35,7 @@ pub enum Axis {
     /// One row per area of the repository: where to start.
     Path,
 }
+
 /// What of a report to show.
 ///
 /// A run always evaluates every rule and computes every finding. This is the
@@ -111,6 +112,7 @@ impl<'a> View<'a> {
         self.hidden
     }
 }
+
 /// How many findings each rule produced.
 ///
 /// Rows come from the configuration, counts from the findings being shown. A
@@ -120,6 +122,7 @@ impl<'a> View<'a> {
 pub struct Breakdown {
     rows: Vec<Row>,
 }
+
 #[derive(Debug)]
 struct Row {
     /// A rule id, or a directory -- whichever axis the reader asked for. The
@@ -128,6 +131,7 @@ struct Row {
     errors: usize,
     warnings: usize,
 }
+
 impl Breakdown {
     /// Counts `findings` against every rule in `ids`.
     ///
@@ -229,6 +233,7 @@ impl Breakdown {
             .map(|row| (row.rule_id.as_str(), row.errors, row.warnings))
     }
 }
+
 /// The nearest ancestor of `path` that some rule's scope selects.
 ///
 /// The path itself when a scope selects it, and the path itself again when

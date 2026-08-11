@@ -95,12 +95,23 @@ pub fn prepare(location: Location<'_>, working_directory: &Utf8Path) -> Result<P
 /// rather than against the process's own, so nothing here depends on ambient
 /// state: a test and a shell behave identically, and one process can serve two
 /// repositories.
+///
+/// Both the config path and the root are joined unconditionally. Each used to
+/// be guarded by an `is_absolute` test that decided nothing: `Path::join`
+/// already replaces the base when what it is given is rooted, on every
+/// platform. `cargo-mutants` replaced the first guard with `false` and no test
+/// noticed — which is what a branch with no observable effect looks like, and
+/// the reason both are gone rather than excluded from mutation testing.
+///
+/// The behaviour they appeared to protect is still pinned, by
+/// `an_absolute_config_path_is_taken_as_it_stands` and
+/// `an_absolute_root_is_taken_as_it_stands`. Those tests are why deleting them
+/// is safe rather than merely tidy.
 fn locate(
     location: Location<'_>,
     working_directory: &Utf8Path,
 ) -> Result<discovery::LoadedConfig, discovery::LoadError> {
     let mut loaded = match location.config {
-        Some(path) if path.is_absolute() => discovery::load_file(path),
         Some(path) => discovery::load_file(&working_directory.join(path)),
         None => discovery::load_from(working_directory),
     }?;
@@ -108,11 +119,7 @@ fn locate(
     // Last, so it beats both the config's own `root` and the default. Someone
     // who passed `--root` is answering the question those two guess at.
     if let Some(root) = location.root {
-        loaded.root = if root.is_absolute() {
-            root.to_owned()
-        } else {
-            working_directory.join(root)
-        };
+        loaded.root = working_directory.join(root);
     }
 
     Ok(loaded)

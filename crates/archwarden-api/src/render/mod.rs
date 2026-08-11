@@ -81,8 +81,8 @@ pub const REPORT_VERSION: u32 = 0;
 /// The standing reason behind each rule, by rule id.
 ///
 /// Looked up when a report is rendered rather than carried on a
-/// [`Finding`](archwarden_core::finding::Finding),
-/// deliberately. A `why` is prose about a *rule*; a finding is about a file,
+/// [`Finding`](archwarden_core::finding::Finding), deliberately. A `why` is
+/// prose about a *rule*; a finding is about a file,
 /// and copying the prose onto every one of them would put it in the baseline's
 /// path -- `.archwarden/baseline.json` must not churn because somebody
 /// reworded a sentence -- and would make every rule engine take a field it
@@ -210,6 +210,7 @@ pub struct Summary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imports: Option<Imports>,
 }
+
 #[allow(
     clippy::trivially_copy_pass_by_ref,
     reason = "serde's `skip_serializing_if` takes `&T`"
@@ -217,6 +218,7 @@ pub struct Summary {
 fn is_zero(value: &usize) -> bool {
     *value == 0
 }
+
 #[allow(
     clippy::struct_field_names,
     reason = "`unresolved_imports` is a JSON key a consumer reads, not a name this struct is free to shorten"
@@ -240,6 +242,7 @@ pub struct Imports {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unresolved_imports: Vec<UnresolvedImport>,
 }
+
 /// One import no boundary rule could see.
 #[derive(Debug, Serialize)]
 pub struct UnresolvedImport {
@@ -248,6 +251,7 @@ pub struct UnresolvedImport {
     /// What it asked for.
     pub specifier: String,
 }
+
 impl Summary {
     /// Counts come from the view, everything else from the report.
     ///
