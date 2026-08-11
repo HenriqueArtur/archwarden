@@ -68,6 +68,17 @@ produce is worth less than nothing.
 Re-run it after any change to a renderer, to the stylesheet, or to anything
 under `phrases/`.
 
+**Where the checkout sits costs more than the machine it runs on.** Measured on
+one repository of 4 154 files, same binary and same warm cache: a `check` takes
+**0.13 s on a local disk and 1.34 s from a shared mount** — virtiofs, 9p,
+Docker Desktop's bind mount, WSL2 reading the Windows side. Ten times, on every
+run of every gate.
+
+Resolution is why: over half of its `stat` calls are existence probes that find
+nothing, and a failed `stat` is a full round trip on a filesystem that is not
+local. Tracked in the issues; the point here is that a clone on a shared mount
+makes this repository's own gates ten times slower to run.
+
 `cargo xtask hooks` is not optional in spirit. It installs two hooks:
 
 | Hook | Runs | Costs |
