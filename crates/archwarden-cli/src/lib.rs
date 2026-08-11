@@ -28,7 +28,6 @@ pub mod scaffold;
 pub mod schema;
 pub mod verify;
 
-use archwarden_cache::store::Cache;
 // A type this passes through and a filename `init` writes, where this once
 // reached for `compile`, `extends` and `PresetResolver` to assemble a
 // configuration by hand. Issue #63 moved the assembly into archwarden-api;
@@ -908,20 +907,22 @@ fn write_baseline(
         Err(exit) => return exit,
     };
 
-    let mut cache = if archwarden_engine::run::reads_files(&compiled) {
-        open_cache(&merged.root, output)
-    } else {
-        None
-    };
-    let outcome = archwarden_engine::run::check(archwarden_engine::run::Run {
+    let evaluated = archwarden_api::evaluate(&archwarden_api::Evaluation {
         root: &merged.root,
-        config: &compiled,
+        compiled: &compiled,
         tree: &tree,
-        cache: cache.as_mut(),
+        cache: archwarden_api::CachePolicy::Use,
     });
-    if let Some(cache) = cache.as_mut() {
-        let _ = cache.flush();
+
+    // Said out loud here too. This used to discard the flush failure with
+    // `let _ = cache.flush()` while `check` reported it — two copies of one
+    // orchestration disagreeing about whether a user hears that their next run
+    // will be slow. Now the operation returns the note and both surfaces have
+    // to decide, which is the decision this makes the same way.
+    for note in &evaluated.notes {
+        let _ = writeln!(output.err, "note: {note}");
     }
+    let outcome = evaluated.report;
 
     let baseline = crate::baseline::Baseline::of(&outcome.findings);
     let path = merged.root.join(crate::baseline::BASELINE_PATH);
@@ -1661,16 +1662,6 @@ fn agent_guide(
     Exit::Clean
 }
 
-/// archwarden's own directory in the repository, and the cache inside it.
-///
-/// Decision 4 in `DECISIONS.md`: archwarden owns `.archwarden/` for generated
-/// artefacts and never writes anywhere else in the user's tree.
-const CACHE_DIRECTORY: &str = ".archwarden/cache";
-
-/// The database file itself. Its format version lives inside it, so this name
-/// does not change when the shape does.
-const CACHE_FILE: &str = "cache.redb";
-
 /// What `check` was asked to do.
 ///
 /// A struct because the four filters plus the two switches are six arguments,
@@ -1762,29 +1753,25 @@ fn check(
         Err(exit) => return exit,
     };
 
-    // Opened only when a rule will actually look inside a file. A purely
-    // structural configuration reads no bytes, and a cache it never consults
-    // would just be a file someone has to wonder about.
-    let mut cache = if options.no_cache || !archwarden_engine::run::reads_files(&compiled) {
-        None
-    } else {
-        open_cache(&merged.root, output)
-    };
-
-    let outcome = archwarden_engine::run::check(archwarden_engine::run::Run {
+    let evaluated = archwarden_api::evaluate(&archwarden_api::Evaluation {
         root: &merged.root,
-        config: &compiled,
+        compiled: &compiled,
         tree: &tree,
-        cache: cache.as_mut(),
+        cache: if options.no_cache {
+            archwarden_api::CachePolicy::Ignore
+        } else {
+            archwarden_api::CachePolicy::Use
+        },
     });
 
-    // A cache that did not persist costs the next run its speed and nothing
-    // else, so it is a note on stderr rather than a failure.
-    if let Some(cache) = cache.as_mut()
-        && let Err(error) = cache.flush()
-    {
-        let _ = writeln!(output.err, "note: the cache was not written — {error}");
+    // A cache that would not open, or would not persist, costs the next run
+    // its speed and nothing else — so it is a note on stderr rather than a
+    // failure. Which of those it is, the operation decided; that it is worth
+    // saying out loud, this decides.
+    for note in &evaluated.notes {
+        let _ = writeln!(output.err, "note: {note}");
     }
+    let outcome = evaluated.report;
 
     // The baseline first, and not as a filter: what it accepts is gone from
     // this run entirely, including from the exit code. That is the one thing
@@ -1933,65 +1920,23 @@ fn view_of<'a>(
     crate::report::View::summarised(shown, crate::report::Breakdown::over(ids, shown), hidden)
 }
 
-/// Opens the repository's cache, or explains why it is running without one.
+/// Walks the repository, rendering a refusal as this surface says it.
 ///
-/// A cache is a rebuildable artefact. Refusing to lint because one is damaged
-/// would be the wrong trade, so a failure here degrades the run instead of
-/// ending it.
-fn open_cache(root: &Utf8Path, output: &mut Output<'_>) -> Option<Cache> {
-    match Cache::open(&root.join(CACHE_DIRECTORY).join(CACHE_FILE)) {
-        Ok(cache) => Some(cache),
-        Err(error) => {
-            let _ = writeln!(output.err, "note: running without a cache — {error}");
-            None
-        }
-    }
-}
-
-/// Walks the repository, refusing a root nobody chose.
-///
-/// The walk itself rarely fails. What this exists for is the case that
-/// succeeds and means nothing: `--config /tmp/stricter.json` takes `/tmp` to be
-/// the repository, because a config file's directory is where globs resolve
-/// from. It walks `/tmp`, finds no TypeScript, and reports a clean run. Exit 0,
-/// no findings — and the question that was asked, "how many findings would this
-/// stricter rule produce?", answered with the one wrong answer a reader takes
-/// as good news.
-///
-/// The refusal is narrow on purpose, because "no source files" on its own is a
-/// legitimate state: a repository that has just run `archwarden init` and has
-/// not been written yet is empty, and exiting 2 on it would make the tool look
-/// broken on its first run. What is never legitimate is an empty root that the
-/// caller is not standing in. Standing somewhere is choosing it; a root reached
-/// only through a config file's own location was chosen by nobody.
+/// The walk and the refusal itself are [`archwarden_api::walk`], including why
+/// the refusal is narrow. What is left here is the rendering — and the help,
+/// which is the CLI's alone: it names `--root`, and a surface with no command
+/// line needs a different sentence for the same fact.
 fn walked(
     root: &Utf8Path,
     working_directory: &Utf8Path,
     compiled: &archwarden_core::compiled::CompiledConfig,
     output: &mut Output<'_>,
 ) -> Result<archwarden_engine::walk::RepoTree, Exit> {
-    let tree = archwarden_engine::walk::walk(root, compiled).map_err(|error| {
-        let _ = writeln!(output.err, "{error}");
+    archwarden_api::walk(root, working_directory, compiled).map_err(|error| {
+        let report = miette::Report::new(ConfigDiagnostic::from_api_error(&error));
+        let _ = writeln!(output.err, "{report:?}");
         Exit::ConfigProblem
-    })?;
-
-    let stood_in = working_directory.starts_with(root);
-    let has_source = tree
-        .files()
-        .any(|file| file.class == archwarden_core::path::FileClass::Source);
-
-    if !stood_in && !has_source {
-        let _ = writeln!(
-            output.err,
-            "× `{root}` holds no JavaScript or TypeScript, and is not where you are standing.\n\
-             \x20 archwarden took it to be the repository because that is where the config file \
-             is.\n\
-             \x20 If the config describes a repository somewhere else, say which: `--root <PATH>`.",
-        );
-        return Err(Exit::ConfigProblem);
-    }
-
-    Ok(tree)
+    })
 }
 
 /// Looks for a configuration that parses and is still wrong.
@@ -2917,7 +2862,7 @@ mod tests {
         );
 
         assert_eq!(result.exit, Exit::Clean);
-        let cache = guard.path().join(CACHE_DIRECTORY);
+        let cache = guard.path().join(archwarden_api::CACHE_DIRECTORY);
         assert!(cache.is_dir(), "no cache at {}", cache.display());
     }
 
@@ -2977,7 +2922,7 @@ mod tests {
         let (guard, first) = run_in(&files, &["check", "--format", "json", "--no-cache"]);
         assert_eq!(cache_split(&first), (1, 0));
         assert!(
-            !guard.path().join(CACHE_DIRECTORY).exists(),
+            !guard.path().join(archwarden_api::CACHE_DIRECTORY).exists(),
             "nothing should have been written"
         );
 
@@ -3033,7 +2978,9 @@ mod tests {
         let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("UTF-8");
         // A directory where the database file should be: unopenable, and not
         // something the cache may delete its way out of.
-        let database = root.join(CACHE_DIRECTORY).join(CACHE_FILE);
+        let database = root
+            .join(archwarden_api::CACHE_DIRECTORY)
+            .join(archwarden_api::CACHE_FILE);
         std::fs::remove_file(&database).expect("remove the database");
         std::fs::create_dir(&database).expect("put a directory in its place");
 
@@ -4200,7 +4147,7 @@ mod tests {
         assert_eq!(result.exit, Exit::Clean);
         assert_eq!(cache_split(&result), (0, 0));
         assert!(
-            !guard.path().join(CACHE_DIRECTORY).exists(),
+            !guard.path().join(archwarden_api::CACHE_DIRECTORY).exists(),
             "an empty cache is still a file someone has to gitignore"
         );
     }

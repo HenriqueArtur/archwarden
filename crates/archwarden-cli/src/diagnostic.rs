@@ -212,6 +212,22 @@ impl ConfigDiagnostic {
                 )),
             },
 
+            // The fact is the api's — a root with no source that nobody
+            // chose. Why it came to be walked, and the flag that corrects it,
+            // are the CLI's: `--root` is a command line, and the surface that
+            // has none needs a different sentence here.
+            archwarden_api::Error::RootHoldsNoSource { .. } => Self {
+                message: error.to_string(),
+                source_text: None,
+                span: None,
+                help: Some(
+                    "archwarden took it to be the repository because that is \
+                     where the config file is. If the config describes a \
+                     repository somewhere else, say which: `--root <PATH>`."
+                        .to_owned(),
+                ),
+            },
+
             _ => Self {
                 message: error.to_string(),
                 source_text: None,

@@ -35,7 +35,13 @@
 //! its own Present"* instead of negotiating the boundary from scratch.
 
 pub mod error;
+pub mod evaluate;
 pub mod resolve;
+pub mod walk;
 
 pub use error::Error;
+pub use evaluate::{
+    CACHE_DIRECTORY, CACHE_FILE, CachePolicy, Evaluated, Evaluation, Note, cache_path, evaluate,
+};
 pub use resolve::{Location, Prepared, load, prepare, resolve};
+pub use walk::walk;

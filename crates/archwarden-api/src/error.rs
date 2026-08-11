@@ -55,4 +55,19 @@ pub enum Error {
     /// A glob, pattern or template in the config did not compile.
     #[error(transparent)]
     Compile(#[from] CompileError),
+
+    /// The repository could not be read.
+    #[error(transparent)]
+    Walk(#[from] archwarden_engine::walk::WalkError),
+
+    /// The root holds no source, and is not where the caller is standing.
+    ///
+    /// A clean run over the wrong directory, which reads as good news and is
+    /// not news at all. See [`crate::walk`] for why the refusal is this narrow
+    /// rather than "the root is empty".
+    #[error("`{root}` holds no JavaScript or TypeScript, and is not where you are standing")]
+    RootHoldsNoSource {
+        /// The root that was walked.
+        root: Utf8PathBuf,
+    },
 }

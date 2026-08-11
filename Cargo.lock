@@ -101,8 +101,10 @@ dependencies = [
 name = "archwarden-api"
 version = "0.14.0"
 dependencies = [
+ "archwarden-cache",
  "archwarden-config",
  "archwarden-core",
+ "archwarden-engine",
  "archwarden-resolver",
  "camino",
  "tempfile",
@@ -127,7 +129,6 @@ name = "archwarden-cli"
 version = "0.14.0"
 dependencies = [
  "archwarden-api",
- "archwarden-cache",
  "archwarden-config",
  "archwarden-core",
  "archwarden-engine",

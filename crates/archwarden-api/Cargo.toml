@@ -10,8 +10,10 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+archwarden-cache = { workspace = true }
 archwarden-config = { workspace = true }
 archwarden-core = { workspace = true }
+archwarden-engine = { workspace = true }
 archwarden-resolver = { workspace = true }
 camino = { workspace = true }
 thiserror = { workspace = true }
