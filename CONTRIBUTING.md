@@ -74,10 +74,18 @@ one repository of 4 154 files, same binary and same warm cache: a `check` takes
 Docker Desktop's bind mount, WSL2 reading the Windows side. Ten times, on every
 run of every gate.
 
-Resolution is why: over half of its `stat` calls are existence probes that find
-nothing, and a failed `stat` is a full round trip on a filesystem that is not
-local. Tracked in the issues; the point here is that a clone on a shared mount
-makes this repository's own gates ten times slower to run.
+Resolution was most of why: over half of its `stat` calls were existence probes
+that found nothing, and a failed `stat` is a full round trip on a filesystem
+that is not local. `archwarden-resolver::listing` answers those from one
+directory listing now, which takes resolution on a shared mount from 186 ms to
+58 ms — and costs a local disk 0.8 ms, which is written down at that module
+rather than rounded away.
+
+What is left is the walk and the hashing every file needs for the cache to know
+it is still fresh, and that is still ten times dearer from a shared mount than
+from a local disk. The point here is unchanged: a clone on a shared mount makes
+this repository's own gates slow, and it is the checkout's location rather than
+the machine.
 
 `cargo xtask hooks` is not optional in spirit. It installs two hooks:
 

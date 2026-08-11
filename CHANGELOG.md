@@ -17,6 +17,33 @@ saying so.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A warm `check` on a shared mount spent most of its time on `stat` calls
+  that found nothing**
+  ([#82](https://github.com/HenriqueArtur/archwarden/issues/82)). Node
+  resolution is a ladder — `./order` means try `.ts`, then `.tsx`, `.js`,
+  `/index.ts` — and over half of those probes miss. On a filesystem that is
+  really a network, a failed `stat` is a full round trip that returns nothing.
+  One directory listing now answers every rung at once.
+
+  Measured over 3 030 files and 15 000 import specifiers, warm, resolution
+  only: **186 ms → 58 ms** on a shared mount. A local disk pays **0.8 ms
+  more**, because a failed `stat` there is a page-cache lookup and the listing
+  buys nothing — a small regression on the fast path, stated rather than
+  rounded away.
+
+  This is not a niche case. Docker Desktop on macOS and Windows, WSL2 with the
+  repository on the Windows side, and any devcontainer with a bind mount all
+  produce it.
+
+### Internal
+
+- The benchmark gained a case that resolves imports. Every case in it ran a
+  `naming` rule, which reads no imports at all, so the half of a warm run this
+  release is about was never measured — which is why it went unnoticed until
+  somebody timed the same repository on two filesystems.
+
 ## [0.15.0] — 2026-08-11
 
 One implementation of every operation, and a boundary the surfaces sit on.
