@@ -1044,6 +1044,7 @@ mod tests {
                     subfolders: vec![".".to_owned()],
                     spec_markers: vec!["spec".to_owned()],
                     ignore_files: PathSet::default(),
+                    spec_dirs: Vec::new(),
                     require_non_empty_spec: false,
                     skip_type_only: false,
                 },

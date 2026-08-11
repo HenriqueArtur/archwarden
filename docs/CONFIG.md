@@ -447,6 +447,13 @@ comes from the source file, so `Component.tsx` pairs with
 `Component.spec.tsx`. See [`RULES.md`](RULES.md) for how a compound name like
 `user.db.repository.ts` is handled.
 
+`spec_dirs` names directories beside the file where a spec also counts —
+`["__tests__"]`, `["tests"]`, whatever the project uses. Empty by default,
+which is sibling-only. It reaches exactly one level: a spec in
+`__tests__/unit/` does not count unless `unit` is named too, and an entry with
+a path separator is refused when the config compiles. `RULES.md` has the
+reason that limit is not a shortcut.
+
 Optional `require_non_empty_spec: true` fails on `.spec.ts` files that contain
 no `it(...)` or `test(...)` calls — this is what enforces "spec written
 first", not just "spec file exists". A `describe(...)` alone does not satisfy

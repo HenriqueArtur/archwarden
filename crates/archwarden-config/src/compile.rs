@@ -141,6 +141,21 @@ pub enum CompileError {
         entry: String,
     },
 
+    /// A `spec-pair` `spec_dirs` entry is not a single directory name.
+    #[error(
+        "rule `{rule}`: `spec_dirs` takes directory names, and `{entry}` is a \
+         path. A spec directory is one level beside the file — `__tests__`, not \
+         `__tests__/unit` — because a rule that reached further would accept a \
+         spec anywhere below and report nothing. Name the deeper directory as \
+         its own entry if it is also a spec directory."
+    )]
+    SpecDirIsAPath {
+        /// The rule.
+        rule: RuleId,
+        /// The entry as written.
+        entry: String,
+    },
+
     /// A `spec-pair` marker is not a single filename component.
     #[error(
         "rule `{rule}`: `{marker}` is not a spec marker. A marker is one \
@@ -307,6 +322,7 @@ fn compile_rule(
             subfolders: r.subfolders.iter().cloned().collect(),
             spec_markers: spec_markers(&id, r)?,
             ignore_files: globs(&id, "ignore_files", &r.ignore_files)?,
+            spec_dirs: spec_dirs(&id, r)?,
             require_non_empty_spec: r.require_non_empty_spec,
             skip_type_only: r.skip_type_only,
         },
@@ -476,6 +492,28 @@ where
 /// A marker is one filename component -- `spec`, `test` -- and the extension
 /// is taken from the source file. A marker carrying a dot or an extension is
 /// almost always someone writing the old whole-suffix form, and guessing what
+/// A `spec_dirs` entry, refused if it is a path rather than a directory name.
+///
+/// The rule reaches one level: a spec at `<dir>/<named>/x.spec.ts` counts and
+/// `<dir>/<named>/unit/x.spec.ts` does not. An entry with a separator asks for
+/// the second, and accepting it silently would make the rule reach further
+/// than it says — which is how a `spec-pair` rule stops reporting and starts
+/// looking like a repository that is fully tested.
+fn spec_dirs(rule: &RuleId, spec: &SpecPairRule) -> Result<Vec<String>, CompileError> {
+    let mut names = Vec::new();
+    for entry in &spec.spec_dirs {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() || trimmed.contains('/') || trimmed.contains('\\') {
+            return Err(CompileError::SpecDirIsAPath {
+                rule: rule.clone(),
+                entry: entry.clone(),
+            });
+        }
+        names.push(trimmed.to_owned());
+    }
+    Ok(names)
+}
+
 /// they meant would be worse than saying so.
 fn spec_markers(rule: &RuleId, spec: &SpecPairRule) -> Result<Vec<String>, CompileError> {
     let mut markers = Vec::new();

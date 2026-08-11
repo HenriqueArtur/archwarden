@@ -680,6 +680,40 @@ The marker must be the last stem component. `user.spec.ts` is a spec;
 `user.spec.helper.ts` is a helper that happens to mention one. A bare
 `spec.ts` counts, matching both runners' optional `<name>.` prefix.
 
+### Where a spec may live
+
+Beside the file, always. And in a directory the project names:
+
+```json
+{
+  "type": "spec-pair",
+  "id": "calcs-need-spec",
+  "level": "error",
+  "roots": ["src/*"],
+  "subfolders": ["."],
+  "spec_dirs": ["__tests__"]
+}
+```
+
+`spec_dirs` is empty by default, which is sibling-only — what every config
+written before this had, and what a project that says nothing keeps.
+
+**One level, and no further.** A spec at `src/user/__tests__/create.spec.ts`
+satisfies `src/user/create.ts`. One at `src/user/__tests__/unit/create.spec.ts`
+does not, unless `unit` is named too. An entry with a path separator is refused
+when the config compiles, with the reason.
+
+That limit is the feature rather than a shortcut. A reading that accepted a
+spec anywhere below would let a project satisfy the rule by putting one file
+somewhere in the subtree — and the rule would report nothing and look exactly
+like a repository that is fully tested, which is the failure `CONFIG.md` calls
+the worst a linter has.
+
+The name is the project's: `__tests__`, `tests`, `__specs__`, anything. The
+`ROADMAP.md` this replaced leaned sibling-only *"because co-located test dirs
+invite scattered test files"* — right about the risk, wrong about the remedy.
+The risk comes from accepting *any* directory, not from the convention.
+
 **Default ignores** (baked in, not configurable):
 - Files that are themselves specs.
 - `index.ts`, `index.tsx`, `index.js`, `index.jsx` — barrel files re-export and

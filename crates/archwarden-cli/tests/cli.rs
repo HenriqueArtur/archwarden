@@ -1028,6 +1028,66 @@ fn the_hook_replays_an_edit_before_judging_it() {
         .stdout("{}\n");
 }
 
+/// `spec_dirs` names a directory beside the file, one level. A path asks for
+/// the rule to reach further than it says, and reaching further is how a
+/// `spec-pair` rule stops reporting and starts looking like a fully-tested
+/// repository. Issue #67.
+#[test]
+fn a_spec_dir_that_is_a_path_is_refused() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"spec-pair","id":"needs-spec","level":"error",
+             "roots":["src/*"],"subfolders":["."],
+             "spec_dirs":["__tests__/unit"]}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "validate"])
+        .assert()
+        .code(2)
+        .stderr(contains("directory names"));
+}
+
+/// And the whole thing end to end: a spec in the named directory satisfies the
+/// rule, and the same spec one level deeper does not.
+#[test]
+fn a_spec_in_a_named_directory_satisfies_the_rule_through_the_cli() {
+    const CONFIG: &str = r#"{"version":0,"rules":[
+        {"type":"spec-pair","id":"needs-spec","level":"error",
+         "roots":["src/*"],"subfolders":["."],"spec_dirs":["__tests__"]}]}"#;
+
+    let named = repo(&[
+        ("arch.config.json", CONFIG),
+        ("src/user/create.ts", "export function create() {}\n"),
+        (
+            "src/user/__tests__/create.spec.ts",
+            "it('works', () => {});\n",
+        ),
+    ]);
+    archwarden()
+        .current_dir(named.path())
+        .args(["check"])
+        .assert()
+        .success();
+
+    let deeper = repo(&[
+        ("arch.config.json", CONFIG),
+        ("src/user/create.ts", "export function create() {}\n"),
+        (
+            "src/user/__tests__/unit/create.spec.ts",
+            "it('works', () => {});\n",
+        ),
+    ]);
+    archwarden()
+        .current_dir(deeper.path())
+        .args(["check"])
+        .assert()
+        .code(1)
+        .stdout(contains("needs-spec"));
+}
+
 /// Issue #46, through the real process. A finding says what the rule wanted
 /// and what the file did, and used to never say why the rule exists — so an
 /// agent reading one could comply and nothing else, which is how a config gets

@@ -478,6 +478,22 @@ pub struct SpecPairRule {
     /// jest do, so the common project needs no configuration here at all.
     #[serde(default = "default_spec_markers")]
     pub spec_markers: Patterns,
+    /// Directories, beside the file, where a spec also counts.
+    ///
+    /// Empty by default, which is sibling-only — what every config written
+    /// before this had, and what a project that says nothing keeps.
+    ///
+    /// A name, not a glob: `__tests__`, `tests`, `__specs__`, whatever the
+    /// project uses. A spec at `<dir>/<named>/x.spec.ts` satisfies `<dir>/x.ts`
+    /// and reaches exactly one level — `__tests__/unit/x.spec.ts` does not
+    /// count unless `unit` is named too.
+    ///
+    /// The depth limit is the feature. A reading that accepted a spec anywhere
+    /// below would make the rule report nothing and look exactly like a
+    /// repository that is fully tested, which is the failure `CONFIG.md` calls
+    /// the worst a linter has. Issue #67.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub spec_dirs: Patterns,
     /// Globs exempted from the rule.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub ignore_files: Patterns,

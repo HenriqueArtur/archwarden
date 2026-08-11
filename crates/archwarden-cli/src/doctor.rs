@@ -862,6 +862,7 @@ mod tests {
             subfolders: subfolders.iter().map(|s| (*s).to_owned()).collect(),
             spec_markers: vec!["spec".to_owned()],
             ignore_files: PathSet::default(),
+            spec_dirs: Vec::new(),
             require_non_empty_spec: false,
             skip_type_only: false,
         }
