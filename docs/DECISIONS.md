@@ -17,6 +17,70 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 20 — The operations are a crate, and nothing in it writes
+Status: accepted.
+Context: issue #63. `prepare()` — discovery, load, version guard,
+`extends::merge`, `compile` — was called from thirteen places in
+`archwarden-cli`, and two of them refused to use it and re-implemented the
+orchestration instead. That was not carelessness. `prepare()` reported
+failure by writing a miette report to stderr and returning exit code 2, and
+neither the pre-write hook nor the end-of-turn hook may answer that way: one
+must reply in JSON and exit clean, the other says nothing at all. The
+difference in how a failure is *said* forced the path to be copied, and the
+copy was missing the version guard. That shipped as issue #55 — a config
+from a future version parsed into one with no rules, compiled, matched
+nothing, and permitted every write. The gate did not fail; it evaporated.
+
+Decision: a crate, `archwarden-api`, holding the operations every surface
+goes through, with one rule:
+
+> **Nothing in it writes, and no function in it takes a writer.** Every
+> failure is a value the caller renders.
+
+The stages are named — `Resolve → Load → Walk → Evaluate → Present` — even
+where each has one implementation, because that is what lets a later surface
+say *"the LSP reuses through Evaluate and brings its own Present"* instead of
+negotiating the boundary from scratch. `Renderer` is a trait because
+`report::render` was already a two-arm match with the HTML page on a separate
+path, and SARIF (#64) would have been a fourth branch in three functions.
+
+Two things the boundary is drawn *around*, not through. A committed file
+format is an operation: the baseline decides the exit code and MCP must
+respect it exactly as `check` does, which is why `describe_observed` moved
+too — its prose is written into `.archwarden/baseline.json`. And a
+command-line vocabulary is not: `LevelFilter` and `By` carry clap's
+`ValueEnum` and stay in the surface that has flags, on the same argument that
+kept them out of `archwarden-core`.
+
+Alternatives:
+- **A general lifecycle bus, where anything registers into any stage.**
+  Rejected, and this is the one worth writing down: that is the v2 plugin
+  API, `ROADMAP.md` never decided between WASM and dylib, and there is no
+  external consumer to validate it against. Building it now designs against
+  imagination. The seams here are the ones the project has *earned* by the
+  same test it already applies — `Parser` is a trait because there are three
+  front-ends, `RuleEngine` because there are nine. `Cache`, `Resolver` and
+  `Walker` have one implementation each and get no trait.
+- **Leave the orchestration in `archwarden-cli` and have MCP depend on it.**
+  Rejected: a server depending on a binary crate to get the report format is
+  the dependency pointing backwards, and it is the same mistake
+  `archwarden-engine` exists to avoid one layer down.
+- **Return rendered strings instead of values.** Rejected: it moves the
+  entanglement rather than removing it. The CLI needs `LoadError::Invalid`'s
+  source text and byte offsets to draw a caret, and a boundary that flattened
+  those into a sentence would trade one duplication for a worse diagnostic.
+
+Consequences: the CLI no longer mentions `extends::merge`, `compile::compile`
+or `version_is_supported` anywhere, and `archwarden-cache` stopped being a
+dependency of it. Enforcement is structural rather than by review — the
+workspace already denied `print_stderr` and never caught `prepare()`, which
+wrote through a `&mut dyn Write` it was handed; what catches it now is that
+no signature in the crate mentions a sink, with `Renderer` as the single
+documented exception. The crate is held at the `archwarden-core` coverage
+bar rather than the CLI's 95, because a branch nothing tests there is one
+every surface inherits at once. MCP (#65) is the proof the boundary is in
+the right place: if it needs anything not in `archwarden-api`, it is not.
+
 ### 19 — A second front-end, and what a third would cost
 Status: accepted.
 Context: issue #44 asked for a rule over markdown frontmatter, which is the

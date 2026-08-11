@@ -17,6 +17,60 @@ saying so.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The pre-write hook said a broken config was a missing one.** Every load
+  failure was reported as *"no archwarden config was found from here"*, so
+  someone who had just introduced a syntax error was sent looking for a file
+  that was sitting there, found and unreadable. It now distinguishes the two,
+  and a config that will not parse points at `archwarden config validate`.
+- **`archwarden baseline` discarded a cache it could not write**, where
+  `check` reported it. The two were separate copies of one sequence, quietly
+  disagreeing about whether a user hears that their next run will be slower.
+  Both say it now.
+- **A violation fixed in the same regeneration as a directory move could
+  vanish from `baseline --dry-run`.** Debt paid is the only encouraging number
+  archwarden prints, and one absorbed into a rename was one nobody was told
+  about.
+- **A summary could reorder between runs on identical input.** Two areas with
+  the same counts had no tie-break, so `check --summary --by path` produced a
+  table whose row order was not stable — which makes every diff of it
+  unreadable, and only shows up on somebody else's machine.
+
+### Changed
+
+- **A config declaring an unsupported version now renders like every other
+  config problem**, with a help line saying the fix is to upgrade archwarden.
+  It was a bare sentence on stderr with no help, and a user reading a
+  complaint about their file's version number would reasonably edit the
+  number — which makes this build parse a config written for a schema it does
+  not have. Exit code and the numbers in the message are unchanged.
+- **`--root` given a path outside the repository is refused with a caret and a
+  help line** rather than a hand-drawn block of text. Same refusal, same exit
+  code.
+
+### Internal
+
+No change to what any command reports beyond the entries above.
+
+- **`archwarden-api`** ([#63](https://github.com/HenriqueArtur/archwarden/issues/63)).
+  The operations every surface goes through — `Resolve → Load → Walk →
+  Evaluate → Present` — move out of `archwarden-cli` into a crate of their
+  own, and return their failures as values instead of writing them. Nothing in
+  it writes and no function in it takes a writer, which is what lets the CLI
+  turn a failure into stderr and exit 2, the agent hook into a `systemMessage`
+  and exit 0, and MCP ([#65](https://github.com/HenriqueArtur/archwarden/issues/65))
+  into a JSON-RPC error, without any of them re-walking the path. The pre-write
+  and end-of-turn hooks carried their own copies of that sequence precisely
+  because they could not answer the way it insisted on; the missing version
+  guard that shipped as
+  [#55](https://github.com/HenriqueArtur/archwarden/issues/55) was in one of
+  them. See decision 20 in `docs/DECISIONS.md`.
+- The JSON report moves with it, behind a `Renderer` trait, so the object an
+  MCP server emits is the one `check --format json` emits rather than a second
+  implementation of the same contract. Human text and the HTML page stay in
+  `archwarden-cli`.
+
 ## [0.14.0] — 2026-08-11
 
 The pre-write hook stops refusing writes that are fixing the thing it is
