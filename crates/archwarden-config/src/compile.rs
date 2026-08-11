@@ -32,6 +32,59 @@ const KIND_ANY: &str = "any";
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CompileError {
+    /// A rule names a module the config never declared.
+    #[error("rule `{rule}` names module `{module}`, which this config does not declare")]
+    UnknownModule {
+        /// The rule.
+        rule: RuleId,
+        /// The name it used.
+        module: archwarden_core::ids::ModuleId,
+    },
+
+    /// A rule names a module that declared no paths.
+    #[error("rule `{rule}` names module `{module}`, which declares no `scope`")]
+    ModuleHasNoScope {
+        /// The rule.
+        rule: RuleId,
+        /// The module with nothing to be.
+        module: archwarden_core::ids::ModuleId,
+    },
+
+    /// A rule says its scope twice, in two fields.
+    #[error("rule `{rule}` sets both `{one}` and `{other}`; use one")]
+    ScopeSaidTwice {
+        /// The rule.
+        rule: RuleId,
+        /// The first field.
+        one: &'static str,
+        /// The second.
+        other: &'static str,
+    },
+
+    /// A rule says its scope in neither field.
+    #[error("rule `{rule}` sets neither `{one}` nor `{other}`; it governs nothing")]
+    ScopeMissing {
+        /// The rule.
+        rule: RuleId,
+        /// The first field it could have used.
+        one: &'static str,
+        /// The second.
+        other: &'static str,
+    },
+
+    /// A module's scope glob is not valid.
+    ///
+    /// Named by module rather than by rule, because every rule inside it is
+    /// fine and the module is the thing to fix. Issue #74.
+    #[error("module `{module}`: {source}")]
+    ModuleScope {
+        /// The module.
+        module: archwarden_core::ids::ModuleId,
+        /// What went wrong.
+        #[source]
+        source: ScopeError,
+    },
+
     /// A rule's scope glob is not valid.
     #[error("rule `{rule}`: {source}")]
     Scope {
@@ -219,12 +272,16 @@ pub enum CompileError {
 pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
     let config = &merged.config;
 
+    let modules = Modules::compile(config)?;
+
     let mut rules = Vec::new();
     for (module, module_why, rule) in config.rules() {
         rules.push(compile_rule(
             rule,
             module.cloned(),
             module_why.map(ToOwned::to_owned),
+            &modules,
+            module,
         )?);
     }
 
@@ -242,12 +299,94 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
     };
 
     Ok(
-        CompiledConfig::new(rules, ignore, skip_dirs, rules_hash(config)).with_languages(
-            archwarden_core::compiled::Languages {
+        CompiledConfig::new(rules, ignore, skip_dirs, rules_hash(config))
+            .with_modules(modules.compiled())
+            .with_languages(archwarden_core::compiled::Languages {
                 astro: config.languages.contains(&config::Language::Astro),
-            },
-        ),
+            }),
     )
+}
+
+/// The paths a boundary forbids, from whichever field it used.
+///
+/// `forbid_module` and `forbid_import_from` are refused together, on the same
+/// argument as `from` and `from_module`: one rule, one way of saying what it
+/// is about. Neither is fine — a boundary may forbid nothing and require
+/// something instead, which `must_import_from` is for.
+fn forbidden_paths(
+    id: &RuleId,
+    rule: &crate::rule::ImportBoundaryRule,
+    modules: &Modules,
+) -> Result<PathSet, CompileError> {
+    if !rule.forbid_module.is_empty() && !rule.forbid_import_from.is_empty() {
+        return Err(CompileError::ScopeSaidTwice {
+            rule: id.clone(),
+            one: "forbid_import_from",
+            other: "forbid_module",
+        });
+    }
+
+    if rule.forbid_module.is_empty() {
+        return globs(id, "forbid_import_from", &rule.forbid_import_from);
+    }
+
+    let mut patterns: Vec<String> = Vec::new();
+    for named in &rule.forbid_module {
+        patterns.extend(modules.paths_of(id, named)?.iter().cloned());
+    }
+    PathSet::compile(&patterns).map_err(|source| CompileError::Glob {
+        rule: id.clone(),
+        field: "forbid_module",
+        source,
+    })
+}
+
+/// A rule's scope, from whichever field it used.
+///
+/// A boundary may say who it is about as globs (`from`) or as a module
+/// (`from_module`), and exactly one of those is required. Both is refused
+/// rather than resolved: two spellings of one scope on one rule is the
+/// ambiguity that produces a rule enforcing something nobody meant, and unlike
+/// glob containment this one is decidable at compile time.
+fn compile_scope(
+    rule: &Rule,
+    id: &RuleId,
+    modules: &Modules,
+    inside: Option<&archwarden_core::ids::ModuleId>,
+) -> Result<Scope, CompileError> {
+    let own = if let Rule::ImportBoundary(boundary) = rule {
+        match (boundary.from.is_empty(), boundary.from_module.as_ref()) {
+            (false, Some(_)) => {
+                return Err(CompileError::ScopeSaidTwice {
+                    rule: id.clone(),
+                    one: "from",
+                    other: "from_module",
+                });
+            }
+            (true, None) => {
+                return Err(CompileError::ScopeMissing {
+                    rule: id.clone(),
+                    one: "from",
+                    other: "from_module",
+                });
+            }
+            (true, Some(named)) => Scope::compile(modules.paths_of(id, named)?),
+            (false, None) => Scope::compile(rule.scope()),
+        }
+    } else {
+        Scope::compile(rule.scope())
+    }
+    .map_err(|source| CompileError::Scope {
+        rule: id.clone(),
+        source,
+    })?;
+
+    // Narrowed, never replaced: a rule keeps its own scope and reaches where
+    // the module it lives in also reaches. See `Scope::within` for why this is
+    // not a refusal.
+    Ok(inside
+        .and_then(|id| modules.scopes.get(id))
+        .map_or(own.clone(), |outer| own.within(outer)))
 }
 
 /// Hashes the effective rule set, for the `findings` cache key.
@@ -261,6 +400,86 @@ fn rules_hash(config: &Config) -> ContentHash {
     ContentHash::of(&serialised)
 }
 
+/// The modules a config declares that have paths of their own.
+///
+/// Compiled once and consulted by every rule, rather than once per rule: a
+/// module of nine rules would otherwise build the same globs nine times, and
+/// a boundary naming a module needs one it does not live in.
+struct Modules {
+    /// Scope by id, for narrowing a rule that lives inside one.
+    scopes: std::collections::BTreeMap<archwarden_core::ids::ModuleId, Scope>,
+    /// The patterns as written, for a rule that names a module and needs its
+    /// paths as a `PathSet` rather than as a scope.
+    patterns: std::collections::BTreeMap<archwarden_core::ids::ModuleId, Vec<String>>,
+    /// Every id the config declares, including those with no scope: naming one
+    /// of those is a different mistake from naming one that does not exist,
+    /// and the two deserve different sentences.
+    declared: std::collections::BTreeSet<archwarden_core::ids::ModuleId>,
+}
+
+impl Modules {
+    fn compile(config: &Config) -> Result<Self, CompileError> {
+        let mut scopes = std::collections::BTreeMap::new();
+        let mut patterns = std::collections::BTreeMap::new();
+        let mut declared = std::collections::BTreeSet::new();
+
+        for module in &config.modules {
+            declared.insert(module.id.clone());
+            if module.scope.is_empty() {
+                continue;
+            }
+            let scope =
+                Scope::compile(&module.scope).map_err(|source| CompileError::ModuleScope {
+                    module: module.id.clone(),
+                    source,
+                })?;
+            scopes.insert(module.id.clone(), scope);
+            patterns.insert(
+                module.id.clone(),
+                module.scope.iter().map(ToOwned::to_owned).collect(),
+            );
+        }
+
+        Ok(Self {
+            scopes,
+            patterns,
+            declared,
+        })
+    }
+
+    /// The modules, as the rest of the run sees them.
+    fn compiled(&self) -> Vec<archwarden_core::compiled::CompiledModule> {
+        self.declared
+            .iter()
+            .map(|id| archwarden_core::compiled::CompiledModule {
+                id: id.clone(),
+                scope: self.scopes.get(id).cloned(),
+            })
+            .collect()
+    }
+
+    /// The paths a named module is, or why it cannot answer.
+    fn paths_of(
+        &self,
+        rule: &RuleId,
+        module: &archwarden_core::ids::ModuleId,
+    ) -> Result<&[String], CompileError> {
+        if !self.declared.contains(module) {
+            return Err(CompileError::UnknownModule {
+                rule: rule.clone(),
+                module: module.clone(),
+            });
+        }
+        self.patterns
+            .get(module)
+            .map(Vec::as_slice)
+            .ok_or_else(|| CompileError::ModuleHasNoScope {
+                rule: rule.clone(),
+                module: module.clone(),
+            })
+    }
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one arm per rule kind, each a literal. Splitting it would put the \
@@ -271,13 +490,12 @@ fn compile_rule(
     rule: &Rule,
     module: Option<archwarden_core::ids::ModuleId>,
     module_why: Option<String>,
+    modules: &Modules,
+    inside: Option<&archwarden_core::ids::ModuleId>,
 ) -> Result<CompiledRule, CompileError> {
     let id = rule.id().clone();
 
-    let scope = Scope::compile(rule.scope()).map_err(|source| CompileError::Scope {
-        rule: id.clone(),
-        source,
-    })?;
+    let scope = compile_scope(rule, &id, modules, inside)?;
 
     let kind = match rule {
         Rule::Structure(r) => CompiledRuleKind::Structure {
@@ -339,7 +557,11 @@ fn compile_rule(
         },
 
         Rule::ImportBoundary(r) => CompiledRuleKind::ImportBoundary {
-            forbid: globs(&id, "forbid_import_from", &r.forbid_import_from)?,
+            // A named module becomes its paths here, so nothing downstream
+            // knows the difference: the engine sees the `PathSet` it always
+            // saw, and the config says `infrastructure` instead of repeating
+            // that module's globs. Issue #74.
+            forbid: forbidden_paths(&id, r, modules)?,
             require: globs(&id, "must_import_from", &r.must_import_from)?,
             forbid_packages: r.forbid_import_from_packages.iter().cloned().collect(),
             except: globs(&id, "except", &r.except)?,
@@ -790,6 +1012,206 @@ mod tests {
 
     fn path(p: &str) -> RepoRelPath {
         RepoRelPath::new(p).expect("valid path")
+    }
+
+    /// A module with paths of its own narrows every rule inside it.
+    ///
+    /// Issue #74: the fixture config in `xtask/src/preview.rs` said
+    /// `packages/domain/src/*` in two rules and `packages/domain/**` in a
+    /// boundary that forbade a module by glob. Moving the package meant
+    /// editing four places, and missing one made a rule stop reaching with
+    /// nothing reporting it.
+    #[test]
+    fn a_rule_inside_a_scoped_module_reaches_where_both_reach() {
+        let compiled = compile_json(
+            r#"{"version":0,"modules":[
+                {"id":"domain","scope":"packages/domain/**","rules":[
+                  {"type":"structure","id":"shape","level":"error",
+                   "roots":"packages/domain/src/*","allowed_subfolders":["calcs"]}]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = compiled.rules().next().expect("one rule");
+        assert!(
+            rule.scope
+                .matches_dir(camino::Utf8Path::new("packages/domain/src/order"))
+        );
+        assert!(
+            !rule
+                .scope
+                .matches_dir(camino::Utf8Path::new("packages/billing/src/order")),
+            "the module's scope narrows it"
+        );
+    }
+
+    /// A module without one keeps working exactly as before, which is what
+    /// makes the field additive rather than a migration.
+    #[test]
+    fn a_module_with_no_scope_narrows_nothing() {
+        let compiled = compile_json(
+            r#"{"version":0,"modules":[
+                {"id":"domain","rules":[
+                  {"type":"structure","id":"shape","level":"error",
+                   "roots":"packages/*/src","allowed_subfolders":["calcs"]}]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = compiled.rules().next().expect("one rule");
+        assert!(
+            rule.scope
+                .matches_dir(camino::Utf8Path::new("packages/billing/src"))
+        );
+    }
+
+    /// A rule whose `roots` points outside its module reaches nothing. That is
+    /// the cost of narrowing over refusing, it is silent, and `config doctor`
+    /// is where it stops being silent.
+    #[test]
+    fn a_rule_pointing_outside_its_module_reaches_nothing() {
+        let compiled = compile_json(
+            r#"{"version":0,"modules":[
+                {"id":"domain","scope":"packages/domain/**","rules":[
+                  {"type":"structure","id":"stray","level":"error",
+                   "roots":"apps/api/src/*","allowed_subfolders":["calcs"]}]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = compiled.rules().next().expect("one rule");
+        assert!(
+            !rule
+                .scope
+                .matches_dir(camino::Utf8Path::new("apps/api/src/env"))
+        );
+    }
+
+    /// A boundary names the module it is about, instead of re-describing it.
+    ///
+    /// The duplication issue #74 opens with: the fixture said
+    /// `packages/domain/**` in a boundary rule and `packages/domain/src/*` in
+    /// the rules of a module called `domain`, and forbade `infrastructure` —
+    /// a declared module — by glob. Four places to edit, and nothing knowing
+    /// they were the same thing.
+    #[test]
+    fn a_boundary_can_name_the_modules_it_is_about() {
+        let compiled = compile_json(
+            r#"{"version":0,
+                "modules":[
+                  {"id":"domain","scope":"packages/domain/**"},
+                  {"id":"infrastructure","scope":"packages/infrastructure/**"}],
+                "rules":[
+                  {"type":"import-boundary","id":"sealed","level":"error",
+                   "from_module":"domain","forbid_module":["infrastructure"]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = compiled.rules().next().expect("one rule");
+        assert!(
+            rule.scope
+                .matches_dir(camino::Utf8Path::new("packages/domain/src"))
+        );
+        assert!(
+            !rule
+                .scope
+                .matches_dir(camino::Utf8Path::new("packages/infrastructure/src"))
+        );
+        assert!(
+            matches!(&rule.kind, CompiledRuleKind::ImportBoundary { forbid, .. }
+                     if forbid.is_match(camino::Utf8Path::new("packages/infrastructure/src/pdf/pdf.ts"))),
+            "the named module became the forbidden paths"
+        );
+    }
+
+    /// Naming a module that does not exist is refused. Silently forbidding
+    /// nothing is the failure this whole feature is meant to remove.
+    #[test]
+    fn a_boundary_naming_a_module_that_does_not_exist_is_refused() {
+        let error = compile_json(
+            r#"{"version":0,
+                "modules":[{"id":"domain","scope":"packages/domain/**"}],
+                "rules":[
+                  {"type":"import-boundary","id":"sealed","level":"error",
+                   "from_module":"domain","forbid_module":["infra"]}]}"#,
+        )
+        .expect_err("no such module");
+
+        assert!(
+            matches!(&error, CompileError::UnknownModule { module, .. } if module.as_str() == "infra"),
+            "{error:?}"
+        );
+    }
+
+    /// And naming one that exists but declared no paths, which would forbid
+    /// nothing just as quietly.
+    #[test]
+    fn a_boundary_naming_a_module_with_no_scope_is_refused() {
+        let error = compile_json(
+            r#"{"version":0,
+                "modules":[{"id":"domain","scope":"packages/domain/**"},
+                           {"id":"loose"}],
+                "rules":[
+                  {"type":"import-boundary","id":"sealed","level":"error",
+                   "from_module":"domain","forbid_module":["loose"]}]}"#,
+        )
+        .expect_err("no scope");
+
+        assert!(
+            matches!(&error, CompileError::ModuleHasNoScope { module, .. } if module.as_str() == "loose"),
+            "{error:?}"
+        );
+    }
+
+    /// Saying it both ways on one rule is refused rather than resolved. Two
+    /// spellings of the scope on one rule is the ambiguity that produces a
+    /// rule enforcing something nobody meant, and unlike glob containment this
+    /// one is decidable.
+    #[test]
+    fn a_boundary_may_not_say_its_scope_both_ways() {
+        let error = compile_json(
+            r#"{"version":0,
+                "modules":[{"id":"domain","scope":"packages/domain/**"}],
+                "rules":[
+                  {"type":"import-boundary","id":"sealed","level":"error",
+                   "from":"apps/**","from_module":"domain",
+                   "forbid_import_from":["packages/infra/**"]}]}"#,
+        )
+        .expect_err("both ways");
+
+        assert!(
+            matches!(&error, CompileError::ScopeSaidTwice { rule, .. } if rule.as_str() == "sealed"),
+            "{error:?}"
+        );
+    }
+
+    /// And a boundary that says neither has no importers to be about.
+    #[test]
+    fn a_boundary_must_say_who_it_is_about() {
+        let error = compile_json(
+            r#"{"version":0,"rules":[
+                  {"type":"import-boundary","id":"sealed","level":"error",
+                   "forbid_import_from":["packages/infra/**"]}]}"#,
+        )
+        .expect_err("says neither");
+
+        assert!(
+            matches!(&error, CompileError::ScopeMissing { rule, .. } if rule.as_str() == "sealed"),
+            "{error:?}"
+        );
+    }
+
+    /// A scope that is not a glob is refused, and names the module rather than
+    /// the rule: the rule is fine and the module is what has to be fixed.
+    #[test]
+    fn a_module_scope_that_is_not_a_glob_is_refused_by_module() {
+        let error = compile_json(
+            r#"{"version":0,"modules":[
+                {"id":"domain","scope":"packages/[","rules":[]}]}"#,
+        )
+        .expect_err("not a glob");
+
+        assert!(
+            matches!(&error, CompileError::ModuleScope { module, .. } if module.as_str() == "domain"),
+            "{error:?}"
+        );
     }
 
     /// Extracts a `Pattern` error, or `None`. See the convention in

@@ -752,6 +752,21 @@ accepted; module membership is only a label for output.
   resolved import path. If `from` matches but no import satisfies the
   requirement, the file is illegal.
 
+**Naming a module instead of describing it.** When a module declares a `scope`
+(see [CONFIG.md](CONFIG.md#modules-with-a-scope)), `from_module` and
+`forbid_module` take module ids in place of globs:
+
+```json
+{ "type": "import-boundary", "id": "domain-is-sealed", "level": "error",
+  "from_module": "domain", "forbid_module": ["infrastructure"] }
+```
+
+They become that module's paths when the config compiles, so everything below
+applies unchanged. Saying it both ways on one rule — `from` *and* `from_module`,
+or `forbid_import_from` *and* `forbid_module` — is refused, as is naming a
+module that does not exist or one that declared no `scope`. Every one of those
+would otherwise be a rule quietly governing nothing.
+
 **Exceptions**. Each rule accepts `except`, a list of globs matched against
 the *resolved* import path. Common use: "UI may not import domain, except
 type-only imports from `domain/*/types/**`".

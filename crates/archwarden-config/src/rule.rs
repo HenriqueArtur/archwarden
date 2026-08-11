@@ -8,7 +8,10 @@
 //!
 //! See `docs/RULES.md` for semantics and `docs/CONFIG.md` for examples.
 
-use archwarden_core::{ids::RuleId, level::Level};
+use archwarden_core::{
+    ids::{ModuleId, RuleId},
+    level::Level,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -549,11 +552,32 @@ pub struct ImportBoundaryRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// Directory globs selecting the importer. Same semantics as `roots`.
+    ///
+    /// Exactly one of this and [`from_module`](Self::from_module) is required.
+    /// Saying it both ways is refused when the config compiles: two spellings
+    /// of one scope on one rule is the ambiguity that produces a rule
+    /// enforcing something nobody meant.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub from: Patterns,
+    /// The module the importers are, instead of the globs they match.
+    ///
+    /// A module that declared a `scope` has paths already; naming it here
+    /// stops a boundary from re-describing them. Move the package and one
+    /// place changes instead of two, and nothing silently stops reaching.
+    /// Issue #74.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_module: Option<ModuleId>,
     /// Globs matched against the *resolved* import path. Matching means the
     /// import is illegal.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub forbid_import_from: Patterns,
+    /// Modules whose files may not be imported, instead of the globs they are.
+    ///
+    /// Folded into `forbid_import_from` when the config compiles, so nothing
+    /// downstream knows the difference — but the config says `infrastructure`
+    /// where it used to repeat that module's paths. Issue #74.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub forbid_module: OneOrMany<ModuleId>,
     /// Globs matched against the resolved import path. If none of the file's
     /// imports match, the file is illegal.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]

@@ -101,6 +101,18 @@ pub struct Config {
 pub struct Module {
     /// The label.
     pub id: ModuleId,
+    /// The paths this module is.
+    ///
+    /// Optional, so every config written before this keeps working: a module
+    /// with no scope is what a module has always been, a namespace for rules.
+    ///
+    /// With one, the module stops being only a label. A rule inside it reaches
+    /// where its own `roots` and this agree, a boundary elsewhere can name the
+    /// module instead of re-describing it by glob, and `config doctor` can ask
+    /// two questions it could not ask before: whether a module reaches
+    /// anything, and whether any rule references it. Issue #74.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub scope: OneOrMany<String>,
     /// Why this module exists, in the author's words.
     ///
     /// A module is a bigger decision than any rule inside it — one sentence

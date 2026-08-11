@@ -38,6 +38,14 @@ pub struct Scope {
     /// because the root is the empty path, which is not a glob any engine
     /// matches naturally.
     matches_root: bool,
+    /// A second scope every match must also satisfy.
+    ///
+    /// The module a rule lives in, when that module declared paths of its own
+    /// (issue #74). Held rather than merged into `matchers` because the two
+    /// are a conjunction and the matchers are a disjunction: a rule scoped to
+    /// `a/*` or `b/*`, inside a module scoped to `a/**`, reaches `a/*` alone,
+    /// and no single list of globs says that.
+    within: Option<Box<Scope>>,
 }
 
 impl Scope {
@@ -86,6 +94,7 @@ impl Scope {
             matchers,
             patterns: stored,
             matches_root,
+            within: None,
         })
     }
 
@@ -93,6 +102,12 @@ impl Scope {
     /// the repository root itself is the empty path.
     #[must_use]
     pub fn matches_dir(&self, dir: &Utf8Path) -> bool {
+        if let Some(outer) = &self.within
+            && !outer.matches_dir(dir)
+        {
+            return false;
+        }
+
         let as_str = dir.as_str();
         if as_str.is_empty() || as_str == "." {
             return self.matches_root;
@@ -110,9 +125,37 @@ impl Scope {
     }
 
     /// The patterns as written, for diagnostics.
+    ///
+    /// The rule's own, never the narrowing. A finding names what the rule was
+    /// written to govern; the module it sits in is a separate sentence and is
+    /// reported as one.
     #[must_use]
     pub fn patterns(&self) -> &[String] {
         &self.patterns
+    }
+
+    /// This scope, narrowed to what `outer` also reaches.
+    ///
+    /// Narrowing rather than replacing, and not refusing: a rule inside a
+    /// module with paths of its own keeps its `roots`, and reaches where both
+    /// agree. A rule pointing outside its module therefore reaches nothing,
+    /// which is silent — so `config doctor` names it. Refusing at compile time
+    /// would be louder and cannot be done: whether one glob contains another
+    /// is not a question `globset` answers, and the only honest test is
+    /// against a tree that has already been walked. Issue #74.
+    #[must_use]
+    pub fn within(&self, outer: &Self) -> Self {
+        Self {
+            matchers: self.matchers.clone(),
+            patterns: self.patterns.clone(),
+            matches_root: self.matches_root,
+            within: Some(Box::new(match &self.within {
+                // Already narrowed once: narrow the narrowing, so a module
+                // nested in a module composes rather than replacing.
+                Some(inner) => inner.within(outer),
+                None => outer.clone(),
+            })),
+        }
     }
 }
 
@@ -137,6 +180,71 @@ fn add_glob(matchers: &mut Vec<GlobMatcher>, pattern: &str, raw: &str) -> Result
         })?;
     matchers.push(glob.compile_matcher());
     Ok(())
+}
+
+#[cfg(test)]
+mod narrowing_tests {
+    use super::Scope;
+    use camino::Utf8Path;
+
+    /// A rule inside a module reaches where both agree, and nowhere else.
+    ///
+    /// Issue #74. A module gains paths of its own, and a rule inside it keeps
+    /// its `roots` — so the two have to combine, and narrowing is the safe
+    /// combination: a module that says "this is my area" cannot have a rule
+    /// inside it governing somewhere else.
+    #[test]
+    fn a_narrowed_scope_reaches_only_where_both_reach() {
+        let rule = Scope::compile(["packages/domain/src/*"]).expect("valid");
+        let module = Scope::compile(["packages/domain/**"]).expect("valid");
+
+        let narrowed = rule.within(&module);
+
+        assert!(narrowed.matches_dir(Utf8Path::new("packages/domain/src/order")));
+        assert!(
+            !narrowed.matches_dir(Utf8Path::new("packages/billing/src/order")),
+            "outside the module"
+        );
+    }
+
+    /// The case the `doctor` check exists for: a rule whose `roots` points
+    /// somewhere its module does not reach selects nothing at all. Silent
+    /// emptiness is the failure this project keeps refusing, which is why
+    /// `config doctor` names it — but the semantics here stay narrowing,
+    /// because deciding whether one glob contains another is not something
+    /// `globset` can answer.
+    #[test]
+    fn a_rule_reaching_outside_its_module_reaches_nothing() {
+        let rule = Scope::compile(["apps/api/src/*"]).expect("valid");
+        let module = Scope::compile(["packages/domain/**"]).expect("valid");
+
+        let narrowed = rule.within(&module);
+
+        assert!(!narrowed.matches_dir(Utf8Path::new("apps/api/src/env")));
+        assert!(!narrowed.matches_dir(Utf8Path::new("packages/domain/src")));
+    }
+
+    /// Narrowing keeps the rule's own patterns for diagnostics: a finding says
+    /// what the rule was written to govern, not the intersection nobody typed.
+    #[test]
+    fn the_patterns_reported_are_the_ones_the_rule_was_written_with() {
+        let rule = Scope::compile(["packages/domain/src/*"]).expect("valid");
+        let module = Scope::compile(["packages/domain/**"]).expect("valid");
+
+        assert_eq!(rule.within(&module).patterns(), ["packages/domain/src/*"]);
+    }
+
+    /// A rule at the repository root, narrowed by a module that does not
+    /// include the root, stops matching it. The root is tracked separately
+    /// from the matchers and would otherwise slip past the narrowing.
+    #[test]
+    fn the_root_is_narrowed_like_anything_else() {
+        let rule = Scope::compile(["."]).expect("valid");
+        let module = Scope::compile(["packages/domain/**"]).expect("valid");
+
+        assert!(rule.matches_dir(Utf8Path::new(".")));
+        assert!(!rule.within(&module).matches_dir(Utf8Path::new(".")));
+    }
 }
 
 #[cfg(test)]

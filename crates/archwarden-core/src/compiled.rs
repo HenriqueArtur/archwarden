@@ -324,10 +324,26 @@ impl CompiledRule {
 #[derive(Debug, Clone)]
 pub struct CompiledConfig {
     rules: Vec<CompiledRule>,
+    modules: Vec<CompiledModule>,
     ignore: PathSet,
     skip_dirs: SkipDirs,
     rules_hash: ContentHash,
     languages: Languages,
+}
+
+/// A module, as the rest of the run sees it.
+#[derive(Debug, Clone)]
+pub struct CompiledModule {
+    /// The label.
+    pub id: ModuleId,
+    /// The paths it is, when it declared any.
+    ///
+    /// `None` is what a module has always been: a namespace for rules, with no
+    /// paths of its own. Everything a scope unlocks — narrowing the rules
+    /// inside it, being named by a boundary, being asked whether it reaches
+    /// anything — is unavailable to those, deliberately, because inventing a
+    /// scope for them would be guessing at the thing the field exists to state.
+    pub scope: Option<Scope>,
 }
 
 impl CompiledConfig {
@@ -359,11 +375,33 @@ impl CompiledConfig {
     ) -> Self {
         Self {
             rules,
+            modules: Vec::new(),
             ignore,
             skip_dirs,
             rules_hash,
             languages: Languages::default(),
         }
+    }
+
+    /// Records the modules the configuration declared.
+    ///
+    /// A builder step for the same reason `with_languages` is one: every test
+    /// of a rule keeps the constructor it had, and the caller that cares says
+    /// so on a line that names what it is setting.
+    #[must_use]
+    pub fn with_modules(mut self, modules: Vec<CompiledModule>) -> Self {
+        self.modules = modules;
+        self
+    }
+
+    /// Every module, in declaration order.
+    ///
+    /// Carried past compilation because two questions need them and neither
+    /// is a rule's: whether a module reaches any file, and whether any rule
+    /// references it. Both are `config doctor`'s, and neither could be asked
+    /// while a module was only a namespace. Issue #74.
+    pub fn modules(&self) -> impl Iterator<Item = &CompiledModule> {
+        self.modules.iter()
     }
 
     /// Every rule, in declaration order.
@@ -474,6 +512,47 @@ mod tests {
             SkipDirs::default(),
             ContentHash::of(b"rules"),
         )
+    }
+
+    /// The modules a config declared travel with it, because two questions
+    /// need them and neither belongs to a rule: whether a module reaches any
+    /// file, and whether anything references it. Issue #74.
+    #[test]
+    fn the_modules_a_configuration_declared_travel_with_it() {
+        let declared = vec![
+            CompiledModule {
+                id: ModuleId::new("domain").expect("valid id"),
+                scope: Some(Scope::compile(["packages/domain/**"]).expect("valid scope")),
+            },
+            CompiledModule {
+                id: ModuleId::new("loose").expect("valid id"),
+                scope: None,
+            },
+        ];
+
+        let compiled = config(Vec::new(), &[]).with_modules(declared);
+
+        let seen: Vec<&str> = compiled.modules().map(|m| m.id.as_str()).collect();
+        assert_eq!(seen, ["domain", "loose"]);
+
+        let domain = compiled.modules().next().expect("the first");
+        assert!(
+            domain
+                .scope
+                .as_ref()
+                .is_some_and(|s| s.matches_dir(camino::Utf8Path::new("packages/domain/src"))),
+        );
+        assert!(
+            compiled.modules().nth(1).is_some_and(|m| m.scope.is_none()),
+            "a module with no paths is what a module has always been"
+        );
+    }
+
+    /// And a configuration that declared none has none, rather than an
+    /// invented empty module for the rules that belong to no module.
+    #[test]
+    fn a_configuration_with_no_modules_reports_none() {
+        assert_eq!(config(Vec::new(), &[]).modules().count(), 0);
     }
 
     /// Which languages a configuration asked for travels with it, and a

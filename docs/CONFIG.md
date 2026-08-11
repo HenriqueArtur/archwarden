@@ -95,9 +95,9 @@ would refuse to complete.
   },
 
   "modules": [
-    { "id": "domain",       "rules": [ ... ] },
-    { "id": "application",  "rules": [ ... ] },
-    { "id": "api-routes",   "rules": [ ... ] }
+    { "id": "domain",      "scope": "packages/domain/**",      "rules": [ ... ] },
+    { "id": "application", "scope": "packages/application/**", "rules": [ ... ] },
+    { "id": "api-routes",  "scope": "apps/api/src/routes/**",  "rules": [ ... ] }
   ],
 
   "rules": [ ... ]
@@ -114,11 +114,52 @@ would refuse to complete.
   is JavaScript and TypeScript together. `["ts", "astro"]` adds the TypeScript
   module inside an `.astro` file's `---` fence.
 - `skip_dirs` — the `_`-prefix escape hatch, see [`RULES.md`](RULES.md).
-- `modules` — logical groupings of rules. A "module" is just a name that
-  scopes a set of rules to a set of paths. Naming things helps error
-  reporting: findings show `[domain] packages/domain/src/user/wrong-folder/`.
+- `modules` — logical groupings of rules, optionally with paths of their own.
+  Naming things helps error reporting: findings show
+  `[domain] packages/domain/src/user/wrong-folder/`. See
+  [modules with a scope](#modules-with-a-scope) for what `scope` adds.
 - `rules` — rules that belong to no particular module, typically import
   boundaries (which are cross-module by nature). They report as `[*]`.
+
+### Modules with a scope
+
+A module is a name for a group of rules. Give it a `scope` and it also becomes
+a name for a part of the repository:
+
+```json
+{
+  "modules": [
+    { "id": "domain",         "scope": "packages/domain/**", "rules": [ ... ] },
+    { "id": "infrastructure", "scope": "packages/infrastructure/**" }
+  ],
+  "rules": [
+    { "type": "import-boundary", "id": "domain-is-sealed", "level": "error",
+      "from_module": "domain", "forbid_module": ["infrastructure"] }
+  ]
+}
+```
+
+`scope` is optional, and a module without one is exactly what modules have
+always been.
+
+**A rule inside a scoped module reaches where both reach.** It keeps its own
+`roots`, and the module narrows it. In practice the rule's `roots` is already
+inside the module and nothing changes; when it is not, the rule reaches
+*nothing* — so `config doctor` reports `rule-reaches-outside-its-module` rather
+than leaving it silent. Narrowing rather than refusing at compile time is not a
+preference: whether one glob contains another is not a question a glob engine
+answers, and the only honest test is against a tree that has been walked.
+
+**A boundary can name a module instead of re-describing it.** `from_module`
+and `forbid_module` take module ids and become that module's paths when the
+config compiles. Saying it both ways on one rule — `from` *and* `from_module` —
+is refused, as is naming a module that does not exist or one that declared no
+`scope`. Each of those would otherwise be a rule quietly governing nothing.
+
+What it buys beyond less repetition: move a package and one line changes
+instead of four, and `config doctor` gains two questions it could not ask
+while a module was only a label — `module-scope-matches-nothing`, and
+`module-nobody-references` for a module declared and never used.
 
 ### The HTML pages, and their language
 

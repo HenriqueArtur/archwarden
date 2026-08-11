@@ -55,6 +55,8 @@ pub fn examine(config: &CompiledConfig) -> Vec<Concern> {
 
     reasons_left_unsaid(config, &mut concerns);
 
+    module_nobody_references(config, &mut concerns);
+
     for rule in config.rules() {
         unreachable_scope(config, rule, &mut concerns);
         constrains_nothing(rule, &mut concerns);
@@ -380,8 +382,13 @@ pub fn examine_repository(
     // `check` asks. Re-deriving "does this rule cover this file?" here would
     // be a second implementation, and the doctor would eventually disagree
     // with the checker about which files a rule is even about.
+    for module in config.modules() {
+        module_scope_matches_nothing(module, tree, &mut concerns);
+    }
+
     for (rule, engine) in config.rules().zip(archwarden_rules::engines_for(config)) {
         scope_matches_nothing(rule, tree, &mut concerns);
+        rule_reaches_outside_its_module(config, rule, tree, &mut concerns);
         pattern_matches_nothing(config, rule, tree, &mut concerns);
         symbol_never_imported(root, config, rule, engine.as_ref(), tree, &mut concerns);
         only_a_default_export(root, config, rule, engine.as_ref(), tree, &mut concerns);
@@ -467,6 +474,130 @@ fn rule_evaluates_nothing(
 
 /// A scope naming a directory that is not there. Usually a typo, occasionally
 /// a folder someone renamed and a rule nobody updated.
+/// A module every rule declares and none of them mentions.
+///
+/// Free once a module has paths of its own (issue #74), and worth having: a
+/// module nothing references is a name somebody wrote down and a constraint
+/// nobody wrote. It is the shape of `governance: closed` (#60) asked about the
+/// config rather than about the tree.
+///
+/// A module that holds rules references itself, so only the empty declarations
+/// and the ones no boundary names are reported.
+fn module_nobody_references(config: &CompiledConfig, concerns: &mut Vec<Concern>) {
+    for module in config.modules() {
+        if config
+            .rules()
+            .any(|rule| rule.module.as_ref() == Some(&module.id))
+        {
+            continue;
+        }
+
+        concerns.push(Concern {
+            code: "module-nobody-references",
+            rule_id: None,
+            path: None,
+            message: format!("module `{}` holds no rules and none names it", module.id),
+            fix: "give it a rule, name it from an `import-boundary` with \
+                  `from_module` or `forbid_module`, or delete the declaration"
+                .to_owned(),
+        });
+    }
+}
+
+/// A module whose `scope` selects no directory in the repository.
+///
+/// The module-level twin of `scope-matches-nothing`, and it costs more,
+/// because a module that reaches nothing takes every rule inside it down with
+/// it: they are narrowed to the intersection, and the intersection of anything
+/// with nothing is nothing. One typo in one field, and nine rules go quiet
+/// with the config still looking right.
+fn module_scope_matches_nothing(
+    module: &archwarden_core::compiled::CompiledModule,
+    tree: &RepoTree,
+    concerns: &mut Vec<Concern>,
+) {
+    let Some(scope) = &module.scope else {
+        return;
+    };
+    if tree
+        .directories()
+        .any(|(path, _)| scope.matches_dir(path.as_path()))
+    {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "module-scope-matches-nothing",
+        rule_id: None,
+        path: None,
+        message: format!(
+            "module `{}` selects no directory in the repository: {}",
+            module.id,
+            list(scope.patterns())
+        ),
+        fix: "every rule inside a module is narrowed to it, so a module that \
+              reaches nothing silences all of them. Check the glob against the \
+              tree"
+            .to_owned(),
+    });
+}
+
+/// A rule whose own scope points outside the module it lives in.
+///
+/// The cost of narrowing rather than refusing (`Scope::within`). A rule that
+/// keeps `roots: "apps/**"` inside a module scoped to `packages/domain/**`
+/// reaches nothing, and nothing about the config looks wrong. Refusing when it
+/// compiles is not available — whether one glob contains another is not a
+/// question `globset` answers — so it is asked here, against a tree, where it
+/// is a fact rather than a guess.
+fn rule_reaches_outside_its_module(
+    config: &CompiledConfig,
+    rule: &CompiledRule,
+    tree: &RepoTree,
+    concerns: &mut Vec<Concern>,
+) {
+    let Some(module_id) = &rule.module else {
+        return;
+    };
+    let Some(module) = config.modules().find(|m| &m.id == module_id) else {
+        return;
+    };
+    let Some(scope) = &module.scope else {
+        return;
+    };
+    // Its own patterns reach somewhere, and the narrowed scope reaches
+    // nowhere: the module is what removed it.
+    let own = archwarden_core::scope::Scope::compile(rule.scope.patterns());
+    let Ok(own) = own else { return };
+
+    let alone = tree
+        .directories()
+        .any(|(path, _)| own.matches_dir(path.as_path()));
+    let narrowed = tree
+        .directories()
+        .any(|(path, _)| rule.scope.matches_dir(path.as_path()));
+
+    if !alone || narrowed {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "rule-reaches-outside-its-module",
+        rule_id: Some(rule.id.clone()),
+        path: None,
+        message: format!(
+            "{} matches directories the repository has, and none of them is inside \
+             module `{module_id}` ({})",
+            list(rule.scope.patterns()),
+            list(scope.patterns())
+        ),
+        fix: "a rule inside a module reaches where both reach, so this one \
+              reaches nothing. Widen the module's `scope`, narrow the rule's \
+              `roots`, or move the rule out of the module"
+            .to_owned(),
+    });
+}
+
 fn scope_matches_nothing(rule: &CompiledRule, tree: &RepoTree, concerns: &mut Vec<Concern>) {
     if tree
         .directories()
@@ -1370,6 +1501,97 @@ mod tests {
             .collect();
         drop(guard);
         codes
+    }
+
+    fn module(id: &str, scope: Option<&str>) -> archwarden_core::compiled::CompiledModule {
+        archwarden_core::compiled::CompiledModule {
+            id: archwarden_core::ids::ModuleId::new(id).expect("valid id"),
+            scope: scope.map(|s| Scope::compile([s]).expect("valid scope")),
+        }
+    }
+
+    fn in_module(mut rule: CompiledRule, id: &str) -> CompiledRule {
+        rule.module = Some(archwarden_core::ids::ModuleId::new(id).expect("valid id"));
+        rule
+    }
+
+    /// A module that reaches nothing takes every rule inside it down with it,
+    /// because each is narrowed to the intersection and the intersection of
+    /// anything with nothing is nothing. One typo, nine silent rules, and a
+    /// config that still looks right.
+    #[test]
+    fn a_module_scope_matching_no_directory_is_reported() {
+        let config = config(vec![rule("shape", &["src/*"], structure(&["calcs"], &[]))])
+            .with_modules(vec![module("domain", Some("packages/domian/**"))]);
+
+        assert!(
+            repository_codes(&[("src/a/b.ts", "export const a = 1;\n")], &config)
+                .contains(&"module-scope-matches-nothing"),
+        );
+    }
+
+    /// And one that reaches something is not reported, which is the half that
+    /// makes the test above mean anything.
+    #[test]
+    fn a_module_that_reaches_a_directory_is_not_reported() {
+        let config = config(vec![rule("shape", &["src/*"], structure(&["calcs"], &[]))])
+            .with_modules(vec![module("domain", Some("src/**"))]);
+
+        assert!(
+            !repository_codes(&[("src/a/b.ts", "export const a = 1;\n")], &config)
+                .contains(&"module-scope-matches-nothing"),
+        );
+    }
+
+    /// A rule inside a module, pointing outside it, reaches nothing. This is
+    /// the cost of narrowing over refusing, and this check is where it stops
+    /// being silent.
+    #[test]
+    fn a_rule_pointing_outside_its_module_is_reported() {
+        let inside = Scope::compile(["packages/domain/**"]).expect("valid");
+        let mut stray = in_module(
+            rule("stray", &["apps/*"], structure(&["calcs"], &[])),
+            "domain",
+        );
+        stray.scope = stray.scope.within(&inside);
+
+        let config =
+            config(vec![stray]).with_modules(vec![module("domain", Some("packages/domain/**"))]);
+
+        assert!(
+            repository_codes(
+                &[
+                    ("apps/api/env.ts", "export const e = 1;\n"),
+                    ("packages/domain/src/a.ts", "export const a = 1;\n"),
+                ],
+                &config,
+            )
+            .contains(&"rule-reaches-outside-its-module"),
+        );
+    }
+
+    /// A rule whose scope is empty for its own reasons is *not* reported by
+    /// this check: `scope-matches-nothing` already says so, and one mistake
+    /// reported twice reads as two.
+    #[test]
+    fn a_rule_whose_own_scope_is_empty_is_not_blamed_on_its_module() {
+        let inside = Scope::compile(["packages/domain/**"]).expect("valid");
+        let mut stray = in_module(
+            rule("stray", &["nowhere/*"], structure(&["calcs"], &[])),
+            "domain",
+        );
+        stray.scope = stray.scope.within(&inside);
+
+        let config =
+            config(vec![stray]).with_modules(vec![module("domain", Some("packages/domain/**"))]);
+
+        assert!(
+            !repository_codes(
+                &[("packages/domain/src/a.ts", "export const a = 1;\n")],
+                &config,
+            )
+            .contains(&"rule-reaches-outside-its-module"),
+        );
     }
 
     /// A scope naming a directory that is not there: usually a typo, sometimes

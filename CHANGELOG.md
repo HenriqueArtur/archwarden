@@ -17,6 +17,39 @@ saying so.
 
 ## [Unreleased]
 
+### Added
+
+- **A module can declare the paths it is, and a boundary can name it**
+  ([#74](https://github.com/HenriqueArtur/archwarden/issues/74)). `scope` on a
+  module, `from_module` and `forbid_module` on an `import-boundary`:
+
+  ```json
+  "modules": [
+    { "id": "domain",         "scope": "packages/domain/**", "rules": [ ... ] },
+    { "id": "infrastructure", "scope": "packages/infrastructure/**" }
+  ],
+  "rules": [
+    { "type": "import-boundary", "id": "domain-is-sealed", "level": "error",
+      "from_module": "domain", "forbid_module": ["infrastructure"] }
+  ]
+  ```
+
+  This repository's own fixture said `packages/domain/**` in a boundary and
+  `packages/domain/src/*` in the rules of a module called `domain`, and
+  forbade `infrastructure` — a declared module — by glob. Moving the package
+  meant editing four places, and missing one made a rule stop reaching with
+  nothing reporting it.
+
+  `scope` is optional and a module without one behaves exactly as before, so
+  no existing config changes. A rule inside a scoped module reaches where both
+  reach; naming a module that does not exist, one with no `scope`, or saying a
+  scope both ways on one rule is refused when the config compiles.
+
+- **Three `config doctor` checks** that a module with paths makes possible:
+  `module-scope-matches-nothing`, `module-nobody-references`, and
+  `rule-reaches-outside-its-module` — the last being the one that stops
+  narrowing from being silent.
+
 ### Fixed
 
 - **A warm `check` on a shared mount spent most of its time on `stat` calls
