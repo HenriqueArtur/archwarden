@@ -63,7 +63,7 @@ pub enum Error {
     /// The root holds no source, and is not where the caller is standing.
     ///
     /// A clean run over the wrong directory, which reads as good news and is
-    /// not news at all. See [`crate::walk`] for why the refusal is this narrow
+    /// not news at all. See [`crate::walk()`] for why the refusal is this narrow
     /// rather than "the root is empty".
     #[error("`{root}` holds no JavaScript or TypeScript, and is not where you are standing")]
     RootHoldsNoSource {
