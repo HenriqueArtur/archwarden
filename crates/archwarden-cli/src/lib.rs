@@ -29,12 +29,11 @@ pub mod schema;
 pub mod verify;
 
 use archwarden_cache::store::Cache;
-use archwarden_config::{
-    compile,
-    discovery::{self, LoadedConfig},
-    extends::{self, MergedConfig},
-};
-use archwarden_resolver::preset::PresetResolver;
+// A type this passes through and a filename `init` writes, where this once
+// reached for `compile`, `extends` and `PresetResolver` to assemble a
+// configuration by hand. Issue #63 moved the assembly into archwarden-api;
+// the shrinking import list is the boundary holding.
+use archwarden_config::{discovery, extends::MergedConfig};
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 
@@ -1194,54 +1193,32 @@ fn hook(
         crate::hook::Target::Unreadable => {
             return unable(
                 output,
-                "the hook event was not in a shape archwarden could read, so this write \
-                 was not checked against any rule",
+                "the hook event was not in a shape archwarden could read",
             );
         }
     };
 
-    // A broken or absent configuration is the user's problem to fix at their
-    // own pace, not a reason to stop them writing a file. It is, however, a
-    // reason to say so: an unconfigured gate that permits in silence is
-    // indistinguishable from one that examined the write and approved it.
-    let Ok(loaded) = load(location, working_directory) else {
-        return unable(
-            output,
-            "no archwarden config was found from here, so this write was not checked \
-             against any rule",
-        );
-    };
-    // Checked here as well as on the `check` path, and for a sharper reason: a
-    // version this build cannot interpret parses into a config with no rules,
-    // which compiles, matches nothing and permits every write. The gate does
-    // not fail — it evaporates. Found by a test that expected the silence to
-    // have been fixed everywhere and discovered one more place it had not.
-    if !loaded.config.version_is_supported() {
-        return unable(
-            output,
-            &format!(
-                "the config declares version {}, which this build does not understand (it \
-                 reads version {}), so this write was not checked against any rule",
-                loaded.config.version,
-                archwarden_config::config::SCHEMA_VERSION,
-            ),
-        );
-    }
+    // The same operation `check` and `config validate` run, and that is the
+    // whole of issue #63. This used to be four steps written out again here,
+    // because the shared `prepare()` reported failure by writing a miette
+    // report to stderr and returning exit 2, and a hook must answer in JSON
+    // and exit clean. So the difference in how a failure is *said* forced the
+    // path to be duplicated — and the copy was missing the version guard,
+    // which shipped as issue #55: a config from a future version parsed into
+    // one with no rules, compiled, matched nothing, and permitted every write.
+    // The gate did not fail; it evaporated.
+    //
+    // Now the operation returns its failure and this decides how to say it. A
+    // broken or absent configuration is the user's problem to fix at their own
+    // pace, not a reason to stop them writing a file. It is a reason to say
+    // so: a gate that permits in silence is indistinguishable from one that
+    // examined the write and approved it.
+    let archwarden_api::Prepared { merged, compiled } =
+        match archwarden_api::prepare(location, working_directory) {
+            Ok(prepared) => prepared,
+            Err(error) => return unable(output, &crate::hook::unexamined(&error)),
+        };
 
-    let Ok(merged) = extends::merge(loaded, &PresetResolver::new()) else {
-        return unable(
-            output,
-            "the config could not be assembled (a preset it extends is missing or \
-             invalid), so this write was not checked against any rule",
-        );
-    };
-    let Ok(compiled) = compile::compile(&merged) else {
-        return unable(
-            output,
-            "the config did not compile, so this write was not checked against any \
-             rule. `archwarden config validate` names the problem",
-        );
-    };
     let path = match crate::describe::repo_relative(&merged.root, working_directory, &argument) {
         Ok(path) => path,
         // `repo_relative` resolves a second route to the same directory, so
@@ -1341,20 +1318,18 @@ fn hook(
 /// seconds on a large repository and say the same thing about files nobody
 /// touched.
 fn stopped(location: Location<'_>, working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
-    let Ok(loaded) = load(location, working_directory) else {
-        // Silence here, unlike the pre-write hook. There, saying nothing is
-        // indistinguishable from approving a write; here nothing was gated, so
-        // a message on every turn about a config the user has not written yet
-        // is noise they would remove the hook to stop.
-        return allow(output);
-    };
-    if !loaded.config.version_is_supported() {
-        return allow(output);
-    }
-    let Ok(merged) = extends::merge(loaded, &PresetResolver::new()) else {
-        return allow(output);
-    };
-    let Ok(compiled) = compile::compile(&merged) else {
+    // The third surface, and the third shape a failure takes: silence.
+    //
+    // Unlike the pre-write hook, saying nothing here is honest. There, silence
+    // is indistinguishable from approving a write; here nothing was gated, so
+    // a message on every turn about a config the user has not written yet is
+    // noise they would remove the hook to stop.
+    //
+    // That this is one `else` rather than four is the point of issue #63. It
+    // was four, and every one of them was an opportunity to leave a guard out.
+    let Ok(archwarden_api::Prepared { merged, compiled }) =
+        archwarden_api::prepare(location, working_directory)
+    else {
         return allow(output);
     };
 
@@ -2017,34 +1992,6 @@ fn walked(
     }
 
     Ok(tree)
-}
-
-/// Loads the config, either from an explicit path or by searching upwards.
-///
-/// A relative `--config` resolves against the working directory rather than
-/// against the process's own, so nothing here depends on ambient state and
-/// `run` behaves identically in a test and in a shell.
-fn load(
-    location: Location<'_>,
-    working_directory: &Utf8Path,
-) -> Result<LoadedConfig, discovery::LoadError> {
-    let mut loaded = match location.config {
-        Some(path) if path.is_absolute() => discovery::load_file(path),
-        Some(path) => discovery::load_file(&working_directory.join(path)),
-        None => discovery::load_from(working_directory),
-    }?;
-
-    // Last, so it beats both the config's own `root` and the default. Someone
-    // who passed `--root` is answering the question those two guess at.
-    if let Some(root) = location.root {
-        loaded.root = if root.is_absolute() {
-            root.to_owned()
-        } else {
-            working_directory.join(root)
-        };
-    }
-
-    Ok(loaded)
 }
 
 /// Looks for a configuration that parses and is still wrong.
@@ -3721,6 +3668,84 @@ mod tests {
                 result.out
             );
         }
+    }
+
+    /// The invariant issue #55 broke, stated where it can fail the build.
+    ///
+    /// Two surfaces read the same config and answer in different shapes —
+    /// `validate` with a miette report and exit 2, the hook with JSON and exit
+    /// 0. What they must never disagree about is the *question underneath*:
+    /// whether this configuration can gate anything at all.
+    ///
+    /// They did disagree. The hook carried its own copy of the orchestration,
+    /// because the shared one wrote to stderr and the hook cannot answer that
+    /// way, and the copy had no version guard. `{"version": 99}` made
+    /// `validate` exit 2 and the hook reply `{}` — a gate that had evaporated,
+    /// reporting the same silence as a gate that examined the write and
+    /// approved it.
+    ///
+    /// Neither the exact prose nor the exit code is asserted here. Those are
+    /// each surface's own business and are pinned elsewhere. This is about the
+    /// one thing they may not decide separately.
+    #[test]
+    fn the_hook_and_validate_never_disagree_about_whether_a_config_is_usable() {
+        let unusable: [(&str, &str); 5] = [
+            ("a syntax error", r#"{"version": 0,,}"#),
+            ("a future version", r#"{"version": 99}"#),
+            ("an unknown field", r#"{"version":0,"rulez":[]}"#),
+            (
+                "an unresolvable preset",
+                r#"{"version":0,"extends":"@org/not-installed"}"#,
+            ),
+            (
+                "an uncompilable rule",
+                r#"{"version":0,"rules":[{"type":"structure",
+                 "id":"a","level":"error","roots":"["}]}"#,
+            ),
+        ];
+
+        for (what, config) in unusable {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+                .expect("UTF-8");
+            std::fs::write(root.join("arch.config.json"), config).expect("write");
+
+            let validated = run_at(&root, &["config", "validate"]);
+            let hooked = run_with(&root, &["hook", "claude-code"], WRITE_EVENT);
+
+            assert_eq!(
+                validated.exit,
+                Exit::ConfigProblem,
+                "{what}: validate should refuse it"
+            );
+            assert!(
+                hooked.out.contains("did not check this write"),
+                "{what}: validate refused this config and the hook gated a write with it \
+                 anyway: {}",
+                hooked.out
+            );
+        }
+    }
+
+    /// And the other direction, which is the half that makes the test above
+    /// mean something: a config both accept is one the hook actually used.
+    /// Without this, a hook that reported every write unchecked would pass.
+    #[test]
+    fn a_config_both_accept_is_one_the_hook_gated_with() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::write(root.join("arch.config.json"), NAMING).expect("write");
+
+        let validated = run_at(&root, &["config", "validate"]);
+        let hooked = run_with(&root, &["hook", "claude-code"], WRITE_EVENT);
+
+        assert_eq!(validated.exit, Exit::Clean);
+        assert!(
+            !hooked.out.contains("did not check this write"),
+            "validate accepted this config and the hook refused to use it: {}",
+            hooked.out
+        );
     }
 
     /// A config that constrains nothing still *checked* the write.

@@ -387,6 +387,135 @@ pub fn explain(
     message
 }
 
+/// Why the hook formed no opinion about a write, in the words it says it in.
+///
+/// The hook cannot report a config problem the way `check` does — it must
+/// answer in JSON and exit clean, where `check` writes a miette report to
+/// stderr and exits 2. That difference used to be enough to make this surface
+/// re-implement the whole of `prepare()` rather than reuse it, and the missing
+/// version guard of issue #55 was in the copy.
+///
+/// This is what the difference costs now: one function, matching on the value
+/// the shared operation returned. A stage added later cannot go unhandled here
+/// — [`archwarden_api::Error`] is `non_exhaustive`, so it lands in the final
+/// arm and the write is still reported as unchecked.
+///
+/// No sentence here ends in "so this write was not checked against any rule".
+/// The caller already says that, and saying it twice in one line was what four
+/// separately-written messages had drifted into.
+#[must_use]
+pub fn unexamined(error: &archwarden_api::Error) -> String {
+    match error {
+        archwarden_api::Error::Load(archwarden_config::discovery::LoadError::NotFound {
+            ..
+        }) => "no archwarden config was found from here".to_owned(),
+
+        // Found, and unusable. Distinct from the arm above because the two
+        // send a user to different places: one to `archwarden init`, the other
+        // to the file they just edited.
+        archwarden_api::Error::Load(_) => {
+            "the config could not be read — `archwarden config validate` names the problem"
+                .to_owned()
+        }
+
+        archwarden_api::Error::UnsupportedVersion {
+            declared,
+            understood,
+            ..
+        } => format!(
+            "the config declares version {declared}, which this build does not understand \
+             (it reads version {understood})"
+        ),
+
+        archwarden_api::Error::Extends(_) => {
+            "the config could not be assembled (a preset it extends is missing, invalid, \
+             or loops)"
+                .to_owned()
+        }
+
+        archwarden_api::Error::Compile(_) => {
+            "the config did not compile — `archwarden config validate` names the problem".to_owned()
+        }
+
+        _ => "the config could not be prepared".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod unexamined_tests {
+    use super::unexamined;
+    use archwarden_api::Error;
+    use archwarden_config::discovery::LoadError;
+    use camino::Utf8PathBuf;
+
+    /// The sentence that used to be wrong. The hook rendered every load
+    /// failure as "no config was found", so a user who had just introduced a
+    /// syntax error was sent looking for a missing file — while the file sat
+    /// there, found, broken, and named by the error the loader returned.
+    ///
+    /// It was not carelessness either: the prose was written by hand beside a
+    /// re-implementation of the orchestration, because the real path wrote a
+    /// miette report to stderr and the hook cannot answer that way. One enum
+    /// with the distinction in it is what makes the right sentence available.
+    #[test]
+    fn a_config_that_is_there_and_broken_is_not_a_config_that_is_missing() {
+        let broken = Error::Load(
+            archwarden_config::discovery::parse(
+                camino::Utf8Path::new("/repo/arch.config.json"),
+                r#"{"version": 0,,}"#,
+            )
+            .expect_err("should not parse"),
+        );
+
+        assert_eq!(
+            unexamined(&broken),
+            "the config could not be read — `archwarden config validate` names the problem"
+        );
+    }
+
+    #[test]
+    fn a_config_that_really_is_missing_says_so() {
+        let absent = Error::Load(LoadError::NotFound {
+            started_at: Utf8PathBuf::from("/repo/packages/app"),
+        });
+
+        assert_eq!(
+            unexamined(&absent),
+            "no archwarden config was found from here"
+        );
+    }
+
+    /// Issue #55's sentence. The guard it reports was missing from this
+    /// surface entirely, because this surface had its own copy of the path.
+    #[test]
+    fn a_future_version_names_both_numbers() {
+        let future = Error::UnsupportedVersion {
+            path: Utf8PathBuf::from("/repo/arch.config.json"),
+            declared: 99,
+            understood: 0,
+        };
+
+        assert_eq!(
+            unexamined(&future),
+            "the config declares version 99, which this build does not understand \
+             (it reads version 0)"
+        );
+    }
+
+    #[test]
+    fn a_preset_problem_says_which_half_of_the_config_failed() {
+        let unresolvable = Error::Extends(archwarden_config::extends::ExtendsError::Cycle {
+            chain: vec![Utf8PathBuf::from("/repo/arch.config.json")],
+        });
+
+        assert_eq!(
+            unexamined(&unresolvable),
+            "the config could not be assembled (a preset it extends is missing, invalid, \
+             or loops)"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use archwarden_core::{

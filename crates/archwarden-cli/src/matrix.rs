@@ -325,8 +325,6 @@ fn crossings_between(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use archwarden_config::{compile::compile, discovery::load_from, extends::merge};
-    use archwarden_resolver::preset::PresetResolver;
     use camino::Utf8PathBuf;
 
     /// Builds a repository on disk, compiles its config, and runs a real check.
@@ -345,9 +343,20 @@ mod tests {
             std::fs::write(&file, contents).expect("write file");
         }
 
-        let loaded = load_from(&root).expect("the config loads");
-        let merged = merge(loaded, &PresetResolver::new()).expect("merges");
-        let config = compile(&merged).expect("compiles");
+        // Through the same operation `check` runs, not a hand-assembled copy
+        // of it. A fixture that spelled out discovery, merge and compile could
+        // drift from what the command does, and then the grid would agree with
+        // the test instead of with `check` — which is the one thing it exists
+        // to do.
+        let prepared = archwarden_api::prepare(
+            archwarden_api::Location {
+                config: None,
+                root: None,
+            },
+            &root,
+        )
+        .expect("the config prepares");
+        let config = prepared.compiled;
         let tree = archwarden_engine::walk::walk(&root, &config).expect("walks");
         let report = archwarden_engine::run::check(archwarden_engine::run::Run {
             root: &root,
