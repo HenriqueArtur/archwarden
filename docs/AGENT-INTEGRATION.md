@@ -205,6 +205,34 @@ in the environment: the hook is handed the event as JSON on stdin, with the
 target under `tool_input.file_path`. archwarden reads that itself, so the
 installed line needs no `jq` and no shell quoting.
 
+### A write that is fixing something is not breaking it
+
+A `presence` rule's finding is about a **directory**, and the pre-write hook is
+asked about a **file**. Writing `projeto.md` violates nothing — the directory is
+incomplete, it was incomplete before the write, and it is less so after.
+
+Refusing that made a rule of several files unsatisfiable in any order: the first
+write refused for the absence of the second, the second for the third, and the
+directory could not be created at all.
+
+So a write supplying one of a directory's required files **passes with a note**
+saying what is still missing, which is what the agent has to write next:
+
+```
+archwarden: this write is fine, and the directory is not done yet.
+
+  `exercicios.md` is not here
+  `diagram.json` is not here
+```
+
+**And a write supplying none of them is refused, exactly as before.** That is
+the half that keeps this from being a way to switch `presence` off: a file the
+rule never asked for leaves the directory as broken as it found it.
+
+Every other rule keeps denying. `spec-pair` has an order that works — the spec
+first, which is the whole point of a TDD gate — and a `structure` violation is
+caused by the write rather than pre-existing it.
+
 ### The turn, as well as the write
 
 `install-hooks` writes two entries, both running the same command, which

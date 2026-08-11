@@ -1108,6 +1108,71 @@ fn a_spec_in_a_named_directory_satisfies_the_rule_through_the_cli() {
         .stdout(contains("needs-spec"));
 }
 
+/// Issue #57. A `presence` rule of several files made every one of them
+/// illegal until all of them existed — no write order passed, and the
+/// directory could not be created at all.
+///
+/// A write supplying one of the required files is fixing the directory, not
+/// breaking it. The whole creation sequence goes through, and each write is
+/// told what is still missing.
+#[test]
+fn a_module_can_be_created_one_file_at_a_time() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"presence","id":"tem-os-tres","level":"error",
+             "roots":["projetos/*"],
+             "require":["projeto.md","exercicios.md","diagram.json"]}]}"#,
+    )]);
+    std::fs::create_dir_all(dir.path().join("projetos/02-novo")).expect("mkdir");
+
+    for name in ["projeto.md", "exercicios.md", "diagram.json"] {
+        let target = dir.path().join("projetos/02-novo").join(name);
+        let target = target.to_str().expect("utf-8");
+
+        archwarden()
+            .current_dir(dir.path())
+            .args(["hook", "claude-code"])
+            .write_stdin(format!(
+                r#"{{"tool_name":"Write","tool_input":{{"file_path":"{target}","content":"x"}}}}"#
+            ))
+            .assert()
+            .success()
+            .stdout(contains("permissionDecision").not());
+
+        std::fs::write(target, "x").expect("write");
+    }
+}
+
+/// And the half that keeps this from being a way to switch `presence` off: a
+/// write that supplies none of the required files leaves the directory exactly
+/// as broken as it found it, and is refused.
+#[test]
+fn a_write_that_ignores_the_missing_files_is_still_refused() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"tem-os-tres","level":"error",
+                 "roots":["projetos/*"],
+                 "require":["projeto.md","exercicios.md","diagram.json"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+    let target = dir.path().join("projetos/01-blink/rascunho.md");
+    let target = target.to_str().expect("utf-8");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{target}","content":"x"}}}}"#
+        ))
+        .assert()
+        .success()
+        .stdout(contains("permissionDecision"));
+}
+
 /// Issue #61, and the relief for #57: the class of rule the pre-write hook
 /// cannot judge is caught once the writes have landed.
 ///

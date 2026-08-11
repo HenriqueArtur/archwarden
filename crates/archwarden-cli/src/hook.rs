@@ -213,6 +213,70 @@ pub fn respond(decision: &Decision) -> String {
     format!("{response}\n")
 }
 
+/// Whether this write is fixing the thing the finding is about.
+///
+/// A `presence` rule requiring several files makes every one of them illegal
+/// until all of them exist: writing the first is refused for the absence of the
+/// second, the second for the absence of the third, and no order passes. The
+/// directory cannot be created at all. Issue #57.
+///
+/// The write is not what is wrong there. Writing `projeto.md` violates nothing
+/// — the *directory* is incomplete, and it was incomplete before the write and
+/// is less so after. Refusing it attributes a directory's fault to a file, and
+/// refuses the write that improves the state, which is #55 one layer up.
+///
+/// So a write supplying one of the required files is **progress**, and passes
+/// with a note. A write that supplies none of them leaves the directory exactly
+/// as broken as it found it, and is refused as before — which is what keeps
+/// this from being a way to switch `presence` off.
+///
+/// Only findings about a missing *required file* qualify. `spec-pair` has an
+/// order that works — the spec first, which is what a TDD gate is for — and a
+/// `structure` violation is caused by the write rather than pre-existing it.
+#[must_use]
+pub fn is_progress(finding: &archwarden_core::finding::Finding, written: &str) -> bool {
+    use archwarden_core::finding::Expectation;
+
+    let Expectation::RequiredFiles { names, patterns } = &finding.expected else {
+        return false;
+    };
+
+    if names.iter().any(|name| name == written) {
+        return true;
+    }
+
+    // Compiled with the engine that compiled the rule, so this cannot disagree
+    // with `check` about whether a name satisfies the pattern.
+    patterns.iter().any(|pattern| {
+        archwarden_core::pattern::Pattern::compile(pattern)
+            .is_ok_and(|compiled| compiled.is_match(written))
+    })
+}
+
+/// What a write is still short of, when the write itself is fine.
+///
+/// A `presence` rule's finding is about the *directory*, and a write supplying
+/// one of its required files is fixing that directory rather than breaking it.
+/// Saying "would break these rules" about such a write is false — and it buries
+/// the one thing worth saying, which is what to write next.
+#[must_use]
+pub fn still_needs(fixing: &[archwarden_core::finding::Finding]) -> String {
+    use std::collections::BTreeSet;
+    use std::fmt::Write as _;
+
+    let mut wanted: BTreeSet<String> = BTreeSet::new();
+    for finding in fixing {
+        wanted.insert(crate::report::describe_observed(&finding.observed));
+    }
+
+    let mut message =
+        String::from("archwarden: this write is fine, and the directory is not done yet.\n");
+    for item in &wanted {
+        let _ = writeln!(message, "\n  {item}");
+    }
+    message
+}
+
 /// The message the end of a turn carries: what landed that a rule objects to.
 ///
 /// Different from [`explain`] in what it is for. That one is handed to an agent
@@ -649,5 +713,116 @@ mod tests {
     #[test]
     fn an_event_this_build_does_not_know_is_named_as_such() {
         assert_eq!(event(r#"{"hook_event_name":"SessionStart"}"#), Event::Other);
+    }
+    /// Issue #57. A `presence` rule requiring several files makes every one of
+    /// them illegal until all of them exist, so no write order passes and the
+    /// directory cannot be created at all.
+    ///
+    /// The rigorous reading, and the one implemented: **a write passes while it
+    /// is fixing the problem.** Judged by what the write does, not by the state
+    /// it lands in — the same correction as #55, one layer up.
+    #[test]
+    fn a_write_that_supplies_a_required_file_is_progress() {
+        let missing = |name: &str| Finding {
+            rule_id: RuleId::new("tem-os-tres").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("projetos/02-novo").expect("valid"),
+            span: None,
+            observed: Observed::RequiredFileMissing {
+                name: name.to_owned(),
+            },
+            expected: Expectation::RequiredFiles {
+                names: vec![
+                    "projeto.md".to_owned(),
+                    "exercicios.md".to_owned(),
+                    "diagram.json".to_owned(),
+                ],
+                patterns: Vec::new(),
+            },
+        };
+
+        assert!(
+            is_progress(&missing("exercicios.md"), "projeto.md"),
+            "writing one of the required files is fixing the directory"
+        );
+        assert!(
+            is_progress(&missing("diagram.json"), "exercicios.md"),
+            "and so is the second one"
+        );
+    }
+
+    /// A write that ignores the problem is still refused. This is the half that
+    /// keeps the relaxation from being a way to switch `presence` off.
+    #[test]
+    fn a_write_that_ignores_the_missing_files_is_not_progress() {
+        let finding = Finding {
+            rule_id: RuleId::new("tem-os-tres").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("projetos/01-blink").expect("valid"),
+            span: None,
+            observed: Observed::RequiredFileMissing {
+                name: "diagram.json".to_owned(),
+            },
+            expected: Expectation::RequiredFiles {
+                names: vec!["projeto.md".to_owned(), "diagram.json".to_owned()],
+                patterns: Vec::new(),
+            },
+        };
+
+        assert!(
+            !is_progress(&finding, "rascunho.md"),
+            "a file the rule never asked for leaves the directory as broken as it was"
+        );
+    }
+
+    /// A `require_any` entry is a regex, and a file matching one is progress
+    /// the same way a named file is.
+    #[test]
+    fn a_write_matching_a_required_pattern_is_progress() {
+        let finding = Finding {
+            rule_id: RuleId::new("tem-um-ino").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("projetos/02-novo/sketch").expect("valid"),
+            span: None,
+            observed: Observed::NoFileMatching {
+                pattern: r"\.ino$".to_owned(),
+            },
+            expected: Expectation::RequiredFiles {
+                names: Vec::new(),
+                patterns: vec![r"\.ino$".to_owned()],
+            },
+        };
+
+        assert!(is_progress(&finding, "sketch.ino"));
+        assert!(!is_progress(&finding, "leiame.md"));
+    }
+
+    /// Every other rule keeps denying. `spec-pair` has an order that works —
+    /// the spec first, which is the whole point of a TDD gate — and a
+    /// `structure` violation is caused by the write rather than pre-existing
+    /// it.
+    #[test]
+    fn a_finding_that_is_not_about_a_missing_file_is_never_progress() {
+        let finding = Finding {
+            rule_id: RuleId::new("usecase-name").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("src/user/create.use-case.ts").expect("valid"),
+            span: None,
+            observed: Observed::ExportMissing {
+                name: "Create".to_owned(),
+            },
+            expected: Expectation::RequiredExport {
+                kind: KindFilter::Any,
+                name: "Create".to_owned(),
+                annotation: Vec::new(),
+                signature_hint: None,
+            },
+        };
+
+        assert!(!is_progress(&finding, "create.use-case.ts"));
     }
 }

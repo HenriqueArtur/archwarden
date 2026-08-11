@@ -1309,15 +1309,40 @@ fn hook(
         single.findings.retain(|finding| !baseline.accepts(finding));
     }
 
+    let mut fixing = Vec::new();
+
     // Probed at the config root rather than the working directory: that is
     // where `node_modules` sits in a monorepo, and where the harness will be
     // when it runs what this message suggests.
     let invocation = crate::hooks::invocation(&merged.root);
     let reasons = crate::report::Reasons::of(&compiled);
+
+    // A write supplying one of a directory's required files is fixing it, not
+    // breaking it. Refusing that made a `presence` rule of several files
+    // unsatisfiable in any order -- the directory could not be created at all.
+    // The finding stays and is shown; it just stops being a denial. Issue #57.
+    //
+    // A write supplying none of them leaves the directory as broken as it was,
+    // and is refused exactly as before.
+    if let Some(name) = path.file_name() {
+        single.findings.retain(|finding| {
+            let progress = crate::hook::is_progress(finding, name);
+            if progress {
+                fixing.push(finding.clone());
+            }
+            !progress
+        });
+    }
+
     let decision = if single.fails_build() {
         crate::hook::Decision::Deny(crate::hook::explain(&single, &reasons, &invocation))
-    } else if single.findings.is_empty() {
+    } else if single.findings.is_empty() && fixing.is_empty() {
         crate::hook::Decision::Allow
+    } else if single.findings.is_empty() {
+        // Only progress. "Would break these rules" is false about a write that
+        // is fixing the directory, and it buries the useful half -- what is
+        // still missing is what the agent has to write next.
+        crate::hook::Decision::Note(crate::hook::still_needs(&fixing))
     } else {
         // Decision 1: warnings are visible and do not gate.
         crate::hook::Decision::Note(crate::hook::explain(&single, &reasons, &invocation))
