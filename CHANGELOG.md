@@ -17,6 +17,86 @@ saying so.
 
 ## [Unreleased]
 
+## [0.14.0] — 2026-08-11
+
+The pre-write hook stops refusing writes that are fixing the thing it is
+complaining about, and gains a second half for the rules one write cannot
+answer.
+
+### Fixed
+
+- **An agent could not create a module at all**
+  ([#57](https://github.com/HenriqueArtur/archwarden/issues/57)). A `presence`
+  rule requiring three files made all three illegal until all three existed:
+  the first write refused for the absence of the second, the second for the
+  third. No write order passed.
+
+  The write was never what was wrong. Writing `projeto.md` violates nothing —
+  the *directory* is incomplete, it was incomplete before the write, and it is
+  less so after. Refusing it attributed a directory's fault to a file, which is
+  0.13.0's fix one layer up.
+
+  A write **supplying one of the required files** passes with a note saying
+  what is still missing. A write **supplying none of them** leaves the
+  directory exactly as broken as it found it, and is refused as before — which
+  is what keeps this from being a way to switch `presence` off.
+
+  Every other rule keeps denying. `spec-pair` has an order that works, and a
+  `structure` violation is caused by the write rather than pre-existing it.
+
+### Added
+
+- **A `Stop` hook**
+  ([#61](https://github.com/HenriqueArtur/archwarden/issues/61)).
+  `install-hooks` now writes two entries, both running `archwarden hook
+  claude-code`, which dispatches on the event it is sent. Two commands could be
+  wired to the wrong event, and an answer to the wrong question is a hook that
+  reports nothing while looking installed.
+
+  The pre-write hook sees one write at a time and cannot judge a rule about a
+  group. At the end of a turn the group is there to judge, and what is missing
+  is a fact rather than a prediction. It reports and never blocks — the writes
+  have landed — and it is silent when nothing broke. Scoped to what changed
+  against `HEAD` plus untracked files.
+
+  An existing installation gains the stop entry on the next `install-hooks`
+  run; the pre-write entry is not duplicated.
+
+- **`spec-pair.spec_dirs`**
+  ([#67](https://github.com/HenriqueArtur/archwarden/issues/67)). A spec may
+  live in a directory the project names — `__tests__`, `tests`, `__specs__`.
+  Empty by default, which is sibling-only, so every existing config behaves
+  exactly as it did.
+
+  **One level, and the limit is the feature.** A spec in `__tests__/unit/` does
+  not count unless `unit` is named too, and an entry with a path separator is
+  refused when the config compiles. A reading that accepted a spec anywhere
+  below would let one file satisfy the rule for a whole subtree, and the rule
+  would report nothing and look exactly like a repository that is fully tested.
+
+### Changed
+
+- **A file's imports are resolved only when a rule of its own asks.**
+  Resolution used to be decided for the run: if any rule anywhere needed
+  imports placed, every file that had facts for any reason was resolved.
+  Measured on a repository of 4 154 files, a boundary rule governing *one file*
+  cost about 0.2 s. It is strictly less work and never more.
+
+### Internal
+
+- **A failing gate in `cargo xtask ci` repeats its last 40 lines** under the
+  summary ([#80](https://github.com/HenriqueArtur/archwarden/issues/80)).
+  "Re-run the command on its own" is advice that works for a gate failing every
+  time and is useless for one that does not — and the intermittent one is the
+  one worth diagnosing.
+
+- **The plan moved to issues and milestones.** `ROADMAP.md` and `PLAN-V0.md`
+  are gone, 2 511 lines of them. Both described work rather than doing it, and
+  both had drifted: the roadmap still called v1 "watch mode, LSP, SARIF", and
+  the plan described itself as living four releases after it stopped being
+  true. Fourteen code comments citing them were rewritten, and one convention
+  that lived only inside the deleted file moved to `CONTRIBUTING.md`.
+
 ## [0.13.0] — 2026-08-09
 
 **The pre-write hook judges the write. It used to judge the file on disk**
