@@ -17,6 +17,11 @@ saying so.
 
 ## [Unreleased]
 
+## [0.15.0] — 2026-08-11
+
+One implementation of every operation, and a boundary the surfaces sit on.
+Nothing a rule reports moved.
+
 ### Fixed
 
 - **The pre-write hook said a broken config was a missing one.** Every load
