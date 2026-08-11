@@ -34,8 +34,11 @@
 //! what lets a future surface say *"the LSP reuses through Evaluate and brings
 //! its own Present"* instead of negotiating the boundary from scratch.
 
+pub mod baseline;
+pub mod describe;
 pub mod error;
 pub mod evaluate;
+pub mod filter;
 pub mod resolve;
 pub mod walk;
 

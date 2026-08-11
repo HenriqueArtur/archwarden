@@ -16,6 +16,10 @@ archwarden-core = { workspace = true }
 archwarden-engine = { workspace = true }
 archwarden-resolver = { workspace = true }
 camino = { workspace = true }
+# The baseline is a committed file with a schema of its own, so the crate that
+# owns the operation owns its format too.
+serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

@@ -11,13 +11,23 @@
 use std::fmt::Write as _;
 
 use archwarden_core::{
-    facts::ExportKind,
-    finding::{Expectation, Finding, Observed},
+    finding::{Expectation, Finding},
     path::RepoRelPath,
 };
 use archwarden_engine::run::Report;
 use camino::Utf8Path;
 use serde::Serialize;
+
+// The sentence a finding is described by, and the comma rule it is built
+// with. Both moved to archwarden-api in issue #63: the baseline writes
+// `describe_observed`'s output into a committed file, so it is part of a
+// format rather than terminal output — and a format cannot live in a
+// renderer that the operations would have to reach back into.
+//
+// Re-exported, not just imported: `crate::report::describe_observed` is what
+// four modules already call it, and renaming a path at five call sites is a
+// diff about nothing.
+pub use archwarden_api::describe::{describe_observed, join_or};
 
 /// The version of the JSON report shape.
 ///
@@ -1011,124 +1021,6 @@ fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
     if count == 1 { one } else { many }
 }
 
-/// One sentence for what was found.
-///
-/// Shared with the hook, so a blocked write and a failing `check` describe the
-/// same problem in the same words.
-pub(crate) fn describe_observed(observed: &Observed) -> String {
-    match observed {
-        Observed::UnexpectedSubfolder { name } => {
-            format!("folder `{name}` is not allowed here")
-        }
-        Observed::DiscouragedSubfolder { name } => {
-            format!("folder `{name}` is allowed for now, as documented debt")
-        }
-        Observed::UnexpectedFilename { name } => {
-            format!("filename `{name}` matches none of the allowed patterns")
-        }
-        Observed::ExportMissing { name } => format!("no export named `{name}`"),
-        Observed::ExportWrongKind { name, found } => {
-            let kinds: Vec<_> = found.iter().map(ExportKind::as_str).collect();
-            format!("`{name}` is declared as {}", join_or(&kinds, "nothing"))
-        }
-        // "declares no type of its own" rather than "has no annotation": the
-        // reader's next action is to write one, and the sentence that names
-        // the absence names the fix.
-        Observed::ExportMissingAnnotation { name } => {
-            format!("`{name}` declares no type of its own")
-        }
-        Observed::ExportWrongAnnotation { name, found } => {
-            let written: Vec<&str> = found.iter().map(String::as_str).collect();
-            format!("`{name}` is declared as {}", join_or(&written, "nothing"))
-        }
-        Observed::OnlyDefaultExport => {
-            "the only export is a default, whose name does not bind importers".to_owned()
-        }
-        Observed::ReexportOfUnknownKind { name, from } => {
-            format!("`{name}` is re-exported from `{from}`, so its kind is not determinable here")
-        }
-        Observed::Passthrough {
-            exports,
-            whole_file,
-        } => {
-            let names = exports
-                .iter()
-                .map(|name| format!("`{name}`"))
-                .collect::<Vec<_>>()
-                .join(", ");
-            let forwards = if exports.len() == 1 {
-                "only forwards"
-            } else {
-                "only forward"
-            };
-            if *whole_file {
-                format!("adds nothing of its own: {names} {forwards} another module")
-            } else {
-                // A different sentence, because it is a different decision:
-                // the file is real and part of it is an indirection.
-                format!("{names} {forwards} another module; the rest of the file is its own")
-            }
-        }
-        // "is not here" rather than "does not exist": the finding is on the
-        // directory, and what the reader has to do is create the file *in it*.
-        Observed::RequiredFileMissing { name } => format!("`{name}` is not here"),
-        Observed::NoFileMatching { pattern } => format!("no file here matches `{pattern}`"),
-        Observed::FrontmatterAbsent => "has no frontmatter block".to_owned(),
-        Observed::FrontmatterMalformed { reason } => {
-            format!("its frontmatter block is not YAML: {reason}")
-        }
-        Observed::FrontmatterKeyMissing { key } => {
-            format!("its frontmatter carries no `{key}`")
-        }
-        // The value is quoted back rather than merely called wrong: a
-        // vocabulary miss is almost always a spelling, and seeing the spelling
-        // is the fix.
-        Observed::FrontmatterValueOutsideVocabulary { key, found } => {
-            format!("`{key}` is `{found}`, which is not one of the accepted values")
-        }
-        Observed::FrontmatterValueDisagrees { key, found, wanted } => {
-            format!("`{key}` is `{found}`, and the path says `{wanted}`")
-        }
-        Observed::FrontmatterValueNotScalar { key } => {
-            format!("`{key}` is not a single value, so there is nothing to compare")
-        }
-        Observed::CompanionMissing { path } | Observed::SiblingMissing { path } => {
-            format!("`{path}` does not exist")
-        }
-        Observed::SpecIsEmpty { path } => format!("`{path}` contains no test cases"),
-        Observed::ForbiddenImport {
-            specifier,
-            resolved,
-        } => format!("imports `{specifier}`, which resolves to `{resolved}`"),
-        Observed::ForbiddenPackageImport { specifier, package } => {
-            // Named separately only when they differ, because for a deep import
-            // they do and reading "imports `three/examples/jsm/loaders/
-            // GLTFLoader.js`" without being told the rule is about `three`
-            // leaves the reader to work out which package they hit.
-            //
-            // `node:` is stripped from both first: `fs` is not *part of*
-            // `node:fs`, it is the same module spelled the other way, and
-            // saying otherwise reads as a bug in the rule.
-            let bare = |name: &str| name.strip_prefix("node:").unwrap_or(name).to_owned();
-            if bare(specifier) == bare(package) {
-                format!("imports the package `{package}`")
-            } else {
-                format!("imports `{specifier}`, which is part of the package `{package}`")
-            }
-        }
-        Observed::RequiredImportMissing => "no import satisfies the requirement".to_owned(),
-        Observed::RequiredCallMissing { symbol } => {
-            format!("`{symbol}` is imported but never called")
-        }
-        Observed::RequiredImportForCallMissing { symbol, module } => {
-            format!("`{symbol}` is not imported from `{module}`")
-        }
-        // `Observed` is non_exhaustive; a variant added later says what it is
-        // rather than failing to compile here.
-        other => format!("{other:?}"),
-    }
-}
-
 /// One sentence for what was required.
 ///
 /// Shared with `describe`, which renders the same expectations for a file that
@@ -1793,25 +1685,12 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
     }
 }
 
-/// Renders a list as `` `a`, `b` or `c` ``.
-fn join_or(items: &[impl AsRef<str>], empty: &str) -> String {
-    let quoted: Vec<String> = items
-        .iter()
-        .map(|item| format!("`{}`", item.as_ref()))
-        .collect();
-
-    match quoted.split_last() {
-        None => empty.to_owned(),
-        Some((last, [])) => last.clone(),
-        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use archwarden_core::{
-        facts::{ExportTags, KindFilter},
+        facts::{ExportKind, ExportTags, KindFilter},
+        finding::Observed,
         ids::{ModuleId, RuleId},
         level::Level,
         path::RepoRelPath,
@@ -2712,54 +2591,6 @@ mod tests {
         assert!(!json.contains("unreadable_files"), "{json}");
     }
 
-    /// The prose comes from the same values the JSON carries, so the two can
-    /// never describe one finding differently.
-    #[test]
-    fn every_observation_has_a_sentence() {
-        let cases = [
-            (
-                Observed::UnexpectedFilename {
-                    name: "helpers.ts".to_owned(),
-                },
-                "helpers.ts",
-            ),
-            (
-                Observed::ExportMissing {
-                    name: "Foo".to_owned(),
-                },
-                "no export named",
-            ),
-            (
-                Observed::ExportWrongKind {
-                    name: "Foo".to_owned(),
-                    found: ExportTags::only(ExportKind::Const).with(ExportKind::Arrow),
-                },
-                "`arrow` or `const`",
-            ),
-            (Observed::OnlyDefaultExport, "does not bind importers"),
-            (
-                Observed::SiblingMissing {
-                    path: path("a.spec.ts"),
-                },
-                "does not exist",
-            ),
-            (
-                Observed::RequiredCallMissing {
-                    symbol: "Event.save".to_owned(),
-                },
-                "never called",
-            ),
-        ];
-
-        for (observed, expected_fragment) in cases {
-            let sentence = describe_observed(&observed);
-            assert!(
-                sentence.contains(expected_fragment),
-                "{observed:?} rendered as {sentence}"
-            );
-        }
-    }
-
     /// Issue #13's reporting half. `1 skipped` is indistinguishable from a
     /// skip on an unreadable file and one on a rule nobody could evaluate, and
     /// the two mean opposite things: one is a bug to investigate, the other is
@@ -2797,56 +2628,6 @@ mod tests {
         assert_eq!(text.matches("src/broken.ts").count(), 1, "{text}");
     }
 
-    /// Issue #44. Six ways a frontmatter block can disappoint a rule, and six
-    /// sentences, because they are six different edits.
-    #[test]
-    fn a_frontmatter_fault_reads_as_a_sentence() {
-        let cases = [
-            (Observed::FrontmatterAbsent, "has no frontmatter block"),
-            (
-                Observed::FrontmatterMalformed {
-                    reason: "mapping values are not allowed here".to_owned(),
-                },
-                "is not YAML",
-            ),
-            (
-                Observed::FrontmatterKeyMissing {
-                    key: "componentes".to_owned(),
-                },
-                "carries no `componentes`",
-            ),
-            (
-                Observed::FrontmatterValueOutsideVocabulary {
-                    key: "status".to_owned(),
-                    found: "concluido".to_owned(),
-                },
-                "`status` is `concluido`",
-            ),
-            (
-                Observed::FrontmatterValueDisagrees {
-                    key: "id".to_owned(),
-                    found: "semaforo".to_owned(),
-                    wanted: "03-semaforo".to_owned(),
-                },
-                "`id` is `semaforo`, and the path says `03-semaforo`",
-            ),
-            (
-                Observed::FrontmatterValueNotScalar {
-                    key: "nivel".to_owned(),
-                },
-                "`nivel` is not a single value",
-            ),
-        ];
-
-        for (observed, fragment) in cases {
-            let sentence = describe_observed(&observed);
-            assert!(
-                sentence.contains(fragment),
-                "{observed:?} rendered as {sentence}"
-            );
-        }
-    }
-
     /// What the rule wants, for someone who has not read the config.
     #[test]
     fn a_required_frontmatter_reads_as_a_sentence() {
@@ -2860,50 +2641,6 @@ mod tests {
             expected,
             "frontmatter carrying `id` and `nivel`, \
              with `nivel` one of `1` or `2`, and `id` equal to `03-semaforo`"
-        );
-    }
-
-    /// Issue #45. The finding is on the file that needs the companion, so the
-    /// sentence has to name the companion rather than repeat the file.
-    #[test]
-    fn a_missing_companion_reads_as_a_sentence() {
-        assert_eq!(
-            describe_observed(&Observed::CompanionMissing {
-                path: path("projetos/03-semaforo/notas.md")
-            }),
-            "`projetos/03-semaforo/notas.md` does not exist"
-        );
-        assert_eq!(
-            describe_expectation(&Expectation::RequiredCompanion {
-                path: path("projetos/03-semaforo/notas.md")
-            }),
-            "`projetos/03-semaforo/notas.md` beside it"
-        );
-    }
-
-    /// Issue #42. The first observation about a path that is *not* there, so
-    /// the sentence has to read as an absence rather than as a disagreement
-    /// with something on disk.
-    #[test]
-    fn a_missing_required_file_reads_as_a_sentence() {
-        assert_eq!(
-            describe_observed(&Observed::RequiredFileMissing {
-                name: "notas.md".to_owned()
-            }),
-            "`notas.md` is not here"
-        );
-        assert_eq!(
-            describe_observed(&Observed::NoFileMatching {
-                pattern: r"\.ino$".to_owned()
-            }),
-            r"no file here matches `\.ino$`"
-        );
-        assert_eq!(
-            describe_expectation(&Expectation::RequiredFiles {
-                names: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
-                patterns: vec![r"\.ino$".to_owned()],
-            }),
-            r"`projeto.md` and `notas.md`, and a file matching `\.ino$`"
         );
     }
 
@@ -3035,36 +2772,6 @@ mod tests {
         );
     }
 
-    /// The two annotation faults are different sentences because they are
-    /// different fixes. Both would otherwise fall through to the
-    /// `non_exhaustive` arm and reach a user as a Rust `Debug` dump, which is
-    /// the failure mode that arm exists to soften and not one to ship.
-    #[test]
-    fn an_annotation_fault_reads_as_a_sentence() {
-        let missing = describe_observed(&Observed::ExportMissingAnnotation {
-            name: "AGENT_TOOL".to_owned(),
-        });
-        assert_eq!(missing, "`AGENT_TOOL` declares no type of its own");
-
-        let wrong = describe_observed(&Observed::ExportWrongAnnotation {
-            name: "AGENT_TOOL".to_owned(),
-            found: vec!["LegacyToolModule".to_owned()],
-        });
-        assert_eq!(wrong, "`AGENT_TOOL` is declared as `LegacyToolModule`");
-
-        // A class names one contract per `implements` clause, and a sentence
-        // that showed only the first would be describing a file that is not
-        // there.
-        let several = describe_observed(&Observed::ExportWrongAnnotation {
-            name: "Tool".to_owned(),
-            found: vec!["Disposable".to_owned(), "Serializable".to_owned()],
-        });
-        assert_eq!(
-            several,
-            "`Tool` is declared as `Disposable` or `Serializable`"
-        );
-    }
-
     /// What the rule wants, worded for someone who has not read the config.
     #[test]
     fn a_required_annotation_reads_as_a_sentence() {
@@ -3079,34 +2786,6 @@ mod tests {
             expected,
             "an export named `AGENT_TOOL`, annotated `AgentToolModule`"
         );
-    }
-
-    /// A deep import names a package the specifier does not spell, so the
-    /// sentence has to carry both; a bare one would read "imports `three`,
-    /// which is part of the package `three`". And `fs` is not *part of*
-    /// `node:fs` — it is the same module, spelled the other way.
-    #[test]
-    fn a_forbidden_package_names_the_package_only_when_it_differs() {
-        let observed = |specifier: &str, package: &str| {
-            describe_observed(&Observed::ForbiddenPackageImport {
-                specifier: specifier.to_owned(),
-                package: package.to_owned(),
-            })
-        };
-
-        assert_eq!(observed("three", "three"), "imports the package `three`");
-        assert_eq!(
-            observed("three/examples/jsm/loaders/GLTFLoader.js", "three"),
-            "imports `three/examples/jsm/loaders/GLTFLoader.js`, which is part \
-             of the package `three`"
-        );
-        for (written, configured) in [("fs", "node:fs"), ("node:fs", "fs")] {
-            assert_eq!(
-                observed(written, configured),
-                format!("imports the package `{configured}`"),
-                "`{written}` and `{configured}` are one module"
-            );
-        }
     }
 
     #[test]
@@ -3368,5 +3047,47 @@ mod tests {
         assert_eq!(join_or(&["a", "b"], "none"), "`a` or `b`");
         assert_eq!(join_or(&["a", "b", "c"], "none"), "`a`, `b` or `c`");
         assert_eq!(join_or(&Vec::<String>::new(), "none"), "none");
+    }
+    /// Issue #45. The finding is on the file that needs the companion, so the
+    /// sentence has to name the companion rather than repeat the file.
+    #[test]
+    fn a_missing_companion_reads_as_a_sentence() {
+        assert_eq!(
+            describe_observed(&Observed::CompanionMissing {
+                path: path("projetos/03-semaforo/notas.md")
+            }),
+            "`projetos/03-semaforo/notas.md` does not exist"
+        );
+        assert_eq!(
+            describe_expectation(&Expectation::RequiredCompanion {
+                path: path("projetos/03-semaforo/notas.md")
+            }),
+            "`projetos/03-semaforo/notas.md` beside it"
+        );
+    }
+    /// Issue #42. The first observation about a path that is *not* there, so
+    /// the sentence has to read as an absence rather than as a disagreement
+    /// with something on disk.
+    #[test]
+    fn a_missing_required_file_reads_as_a_sentence() {
+        assert_eq!(
+            describe_observed(&Observed::RequiredFileMissing {
+                name: "notas.md".to_owned()
+            }),
+            "`notas.md` is not here"
+        );
+        assert_eq!(
+            describe_observed(&Observed::NoFileMatching {
+                pattern: r"\.ino$".to_owned()
+            }),
+            r"no file here matches `\.ino$`"
+        );
+        assert_eq!(
+            describe_expectation(&Expectation::RequiredFiles {
+                names: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
+                patterns: vec![r"\.ino$".to_owned()],
+            }),
+            r"`projeto.md` and `notas.md`, and a file matching `\.ino$`"
+        );
     }
 }

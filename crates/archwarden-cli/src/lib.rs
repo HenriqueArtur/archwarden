@@ -4,15 +4,20 @@
 //! anything lives here so it can be tested without spawning a process.
 
 pub mod apply;
-pub mod baseline;
 pub mod batch;
 pub mod changed;
+// The baseline and the filters are operations, not presentation: a committed
+// record of accepted debt and a decision about what to print are both things
+// MCP and an LSP have to make the same way `check` does. Issue #63 moved them
+// to archwarden-api; re-exported here so `crate::baseline` and `crate::filter`
+// still name them at the fifty-odd call sites that use them.
+pub use archwarden_api::{baseline, filter};
+
 pub mod describe;
 pub mod diagnostic;
 pub mod doctor;
 pub mod exit;
 pub mod explain;
-pub mod filter;
 pub mod guide;
 pub mod hook;
 pub mod hooks;
@@ -211,7 +216,7 @@ pub enum Command {
         /// known debt. They are still evaluated, still counted in
         /// `--summary`, and still not what fails the build.
         #[arg(long, value_enum, value_name = "LEVEL")]
-        level: Option<crate::filter::LevelFilter>,
+        level: Option<LevelFilter>,
 
         /// Show only findings in files that differ from this ref.
         ///
@@ -486,6 +491,33 @@ pub enum ConfigCommand {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
+}
+
+/// Which level to show, as a command-line value.
+///
+/// Here rather than beside the filter it feeds, and for the reason that kept
+/// it out of `archwarden-core` before: this is the enum with clap's
+/// `ValueEnum` on it, and the crate holding the operations should no more
+/// learn about a command line than the core should. `archwarden_api::filter`
+/// takes the core's own [`archwarden_core::level::Level`]; this is the word
+/// a user types, and [`LevelFilter::level`] is the one step between them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum LevelFilter {
+    /// Only errors.
+    Error,
+    /// Only warnings.
+    Warning,
+}
+
+impl LevelFilter {
+    /// The severity this names.
+    #[must_use]
+    pub fn level(self) -> archwarden_core::level::Level {
+        match self {
+            Self::Error => archwarden_core::level::Level::Error,
+            Self::Warning => archwarden_core::level::Level::Warning,
+        }
+    }
 }
 
 /// A harness archwarden can speak the hook protocol of.
@@ -1676,7 +1708,7 @@ struct CheckOptions<'a> {
     rules: &'a [String],
     paths: &'a [String],
     changed: Option<&'a str>,
-    level: Option<crate::filter::LevelFilter>,
+    level: Option<LevelFilter>,
     no_baseline: bool,
     by: Option<crate::report::Axis>,
 }
@@ -1737,7 +1769,9 @@ fn check(
             rules: options.rules,
             paths: options.paths,
             changed,
-            level: options.level,
+            // The one step from the word a user typed to the severity the
+            // filter matches on.
+            level: options.level.map(LevelFilter::level),
         },
         &compiled,
     ) {

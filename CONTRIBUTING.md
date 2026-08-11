@@ -178,12 +178,22 @@ the build. The line floor is 99 rather than 100 only because
 `cargo-llvm-cov`'s summary reports one phantom miss inside macro-expanded code
 in `glob.rs` that its own lcov, JSON and HTML reports all show as covered.
 
-`archwarden-api` does touch the filesystem, and is held to the same pair
-anyway. It is the boundary every surface goes through, so a branch nothing
-tests is a branch the CLI, the agent hook and MCP all inherit at once. It is
-affordable because nothing in that crate writes: every stage returns its
-failure as a value, so reaching a branch means constructing an input rather
-than arranging a terminal.
+`archwarden-api` does touch the filesystem, and is held at 99/99. It is the
+boundary every surface goes through, so a branch nothing tests is a branch the
+CLI, the agent hook and MCP all inherit at once. That is affordable because
+nothing in the crate writes: every stage returns its failure as a value, so
+reaching a branch means constructing an input rather than arranging a terminal.
+
+Its function floor is 99 rather than 100 for exactly one function, named
+rather than left as slack: `Baseline::write` maps the error of
+`serde_json::to_string_pretty(self)`, and `Baseline` is a `Vec<Entry>` of
+three `String`s. serde_json fails on non-string map keys, on non-finite
+floats, and on a `Serialize` that errors; this type has none of the three, so
+no input reaches that arm — and `?` cannot be written without handling it.
+`#[coverage(off)]` would say so precisely and is nightly-only.
+
+One more uncovered function could hide behind that. If the count moves off 173
+of 174, find out which one before touching the floor.
 
 ## Tests
 

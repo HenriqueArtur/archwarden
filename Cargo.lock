@@ -107,6 +107,8 @@ dependencies = [
  "archwarden-engine",
  "archwarden-resolver",
  "camino",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
 ]

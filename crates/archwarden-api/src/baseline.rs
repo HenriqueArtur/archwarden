@@ -400,7 +400,7 @@ fn entry_for(finding: &Finding) -> Entry {
     Entry {
         rule: finding.rule_id.as_str().to_owned(),
         path: finding.path.as_str().to_owned(),
-        note: crate::report::describe_observed(&finding.observed),
+        note: crate::describe::describe_observed(&finding.observed),
     }
 }
 
@@ -712,6 +712,159 @@ mod tests {
         assert_eq!(changes.added.len(), 1, "{:?}", changes.added);
         assert_eq!(changes.added[0].path, "packages/domain/invoice");
         assert!(changes.removed.is_empty());
+    }
+
+    /// The other half of the pairing, and the one nothing asserted. A
+    /// directory moved *and* a violation elsewhere was fixed, in the same
+    /// regeneration. The mapping explains two of the three departures; the
+    /// third is a real fix and has to survive the pairing as a removal.
+    ///
+    /// Losing it would be the cheerful direction to fail in and still wrong:
+    /// the count of debt paid is the only encouraging number archwarden has,
+    /// and one silently absorbed into a rename is one nobody is told about.
+    #[test]
+    fn a_fix_alongside_a_move_is_still_a_fix() {
+        let committed = Baseline::of(&[
+            finding(
+                "shape",
+                "apps/api/src/Domain/order",
+                Level::Error,
+                "handlers",
+            ),
+            finding(
+                "shape",
+                "apps/api/src/Domain/user",
+                Level::Error,
+                "handlers",
+            ),
+            finding("shape", "apps/web/src/legacy", Level::Error, "handlers"),
+        ]);
+        let next = Baseline::of(&[
+            finding("shape", "packages/domain/order", Level::Error, "handlers"),
+            finding("shape", "packages/domain/user", Level::Error, "handlers"),
+        ]);
+
+        let changes = committed.changes(&next);
+
+        assert_eq!(changes.moved.len(), 2);
+        assert!(changes.added.is_empty(), "{:?}", changes.added);
+        assert_eq!(changes.removed.len(), 1, "{:?}", changes.removed);
+        assert_eq!(changes.removed[0].path, "apps/web/src/legacy");
+    }
+
+    /// The file's own contents, for the caller that has to show them rather
+    /// than ask a question of them — `baseline --dry-run` against a repository
+    /// that has none yet, where what *would* be accepted is the whole answer.
+    #[test]
+    fn the_accepted_entries_can_be_read_back_in_file_order() {
+        let baseline = Baseline::of(&debt());
+
+        let paths: Vec<&str> = baseline
+            .entries()
+            .map(|entry| entry.path.as_str())
+            .collect();
+
+        assert_eq!(paths.len(), debt().len());
+        assert!(paths.windows(2).all(|pair| pair[0] <= pair[1]), "{paths:?}");
+    }
+
+    /// A baseline that is there and unreadable is refused, and the refusal
+    /// names the file. Absence is not an error — most projects have none — but
+    /// a file that exists and cannot be read must never be taken for an empty
+    /// one: that would accept nothing and fail a build for a reason the user
+    /// cannot see.
+    #[test]
+    fn a_baseline_that_cannot_be_read_is_refused_by_name() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let root = camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf())
+            .expect("temp path is UTF-8");
+        // A directory where the file goes: present, and not readable as text.
+        std::fs::create_dir_all(root.join(BASELINE_PATH)).expect("create");
+
+        let error = Baseline::load(&root).expect_err("a directory is not a baseline");
+
+        assert!(error.starts_with("cannot read `"), "{error}");
+        assert!(error.contains(BASELINE_PATH), "{error}");
+    }
+
+    /// And a baseline that cannot be written says which directory it could not
+    /// make. `baseline` is a command a user runs deliberately; failing it in
+    /// silence would leave them believing debt was accepted when nothing was
+    /// recorded.
+    #[test]
+    fn a_baseline_whose_directory_cannot_be_made_is_refused_by_name() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let root = camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf())
+            .expect("temp path is UTF-8");
+        // A file where the directory goes.
+        std::fs::write(root.join(".archwarden"), "not a directory").expect("write");
+
+        let error = Baseline::of(&debt())
+            .write(&root)
+            .expect_err("a file is not a directory");
+
+        assert!(error.starts_with("cannot create `"), "{error}");
+    }
+
+    /// Two directories moved in one regeneration, each explaining two pairs.
+    /// With equal votes the order has to come from the mappings themselves,
+    /// not from whatever order they were counted in — which is the reason the
+    /// votes are held in a `BTreeMap` and then tie-broken explicitly.
+    ///
+    /// The property is that running this twice on the same input produces the
+    /// same output. A `baseline --dry-run` whose report reshuffled between
+    /// runs would make every diff of it unreadable, and the instability would
+    /// only show up on somebody else's machine.
+    #[test]
+    fn two_moves_with_equal_votes_are_ordered_the_same_way_every_time() {
+        let committed = Baseline::of(&[
+            finding("shape", "old/api/order", Level::Error, "handlers"),
+            finding("shape", "old/api/user", Level::Error, "handlers"),
+            finding("shape", "legacy/web/cart", Level::Error, "handlers"),
+            finding("shape", "legacy/web/checkout", Level::Error, "handlers"),
+        ]);
+        let next = Baseline::of(&[
+            finding("shape", "new/api/order", Level::Error, "handlers"),
+            finding("shape", "new/api/user", Level::Error, "handlers"),
+            finding("shape", "apps/web/cart", Level::Error, "handlers"),
+            finding("shape", "apps/web/checkout", Level::Error, "handlers"),
+        ]);
+
+        let once = committed.changes(&next);
+        let again = committed.changes(&next);
+
+        assert_eq!(once.moved.len(), 4, "{:?}", once.moved);
+        assert!(once.added.is_empty(), "{:?}", once.added);
+        assert!(once.removed.is_empty(), "{:?}", once.removed);
+
+        let order = |changes: &Changes<'_>| -> Vec<String> {
+            changes
+                .moved
+                .iter()
+                .map(|moved| format!("{} -> {}", moved.from.path, moved.to.path))
+                .collect()
+        };
+        assert_eq!(order(&once), order(&again));
+    }
+
+    /// And a baseline whose directory exists but whose file cannot be written
+    /// says which file. Same reason as the directory case: a `baseline` that
+    /// failed in silence leaves a user believing debt was accepted when
+    /// nothing was recorded.
+    #[test]
+    fn a_baseline_that_cannot_be_written_is_refused_by_name() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let root = camino::Utf8PathBuf::from_path_buf(directory.path().to_path_buf())
+            .expect("temp path is UTF-8");
+        // A directory where the file goes: the parent is fine, the write is not.
+        std::fs::create_dir_all(root.join(BASELINE_PATH)).expect("create");
+
+        let error = Baseline::of(&debt())
+            .write(&root)
+            .expect_err("a directory cannot be overwritten with a file");
+
+        assert!(error.starts_with("cannot write `"), "{error}");
+        assert!(error.contains(BASELINE_PATH), "{error}");
     }
 
     /// The trap the pairing itself creates, found by running the command
