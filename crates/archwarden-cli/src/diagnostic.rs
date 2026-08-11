@@ -176,6 +176,50 @@ impl ConfigDiagnostic {
             },
         }
     }
+
+    /// Builds a diagnostic from anything an operation returned.
+    ///
+    /// The single entry point the CLI uses, and the reason the boundary in
+    /// issue #63 costs nothing in diagnostic quality: the wrapped variants
+    /// delegate to the constructors above, which still hold the source text
+    /// and the byte offsets they need to draw a caret.
+    ///
+    /// [`archwarden_api::Error`] is `non_exhaustive`, so a stage added later
+    /// lands in the final arm and gets the bare rendering rather than failing
+    /// to compile. The message is always correct there; only the help is
+    /// missing.
+    #[must_use]
+    pub fn from_api_error(error: &archwarden_api::Error) -> Self {
+        match error {
+            archwarden_api::Error::Load(inner) => Self::from_load_error(inner),
+            archwarden_api::Error::Extends(inner) => Self::from_extends_error(inner),
+            archwarden_api::Error::Compile(inner) => Self::from_compile_error(inner),
+
+            // The one config problem whose fix is not in the config. Saying
+            // "upgrade" first matters: a user reading a complaint about their
+            // own file's version number will otherwise edit the number, which
+            // makes this build read a config written for a schema it does not
+            // have — the exact silence issue #55 was.
+            archwarden_api::Error::UnsupportedVersion { understood, .. } => Self {
+                message: error.to_string(),
+                source_text: None,
+                span: None,
+                help: Some(format!(
+                    "upgrade archwarden to a build that reads this version. \
+                     Lowering the file's `version` to {understood} would make \
+                     this build parse it, and silently ignore everything the \
+                     newer schema added."
+                )),
+            },
+
+            _ => Self {
+                message: error.to_string(),
+                source_text: None,
+                span: None,
+                help: None,
+            },
+        }
+    }
 }
 
 /// Removes the ` at line N column M` suffix `serde_json` appends to every
@@ -279,6 +323,43 @@ mod tests {
         assert_eq!(byte_offset("abc", 0, 1), None);
         assert_eq!(byte_offset("abc", 1, 0), None);
         assert_eq!(byte_offset("", 1, 1), None);
+    }
+
+    /// The version refusal is the one error the orchestration used to write
+    /// itself, in a bare sentence with no help, because it had no variant to
+    /// be. It has one now, so it renders like every other config problem —
+    /// and can finally say the thing the user needs, which is that the fix is
+    /// on this side rather than in their file.
+    #[test]
+    fn an_unsupported_version_says_the_fix_is_on_this_side() {
+        let diagnostic =
+            ConfigDiagnostic::from_api_error(&archwarden_api::Error::UnsupportedVersion {
+                path: Utf8PathBuf::from("/repo/arch.config.json"),
+                declared: 99,
+                understood: 0,
+            });
+
+        assert_eq!(
+            diagnostic.message,
+            "`/repo/arch.config.json` declares version 99, but this build understands version 0"
+        );
+        assert!(diagnostic.span.is_none());
+        let help = diagnostic.help.as_deref().expect("has help");
+        assert!(help.contains("upgrade archwarden"), "{help}");
+    }
+
+    /// The three wrapped variants delegate, so a syntax error inside a preset
+    /// still gets the caret it got before the boundary existed. This is the
+    /// property that stops "errors as values" costing a diagnostic.
+    #[test]
+    fn a_wrapped_load_error_keeps_the_span_it_would_have_had() {
+        let error = invalid(r#"{"version": 0,,}"#);
+        let direct = ConfigDiagnostic::from_load_error(&error);
+        let through = ConfigDiagnostic::from_api_error(&archwarden_api::Error::Load(error));
+
+        assert_eq!(direct.message, through.message);
+        assert_eq!(direct.span, through.span);
+        assert!(through.span.is_some());
     }
 
     /// A missing config cannot show a span, but it can say what to do next.

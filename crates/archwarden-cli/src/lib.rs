@@ -68,16 +68,10 @@ pub struct Cli {
 
 /// Where a command reads its rules from, and what it reads them against.
 ///
-/// Two questions `--config` used to answer at once. Separating them is what
-/// lets a configuration live outside the repository it describes.
-#[derive(Debug, Clone, Copy)]
-pub struct Location<'a> {
-    /// An explicit config path, or `None` to search upwards from the working
-    /// directory.
-    pub config: Option<&'a Utf8Path>,
-    /// An explicit repository root, or `None` to take the config's answer.
-    pub root: Option<&'a Utf8Path>,
-}
+/// Defined by [`archwarden_api`] and re-exported, not restated. It is an
+/// argument to the operations, so the crate that owns the operations owns it;
+/// a second copy here would be a type to keep in step for no gain.
+pub use archwarden_api::Location;
 
 impl Cli {
     /// Where this invocation says to look.
@@ -661,48 +655,26 @@ fn run_config(
 
 /// Loads, merges and compiles a configuration, rendering any failure.
 ///
-/// Shared by `check` and `config validate` so the two can never disagree about
-/// whether a configuration is usable.
+/// The orchestration itself lives in [`archwarden_api`] and returns its
+/// failures as values. What is left here is the half that is genuinely the
+/// CLI's: turning one of those values into a miette report on stderr and exit
+/// code 2. That split is issue #63 — before it, the two were one function, and
+/// every surface that reports failure differently had to re-implement the path
+/// to change the shape of an error rather than reuse it.
+///
+/// Keeps its tuple return so the eleven callers below are unchanged.
 fn prepare(
     location: Location<'_>,
     working_directory: &Utf8Path,
     output: &mut Output<'_>,
 ) -> Result<(MergedConfig, archwarden_core::compiled::CompiledConfig), Exit> {
-    let loaded = load(location, working_directory).map_err(|error| {
-        let report = miette::Report::new(ConfigDiagnostic::from_load_error(&error));
+    let prepared = archwarden_api::prepare(location, working_directory).map_err(|error| {
+        let report = miette::Report::new(ConfigDiagnostic::from_api_error(&error));
         let _ = writeln!(output.err, "{report:?}");
         Exit::ConfigProblem
     })?;
 
-    // Checked before merging: an unsupported version means this build cannot
-    // be trusted to interpret the file at all, presets included.
-    if !loaded.config.version_is_supported() {
-        let _ = writeln!(
-            output.err,
-            "{}: config declares version {}, but this build understands version {}",
-            loaded.path,
-            loaded.config.version,
-            archwarden_config::config::SCHEMA_VERSION,
-        );
-        return Err(Exit::ConfigProblem);
-    }
-
-    let merged = extends::merge(loaded, &PresetResolver::new()).map_err(|error| {
-        let report = miette::Report::new(ConfigDiagnostic::from_extends_error(&error));
-        let _ = writeln!(output.err, "{report:?}");
-        Exit::ConfigProblem
-    })?;
-
-    // Compiling is what makes validation mean something beyond "the JSON
-    // parsed": every glob is built, every regex is compiled, and every export
-    // template is checked against the capture groups its pattern defines.
-    let compiled = compile::compile(&merged).map_err(|error| {
-        let report = miette::Report::new(ConfigDiagnostic::from_compile_error(&error));
-        let _ = writeln!(output.err, "{report:?}");
-        Exit::ConfigProblem
-    })?;
-
-    Ok((merged, compiled))
+    Ok((prepared.merged, prepared.compiled))
 }
 
 /// Says what the rules require of one path.

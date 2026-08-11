@@ -160,6 +160,13 @@ pub(crate) const STEPS: &[Step] = &[
         role: Role::Gate,
     },
     Step {
+        command: "cargo llvm-cov -p archwarden-api --all-features --fail-under-lines 99 \
+                  --fail-under-functions 100",
+        dir: None,
+        needs: Some(LLVM_COV),
+        role: Role::Gate,
+    },
+    Step {
         command: "cargo llvm-cov --workspace --all-features --ignore-filename-regex 'xtask/' \
                   --fail-under-lines 95",
         dir: None,

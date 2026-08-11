@@ -168,13 +168,22 @@ reads better than the alternative. `dbg!` stays denied even there.
 outside the binary crates. Libraries return values; the CLI decides how to say
 them.
 
-**Coverage floors are floors.** `archwarden-core` is held at 99% lines / 100%
-functions, everything else at 95% lines. Never lower one to make a red build
-green. It is pure logic with no I/O, so an uncovered line there means either a
-missing test or a branch no input can take — and both deserve to fail the
-build. The line floor is 99 rather than 100 only because `cargo-llvm-cov`'s
-summary reports one phantom miss inside macro-expanded code in `glob.rs` that
-its own lcov, JSON and HTML reports all show as covered.
+**Coverage floors are floors.** `archwarden-core` and `archwarden-api` are held
+at 99% lines / 100% functions, everything else at 95% lines. Never lower one to
+make a red build green.
+
+`archwarden-core` is pure logic with no I/O, so an uncovered line there means
+either a missing test or a branch no input can take — and both deserve to fail
+the build. The line floor is 99 rather than 100 only because
+`cargo-llvm-cov`'s summary reports one phantom miss inside macro-expanded code
+in `glob.rs` that its own lcov, JSON and HTML reports all show as covered.
+
+`archwarden-api` does touch the filesystem, and is held to the same pair
+anyway. It is the boundary every surface goes through, so a branch nothing
+tests is a branch the CLI, the agent hook and MCP all inherit at once. It is
+affordable because nothing in that crate writes: every stage returns its
+failure as a value, so reaching a branch means constructing an input rather
+than arranging a terminal.
 
 ## Tests
 

@@ -93,6 +93,21 @@ jobs:
           --fail-under-lines 99
           --fail-under-functions 100
 
+      # archwarden-api is held to the same pair, and it is the one crate here
+      # that touches the filesystem under that bar. Deliberate: it is the
+      # boundary every surface goes through, so a branch nothing tests is a
+      # branch the CLI, the hook and MCP all inherit at once. Issue #63 moved
+      # this code out of archwarden-cli, where the 95 floor would have let a
+      # whole error variant arrive untested.
+      #
+      # It is affordable because nothing in the crate writes: every stage
+      # returns a value, so reaching a branch means constructing an input, not
+      # arranging a terminal.
+      - run: >
+          cargo llvm-cov -p archwarden-api --all-features
+          --fail-under-lines 99
+          --fail-under-functions 100
+
       # Everything else: 95% is the floor, 100% the aim. The crates that touch
       # the filesystem, the terminal and node_modules have edges that cost more
       # to reach than they are worth.

@@ -1,0 +1,23 @@
+[package]
+name = "archwarden-api"
+description = "The operations behind archwarden's surfaces: one implementation, errors as values."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+archwarden-config = { workspace = true }
+archwarden-core = { workspace = true }
+archwarden-resolver = { workspace = true }
+camino = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

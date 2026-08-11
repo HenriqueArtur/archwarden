@@ -17,6 +17,7 @@ authors = ["Henrique Artur"]
 [workspace.dependencies]
 
 # --- internal ---------------------------------------------------------------
+archwarden-api = { path = "crates/archwarden-api", version = "0.14.0" }
 archwarden-cache = { path = "crates/archwarden-cache", version = "0.14.0" }
 archwarden-config = { path = "crates/archwarden-config", version = "0.14.0" }
 archwarden-core = { path = "crates/archwarden-core", version = "0.14.0" }
