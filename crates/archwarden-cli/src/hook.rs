@@ -32,6 +32,45 @@ pub enum Decision {
     Deny(String),
 }
 
+/// Which question the harness is asking.
+///
+/// One command answers both, dispatching on what it was sent. Two commands
+/// would let a hook be wired to the wrong event, and a pre-write answer to a
+/// stop event — or the reverse — is a hook that reports nothing while looking
+/// installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event {
+    /// A write is about to happen. Answer whether it would be legal.
+    PreToolUse,
+    /// The turn is over. Say what landed.
+    ///
+    /// The pre-write hook sees one write at a time and is structurally unable
+    /// to judge a rule about a group — a `presence` rule makes every write in
+    /// the group illegal until the whole group exists, so no order passes.
+    /// This is where that class is caught. Issue #61.
+    Stop,
+    /// Something this build has no answer for.
+    Other,
+}
+
+/// Which event the payload announces.
+///
+/// Absent means [`PreToolUse`](Event::PreToolUse): that is what every hook
+/// installed before this sent, and a harness that stops sending the field must
+/// not silently change what the hook does.
+#[must_use]
+pub fn event(payload: &str) -> Event {
+    let Ok(parsed) = serde_json::from_str::<Value>(payload) else {
+        return Event::PreToolUse;
+    };
+
+    match parsed.get("hook_event_name").and_then(Value::as_str) {
+        None | Some(EVENT) => Event::PreToolUse,
+        Some("Stop") => Event::Stop,
+        Some(_) => Event::Other,
+    }
+}
+
 /// What the payload had to say about a file.
 ///
 /// Three answers rather than two, because [`NoFile`](Target::NoFile) and
@@ -172,6 +211,73 @@ pub fn respond(decision: &Decision) -> String {
     // call otherwise, and a hook that fills someone's debug log is a hook they
     // uninstall.
     format!("{response}\n")
+}
+
+/// The message the end of a turn carries: what landed that a rule objects to.
+///
+/// Different from [`explain`] in what it is for. That one is handed to an agent
+/// about to be refused, and names one file and the shape it should have had.
+/// This one is read after the fact, about a set of files, and its job is to be
+/// short enough that somebody reads it.
+///
+/// Grouped by rule rather than by file: a `presence` rule that fired on four
+/// directories is one thing to fix, and four lines saying the same thing is a
+/// message people learn to skip.
+#[must_use]
+pub fn landed(
+    findings: &[archwarden_core::finding::Finding],
+    reasons: &crate::report::Reasons,
+) -> String {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    // The level is stored with the group rather than read back from its first
+    // member: taking it from `first()` needs an `expect` for a case that cannot
+    // happen, and a panic that cannot happen is still a panic in a hook.
+    type Group<'a> = (
+        archwarden_core::level::Level,
+        Vec<&'a archwarden_core::finding::Finding>,
+    );
+    let mut by_rule: BTreeMap<&archwarden_core::ids::RuleId, Group<'_>> = BTreeMap::new();
+    for finding in findings {
+        by_rule
+            .entry(&finding.rule_id)
+            .or_insert_with(|| (finding.level, Vec::new()))
+            .1
+            .push(finding);
+    }
+
+    let mut message = format!(
+        "archwarden: {} {} landed in this turn.\n",
+        findings.len(),
+        if findings.len() == 1 {
+            "finding"
+        } else {
+            "findings"
+        },
+    );
+
+    for (rule, (level, found)) in &by_rule {
+        let _ = write!(message, "\n  [{level}] {rule}\n");
+
+        // Each finding keeps its own observation. Grouping by rule and showing
+        // only the first one printed the same sentence twice for a directory
+        // missing two files, and never mentioned the second -- a shorter
+        // message that leaves out what is wrong is not shorter, it is wrong.
+        for finding in found {
+            let _ = writeln!(
+                message,
+                "    {} — {}",
+                finding.path,
+                crate::report::describe_observed(&finding.observed),
+            );
+        }
+        if let Some(why) = reasons.of_rule(rule) {
+            let _ = writeln!(message, "  why: {why}");
+        }
+    }
+
+    message
 }
 
 /// The message a blocked write carries: what broke, what was expected, and how
@@ -514,5 +620,34 @@ mod tests {
             "file_path":"/repo/a.ipynb","cell":"3"}}"#;
 
         assert_eq!(pending(event, "whatever"), None);
+    }
+    /// The harness says which event it is sending, and one command answers
+    /// both. Issue #61.
+    #[test]
+    fn the_event_is_read_from_the_payload() {
+        assert_eq!(event(WRITE), Event::PreToolUse);
+        assert_eq!(
+            event(r#"{"hook_event_name":"Stop","session_id":"abc"}"#),
+            Event::Stop
+        );
+    }
+
+    /// A payload with no event name is the pre-write one: that is what every
+    /// installed hook sent before this existed, and a harness that stops
+    /// sending the field must not silently switch behaviour.
+    #[test]
+    fn a_payload_with_no_event_name_is_the_pre_write_one() {
+        assert_eq!(
+            event(r#"{"tool_input":{"file_path":"/repo/a.ts"}}"#),
+            Event::PreToolUse
+        );
+    }
+
+    /// An event this build does not know is not guessed at. A harness that
+    /// grows a new event would otherwise have it answered as though it were a
+    /// write.
+    #[test]
+    fn an_event_this_build_does_not_know_is_named_as_such() {
+        assert_eq!(event(r#"{"hook_event_name":"SessionStart"}"#), Event::Other);
     }
 }

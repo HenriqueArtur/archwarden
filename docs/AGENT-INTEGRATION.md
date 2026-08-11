@@ -205,6 +205,36 @@ in the environment: the hook is handed the event as JSON on stdin, with the
 target under `tool_input.file_path`. archwarden reads that itself, so the
 installed line needs no `jq` and no shell quoting.
 
+### The turn, as well as the write
+
+`install-hooks` writes two entries, both running the same command, which
+dispatches on the event it is sent:
+
+| event | matcher | answers |
+|---|---|---|
+| `PreToolUse` | `Write\|Edit\|MultiEdit` | would this write be legal? |
+| `Stop` | none | what landed this turn? |
+
+**The pre-write hook sees one write at a time, and some rules cannot be judged
+from one.** A `presence` rule requiring three files makes every one of the
+three illegal until the other two exist — so no write order passes, and the
+module cannot be created at all. The stop hook is where that class is caught,
+because by then the group is there to be judged and what is missing is a fact
+rather than a prediction.
+
+It **reports and never blocks**: the writes have landed, so refusing them is
+not on offer, and a stop hook that kept the agent going would be a loop waiting
+for a reason to start. It is silent when nothing broke — a hook that spoke
+every turn is one somebody removes.
+
+Scoped to what changed against `HEAD`, plus untracked files. That is the turn's
+work unless the agent committed midway, and a full run would take seconds on a
+large repository to say the same thing about files nobody touched.
+
+One command for both events, rather than two. Two commands can be wired to the
+wrong event, and an answer to the wrong question is a hook that reports nothing
+while looking installed.
+
 **The hook answers about the file as it would be after this write.** Not as it
 is on disk — that is the previous version, and answering from it means a new
 file is never checked, an edit introducing a violation is permitted, and an edit

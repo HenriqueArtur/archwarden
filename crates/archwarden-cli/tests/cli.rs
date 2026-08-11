@@ -36,6 +36,26 @@ fn archwarden() -> Command {
     Command::cargo_bin("archwarden").expect("the binary is built")
 }
 
+/// A repository with one commit, so `HEAD` names something.
+///
+/// The stop hook asks git what changed since `HEAD`, which is the turn's work
+/// unless the agent committed midway.
+fn git_init(root: &std::path::Path) {
+    let run = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git runs");
+    };
+    run(&["init", "-q"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "test"]);
+    run(&["add", "arch.config.json"]);
+    run(&["commit", "-qm", "config"]);
+}
+
 const MINIMAL: &str = r#"{"version": 0}"#;
 
 #[test]
@@ -1086,6 +1106,61 @@ fn a_spec_in_a_named_directory_satisfies_the_rule_through_the_cli() {
         .assert()
         .code(1)
         .stdout(contains("needs-spec"));
+}
+
+/// Issue #61, and the relief for #57: the class of rule the pre-write hook
+/// cannot judge is caught once the writes have landed.
+///
+/// A `presence` rule requiring three files makes every one of the three
+/// illegal until the other two exist, so no write order passes and the module
+/// cannot be created at all. At the end of the turn the group is there to be
+/// judged, and what is missing is a fact rather than a prediction.
+#[test]
+fn the_stop_hook_reports_what_landed() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"tem-os-tres","level":"error",
+                 "roots":["projetos/*"],
+                 "require":["projeto.md","exercicios.md","diagram.json"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+    git_init(dir.path());
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"Stop","session_id":"abc"}"#)
+        .assert()
+        .success()
+        .stdout(contains("landed in this turn"))
+        .stdout(contains("exercicios.md"));
+}
+
+/// A turn that broke nothing says nothing. A hook that spoke every turn is one
+/// somebody removes.
+#[test]
+fn the_stop_hook_is_silent_when_nothing_landed() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"tem-os-tres","level":"error",
+                 "roots":["projetos/*"],"require":["projeto.md"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+    git_init(dir.path());
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"Stop"}"#)
+        .assert()
+        .success()
+        .stdout("{}\n");
 }
 
 /// Issue #46, through the real process. A finding says what the rule wanted
