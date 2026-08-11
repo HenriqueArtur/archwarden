@@ -29,6 +29,14 @@ use serde::Serialize;
 // diff about nothing.
 pub use archwarden_api::describe::{describe_observed, join_or};
 
+// What of a run to show is a decision, not a rendering: which findings the
+// baseline left, which the filters kept, and whether the reader asked for a
+// listing or for counts. All three are answers MCP and an LSP need in exactly
+// the form `check` gets them, so `View` and `Breakdown` moved to
+// archwarden-api with the rest of Present. What stayed here is the part that
+// turns one into bytes.
+pub use archwarden_api::present::{Breakdown, View};
+
 /// The version of the JSON report shape.
 ///
 /// Bumped when a consumer would have to change to keep reading it. Adding a
@@ -97,226 +105,6 @@ pub enum Format {
     Text,
     /// A stable, versioned JSON object.
     Json,
-}
-
-/// What `--summary` counts by.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
-pub enum Axis {
-    /// One row per rule: what is dominating this output.
-    #[default]
-    Rule,
-    /// One row per area of the repository: where to start.
-    Path,
-}
-
-/// What of a report to show.
-///
-/// A run always evaluates every rule and computes every finding. This is the
-/// part the user asked to look at, and nothing in it can change the exit code
-/// — see [`crate::filter`].
-#[derive(Debug)]
-pub struct View<'a> {
-    /// The findings that survived the filters, in the report's own order.
-    findings: Vec<&'a Finding>,
-    /// The per-rule counts, when `--summary` was asked for.
-    breakdown: Option<Breakdown>,
-    /// How many findings the filters removed.
-    hidden: usize,
-}
-
-impl<'a> View<'a> {
-    /// Everything, which is what an unfiltered run shows.
-    #[must_use]
-    pub fn everything(report: &'a Report) -> Self {
-        Self {
-            findings: report.findings.iter().collect(),
-            breakdown: None,
-            hidden: 0,
-        }
-    }
-
-    /// A filtered listing.
-    #[must_use]
-    pub fn filtered(findings: &[&'a Finding], hidden: usize) -> Self {
-        Self {
-            findings: findings.to_vec(),
-            breakdown: None,
-            hidden,
-        }
-    }
-
-    /// Counts instead of a listing.
-    #[must_use]
-    pub fn summarised(findings: &[&'a Finding], breakdown: Breakdown, hidden: usize) -> Self {
-        Self {
-            findings: findings.to_vec(),
-            breakdown: Some(breakdown),
-            hidden,
-        }
-    }
-
-    fn count(&self, level: archwarden_core::level::Level) -> usize {
-        self.findings
-            .iter()
-            .filter(|finding| finding.level == level)
-            .count()
-    }
-}
-
-/// How many findings each rule produced.
-///
-/// Rows come from the configuration, counts from the findings being shown. A
-/// rule that fired nothing keeps its row: that it was evaluated is an answer,
-/// and a missing row reads as a rule someone disabled.
-#[derive(Debug)]
-pub struct Breakdown {
-    rows: Vec<Row>,
-}
-
-#[derive(Debug, Serialize)]
-struct Row {
-    /// A rule id, or a directory -- whichever axis the reader asked for. The
-    /// table is the same either way; only what the first column names changes.
-    #[serde(skip)]
-    rule_id: String,
-    errors: usize,
-    warnings: usize,
-}
-
-impl Breakdown {
-    /// Counts `findings` against every rule in `ids`.
-    ///
-    /// Ordered worst-first: errors descending, then warnings descending, then
-    /// by id. The same order the findings themselves are in — two orderings
-    /// for one report is a thing someone eventually reports as a bug.
-    #[must_use]
-    pub fn over<I, S>(ids: I, findings: &[&Finding]) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        let mut rows: Vec<Row> = ids
-            .into_iter()
-            .map(|id| {
-                let id = id.as_ref();
-                let mine = findings.iter().filter(|f| f.rule_id.as_str() == id);
-                let (errors, warnings) =
-                    mine.fold((0, 0), |(errors, warnings), finding| match finding.level {
-                        archwarden_core::level::Level::Error => (errors + 1, warnings),
-                        archwarden_core::level::Level::Warning => (errors, warnings + 1),
-                    });
-                Row {
-                    rule_id: id.to_owned(),
-                    errors,
-                    warnings,
-                }
-            })
-            .collect();
-
-        rows.sort_by(|a, b| {
-            b.errors
-                .cmp(&a.errors)
-                .then_with(|| b.warnings.cmp(&a.warnings))
-                .then_with(|| a.rule_id.cmp(&b.rule_id))
-        });
-
-        Self { rows }
-    }
-
-    /// Counts `findings` by the area of the repository they are in.
-    ///
-    /// "Which rule dominates this output" and "which part of the repository is
-    /// furthest from the rules" are different questions, and only the second
-    /// says where to start a refactor.
-    ///
-    /// The areas are the directories the rules' own scopes select. Nothing
-    /// here invents a depth: a config saying `roots: packages/domain/src/*`
-    /// has already declared that `packages/domain/src/order` is a unit, and
-    /// rolling a finding up to the nearest ancestor a scope matches is reading
-    /// that back rather than guessing.
-    ///
-    /// Unlike the rule breakdown, only areas with findings get a row. That a
-    /// rule was evaluated is an answer worth a zero; there is no comparable
-    /// list of directories, and printing every clean one in a monorepo would
-    /// bury the ones that are not.
-    #[must_use]
-    pub fn by_path(scopes: &[archwarden_core::scope::Scope], findings: &[&Finding]) -> Self {
-        let mut counts: std::collections::BTreeMap<String, (usize, usize)> =
-            std::collections::BTreeMap::new();
-
-        for finding in findings {
-            let area = area_of(scopes, &finding.path);
-            let entry = counts.entry(area).or_default();
-            match finding.level {
-                archwarden_core::level::Level::Error => entry.0 += 1,
-                archwarden_core::level::Level::Warning => entry.1 += 1,
-            }
-        }
-
-        let mut rows: Vec<Row> = counts
-            .into_iter()
-            .map(|(rule_id, (errors, warnings))| Row {
-                rule_id,
-                errors,
-                warnings,
-            })
-            .collect();
-
-        rows.sort_by(|a, b| {
-            b.errors
-                .cmp(&a.errors)
-                .then_with(|| b.warnings.cmp(&a.warnings))
-                .then_with(|| a.rule_id.cmp(&b.rule_id))
-        });
-
-        Self { rows }
-    }
-
-    /// The map the JSON carries, in the order the text uses.
-    fn as_map(&self) -> serde_json::Map<String, serde_json::Value> {
-        self.rows
-            .iter()
-            .map(|row| {
-                (
-                    row.rule_id.clone(),
-                    serde_json::json!({ "errors": row.errors, "warnings": row.warnings }),
-                )
-            })
-            .collect()
-    }
-
-    #[cfg(test)]
-    fn ids(&self) -> Vec<&str> {
-        self.rows.iter().map(|row| row.rule_id.as_str()).collect()
-    }
-
-    #[cfg(test)]
-    fn rows_for_test(&self) -> Vec<(&str, usize, usize)> {
-        self.rows
-            .iter()
-            .map(|row| (row.rule_id.as_str(), row.errors, row.warnings))
-            .collect()
-    }
-}
-
-/// The nearest ancestor of `path` that some rule's scope selects.
-///
-/// The path itself when a scope selects it, and the path itself again when
-/// none does -- a finding outside every scope keeps its own name rather than
-/// being dropped from a summary that claims to count everything, or filed
-/// under a heading that means nothing.
-fn area_of(scopes: &[archwarden_core::scope::Scope], path: &RepoRelPath) -> String {
-    let mut candidate = Some(path.as_path());
-
-    while let Some(directory) = candidate {
-        if !directory.as_str().is_empty() && scopes.iter().any(|scope| scope.matches_dir(directory))
-        {
-            return directory.to_string();
-        }
-        candidate = directory.parent();
-    }
-
-    path.as_str().to_owned()
 }
 
 /// The JSON envelope.
@@ -475,8 +263,8 @@ impl Summary {
                 })
                 .collect(),
             duration_ms: elapsed.as_millis(),
-            hidden: view.hidden,
-            by_rule: view.breakdown.as_ref().map(Breakdown::as_map),
+            hidden: view.hidden(),
+            by_rule: view.breakdown().map(breakdown_as_map),
             imports: (report.imports.total() > 0).then_some(Imports {
                 in_repo: report.imports.in_repo,
                 external: report.imports.external,
@@ -611,8 +399,8 @@ fn render_json(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
     let envelope = JsonReport {
         version: REPORT_VERSION,
         summary: Summary::of(report, view, elapsed),
-        findings: view.breakdown.is_none().then(|| {
-            view.findings
+        findings: view.breakdown().is_none().then(|| {
+            view.findings()
                 .iter()
                 .map(|finding| JsonFinding::new(finding, reasons))
                 .collect()
@@ -676,28 +464,42 @@ fn render_finding(finding: &Finding, at: &str, why: Option<&str>, out: &mut dyn 
 ///
 /// The rule id sets the left column and the count is right-aligned inside it,
 /// so the numbers read as a column rather than as prose to scan.
+/// The breakdown as the JSON report carries it.
+///
+/// Built here rather than by `Breakdown` itself. The rows are data — a name
+/// and two counts — and turning them into a map of JSON objects is one
+/// format's shape. `Breakdown::rows()` hands the same rows to the text
+/// renderer, so the two cannot count differently, and SARIF will get them
+/// without going through JSON to do it.
+fn breakdown_as_map(breakdown: &Breakdown) -> serde_json::Map<String, serde_json::Value> {
+    breakdown
+        .rows()
+        .map(|(rule_id, errors, warnings)| {
+            (
+                rule_id.to_owned(),
+                serde_json::json!({ "errors": errors, "warnings": warnings }),
+            )
+        })
+        .collect()
+}
+
 fn render_breakdown(breakdown: &Breakdown, out: &mut dyn std::io::Write) {
     // A configuration with no rules has nothing to break down, and a blank
     // line above the totals would be the only thing `--summary` contributed.
-    if breakdown.rows.is_empty() {
+    let rows: Vec<(&str, usize, usize)> = breakdown.rows().collect();
+    if rows.is_empty() {
         return;
     }
 
-    let id_width = breakdown
-        .rows
+    let id_width = rows.iter().map(|(id, _, _)| id.len()).max().unwrap_or(0);
+    let count_width = rows
         .iter()
-        .map(|row| row.rule_id.len())
-        .max()
-        .unwrap_or(0);
-    let count_width = breakdown
-        .rows
-        .iter()
-        .map(|row| row.errors.max(row.warnings).to_string().len())
+        .map(|(_, errors, warnings)| errors.max(warnings).to_string().len())
         .max()
         .unwrap_or(1);
 
-    for row in &breakdown.rows {
-        let (count, tail) = match (row.errors, row.warnings) {
+    for &(rule_id, errors, warnings) in &rows {
+        let (count, tail) = match (errors, warnings) {
             (0, 0) => (0, String::new()),
             (errors, 0) => (errors, format!(" {}", plural(errors, "error", "errors"))),
             (0, warnings) => (
@@ -714,11 +516,7 @@ fn render_breakdown(breakdown: &Breakdown, out: &mut dyn std::io::Write) {
             ),
         };
 
-        let _ = writeln!(
-            out,
-            "{:<id_width$}  {count:>count_width$}{tail}",
-            row.rule_id
-        );
+        let _ = writeln!(out, "{rule_id:<id_width$}  {count:>count_width$}{tail}");
     }
 
     let _ = writeln!(out);
@@ -733,7 +531,7 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         elapsed,
     } = *rendered;
 
-    if let Some(breakdown) = &view.breakdown {
+    if let Some(breakdown) = view.breakdown() {
         render_breakdown(breakdown, out);
     } else {
         let mut positions = Positions::default();
@@ -741,7 +539,7 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         // two hundred paragraphs. Six, at the point each rule first comes up,
         // is where a reader is already looking. Issue #46.
         let mut explained = std::collections::BTreeSet::new();
-        for finding in &view.findings {
+        for finding in view.findings() {
             let at = positions.label(root, finding);
             let why = reasons
                 .of_rule(&finding.rule_id)
@@ -792,12 +590,12 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
     // Without this, `0 errors` beside exit 1 is a contradiction the reader
     // cannot resolve: the gate counts what was evaluated, and the line above
     // counts what was asked for.
-    if view.hidden > 0 {
+    if view.hidden() > 0 {
         let _ = writeln!(
             out,
             "note: {} {} hidden by the filters given",
-            view.hidden,
-            plural(view.hidden, "finding", "findings")
+            view.hidden(),
+            plural(view.hidden(), "finding", "findings")
         );
     }
 
@@ -1841,122 +1639,6 @@ mod tests {
         }
     }
 
-    /// A breakdown over four rules, of which two fired.
-    fn four_rules() -> (Report, Breakdown) {
-        let findings = vec![
-            from("domain-entity-shape", Level::Error, "packages/domain/a"),
-            from("domain-entity-shape", Level::Error, "packages/domain/b"),
-            from("actions-need-spec", Level::Warning, "packages/domain/c"),
-        ];
-        let report = report(findings);
-        let breakdown = Breakdown::over(
-            [
-                "domain-entity-shape",
-                "actions-need-spec",
-                "calcs-need-spec",
-                "variants-need-spec",
-            ],
-            &report.findings.iter().collect::<Vec<_>>(),
-        );
-        (report, breakdown)
-    }
-
-    /// The breakdown answers "what rule is dominating this output?", so the
-    /// worst rule is the first line. Errors outrank warnings however many
-    /// warnings there are: it is the same worst-first order the findings
-    /// themselves are in, and two orderings for one report would be a bug
-    /// someone eventually reports as one.
-    #[test]
-    fn the_breakdown_puts_the_worst_rule_first() {
-        let (_report, breakdown) = four_rules();
-
-        assert_eq!(
-            breakdown.ids(),
-            [
-                "domain-entity-shape", // 2 errors
-                "actions-need-spec",   // 1 warning
-                "calcs-need-spec",     // nothing, and then by id
-                "variants-need-spec",
-            ]
-        );
-    }
-
-    // --- the other axis --------------------------------------------------
-
-    /// A scope selecting each module directory, as a real config does.
-    fn module_scope() -> archwarden_core::scope::Scope {
-        archwarden_core::scope::Scope::compile(["packages/domain/src/*"]).expect("valid scope")
-    }
-
-    /// "Which rule dominates" and "which part of the repository is furthest"
-    /// are different questions. The second is the one that says where to start
-    /// a refactor, and rolling up to the directories the *rules* select is what
-    /// makes the rows mean something: the config already says what the units
-    /// are, so nothing here has to invent a depth.
-    #[test]
-    fn findings_roll_up_to_the_directory_a_rule_scope_selects() {
-        let findings = [
-            from("shape", Level::Error, "packages/domain/src/order/handlers"),
-            from("shape", Level::Error, "packages/domain/src/order/services"),
-            from(
-                "spec",
-                Level::Warning,
-                "packages/domain/src/invoice/calcs/a.ts",
-            ),
-        ];
-        let shown: Vec<&Finding> = findings.iter().collect();
-
-        let breakdown = Breakdown::by_path(&[module_scope()], &shown);
-
-        assert_eq!(
-            breakdown.rows_for_test(),
-            [
-                ("packages/domain/src/order", 2, 0),
-                ("packages/domain/src/invoice", 0, 1),
-            ]
-        );
-    }
-
-    /// Worst first, then by path -- the same order the rule breakdown uses,
-    /// because two orderings in one report is something someone eventually
-    /// reports as a bug.
-    #[test]
-    fn the_path_breakdown_puts_the_worst_area_first() {
-        let findings = [
-            from("spec", Level::Warning, "packages/domain/src/aaa/x.ts"),
-            from("shape", Level::Error, "packages/domain/src/zzz/handlers"),
-        ];
-        let shown: Vec<&Finding> = findings.iter().collect();
-
-        assert_eq!(
-            Breakdown::by_path(&[module_scope()], &shown).ids(),
-            ["packages/domain/src/zzz", "packages/domain/src/aaa"]
-        );
-    }
-
-    /// A finding no scope reaches keeps its own path. Dropping it would lose a
-    /// finding from a summary that claims to count everything, and inventing a
-    /// parent for it would put it under a heading that means nothing.
-    #[test]
-    fn a_finding_outside_every_scope_stands_alone() {
-        let findings = [from("shape", Level::Error, "scripts/build.ts")];
-        let shown: Vec<&Finding> = findings.iter().collect();
-
-        assert_eq!(
-            Breakdown::by_path(&[module_scope()], &shown).rows_for_test(),
-            [("scripts/build.ts", 1, 0)]
-        );
-    }
-
-    /// Only areas that have something to say. A rule breakdown lists every
-    /// rule including the quiet ones -- that a rule was evaluated is an
-    /// answer. There is no equivalent list of directories, and printing every
-    /// clean directory in a monorepo would bury the ones that are not.
-    #[test]
-    fn the_path_breakdown_lists_only_what_fired() {
-        assert!(Breakdown::by_path(&[module_scope()], &[]).ids().is_empty());
-    }
-
     /// It renders like the rule breakdown, because it is the same table with a
     /// different first column.
     #[test]
@@ -2026,28 +1708,6 @@ mod tests {
 
         assert!(!text.contains("expected:"), "{text}");
         assert!(!text.contains("packages/domain/a"), "{text}");
-    }
-
-    /// A rule with both is described with both, rather than the reader having
-    /// to run it again the other way round.
-    #[test]
-    fn a_rule_with_errors_and_warnings_says_so() {
-        let findings = vec![
-            from("mixed", Level::Error, "a"),
-            from("mixed", Level::Warning, "b"),
-            from("mixed", Level::Warning, "c"),
-        ];
-        let report = report(findings);
-        let breakdown = Breakdown::over(["mixed"], &report.findings.iter().collect::<Vec<_>>());
-
-        assert_eq!(breakdown.rows_for_test(), [("mixed", 1, 2)]);
-        let text = rendered_view(
-            &report,
-            &View::summarised(&report.findings.iter().collect::<Vec<_>>(), breakdown, 0),
-            Format::Text,
-            TOOK,
-        );
-        assert!(text.starts_with("mixed  1 error, 2 warnings\n"), "{text}");
     }
 
     /// The JSON half of `--summary`: a map beside the counts, and no
@@ -3089,5 +2749,54 @@ mod tests {
             }),
             r"`projeto.md` and `notas.md`, and a file matching `\.ino$`"
         );
+    }
+    /// A rule with both is described with both, rather than the reader having
+    /// to run it again the other way round.
+    #[test]
+    fn a_rule_with_errors_and_warnings_says_so() {
+        let findings = vec![
+            from("mixed", Level::Error, "a"),
+            from("mixed", Level::Warning, "b"),
+            from("mixed", Level::Warning, "c"),
+        ];
+        let report = report(findings);
+        let breakdown = Breakdown::over(["mixed"], &report.findings.iter().collect::<Vec<_>>());
+
+        assert_eq!(breakdown.rows().collect::<Vec<_>>(), [("mixed", 1, 2)]);
+        let text = rendered_view(
+            &report,
+            &View::summarised(&report.findings.iter().collect::<Vec<_>>(), breakdown, 0),
+            Format::Text,
+            TOOK,
+        );
+        assert!(text.starts_with("mixed  1 error, 2 warnings\n"), "{text}");
+    }
+
+    /// A scope selecting each module directory, as a real config does.
+    fn module_scope() -> archwarden_core::scope::Scope {
+        archwarden_core::scope::Scope::compile(["packages/domain/src/*"]).expect("valid scope")
+    }
+
+    /// A breakdown over four rules, of which two fired.
+    ///
+    /// The counting is `archwarden_api::present`'s and is tested there. What
+    /// these need it for is a table with something in it to render.
+    fn four_rules() -> (Report, Breakdown) {
+        let findings = vec![
+            from("domain-entity-shape", Level::Error, "packages/domain/a"),
+            from("domain-entity-shape", Level::Error, "packages/domain/b"),
+            from("actions-need-spec", Level::Warning, "packages/domain/c"),
+        ];
+        let report = report(findings);
+        let breakdown = Breakdown::over(
+            [
+                "domain-entity-shape",
+                "actions-need-spec",
+                "calcs-need-spec",
+                "variants-need-spec",
+            ],
+            &report.findings.iter().collect::<Vec<_>>(),
+        );
+        (report, breakdown)
     }
 }

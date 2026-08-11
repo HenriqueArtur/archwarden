@@ -39,6 +39,7 @@ pub mod describe;
 pub mod error;
 pub mod evaluate;
 pub mod filter;
+pub mod present;
 pub mod resolve;
 pub mod walk;
 
@@ -46,5 +47,6 @@ pub use error::Error;
 pub use evaluate::{
     CACHE_DIRECTORY, CACHE_FILE, CachePolicy, Evaluated, Evaluation, Note, cache_path, evaluate,
 };
+pub use present::{Axis, Breakdown, Presented, Shape, View, present};
 pub use resolve::{Location, Prepared, load, prepare, resolve};
 pub use walk::walk;

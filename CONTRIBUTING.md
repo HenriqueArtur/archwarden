@@ -192,8 +192,9 @@ floats, and on a `Serialize` that errors; this type has none of the three, so
 no input reaches that arm — and `?` cannot be written without handling it.
 `#[coverage(off)]` would say so precisely and is nightly-only.
 
-One more uncovered function could hide behind that. If the count moves off 173
-of 174, find out which one before touching the floor.
+One more uncovered function could hide behind that. The exception is that
+function and no other: if the gate ever fails at 99, the answer is to find the
+second one, never to lower it again.
 
 ## Tests
 

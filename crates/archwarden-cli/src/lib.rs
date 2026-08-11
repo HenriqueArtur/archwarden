@@ -242,7 +242,7 @@ pub enum Command {
         /// config saying `roots: packages/domain/src/*` gets one row per
         /// module without anyone choosing a depth.
         #[arg(long, value_enum, value_name = "AXIS")]
-        by: Option<crate::report::Axis>,
+        by: Option<By>,
 
         /// Report every finding, including the ones the baseline accepts.
         ///
@@ -491,6 +491,32 @@ pub enum ConfigCommand {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
+}
+
+/// What `--summary` counts by, as a command-line value.
+///
+/// Here for the same reason [`LevelFilter`] is: this is the enum carrying
+/// clap's `ValueEnum`, and `archwarden_api::present` takes its own
+/// [`archwarden_api::Axis`]. One step between the word and the decision, in
+/// the surface that has the word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum By {
+    /// One row per rule: what is dominating this output.
+    #[default]
+    Rule,
+    /// One row per area of the repository: where to start.
+    Path,
+}
+
+impl By {
+    /// The axis this names.
+    #[must_use]
+    pub fn axis(self) -> archwarden_api::Axis {
+        match self {
+            Self::Rule => archwarden_api::Axis::Rule,
+            Self::Path => archwarden_api::Axis::Path,
+        }
+    }
 }
 
 /// Which level to show, as a command-line value.
@@ -1710,7 +1736,7 @@ struct CheckOptions<'a> {
     changed: Option<&'a str>,
     level: Option<LevelFilter>,
     no_baseline: bool,
-    by: Option<crate::report::Axis>,
+    by: Option<By>,
 }
 
 #[allow(
@@ -1807,30 +1833,31 @@ fn check(
     }
     let outcome = evaluated.report;
 
-    // The baseline first, and not as a filter: what it accepts is gone from
-    // this run entirely, including from the exit code. That is the one thing
-    // a filter may never do, and the reason this is a committed file rather
-    // than a flag -- see `crate::baseline`.
-    let unaccepted: Vec<&archwarden_core::finding::Finding> = outcome
-        .findings
-        .iter()
-        .filter(|finding| baseline.as_ref().is_none_or(|b| !b.accepts(finding)))
-        .collect();
-
-    let shown: Vec<&archwarden_core::finding::Finding> = unaccepted
-        .iter()
-        .copied()
-        .filter(|finding| filters.keep(finding))
-        .collect();
-    let hidden = unaccepted.len() - shown.len();
-
-    let view = view_of(&shown, hidden, options, &filters, &compiled);
+    // The baseline, then the filters, then the shape. The order is not a
+    // preference and no surface decides it: `archwarden_api::present` does,
+    // because reversing the first two would let a reading preference decide
+    // whether a build passes.
+    let presented = archwarden_api::present(
+        &outcome,
+        baseline.as_ref(),
+        &filters,
+        archwarden_api::Shape {
+            // `--by` implies `--summary`: counting by area only means anything
+            // as counts, and making someone pass both to say one thing is
+            // friction with no reading behind it.
+            axis: options
+                .by
+                .map(By::axis)
+                .or(options.summary.then_some(archwarden_api::Axis::Rule)),
+        },
+        &compiled,
+    );
 
     crate::report::render(
         &crate::report::Rendered {
             root: &merged.root,
             report: &outcome,
-            view: &view,
+            view: &presented.view,
             reasons: &crate::report::Reasons::of(&compiled),
             elapsed: started.elapsed(),
         },
@@ -1843,7 +1870,7 @@ fn check(
             &compiled,
             &tree,
             &outcome,
-            &unaccepted,
+            &presented.unaccepted,
             baseline.as_ref(),
             options
                 .language
@@ -1866,10 +1893,11 @@ fn check(
         report_standing(baseline, &outcome.findings, output);
     }
 
-    // From what the baseline did not accept, never from the view. A filter
-    // narrows what is printed and nothing else -- otherwise `--rules` in a CI
-    // command would quietly turn a failing build green.
-    if unaccepted.iter().any(|finding| finding.level.fails_build()) {
+    // One question, asked of the thing that knows the rule. `fails_build` reads
+    // what the baseline did not accept and never the view, and there is no
+    // other way to ask it -- which is what stops a surface deciding for itself
+    // that a narrowed run is a passing one.
+    if presented.fails_build() {
         Exit::Errors
     } else {
         Exit::Clean
@@ -1904,54 +1932,6 @@ fn report_standing(
     }
 
     let _ = writeln!(output.out);
-}
-
-/// What to show, once the baseline and the filters have had their say.
-///
-/// Extracted from `check` because it is a decision of its own: whether the
-/// reader asked for a listing or for counts, and which rules keep a row.
-fn view_of<'a>(
-    shown: &[&'a archwarden_core::finding::Finding],
-    hidden: usize,
-    options: &CheckOptions<'_>,
-    filters: &crate::filter::Filters,
-    compiled: &archwarden_core::compiled::CompiledConfig,
-) -> crate::report::View<'a> {
-    // `--by` implies `--summary`: counting by area only means anything as
-    // counts, and making someone pass both to say one thing is friction with
-    // no reading behind it.
-    let axis = options
-        .by
-        .or(options.summary.then_some(crate::report::Axis::Rule));
-    let Some(axis) = axis else {
-        return crate::report::View::filtered(shown, hidden);
-    };
-
-    if axis == crate::report::Axis::Path {
-        let scopes: Vec<archwarden_core::scope::Scope> =
-            compiled.rules().map(|rule| rule.scope.clone()).collect();
-        return crate::report::View::summarised(
-            shown,
-            crate::report::Breakdown::by_path(&scopes, shown),
-            hidden,
-        );
-    }
-
-    // Rows come from the config, not from what fired. `--rules` is the one
-    // filter that names *rules*, so it is the one that narrows the rows;
-    // `--paths` and `--level` leave every row in place, because "this rule
-    // found nothing here" is the answer the reader wanted.
-    let ids: Vec<String> = filters.named_rules().map_or_else(
-        || {
-            compiled
-                .rules()
-                .map(|rule| rule.id.as_str().to_owned())
-                .collect()
-        },
-        |named| named.iter().map(|id| id.as_str().to_owned()).collect(),
-    );
-
-    crate::report::View::summarised(shown, crate::report::Breakdown::over(ids, shown), hidden)
 }
 
 /// Walks the repository, rendering a refusal as this surface says it.

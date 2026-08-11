@@ -114,8 +114,8 @@ jobs:
       # `#[coverage(off)]` would say exactly that, and is nightly-only.
       #
       # The cost, stated: one more uncovered function could hide behind this.
-      # If the number ever moves off 173 of 174, find out which one before
-      # touching the floor.
+      # The exception is that function and no other, so if the gate ever fails
+      # at 99, the answer is to find the second one -- never to lower it again.
       - run: >
           cargo llvm-cov -p archwarden-api --all-features
           --fail-under-lines 99
