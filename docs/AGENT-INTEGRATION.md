@@ -205,6 +205,64 @@ in the environment: the hook is handed the event as JSON on stdin, with the
 target under `tool_input.file_path`. archwarden reads that itself, so the
 installed line needs no `jq` and no shell quoting.
 
+### A write that is fixing something is not breaking it
+
+A `presence` rule's finding is about a **directory**, and the pre-write hook is
+asked about a **file**. Writing `projeto.md` violates nothing — the directory is
+incomplete, it was incomplete before the write, and it is less so after.
+
+Refusing that made a rule of several files unsatisfiable in any order: the first
+write refused for the absence of the second, the second for the third, and the
+directory could not be created at all.
+
+So a write supplying one of a directory's required files **passes with a note**
+saying what is still missing, which is what the agent has to write next:
+
+```
+archwarden: this write is fine, and the directory is not done yet.
+
+  `exercicios.md` is not here
+  `diagram.json` is not here
+```
+
+**And a write supplying none of them is refused, exactly as before.** That is
+the half that keeps this from being a way to switch `presence` off: a file the
+rule never asked for leaves the directory as broken as it found it.
+
+Every other rule keeps denying. `spec-pair` has an order that works — the spec
+first, which is the whole point of a TDD gate — and a `structure` violation is
+caused by the write rather than pre-existing it.
+
+### The turn, as well as the write
+
+`install-hooks` writes two entries, both running the same command, which
+dispatches on the event it is sent:
+
+| event | matcher | answers |
+|---|---|---|
+| `PreToolUse` | `Write\|Edit\|MultiEdit` | would this write be legal? |
+| `Stop` | none | what landed this turn? |
+
+**The pre-write hook sees one write at a time, and some rules cannot be judged
+from one.** A `presence` rule requiring three files makes every one of the
+three illegal until the other two exist — so no write order passes, and the
+module cannot be created at all. The stop hook is where that class is caught,
+because by then the group is there to be judged and what is missing is a fact
+rather than a prediction.
+
+It **reports and never blocks**: the writes have landed, so refusing them is
+not on offer, and a stop hook that kept the agent going would be a loop waiting
+for a reason to start. It is silent when nothing broke — a hook that spoke
+every turn is one somebody removes.
+
+Scoped to what changed against `HEAD`, plus untracked files. That is the turn's
+work unless the agent committed midway, and a full run would take seconds on a
+large repository to say the same thing about files nobody touched.
+
+One command for both events, rather than two. Two commands can be wired to the
+wrong event, and an answer to the wrong question is a hook that reports nothing
+while looking installed.
+
 **The hook answers about the file as it would be after this write.** Not as it
 is on disk — that is the previous version, and answering from it means a new
 file is never checked, an edit introducing a violation is permitted, and an edit

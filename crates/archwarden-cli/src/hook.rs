@@ -12,9 +12,9 @@
 //! write and says why. Blocking is a decision expressed in the response, never
 //! a side effect of something going wrong.
 //!
-//! **It says what to do, not just what is wrong.** `ROADMAP.md:57` asks for a
-//! message that identifies the rule *and the fix*. The message carries the
-//! same prose `check` prints, expectation included.
+//! **It says what to do, not just what is wrong.** A denial names the rule
+//! *and the fix*: the message carries the same prose `check` prints,
+//! expectation included.
 
 use serde_json::{Value, json};
 
@@ -30,6 +30,45 @@ pub enum Decision {
     Note(String),
     /// Refuse the write, with the reason.
     Deny(String),
+}
+
+/// Which question the harness is asking.
+///
+/// One command answers both, dispatching on what it was sent. Two commands
+/// would let a hook be wired to the wrong event, and a pre-write answer to a
+/// stop event — or the reverse — is a hook that reports nothing while looking
+/// installed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Event {
+    /// A write is about to happen. Answer whether it would be legal.
+    PreToolUse,
+    /// The turn is over. Say what landed.
+    ///
+    /// The pre-write hook sees one write at a time and is structurally unable
+    /// to judge a rule about a group — a `presence` rule makes every write in
+    /// the group illegal until the whole group exists, so no order passes.
+    /// This is where that class is caught. Issue #61.
+    Stop,
+    /// Something this build has no answer for.
+    Other,
+}
+
+/// Which event the payload announces.
+///
+/// Absent means [`PreToolUse`](Event::PreToolUse): that is what every hook
+/// installed before this sent, and a harness that stops sending the field must
+/// not silently change what the hook does.
+#[must_use]
+pub fn event(payload: &str) -> Event {
+    let Ok(parsed) = serde_json::from_str::<Value>(payload) else {
+        return Event::PreToolUse;
+    };
+
+    match parsed.get("hook_event_name").and_then(Value::as_str) {
+        None | Some(EVENT) => Event::PreToolUse,
+        Some("Stop") => Event::Stop,
+        Some(_) => Event::Other,
+    }
 }
 
 /// What the payload had to say about a file.
@@ -172,6 +211,137 @@ pub fn respond(decision: &Decision) -> String {
     // call otherwise, and a hook that fills someone's debug log is a hook they
     // uninstall.
     format!("{response}\n")
+}
+
+/// Whether this write is fixing the thing the finding is about.
+///
+/// A `presence` rule requiring several files makes every one of them illegal
+/// until all of them exist: writing the first is refused for the absence of the
+/// second, the second for the absence of the third, and no order passes. The
+/// directory cannot be created at all. Issue #57.
+///
+/// The write is not what is wrong there. Writing `projeto.md` violates nothing
+/// — the *directory* is incomplete, and it was incomplete before the write and
+/// is less so after. Refusing it attributes a directory's fault to a file, and
+/// refuses the write that improves the state, which is #55 one layer up.
+///
+/// So a write supplying one of the required files is **progress**, and passes
+/// with a note. A write that supplies none of them leaves the directory exactly
+/// as broken as it found it, and is refused as before — which is what keeps
+/// this from being a way to switch `presence` off.
+///
+/// Only findings about a missing *required file* qualify. `spec-pair` has an
+/// order that works — the spec first, which is what a TDD gate is for — and a
+/// `structure` violation is caused by the write rather than pre-existing it.
+#[must_use]
+pub fn is_progress(finding: &archwarden_core::finding::Finding, written: &str) -> bool {
+    use archwarden_core::finding::Expectation;
+
+    let Expectation::RequiredFiles { names, patterns } = &finding.expected else {
+        return false;
+    };
+
+    if names.iter().any(|name| name == written) {
+        return true;
+    }
+
+    // Compiled with the engine that compiled the rule, so this cannot disagree
+    // with `check` about whether a name satisfies the pattern.
+    patterns.iter().any(|pattern| {
+        archwarden_core::pattern::Pattern::compile(pattern)
+            .is_ok_and(|compiled| compiled.is_match(written))
+    })
+}
+
+/// What a write is still short of, when the write itself is fine.
+///
+/// A `presence` rule's finding is about the *directory*, and a write supplying
+/// one of its required files is fixing that directory rather than breaking it.
+/// Saying "would break these rules" about such a write is false — and it buries
+/// the one thing worth saying, which is what to write next.
+#[must_use]
+pub fn still_needs(fixing: &[archwarden_core::finding::Finding]) -> String {
+    use std::collections::BTreeSet;
+    use std::fmt::Write as _;
+
+    let mut wanted: BTreeSet<String> = BTreeSet::new();
+    for finding in fixing {
+        wanted.insert(crate::report::describe_observed(&finding.observed));
+    }
+
+    let mut message =
+        String::from("archwarden: this write is fine, and the directory is not done yet.\n");
+    for item in &wanted {
+        let _ = writeln!(message, "\n  {item}");
+    }
+    message
+}
+
+/// The message the end of a turn carries: what landed that a rule objects to.
+///
+/// Different from [`explain`] in what it is for. That one is handed to an agent
+/// about to be refused, and names one file and the shape it should have had.
+/// This one is read after the fact, about a set of files, and its job is to be
+/// short enough that somebody reads it.
+///
+/// Grouped by rule rather than by file: a `presence` rule that fired on four
+/// directories is one thing to fix, and four lines saying the same thing is a
+/// message people learn to skip.
+#[must_use]
+pub fn landed(
+    findings: &[archwarden_core::finding::Finding],
+    reasons: &crate::report::Reasons,
+) -> String {
+    use std::collections::BTreeMap;
+    use std::fmt::Write as _;
+
+    // The level is stored with the group rather than read back from its first
+    // member: taking it from `first()` needs an `expect` for a case that cannot
+    // happen, and a panic that cannot happen is still a panic in a hook.
+    type Group<'a> = (
+        archwarden_core::level::Level,
+        Vec<&'a archwarden_core::finding::Finding>,
+    );
+    let mut by_rule: BTreeMap<&archwarden_core::ids::RuleId, Group<'_>> = BTreeMap::new();
+    for finding in findings {
+        by_rule
+            .entry(&finding.rule_id)
+            .or_insert_with(|| (finding.level, Vec::new()))
+            .1
+            .push(finding);
+    }
+
+    let mut message = format!(
+        "archwarden: {} {} landed in this turn.\n",
+        findings.len(),
+        if findings.len() == 1 {
+            "finding"
+        } else {
+            "findings"
+        },
+    );
+
+    for (rule, (level, found)) in &by_rule {
+        let _ = write!(message, "\n  [{level}] {rule}\n");
+
+        // Each finding keeps its own observation. Grouping by rule and showing
+        // only the first one printed the same sentence twice for a directory
+        // missing two files, and never mentioned the second -- a shorter
+        // message that leaves out what is wrong is not shorter, it is wrong.
+        for finding in found {
+            let _ = writeln!(
+                message,
+                "    {} — {}",
+                finding.path,
+                crate::report::describe_observed(&finding.observed),
+            );
+        }
+        if let Some(why) = reasons.of_rule(rule) {
+            let _ = writeln!(message, "  why: {why}");
+        }
+    }
+
+    message
 }
 
 /// The message a blocked write carries: what broke, what was expected, and how
@@ -350,7 +520,7 @@ mod tests {
         );
     }
 
-    /// `ROADMAP.md:57` asks for a message identifying the rule *and the fix*.
+    /// A denial identifies the rule *and the fix*, or an agent can only guess.
     #[test]
     fn the_message_names_the_rule_and_the_expectation() {
         use archwarden_core::{
@@ -514,5 +684,202 @@ mod tests {
             "file_path":"/repo/a.ipynb","cell":"3"}}"#;
 
         assert_eq!(pending(event, "whatever"), None);
+    }
+    /// The harness says which event it is sending, and one command answers
+    /// both. Issue #61.
+    #[test]
+    fn the_event_is_read_from_the_payload() {
+        assert_eq!(event(WRITE), Event::PreToolUse);
+        assert_eq!(
+            event(r#"{"hook_event_name":"Stop","session_id":"abc"}"#),
+            Event::Stop
+        );
+    }
+
+    /// A payload with no event name is the pre-write one: that is what every
+    /// installed hook sent before this existed, and a harness that stops
+    /// sending the field must not silently switch behaviour.
+    #[test]
+    fn a_payload_with_no_event_name_is_the_pre_write_one() {
+        assert_eq!(
+            event(r#"{"tool_input":{"file_path":"/repo/a.ts"}}"#),
+            Event::PreToolUse
+        );
+    }
+
+    /// An event this build does not know is not guessed at. A harness that
+    /// grows a new event would otherwise have it answered as though it were a
+    /// write.
+    #[test]
+    fn an_event_this_build_does_not_know_is_named_as_such() {
+        assert_eq!(event(r#"{"hook_event_name":"SessionStart"}"#), Event::Other);
+    }
+    /// Issue #57. A `presence` rule requiring several files makes every one of
+    /// them illegal until all of them exist, so no write order passes and the
+    /// directory cannot be created at all.
+    ///
+    /// The rigorous reading, and the one implemented: **a write passes while it
+    /// is fixing the problem.** Judged by what the write does, not by the state
+    /// it lands in — the same correction as #55, one layer up.
+    #[test]
+    fn a_write_that_supplies_a_required_file_is_progress() {
+        let missing = |name: &str| Finding {
+            rule_id: RuleId::new("tem-os-tres").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("projetos/02-novo").expect("valid"),
+            span: None,
+            observed: Observed::RequiredFileMissing {
+                name: name.to_owned(),
+            },
+            expected: Expectation::RequiredFiles {
+                names: vec![
+                    "projeto.md".to_owned(),
+                    "exercicios.md".to_owned(),
+                    "diagram.json".to_owned(),
+                ],
+                patterns: Vec::new(),
+            },
+        };
+
+        assert!(
+            is_progress(&missing("exercicios.md"), "projeto.md"),
+            "writing one of the required files is fixing the directory"
+        );
+        assert!(
+            is_progress(&missing("diagram.json"), "exercicios.md"),
+            "and so is the second one"
+        );
+    }
+
+    /// A write that ignores the problem is still refused. This is the half that
+    /// keeps the relaxation from being a way to switch `presence` off.
+    #[test]
+    fn a_write_that_ignores_the_missing_files_is_not_progress() {
+        let finding = Finding {
+            rule_id: RuleId::new("tem-os-tres").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("projetos/01-blink").expect("valid"),
+            span: None,
+            observed: Observed::RequiredFileMissing {
+                name: "diagram.json".to_owned(),
+            },
+            expected: Expectation::RequiredFiles {
+                names: vec!["projeto.md".to_owned(), "diagram.json".to_owned()],
+                patterns: Vec::new(),
+            },
+        };
+
+        assert!(
+            !is_progress(&finding, "rascunho.md"),
+            "a file the rule never asked for leaves the directory as broken as it was"
+        );
+    }
+
+    /// A `require_any` entry is a regex, and a file matching one is progress
+    /// the same way a named file is.
+    #[test]
+    fn a_write_matching_a_required_pattern_is_progress() {
+        let finding = Finding {
+            rule_id: RuleId::new("tem-um-ino").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("projetos/02-novo/sketch").expect("valid"),
+            span: None,
+            observed: Observed::NoFileMatching {
+                pattern: r"\.ino$".to_owned(),
+            },
+            expected: Expectation::RequiredFiles {
+                names: Vec::new(),
+                patterns: vec![r"\.ino$".to_owned()],
+            },
+        };
+
+        assert!(is_progress(&finding, "sketch.ino"));
+        assert!(!is_progress(&finding, "leiame.md"));
+    }
+
+    /// Every other rule keeps denying. `spec-pair` has an order that works —
+    /// the spec first, which is the whole point of a TDD gate — and a
+    /// `structure` violation is caused by the write rather than pre-existing
+    /// it.
+    #[test]
+    fn a_finding_that_is_not_about_a_missing_file_is_never_progress() {
+        let finding = Finding {
+            rule_id: RuleId::new("usecase-name").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("src/user/create.use-case.ts").expect("valid"),
+            span: None,
+            observed: Observed::ExportMissing {
+                name: "Create".to_owned(),
+            },
+            expected: Expectation::RequiredExport {
+                kind: KindFilter::Any,
+                name: "Create".to_owned(),
+                annotation: Vec::new(),
+                signature_hint: None,
+            },
+        };
+
+        assert!(!is_progress(&finding, "create.use-case.ts"));
+    }
+    /// The note a progress write carries says what is still missing, which is
+    /// what the agent has to write next. "would break these rules" is false
+    /// about a write that is fixing the directory. Issue #57.
+    #[test]
+    fn the_progress_note_names_what_is_still_missing() {
+        let missing = |name: &str| Finding {
+            rule_id: RuleId::new("tem-os-tres").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("projetos/02-novo").expect("valid"),
+            span: None,
+            observed: Observed::RequiredFileMissing {
+                name: name.to_owned(),
+            },
+            expected: Expectation::RequiredFiles {
+                names: vec!["exercicios.md".to_owned()],
+                patterns: Vec::new(),
+            },
+        };
+
+        let message = still_needs(&[missing("exercicios.md"), missing("diagram.json")]);
+
+        assert!(
+            message.contains("this write is fine"),
+            "it must not read as a complaint about the write: {message}"
+        );
+        assert!(message.contains("exercicios.md"), "{message}");
+        assert!(message.contains("diagram.json"), "{message}");
+        assert!(
+            !message.contains("would break"),
+            "the write breaks nothing: {message}"
+        );
+    }
+
+    /// The same file named twice is said once. A directory missing one file
+    /// under two rules would otherwise repeat itself.
+    #[test]
+    fn the_progress_note_does_not_repeat_itself() {
+        let same = || Finding {
+            rule_id: RuleId::new("tem-os-tres").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new("projetos/02-novo").expect("valid"),
+            span: None,
+            observed: Observed::RequiredFileMissing {
+                name: "exercicios.md".to_owned(),
+            },
+            expected: Expectation::RequiredFiles {
+                names: vec!["exercicios.md".to_owned()],
+                patterns: Vec::new(),
+            },
+        };
+
+        let message = still_needs(&[same(), same()]);
+
+        assert_eq!(message.matches("exercicios.md").count(), 1, "{message}");
     }
 }

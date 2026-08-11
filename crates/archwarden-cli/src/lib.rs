@@ -1181,7 +1181,7 @@ fn ignore_the_cache(working_directory: &Utf8Path) -> bool {
         .is_ok()
 }
 
-/// Answers a harness's pre-write question.
+/// Answers a harness's question, whichever one it asked.
 ///
 /// Always exits clean. A hook that blocked because *it* failed would be worse
 /// than no hook, so every unexpected shape allows the write and says why;
@@ -1199,6 +1199,21 @@ fn hook(
     if std::io::Read::read_to_string(output.input, &mut payload).is_err() {
         return unable(output, "the hook event could not be read from stdin");
     }
+
+    // One command, dispatching on what it was sent. Two commands would let a
+    // hook be wired to the wrong event, and an answer to the wrong question is
+    // a hook that reports nothing while looking installed.
+    match crate::hook::event(&payload) {
+        crate::hook::Event::PreToolUse => {}
+        crate::hook::Event::Stop => {
+            return stopped(location, working_directory, output);
+        }
+        // Not guessed at. A harness that grows an event this build has never
+        // seen gets silence rather than a pre-write answer to a question that
+        // was not one.
+        crate::hook::Event::Other => return allow(output),
+    }
+
     let argument = match crate::hook::target(&payload) {
         crate::hook::Target::Path(path) => path,
         // The one silence that is correct: most tools write no file, and a
@@ -1294,21 +1309,120 @@ fn hook(
         single.findings.retain(|finding| !baseline.accepts(finding));
     }
 
+    let mut fixing = Vec::new();
+
     // Probed at the config root rather than the working directory: that is
     // where `node_modules` sits in a monorepo, and where the harness will be
     // when it runs what this message suggests.
     let invocation = crate::hooks::invocation(&merged.root);
     let reasons = crate::report::Reasons::of(&compiled);
+
+    // A write supplying one of a directory's required files is fixing it, not
+    // breaking it. Refusing that made a `presence` rule of several files
+    // unsatisfiable in any order -- the directory could not be created at all.
+    // The finding stays and is shown; it just stops being a denial. Issue #57.
+    //
+    // A write supplying none of them leaves the directory as broken as it was,
+    // and is refused exactly as before.
+    if let Some(name) = path.file_name() {
+        single.findings.retain(|finding| {
+            let progress = crate::hook::is_progress(finding, name);
+            if progress {
+                fixing.push(finding.clone());
+            }
+            !progress
+        });
+    }
+
     let decision = if single.fails_build() {
         crate::hook::Decision::Deny(crate::hook::explain(&single, &reasons, &invocation))
-    } else if single.findings.is_empty() {
+    } else if single.findings.is_empty() && fixing.is_empty() {
         crate::hook::Decision::Allow
+    } else if single.findings.is_empty() {
+        // Only progress. "Would break these rules" is false about a write that
+        // is fixing the directory, and it buries the useful half -- what is
+        // still missing is what the agent has to write next.
+        crate::hook::Decision::Note(crate::hook::still_needs(&fixing))
     } else {
         // Decision 1: warnings are visible and do not gate.
         crate::hook::Decision::Note(crate::hook::explain(&single, &reasons, &invocation))
     };
 
     let _ = write!(output.out, "{}", crate::hook::respond(&decision));
+    Exit::Clean
+}
+
+/// Answers the end of a turn: what landed, now that it has all landed.
+///
+/// The pre-write hook sees one write at a time, and some rules are only
+/// decidable once a group of writes exists. A `presence` rule requiring three
+/// files makes every one of the three illegal until the other two are there,
+/// so there is no order that passes and the module cannot be created at all.
+/// Issue #57 is that; this is where the class is caught instead.
+///
+/// **Reports, never blocks.** The writes have already happened, so refusing
+/// them is not on offer — and a `Stop` hook that kept the agent going would be
+/// a loop waiting for a reason to start.
+///
+/// Scoped to what changed against `HEAD`, plus untracked files, which is the
+/// work of the turn unless the agent committed midway. A full run would take
+/// seconds on a large repository and say the same thing about files nobody
+/// touched.
+fn stopped(location: Location<'_>, working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
+    let Ok(loaded) = load(location, working_directory) else {
+        // Silence here, unlike the pre-write hook. There, saying nothing is
+        // indistinguishable from approving a write; here nothing was gated, so
+        // a message on every turn about a config the user has not written yet
+        // is noise they would remove the hook to stop.
+        return allow(output);
+    };
+    if !loaded.config.version_is_supported() {
+        return allow(output);
+    }
+    let Ok(merged) = extends::merge(loaded, &PresetResolver::new()) else {
+        return allow(output);
+    };
+    let Ok(compiled) = compile::compile(&merged) else {
+        return allow(output);
+    };
+
+    let Ok(changed) = crate::changed::changed_files(&merged.root, "HEAD") else {
+        // No git, a fresh repository with no commits, a detached state. None of
+        // those is the user's problem at the end of a turn.
+        return allow(output);
+    };
+    if changed.is_empty() {
+        return allow(output);
+    }
+
+    let baseline = crate::baseline::Baseline::load(&merged.root).ok().flatten();
+
+    let mut findings = Vec::new();
+    for path in &changed {
+        let Ok(path) = archwarden_core::path::RepoRelPath::new(path) else {
+            continue;
+        };
+        let single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
+        findings.extend(
+            single
+                .findings
+                .into_iter()
+                .filter(|finding| baseline.as_ref().is_none_or(|b| !b.accepts(finding))),
+        );
+    }
+
+    if findings.is_empty() {
+        return allow(output);
+    }
+
+    let reasons = crate::report::Reasons::of(&compiled);
+    let _ = write!(
+        output.out,
+        "{}",
+        crate::hook::respond(&crate::hook::Decision::Note(crate::hook::landed(
+            &findings, &reasons,
+        )))
+    );
     Exit::Clean
 }
 

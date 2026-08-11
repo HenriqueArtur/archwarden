@@ -18,8 +18,7 @@
 //! `AGENT-INTEGRATION.md:180` expected boundary rules to be skipped on a cold
 //! cache. They are not, and cannot be: a boundary rule is file-local once its
 //! imports are resolved, and resolving them costs a handful of filesystem
-//! probes rather than cross-file state. Correction C13 in `docs/PLAN-V0.md`
-//! carries the measurement.
+//! probes rather than cross-file state.
 //!
 //! What genuinely cannot run is a rule that reads a file this command could
 //! not. That is reported, never dropped: "no findings" and "not checked" are
@@ -192,7 +191,7 @@ fn check(
     // reaches the same answer through a wasted read. It stays because reading
     // a file to be told it is the wrong kind is work with no reason, and on a
     // binary that happened to match a `file_pattern` it is a large one. Second
-    // instance of this shape -- see M4 in `docs/PLAN-V0.md` for the first.
+    // instance of this shape; the first is the parser guard in `run.rs`.
     let facts = if needs_facts && is_source {
         // The pending text when there is one, the file otherwise. A write that
         // has not landed is still the thing being judged.
@@ -677,6 +676,7 @@ mod tests {
                         subfolders: vec![".".to_owned()],
                         spec_markers: vec!["spec".to_owned()],
                         ignore_files: PathSet::default(),
+                        spec_dirs: Vec::new(),
                         require_non_empty_spec: true,
                         skip_type_only: false,
                     },
@@ -838,6 +838,7 @@ mod tests {
                         subfolders: vec![".".to_owned()],
                         spec_markers: vec!["spec".to_owned()],
                         ignore_files: PathSet::default(),
+                        spec_dirs: Vec::new(),
                         require_non_empty_spec: true,
                         skip_type_only: false,
                     },
@@ -946,6 +947,7 @@ mod tests {
                         subfolders: vec![".".to_owned()],
                         spec_markers: vec!["spec".to_owned()],
                         ignore_files: PathSet::default(),
+                        spec_dirs: Vec::new(),
                         require_non_empty_spec: false,
                         skip_type_only: false,
                     },

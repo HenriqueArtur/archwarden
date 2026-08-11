@@ -12,7 +12,7 @@
 //! not change; the cache saves the parse, not the read.
 //!
 //! Neither figure includes the flush, which happens once per run rather than
-//! per file and is measured by nothing here. See `docs/PLAN-V0.md`, M4.
+//! per file and is measured by nothing here.
 
 // Benches are not library code: an `expect` that fails here fails the bench,
 // which is exactly the desired behaviour.

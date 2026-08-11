@@ -81,6 +81,7 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     subfolders,
                     spec_markers,
                     ignore_files,
+                    spec_dirs,
                     require_non_empty_spec,
                     skip_type_only,
                 } => Box::new(spec_pair::SpecPairEngine::build(
@@ -88,6 +89,7 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     subfolders,
                     spec_markers,
                     ignore_files,
+                    spec_dirs,
                     *require_non_empty_spec,
                     *skip_type_only,
                 )),
@@ -212,6 +214,7 @@ mod tests {
             subfolders: vec![".".to_owned()],
             spec_markers: vec!["spec".to_owned()],
             ignore_files: PathSet::default(),
+            spec_dirs: Vec::new(),
             require_non_empty_spec: false,
             skip_type_only: false,
         }

@@ -7,7 +7,8 @@
 //! hash, so without a third component the `findings` cache would serve stale
 //! answers after a `tsconfig.paths` change -- correct-looking, and wrong.
 //!
-//! This is correction C4 in `docs/PLAN-V0.md`.
+//! Found when a `tsconfig.paths` change left the cache serving answers that
+//! looked right.
 
 use archwarden_core::{hash::ContentHash, path::RepoRelPath};
 

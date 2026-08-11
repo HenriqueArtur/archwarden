@@ -296,7 +296,7 @@ mod tests {
             // Every entry is `directory/file`, so the parent is never absent.
             // Written as an `expect` rather than an `if let` because the
             // negative arm no execution reaches is dead code that drags the
-            // coverage floor down -- see the convention in docs/PLAN-V0.md.
+            // coverage floor down -- see the convention in CONTRIBUTING.md.
             std::fs::create_dir_all(path.parent().expect("a file has a parent"))
                 .expect("create dirs");
             std::fs::write(&path, contents).expect("write file");

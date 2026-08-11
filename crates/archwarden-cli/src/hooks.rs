@@ -120,8 +120,16 @@ pub fn hook_command(root: &camino::Utf8Path) -> String {
 /// The tools whose writes are worth intercepting.
 const MATCHER: &str = "Write|Edit|MultiEdit";
 
-/// The event archwarden hooks into.
+/// The event archwarden hooks into before a write.
 const EVENT: &str = "PreToolUse";
+
+/// The event archwarden hooks into once the turn is over.
+///
+/// The pre-write hook sees one write at a time, and a rule about a *group* of
+/// files cannot be judged from one of them — a `presence` rule requiring three
+/// files makes all three illegal until all three exist, so no order passes.
+/// This is where that class is caught. Issue #61.
+const STOP_EVENT: &str = "Stop";
 
 /// What an install or removal did, for a message the user can trust.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,10 +156,18 @@ pub enum Outcome {
 pub fn install(settings: Option<&str>, command: &str) -> Result<(String, Outcome), String> {
     let mut root = parse(settings)?;
 
-    let hooks = object_at(&mut root, "hooks")?;
-    let entries = array_at(hooks, EVENT)?;
+    // Each event decided on its own. A shared flag made the pre-write entry get
+    // pushed a second time whenever only the stop one was missing -- an entry
+    // duplicated is every write checked twice, which is the thing this module
+    // recognises entries by command to avoid.
+    //
+    // Both run the same command, which dispatches on the event it is sent. Two
+    // commands would let a hook be wired to the wrong event and answer the
+    // wrong question in silence.
+    let added_write = add_entry(&mut root, EVENT, Some(MATCHER), command)?;
+    let added_stop = add_entry(&mut root, STOP_EVENT, None, command)?;
 
-    if entries.iter().any(has_our_command) {
+    if !added_write && !added_stop {
         // Unchanged means unchanged: hand back the bytes that came in rather
         // than a re-rendering of them.
         return Ok((
@@ -159,11 +175,6 @@ pub fn install(settings: Option<&str>, command: &str) -> Result<(String, Outcome
             Outcome::AlreadyInstalled,
         ));
     }
-
-    entries.push(json!({
-        "matcher": MATCHER,
-        "hooks": [{ "type": "command", "command": command }],
-    }));
 
     Ok((written(settings, &root), Outcome::Installed))
 }
@@ -181,32 +192,75 @@ pub fn remove(settings: Option<&str>) -> Result<(String, Outcome), String> {
             Outcome::NotInstalled,
         ));
     };
-    let Some(entries) = hooks.get_mut(EVENT).and_then(Value::as_array_mut) else {
-        return Ok((
-            settings.map_or_else(|| render(&root), str::to_owned),
-            Outcome::NotInstalled,
-        ));
-    };
 
-    let before = entries.len();
-    entries.retain(|entry| !has_our_command(entry));
-    if entries.len() == before {
+    // Both events, because install writes both. Taking one and leaving the
+    // other would report "removed" while a hook of ours kept running -- the
+    // uninstall equivalent of a gate that says it is on and is not.
+    let removed = [EVENT, STOP_EVENT]
+        .into_iter()
+        .filter(|event| take_ours_from(hooks, event))
+        .count();
+
+    if removed == 0 {
         return Ok((
             settings.map_or_else(|| render(&root), str::to_owned),
             Outcome::NotInstalled,
         ));
     }
 
-    // Leaving `"PreToolUse": []` behind would be litter in someone else's
-    // file, and `"hooks": {}` after it more so.
-    if entries.is_empty() {
-        hooks.remove(EVENT);
-    }
+    // `"hooks": {}` left behind is litter in someone else's file.
     if hooks.is_empty() {
         root.remove("hooks");
     }
 
     Ok((written(settings, &root), Outcome::Removed))
+}
+
+/// Takes our entry out of one event's list, and says whether there was one.
+///
+/// Removes the list itself when it empties: leaving `"PreToolUse": []` behind
+/// is litter, and a reader cannot tell it from a list somebody meant to fill.
+fn take_ours_from(hooks: &mut Map<String, Value>, event: &str) -> bool {
+    let Some(entries) = hooks.get_mut(event).and_then(Value::as_array_mut) else {
+        return false;
+    };
+
+    let before = entries.len();
+    entries.retain(|entry| !has_our_command(entry));
+    if entries.len() == before {
+        return false;
+    }
+
+    if entries.is_empty() {
+        hooks.remove(event);
+    }
+    true
+}
+
+/// Adds our entry to one event's list when it is not already there, and says
+/// whether it did.
+///
+/// `matcher` is `None` for `Stop`, which fires once per turn and has nothing to
+/// match on.
+fn add_entry(
+    root: &mut Map<String, Value>,
+    event: &str,
+    matcher: Option<&str>,
+    command: &str,
+) -> Result<bool, String> {
+    let hooks = object_at(root, "hooks")?;
+    let entries = array_at(hooks, event)?;
+
+    if entries.iter().any(has_our_command) {
+        return Ok(false);
+    }
+
+    let mut entry = json!({ "hooks": [{ "type": "command", "command": command }] });
+    if let (Some(matcher), Some(object)) = (matcher, entry.as_object_mut()) {
+        object.insert("matcher".to_owned(), Value::String(matcher.to_owned()));
+    }
+    entries.push(entry);
+    Ok(true)
 }
 
 /// Whether an entry is one archwarden installed.
@@ -545,8 +599,11 @@ mod tests {
             "./node_modules/.bin/archwarden hook claude-code",
         ] {
             let settings = format!(
-                r#"{{"hooks":{{"PreToolUse":[{{"matcher":"Write","hooks":[
-                    {{"type":"command","command":"{command}"}}]}}]}}}}"#
+                r#"{{"hooks":{{
+                    "PreToolUse":[{{"matcher":"Write","hooks":[
+                        {{"type":"command","command":"{command}"}}]}}],
+                    "Stop":[{{"hooks":[
+                        {{"type":"command","command":"{command}"}}]}}]}}}}"#
             );
 
             let (_, outcome) = install(Some(&settings), HOOK_COMMAND).expect("installs");
@@ -827,9 +884,11 @@ mod tests {
     /// the whole block is what makes that work.
     #[test]
     fn a_users_edit_to_our_entry_is_not_undone() {
-        let edited = r#"{"hooks":{"PreToolUse":[
-            {"matcher":"Write","hooks":[
-                {"type":"command","command":"archwarden hook claude-code","timeout":5}]}]}}"#;
+        let edited = r#"{"hooks":{
+            "PreToolUse":[{"matcher":"Write","hooks":[
+                {"type":"command","command":"archwarden hook claude-code","timeout":5}]}],
+            "Stop":[{"hooks":[
+                {"type":"command","command":"archwarden hook claude-code"}]}]}}"#;
 
         let (written, outcome) = install(Some(edited), HOOK_COMMAND).expect("installs");
 
@@ -942,6 +1001,66 @@ mod tests {
         assert!(
             !MATCHER.contains("Bash"),
             "a hook on Bash would run for nothing"
+        );
+    }
+    /// Install writes both events, and a settings file that already carries
+    /// the pre-write hook gains the stop one on the next run.
+    ///
+    /// Issue #61. The pre-write hook cannot judge a rule about a group of
+    /// files, so an upgrade that left the stop entry out would leave that class
+    /// unchecked on every machine already using archwarden.
+    #[test]
+    fn install_writes_both_events() {
+        let written = installed(None);
+        let root: Value = serde_json::from_str(&written).expect("valid JSON");
+
+        assert_eq!(
+            root["hooks"]["PreToolUse"][0]["matcher"], MATCHER,
+            "the pre-write entry narrows to the writing tools"
+        );
+        assert_eq!(
+            root["hooks"]["Stop"][0]["hooks"][0]["command"], HOOK_COMMAND,
+            "and the stop entry runs the same command"
+        );
+        assert!(
+            root["hooks"]["Stop"][0].get("matcher").is_none(),
+            "`Stop` fires once per turn and has nothing to match on"
+        );
+    }
+
+    /// An existing installation gains the stop hook rather than being told
+    /// there is nothing to do.
+    #[test]
+    fn an_existing_install_gains_the_stop_hook() {
+        let old = r#"{"hooks":{"PreToolUse":[{"matcher":"Write|Edit|MultiEdit","hooks":[
+            {"type":"command","command":"archwarden hook claude-code"}]}]}}"#;
+
+        let (written, outcome) = install(Some(old), HOOK_COMMAND).expect("installs");
+        let root: Value = serde_json::from_str(&written).expect("valid JSON");
+
+        assert_eq!(outcome, Outcome::Installed, "something was installed");
+        assert_eq!(
+            root["hooks"]["Stop"][0]["hooks"][0]["command"],
+            HOOK_COMMAND
+        );
+        assert_eq!(
+            root["hooks"]["PreToolUse"].as_array().map(Vec::len),
+            Some(1),
+            "and the one that was there is not duplicated"
+        );
+    }
+
+    /// Uninstall takes both, or it reports success while one of ours keeps
+    /// running — the uninstall shape of a gate that says it is on and is not.
+    #[test]
+    fn removing_takes_both_events() {
+        let written = installed(None);
+        let (removed, outcome) = remove(Some(&written)).expect("removes");
+
+        assert_eq!(outcome, Outcome::Removed);
+        assert!(
+            !removed.contains("archwarden"),
+            "one of ours survived: {removed}"
         );
     }
 }

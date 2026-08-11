@@ -2,8 +2,7 @@
 //!
 //! Excluded from the spell checker in `_typos.toml`: it is an English
 //! dictionary, and on this file it produces nothing but false positives —
-//! `erro` offered as `error`, `regenere` as `regenerate`. The same reasoning
-//! `docs/PLAN-V0.md` is excluded under.
+//! `erro` offered as `error`, `regenere` as `regenerate`.
 //!
 //! That exclusion is why this file holds its own tests. Assertions about this
 //! translation are in the language they are about, so moving them into the

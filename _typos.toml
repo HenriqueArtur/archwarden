@@ -2,11 +2,6 @@
 extend-exclude = [
     "Cargo.lock",
     "target/",
-    # PLAN-V0.md is written in Portuguese; typos is an English dictionary and
-    # produces nothing but false positives on it. See the note in that file
-    # about eventually bringing it in line with the rest of docs/, which are
-    # all English.
-    "docs/PLAN-V0.md",
     # The pages are written in more than one language, and each language is one
     # file so that exactly the non-English ones can be skipped here. `erro` is
     # offered as `error` and `regenere` as `regenerate`; the English half of the

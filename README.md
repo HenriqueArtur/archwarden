@@ -46,7 +46,10 @@ publishing.
 
 ## Status
 
-v0, in development. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Released and in use. What is planned lives in the
+[issues](https://github.com/HenriqueArtur/archwarden/issues) and
+[milestones](https://github.com/HenriqueArtur/archwarden/milestones), which
+are the plan rather than a document that describes one.
 
 ## Why
 

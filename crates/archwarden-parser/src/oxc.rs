@@ -610,7 +610,7 @@ fn imports(
     // an ordinary call expression, so it is invisible there and has to come
     // off the AST -- which is how a boundary rule was bypassable by writing
     // `await import('@/domain/user')`. Found by the differential harness
-    // against a real monorepo; see M5e in `docs/PLAN-V0.md`.
+    // against a real monorepo.
     let (dynamic, has_opaque_import) = dynamic_imports(program);
     by_statement.extend(dynamic);
 
@@ -992,7 +992,7 @@ import { type U, W } from './mixed';
     /// A `import()` expression is a dependency. Found by the differential
     /// harness against a real monorepo, where a boundary rule could be
     /// bypassed -- without anyone trying to -- by lazy-loading a forbidden
-    /// layer. See M5e in `docs/PLAN-V0.md`.
+    /// layer.
     #[test]
     fn a_dynamic_import_is_an_import() {
         let facts = parse(

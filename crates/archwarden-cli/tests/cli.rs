@@ -36,6 +36,26 @@ fn archwarden() -> Command {
     Command::cargo_bin("archwarden").expect("the binary is built")
 }
 
+/// A repository with one commit, so `HEAD` names something.
+///
+/// The stop hook asks git what changed since `HEAD`, which is the turn's work
+/// unless the agent committed midway.
+fn git_init(root: &std::path::Path) {
+    let run = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .output()
+            .expect("git runs");
+    };
+    run(&["init", "-q"]);
+    run(&["config", "user.email", "test@example.com"]);
+    run(&["config", "user.name", "test"]);
+    run(&["add", "arch.config.json"]);
+    run(&["commit", "-qm", "config"]);
+}
+
 const MINIMAL: &str = r#"{"version": 0}"#;
 
 #[test]
@@ -1023,6 +1043,230 @@ fn the_hook_replays_an_edit_before_judging_it() {
             r#"{{"tool_name":"Edit","tool_input":{{"file_path":"{target}",
                "old_string":"Wrong","new_string":"CreateClient"}}}}"#
         ))
+        .assert()
+        .success()
+        .stdout("{}\n");
+}
+
+/// `spec_dirs` names a directory beside the file, one level. A path asks for
+/// the rule to reach further than it says, and reaching further is how a
+/// `spec-pair` rule stops reporting and starts looking like a fully-tested
+/// repository. Issue #67.
+#[test]
+fn a_spec_dir_that_is_a_path_is_refused() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"spec-pair","id":"needs-spec","level":"error",
+             "roots":["src/*"],"subfolders":["."],
+             "spec_dirs":["__tests__/unit"]}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "validate"])
+        .assert()
+        .code(2)
+        .stderr(contains("directory names"));
+}
+
+/// And the whole thing end to end: a spec in the named directory satisfies the
+/// rule, and the same spec one level deeper does not.
+#[test]
+fn a_spec_in_a_named_directory_satisfies_the_rule_through_the_cli() {
+    const CONFIG: &str = r#"{"version":0,"rules":[
+        {"type":"spec-pair","id":"needs-spec","level":"error",
+         "roots":["src/*"],"subfolders":["."],"spec_dirs":["__tests__"]}]}"#;
+
+    let named = repo(&[
+        ("arch.config.json", CONFIG),
+        ("src/user/create.ts", "export function create() {}\n"),
+        (
+            "src/user/__tests__/create.spec.ts",
+            "it('works', () => {});\n",
+        ),
+    ]);
+    archwarden()
+        .current_dir(named.path())
+        .args(["check"])
+        .assert()
+        .success();
+
+    let deeper = repo(&[
+        ("arch.config.json", CONFIG),
+        ("src/user/create.ts", "export function create() {}\n"),
+        (
+            "src/user/__tests__/unit/create.spec.ts",
+            "it('works', () => {});\n",
+        ),
+    ]);
+    archwarden()
+        .current_dir(deeper.path())
+        .args(["check"])
+        .assert()
+        .code(1)
+        .stdout(contains("needs-spec"));
+}
+
+/// Issue #57. A `presence` rule of several files made every one of them
+/// illegal until all of them existed — no write order passed, and the
+/// directory could not be created at all.
+///
+/// A write supplying one of the required files is fixing the directory, not
+/// breaking it. The whole creation sequence goes through, and each write is
+/// told what is still missing.
+#[test]
+fn a_module_can_be_created_one_file_at_a_time() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"presence","id":"tem-os-tres","level":"error",
+             "roots":["projetos/*"],
+             "require":["projeto.md","exercicios.md","diagram.json"]}]}"#,
+    )]);
+    std::fs::create_dir_all(dir.path().join("projetos/02-novo")).expect("mkdir");
+
+    for name in ["projeto.md", "exercicios.md", "diagram.json"] {
+        let target = dir.path().join("projetos/02-novo").join(name);
+        let target = target.to_str().expect("utf-8");
+
+        archwarden()
+            .current_dir(dir.path())
+            .args(["hook", "claude-code"])
+            .write_stdin(format!(
+                r#"{{"tool_name":"Write","tool_input":{{"file_path":"{target}","content":"x"}}}}"#
+            ))
+            .assert()
+            .success()
+            .stdout(contains("permissionDecision").not());
+
+        // Allowed *and* told what is still missing. Silence here would let the
+        // agent believe the directory was done.
+        if name != "diagram.json" {
+            archwarden()
+                .current_dir(dir.path())
+                .args(["hook", "claude-code"])
+                .write_stdin(format!(
+                    r#"{{"tool_name":"Write","tool_input":{{"file_path":"{target}","content":"x"}}}}"#
+                ))
+                .assert()
+                .stdout(contains("not done yet"));
+        }
+
+        std::fs::write(target, "x").expect("write");
+    }
+}
+
+/// And the half that keeps this from being a way to switch `presence` off: a
+/// write that supplies none of the required files leaves the directory exactly
+/// as broken as it found it, and is refused.
+#[test]
+fn a_write_that_ignores_the_missing_files_is_still_refused() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"tem-os-tres","level":"error",
+                 "roots":["projetos/*"],
+                 "require":["projeto.md","exercicios.md","diagram.json"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+    let target = dir.path().join("projetos/01-blink/rascunho.md");
+    let target = target.to_str().expect("utf-8");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{target}","content":"x"}}}}"#
+        ))
+        .assert()
+        .success()
+        .stdout(contains("permissionDecision"));
+}
+
+/// Issue #61, and the relief for #57: the class of rule the pre-write hook
+/// cannot judge is caught once the writes have landed.
+///
+/// A `presence` rule requiring three files makes every one of the three
+/// illegal until the other two exist, so no write order passes and the module
+/// cannot be created at all. At the end of the turn the group is there to be
+/// judged, and what is missing is a fact rather than a prediction.
+#[test]
+fn the_stop_hook_reports_what_landed() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"tem-os-tres","level":"error",
+                 "roots":["projetos/*"],
+                 "require":["projeto.md","exercicios.md","diagram.json"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+    git_init(dir.path());
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"Stop","session_id":"abc"}"#)
+        .assert()
+        .success()
+        .stdout(contains("landed in this turn"))
+        .stdout(contains("exercicios.md"));
+}
+
+/// A finding the project already accepted is not reported at the end of a
+/// turn either. `baseline` is debt the repository decided to carry, and a hook
+/// that read it out every turn would be a hook somebody removes.
+#[test]
+fn the_stop_hook_honours_the_baseline() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"tem-os-tres","level":"error",
+                 "roots":["projetos/*"],"require":["projeto.md","exercicios.md"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+        (
+            ".archwarden/baseline.json",
+            r#"{"version":0,"accepted":[
+                {"rule":"tem-os-tres","path":"projetos/01-blink",
+                 "note":"pre-existing"}]}"#,
+        ),
+    ]);
+    git_init(dir.path());
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"Stop"}"#)
+        .assert()
+        .success()
+        .stdout("{}\n");
+}
+
+/// A turn that broke nothing says nothing. A hook that spoke every turn is one
+/// somebody removes.
+#[test]
+fn the_stop_hook_is_silent_when_nothing_landed() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"tem-os-tres","level":"error",
+                 "roots":["projetos/*"],"require":["projeto.md"]}]}"#,
+        ),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+    git_init(dir.path());
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"Stop"}"#)
         .assert()
         .success()
         .stdout("{}\n");

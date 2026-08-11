@@ -35,6 +35,9 @@ pub struct SpecPairEngine {
     subfolders: Vec<String>,
     spec_markers: Vec<String>,
     ignore_files: PathSet,
+    /// Directory names beside a file where a spec also counts. Empty is
+    /// sibling-only, which is every config written before issue #67.
+    spec_dirs: Vec<String>,
     require_non_empty_spec: bool,
     skip_type_only: bool,
 }
@@ -49,6 +52,7 @@ impl SpecPairEngine {
             subfolders,
             spec_markers,
             ignore_files,
+            spec_dirs,
             require_non_empty_spec,
             skip_type_only,
         } = &rule.kind
@@ -61,6 +65,7 @@ impl SpecPairEngine {
             subfolders,
             spec_markers,
             ignore_files,
+            spec_dirs,
             *require_non_empty_spec,
             *skip_type_only,
         ))
@@ -78,6 +83,7 @@ impl SpecPairEngine {
         subfolders: &[String],
         spec_markers: &[String],
         ignore_files: &PathSet,
+        spec_dirs: &[String],
         require_non_empty_spec: bool,
         skip_type_only: bool,
     ) -> Self {
@@ -89,6 +95,7 @@ impl SpecPairEngine {
             subfolders: subfolders.to_vec(),
             spec_markers: spec_markers.to_vec(),
             ignore_files: ignore_files.clone(),
+            spec_dirs: spec_dirs.to_vec(),
             require_non_empty_spec,
             skip_type_only,
         }
@@ -290,6 +297,22 @@ impl SpecPairEngine {
         let Some(spec_name) = self.spec_name_for(name) else {
             return Vec::new();
         };
+
+        // A directory the rule named, one level down and no further. Asked of
+        // the existence predicate rather than of `siblings`, which only carries
+        // this directory's own listing.
+        //
+        // One level is the whole design: a reading that accepted a spec
+        // anywhere below would let a rule report nothing while looking exactly
+        // like a repository that is fully tested. Issue #67.
+        if self.spec_dirs.iter().any(|directory| {
+            parent
+                .join(directory)
+                .and_then(|inside| inside.join(&spec_name))
+                .is_ok_and(|candidate| ctx.exists.at(&candidate))
+        }) {
+            return Vec::new();
+        }
         let Ok(spec) = parent.join(&spec_name) else {
             return Vec::new();
         };
@@ -436,6 +459,24 @@ mod tests {
     }
 
     fn engine(scope: &[&str], subfolders: &[&str], ignore: &[&str]) -> SpecPairEngine {
+        engine_with_spec_dirs_and_ignore(scope, subfolders, ignore, &[])
+    }
+
+    /// The same, with directories where a spec also counts. Issue #67.
+    fn engine_with_spec_dirs(
+        scope: &[&str],
+        subfolders: &[&str],
+        spec_dirs: &[&str],
+    ) -> SpecPairEngine {
+        engine_with_spec_dirs_and_ignore(scope, subfolders, &[], spec_dirs)
+    }
+
+    fn engine_with_spec_dirs_and_ignore(
+        scope: &[&str],
+        subfolders: &[&str],
+        ignore: &[&str],
+        spec_dirs: &[&str],
+    ) -> SpecPairEngine {
         let rule = CompiledRule {
             id: RuleId::new("needs-spec").expect("valid id"),
             module: None,
@@ -447,6 +488,7 @@ mod tests {
                 subfolders: owned(subfolders),
                 spec_markers: owned(&["spec", "test"]),
                 ignore_files: PathSet::compile(ignore).expect("valid globs"),
+                spec_dirs: owned(spec_dirs),
                 require_non_empty_spec: false,
                 skip_type_only: false,
             },
@@ -797,6 +839,7 @@ mod tests {
                 subfolders: owned(["."].as_slice()),
                 spec_markers: owned(&["test"]),
                 ignore_files: PathSet::default(),
+                spec_dirs: Vec::new(),
                 require_non_empty_spec: false,
                 skip_type_only: false,
             },
@@ -892,6 +935,7 @@ mod tests {
                 subfolders: owned(["."].as_slice()),
                 spec_markers: owned(&["spec"]),
                 ignore_files: PathSet::default(),
+                spec_dirs: Vec::new(),
                 require_non_empty_spec: true,
                 skip_type_only: false,
             },
@@ -963,6 +1007,7 @@ mod tests {
                 subfolders: owned(["."].as_slice()),
                 spec_markers: owned(&["spec"]),
                 ignore_files: PathSet::default(),
+                spec_dirs: Vec::new(),
                 require_non_empty_spec: true,
                 skip_type_only: false,
             },
@@ -993,6 +1038,7 @@ mod tests {
                 subfolders: owned(["."].as_slice()),
                 spec_markers: owned(&["spec"]),
                 ignore_files: PathSet::default(),
+                spec_dirs: Vec::new(),
                 require_non_empty_spec: true,
                 skip_type_only: false,
             },
@@ -1046,6 +1092,7 @@ mod tests {
                 subfolders: owned(subfolders),
                 spec_markers: owned(&["spec", "test"]),
                 ignore_files: PathSet::default(),
+                spec_dirs: Vec::new(),
                 require_non_empty_spec: false,
                 skip_type_only: true,
             },
@@ -1174,5 +1221,94 @@ mod tests {
         assert!(engine.applies_to(&path("src/user/thing.ts")));
         assert!(!engine.applies_to(&path("src/user/index.ts")));
         assert!(!engine.applies_to(&RepoRelPath::root()));
+    }
+    /// Issue #67. `spec-pair` accepted a sibling only, and a project keeping
+    /// its specs in `__tests__` had a rule that reported every file.
+    ///
+    /// The directory is named by the author — `tests`, `__specs__`, whatever
+    /// the project uses — and an empty list keeps the sibling-only behaviour
+    /// every existing config has.
+    #[test]
+    fn a_spec_in_a_named_directory_satisfies_the_rule() {
+        let engine = engine_with_spec_dirs(&["src/*"], &["."], &["__tests__"]);
+        let there =
+            |candidate: &RepoRelPath| candidate.as_str() == "src/user/__tests__/create.spec.ts";
+
+        let findings = engine.check_file(FileContext {
+            path: &path("src/user/create.ts"),
+            facts: None,
+            docs: None,
+            siblings: &owned(&["create.ts"]),
+            exists: Exists::new(&there),
+        });
+
+        assert!(
+            findings.is_empty(),
+            "the spec is in the directory the rule names: {findings:?}"
+        );
+    }
+
+    /// A directory the rule does not name is not a spec directory.
+    ///
+    /// This is the test that keeps the feature from being a way to switch the
+    /// rule off. A permissive reading — a spec anywhere below counts — reports
+    /// nothing and looks exactly like a repository that is fully tested.
+    #[test]
+    fn a_spec_in_a_directory_the_rule_did_not_name_does_not_count() {
+        let engine = engine_with_spec_dirs(&["src/*"], &["."], &["__tests__"]);
+        let elsewhere =
+            |candidate: &RepoRelPath| candidate.as_str() == "src/user/spec/create.spec.ts";
+
+        let findings = engine.check_file(FileContext {
+            path: &path("src/user/create.ts"),
+            facts: None,
+            docs: None,
+            siblings: &owned(&["create.ts"]),
+            exists: Exists::new(&elsewhere),
+        });
+
+        assert_eq!(findings.len(), 1, "`spec/` was never named: {findings:?}");
+    }
+
+    /// And it reaches one level, not the whole subtree. `__tests__/unit/` is a
+    /// directory of its own, and naming `__tests__` did not name it.
+    #[test]
+    fn a_spec_nested_deeper_than_the_named_directory_does_not_count() {
+        let engine = engine_with_spec_dirs(&["src/*"], &["."], &["__tests__"]);
+        let deeper = |candidate: &RepoRelPath| {
+            candidate.as_str() == "src/user/__tests__/unit/create.spec.ts"
+        };
+
+        let findings = engine.check_file(FileContext {
+            path: &path("src/user/create.ts"),
+            facts: None,
+            docs: None,
+            siblings: &owned(&["create.ts"]),
+            exists: Exists::new(&deeper),
+        });
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+    }
+
+    /// A rule that names no directory behaves exactly as it did before, which
+    /// is what keeps every config written until now working.
+    #[test]
+    fn naming_no_directory_keeps_the_sibling_only_rule() {
+        let engine = engine_with_spec_dirs(&["src/*"], &["."], &[]);
+        let anywhere = |_: &RepoRelPath| true;
+
+        let findings = engine.check_file(FileContext {
+            path: &path("src/user/create.ts"),
+            facts: None,
+            docs: None,
+            siblings: &owned(&["create.ts"]),
+            exists: Exists::new(&anywhere),
+        });
+
+        assert_eq!(
+            findings.len(),
+            1,
+            "with no directory named, only a sibling counts: {findings:?}"
+        );
     }
 }

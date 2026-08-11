@@ -231,7 +231,7 @@ synthetic fixtures:
 - **The larger sibling project** — runs on CI when configured, like every
   other tier. Not committed as snapshot (too large, moves too fast);
   instead, the job asserts that the output structure is well-formed and the
-  run finishes under the performance budget declared in `ROADMAP.md`.
+  run finishes under the declared performance budget.
 
 Both repos are pulled by CI as read-only references. No changes ever
 flow from archwarden CI back to them.
@@ -252,7 +252,8 @@ These are complements to unit tests, not replacements.
 
 ## Performance regression tests
 
-Success criteria in `ROADMAP.md` are numeric. Enforce them:
+The performance criteria are numeric, and tracked in the issues rather than
+in a document. Enforce them:
 
 - A `benches/` directory using `criterion` measures `check`, `describe`,
   and `scaffold` on Flowmaatik and a fixture 30k-file synthetic repo.

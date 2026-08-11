@@ -141,6 +141,21 @@ pub enum CompileError {
         entry: String,
     },
 
+    /// A `spec-pair` `spec_dirs` entry is not a single directory name.
+    #[error(
+        "rule `{rule}`: `spec_dirs` takes directory names, and `{entry}` is a \
+         path. A spec directory is one level beside the file — `__tests__`, not \
+         `__tests__/unit` — because a rule that reached further would accept a \
+         spec anywhere below and report nothing. Name the deeper directory as \
+         its own entry if it is also a spec directory."
+    )]
+    SpecDirIsAPath {
+        /// The rule.
+        rule: RuleId,
+        /// The entry as written.
+        entry: String,
+    },
+
     /// A `spec-pair` marker is not a single filename component.
     #[error(
         "rule `{rule}`: `{marker}` is not a spec marker. A marker is one \
@@ -307,6 +322,7 @@ fn compile_rule(
             subfolders: r.subfolders.iter().cloned().collect(),
             spec_markers: spec_markers(&id, r)?,
             ignore_files: globs(&id, "ignore_files", &r.ignore_files)?,
+            spec_dirs: spec_dirs(&id, r)?,
             require_non_empty_spec: r.require_non_empty_spec,
             skip_type_only: r.skip_type_only,
         },
@@ -476,6 +492,28 @@ where
 /// A marker is one filename component -- `spec`, `test` -- and the extension
 /// is taken from the source file. A marker carrying a dot or an extension is
 /// almost always someone writing the old whole-suffix form, and guessing what
+/// A `spec_dirs` entry, refused if it is a path rather than a directory name.
+///
+/// The rule reaches one level: a spec at `<dir>/<named>/x.spec.ts` counts and
+/// `<dir>/<named>/unit/x.spec.ts` does not. An entry with a separator asks for
+/// the second, and accepting it silently would make the rule reach further
+/// than it says — which is how a `spec-pair` rule stops reporting and starts
+/// looking like a repository that is fully tested.
+fn spec_dirs(rule: &RuleId, spec: &SpecPairRule) -> Result<Vec<String>, CompileError> {
+    let mut names = Vec::new();
+    for entry in &spec.spec_dirs {
+        let trimmed = entry.trim();
+        if trimmed.is_empty() || trimmed.contains('/') || trimmed.contains('\\') {
+            return Err(CompileError::SpecDirIsAPath {
+                rule: rule.clone(),
+                entry: entry.clone(),
+            });
+        }
+        names.push(trimmed.to_owned());
+    }
+    Ok(names)
+}
+
 /// they meant would be worse than saying so.
 fn spec_markers(rule: &RuleId, spec: &SpecPairRule) -> Result<Vec<String>, CompileError> {
     let mut markers = Vec::new();
@@ -649,6 +687,74 @@ mod tests {
         }
     }
 
+    /// A `spec_dirs` entry is a directory name, and the names survive.
+    ///
+    /// Tested here rather than only through the CLI: a validator returning an
+    /// empty list would drop every entry, the feature would stop working, and
+    /// the CLI test — which only asserts that a *path* is refused — would keep
+    /// passing.
+    #[test]
+    fn a_spec_dir_is_a_directory_name_and_it_survives() {
+        let id = RuleId::new("r").expect("valid id");
+        let spec = |dirs: &[&str]| SpecPairRule {
+            id: id.clone(),
+            level: Level::Error,
+            why: None,
+            roots: crate::one_or_many::OneOrMany::One("src/*".to_owned()),
+            subfolders: crate::one_or_many::OneOrMany::One(".".to_owned()),
+            spec_markers: crate::one_or_many::OneOrMany::One("spec".to_owned()),
+            spec_dirs: crate::one_or_many::OneOrMany::Many(
+                dirs.iter().map(|d| (*d).to_owned()).collect(),
+            ),
+            ignore_files: crate::one_or_many::OneOrMany::Many(Vec::new()),
+            require_non_empty_spec: false,
+            skip_type_only: false,
+        };
+
+        assert_eq!(
+            spec_dirs(&id, &spec(&["__tests__", "tests"])).expect("valid"),
+            vec!["__tests__".to_owned(), "tests".to_owned()],
+            "the names the author wrote are the names the rule gets"
+        );
+        assert_eq!(
+            spec_dirs(&id, &spec(&["  __tests__  "])).expect("valid"),
+            vec!["__tests__".to_owned()],
+            "and they are trimmed"
+        );
+        assert!(
+            spec_dirs(&id, &spec(&[])).expect("valid").is_empty(),
+            "naming none is sibling-only, not an error"
+        );
+    }
+
+    /// An entry that is a path asks the rule to reach a level deeper than it
+    /// says. Accepting it would let a spec anywhere below satisfy the rule, and
+    /// a `spec-pair` rule that reports nothing looks exactly like a repository
+    /// that is fully tested. Issue #67.
+    #[test]
+    fn a_spec_dir_that_is_a_path_or_empty_is_refused() {
+        let id = RuleId::new("r").expect("valid id");
+        let spec = |dir: &str| SpecPairRule {
+            id: id.clone(),
+            level: Level::Error,
+            why: None,
+            roots: crate::one_or_many::OneOrMany::One("src/*".to_owned()),
+            subfolders: crate::one_or_many::OneOrMany::One(".".to_owned()),
+            spec_markers: crate::one_or_many::OneOrMany::One("spec".to_owned()),
+            spec_dirs: crate::one_or_many::OneOrMany::One(dir.to_owned()),
+            ignore_files: crate::one_or_many::OneOrMany::Many(Vec::new()),
+            require_non_empty_spec: false,
+            skip_type_only: false,
+        };
+
+        for entry in ["__tests__/unit", "a\\b", "", "   "] {
+            assert!(
+                spec_dirs(&id, &spec(entry)).is_err(),
+                "`{entry}` was accepted as a directory name"
+            );
+        }
+    }
+
     /// Issue #50. The template form is what `naming.must_export` and
     /// `frontmatter.equals` accept, so reaching for it here is the obvious
     /// mistake -- and it used to compile, then report every governed file as
@@ -686,8 +792,8 @@ mod tests {
         RepoRelPath::new(p).expect("valid path")
     }
 
-    /// Extracts a `Pattern` error, or `None`. See the convention note in
-    /// docs/PLAN-V0.md about not using `let ... else { panic!() }` here.
+    /// Extracts a `Pattern` error, or `None`. See the convention in
+    /// CONTRIBUTING.md about not using `let ... else { panic!() }` in a test.
     fn pattern_error(error: &CompileError) -> Option<(&RuleId, &'static str)> {
         match error {
             CompileError::Pattern { rule, field, .. } => Some((rule, field)),

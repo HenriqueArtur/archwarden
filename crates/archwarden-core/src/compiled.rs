@@ -137,6 +137,9 @@ pub enum CompiledRuleKind {
         spec_markers: Vec<String>,
         /// Files exempted from the rule.
         ignore_files: PathSet,
+        /// Directory names beside the file where a spec also counts. Empty is
+        /// sibling-only. One level deep; see `SpecPairRule::spec_dirs`.
+        spec_dirs: Vec<String>,
         /// Whether the spec must contain at least one `it` or `test` call.
         require_non_empty_spec: bool,
         /// Whether a file whose exports are all `type` or `interface` is
@@ -586,6 +589,7 @@ mod tests {
             subfolders: vec![".".to_owned()],
             spec_markers: vec!["spec".to_owned()],
             ignore_files: PathSet::default(),
+            spec_dirs: Vec::new(),
             require_non_empty_spec: false,
             skip_type_only: false,
         };
@@ -593,6 +597,7 @@ mod tests {
             subfolders: vec![".".to_owned()],
             spec_markers: vec!["spec".to_owned()],
             ignore_files: PathSet::default(),
+            spec_dirs: Vec::new(),
             require_non_empty_spec: true,
             skip_type_only: false,
         };
@@ -610,6 +615,7 @@ mod tests {
                 subfolders: Vec::new(),
                 spec_markers: vec!["spec".to_owned()],
                 ignore_files: PathSet::default(),
+                spec_dirs: Vec::new(),
                 require_non_empty_spec: false,
                 skip_type_only: false,
             },

@@ -377,6 +377,10 @@
                 "test"
               ]
             },
+            "spec_dirs": {
+              "description": "Directories, beside the file, where a spec also counts.\n\nEmpty by default, which is sibling-only — what every config written\nbefore this had, and what a project that says nothing keeps.\n\nA name, not a glob: `__tests__`, `tests`, `__specs__`, whatever the\nproject uses. A spec at `<dir>/<named>/x.spec.ts` satisfies `<dir>/x.ts`\nand reaches exactly one level — `__tests__/unit/x.spec.ts` does not\ncount unless `unit` is named too.\n\nThe depth limit is the feature. A reading that accepted a spec anywhere\nbelow would make the rule report nothing and look exactly like a\nrepository that is fully tested, which is the failure `CONFIG.md` calls\nthe worst a linter has. Issue #67.",
+              "$ref": "#/$defs/OneOrMany"
+            },
             "ignore_files": {
               "description": "Globs exempted from the rule.",
               "$ref": "#/$defs/OneOrMany"
