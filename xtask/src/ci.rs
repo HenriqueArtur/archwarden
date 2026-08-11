@@ -379,11 +379,12 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<(), String> {
         ));
     }
 
-    let mut failed = Vec::new();
+    let mut failed: Vec<(&str, Vec<String>)> = Vec::new();
     for (n, step) in gates.iter().enumerate() {
         println!("[{}/{}] {}", n + 1, gates.len(), step.command);
-        if !step.succeeds(root) {
-            failed.push(step.command);
+        let (ok, tail) = step.succeeds(root);
+        if !ok {
+            failed.push((step.command, tail));
             println!("       FAILED");
         }
     }
@@ -394,10 +395,25 @@ pub(crate) fn run(root: &Path, mode: Mode) -> Result<(), String> {
     }
 
     eprintln!("\n{} of {} gates failed:", failed.len(), gates.len());
-    for command in &failed {
+    for (command, _) in &failed {
         eprintln!("  {command}");
     }
-    Err("re-run the command above on its own to read its output".to_owned())
+
+    // Repeated here, at the bottom, where a reader is already looking. Telling
+    // somebody to re-run the command is fine for a gate that fails every time
+    // and useless for one that does not -- and a gate that fails intermittently
+    // is exactly the one worth diagnosing. Issue #80.
+    for (command, tail) in &failed {
+        if tail.is_empty() {
+            continue;
+        }
+        eprintln!("\n--- last {} lines of `{command}`:", tail.len());
+        for line in tail {
+            eprintln!("  {line}");
+        }
+    }
+
+    Err("the failing output is repeated above".to_owned())
 }
 
 /// Says what is here and what is not, and runs nothing.
@@ -432,9 +448,38 @@ impl Step {
     ///
     /// Output is inherited rather than captured: a contributor wants the
     /// compiler's own diagnostics, in colour, as they happen.
-    fn succeeds(&self, root: &Path) -> bool {
-        self.spawned(root)
-            .is_some_and(|mut command| command.status().is_ok_and(|status| status.success()))
+    fn succeeds(&self, root: &Path) -> (bool, Vec<String>) {
+        let Some(mut command) = self.spawned(root) else {
+            return (false, Vec::new());
+        };
+
+        // Streamed *and* kept. Streamed because a contributor wants the
+        // compiler's own diagnostics as they happen; kept because a gate that
+        // fails intermittently is diagnosed from the run that failed, and by
+        // the time the summary prints, that output has scrolled past. Twice the
+        // coverage gate failed and passed on the retry with the evidence gone.
+        // Issue #80.
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let Ok(mut child) = command.spawn() else {
+            return (false, Vec::new());
+        };
+
+        let tail = std::sync::Arc::new(std::sync::Mutex::new(Tail::new()));
+        let errors = child.stderr.take().map({
+            let tail = std::sync::Arc::clone(&tail);
+            |stream| std::thread::spawn(move || pump(stream, &tail, true))
+        });
+        if let Some(stream) = child.stdout.take() {
+            pump(stream, &tail, false);
+        }
+        if let Some(handle) = errors {
+            let _ = handle.join();
+        }
+
+        let ok = child.wait().is_ok_and(|status| status.success());
+        let kept = tail.lock().map(|tail| tail.lines()).unwrap_or_default();
+        (ok, kept)
     }
 
     /// The command as it will be run, or `None` if there is nothing to run.
@@ -473,6 +518,58 @@ impl Step {
         self.command
             .split_whitespace()
             .map(|word| word.trim_matches(['"', '\'']))
+    }
+}
+
+/// Copies a child's output to ours, keeping the last lines of it.
+///
+/// Line by line rather than in bulk: a build that takes two minutes should look
+/// like it is working, and a reader watching a blank terminal reaches for
+/// Ctrl-C.
+fn pump<R: std::io::Read>(stream: R, tail: &std::sync::Mutex<Tail>, is_error: bool) {
+    use std::io::BufRead as _;
+
+    for line in std::io::BufReader::new(stream)
+        .lines()
+        .map_while(Result::ok)
+    {
+        if is_error {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+        if let Ok(mut tail) = tail.lock() {
+            tail.push(line);
+        }
+    }
+}
+
+/// How much of a failing gate's output the summary repeats.
+///
+/// The end, not the beginning: the first thousand lines of a build are what
+/// succeeded, and the reason it failed is at the bottom.
+const TAIL_LINES: usize = 40;
+
+/// The last [`TAIL_LINES`] lines a gate printed.
+#[derive(Debug, Default)]
+struct Tail {
+    lines: std::collections::VecDeque<String>,
+}
+
+impl Tail {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn push(&mut self, line: String) {
+        if self.lines.len() == TAIL_LINES {
+            self.lines.pop_front();
+        }
+        self.lines.push_back(line);
+    }
+
+    fn lines(&self) -> Vec<String> {
+        self.lines.iter().cloned().collect()
     }
 }
 
@@ -883,5 +980,43 @@ jobs:
         let path = std::env::join_paths([dir.path().to_owned()]).expect("join");
 
         assert!(!found_in("typos", &path));
+    }
+    /// A failure that says only which gate failed is a failure somebody
+    /// re-runs, and a gate that fails intermittently is one nobody can
+    /// diagnose — the output has already scrolled past, or been piped away.
+    ///
+    /// Twice the coverage gate failed and passed on the immediate retry, and
+    /// both times the evidence was gone. Issue #80.
+    #[test]
+    fn a_failed_gate_keeps_its_last_words() {
+        let mut tail = Tail::new();
+        for n in 1..=60 {
+            tail.push(format!("line {n}"));
+        }
+
+        let kept = tail.lines();
+        assert_eq!(
+            kept.len(),
+            TAIL_LINES,
+            "it keeps a bounded window, not the whole run"
+        );
+        assert_eq!(
+            kept.last().map(String::as_str),
+            Some("line 60"),
+            "and the end is what a failure is explained by"
+        );
+        assert!(
+            !kept.iter().any(|line| line == "line 1"),
+            "the beginning of a long build is not the reason it failed"
+        );
+    }
+
+    /// A gate that printed less than the window keeps all of it.
+    #[test]
+    fn a_short_failure_is_kept_whole() {
+        let mut tail = Tail::new();
+        tail.push("only this".to_owned());
+
+        assert_eq!(tail.lines(), vec!["only this".to_owned()]);
     }
 }
