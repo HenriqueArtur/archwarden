@@ -1,5 +1,10 @@
 # Build outputs
 /target/
+# Any crate's, not only the workspace root's. `cargo xtask mutants` writes its
+# scratch diff under `target/`, and cargo-mutants builds each mutant in a copy
+# of the tree -- which is how `xtask/target/xtask-mutants/in-diff.patch` was
+# committed. A leading slash anchors to this directory and nowhere else.
+target/
 **/*.rs.bk
 
 # Cargo.lock IS committed: this workspace produces a binary, so reproducible
