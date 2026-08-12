@@ -333,6 +333,8 @@ mod tests {
             scope: Scope::compile([from]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {
                 forbid: PathSet::compile([forbid.to_owned()]).expect("valid glob"),
+                allow: None,
+                allow_packages: None,
                 require: PathSet::default(),
                 forbid_packages: Vec::new(),
                 except: PathSet::default(),

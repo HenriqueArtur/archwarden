@@ -283,12 +283,31 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
         CompiledRuleKind::ImportBoundary {
             forbid,
             require,
+            allow,
+            allow_packages,
             forbid_packages,
             except,
             except_from,
             include_type_only,
         } => {
             let mut lines = Vec::new();
+            // First, because it is the strongest sentence a boundary can say:
+            // everything not named is refused, including what does not exist
+            // yet. An agent reading the denials first would take the silence
+            // about everything else for permission.
+            if let Some(allow) = allow {
+                lines.push(format!(
+                    "may import only from {} (its own files are always allowed, \
+                     and packages are governed separately)",
+                    join(allow.patterns())
+                ));
+            }
+            if let Some(packages) = allow_packages {
+                lines.push(format!(
+                    "may import only these packages: {}",
+                    join(packages.as_slice())
+                ));
+            }
             if !forbid.is_empty() {
                 let mut line = format!("must not import from {}", join(forbid.patterns()));
                 if !except.is_empty() {
@@ -765,6 +784,8 @@ mod tests {
     fn boundary() -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: set(&["src/infra/**"]),
+            allow: None,
+            allow_packages: None,
             require: PathSet::default(),
             forbid_packages: Vec::new(),
             except: PathSet::default(),
@@ -777,6 +798,8 @@ mod tests {
     fn package_boundary(except_from: &[&str]) -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: PathSet::default(),
+            allow: None,
+            allow_packages: None,
             require: PathSet::default(),
             forbid_packages: vec!["three".to_owned()],
             except: PathSet::default(),
@@ -1166,6 +1189,8 @@ mod tests {
                 &["src/**"],
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
+                    allow: None,
+                    allow_packages: None,
                     require: PathSet::default(),
                     forbid_packages: Vec::new(),
                     except: PathSet::default(),
@@ -1443,6 +1468,8 @@ mod tests {
                 &["src/**"],
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
+                    allow: None,
+                    allow_packages: None,
                     require: set(&["src/telemetry/**"]),
                     forbid_packages: Vec::new(),
                     except: set(&["src/infra/types/**"]),

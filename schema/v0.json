@@ -451,6 +451,18 @@
               "description": "Globs matched against the *resolved* import path. Matching means the\nimport is illegal.",
               "$ref": "#/$defs/OneOrMany"
             },
+            "only_import_from": {
+              "description": "Globs matched against the *resolved* import path. Anything not matching\nis illegal.\n\nThe allowlist direction. A denylist decays: every new package, app or\ndirectory is permitted by omission, and omission is invisible. This one\nrefuses things that do not exist yet, which is the whole point.\n\n**Governs edges inside this repository only.** A builtin, a dependency\nand an import nothing could resolve have no repo-relative path a glob\ncould match; `only_import_from_packages` is the field for those, for the\nsame reason `forbid_import_from_packages` is separate from\n`forbid_import_from`. And a file importing its own neighbour is always\npermitted: an import resolving inside the rule's own `from` is not\nsomething \"only these\" was ever meant to refuse. Issue #75.\n\nRefused alongside `forbid_import_from` on one rule: \"only these, except\nthose\" is expressible as two rules and clearer as two.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "only_import_from_modules": {
+              "description": "Modules whose files may be imported, and no others.\n\n`only_import_from` with the paths written for you, the way\n`forbid_module` is for `forbid_import_from`.",
+              "$ref": "#/$defs/OneOrMany2"
+            },
+            "only_import_from_packages": {
+              "description": "Package names this file may import, and no others.\n\nThe package axis of `only_import_from`. Absent means packages are not\ngoverned by this rule at all, which is what keeps `only_import_from`\nfrom tripping on every dependency in the manifest.",
+              "$ref": "#/$defs/OneOrMany"
+            },
             "forbid_module": {
               "description": "Modules whose files may not be imported, instead of the globs they are.\n\nFolded into `forbid_import_from` when the config compiles, so nothing\ndownstream knows the difference — but the config says `infrastructure`\nwhere it used to repeat that module's paths. Issue #74.",
               "$ref": "#/$defs/OneOrMany2"

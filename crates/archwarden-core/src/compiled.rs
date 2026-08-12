@@ -166,6 +166,14 @@ pub enum CompiledRuleKind {
         forbid: PathSet,
         /// Resolved import paths at least one import must match.
         require: PathSet,
+        /// Resolved import paths that are the *only* ones allowed.
+        ///
+        /// `None` means the rule does not work this way. An empty `PathSet`
+        /// would mean "nothing is allowed", which is a different and much
+        /// louder statement, so the two must not be the same value.
+        allow: Option<PathSet>,
+        /// Package names that are the only ones allowed. `None` as above.
+        allow_packages: Option<Vec<String>>,
         /// Package names that are illegal, matched as "this package, and
         /// anything under it".
         ///
@@ -700,6 +708,8 @@ mod tests {
             },
             CompiledRuleKind::ImportBoundary {
                 forbid: PathSet::default(),
+                allow: None,
+                allow_packages: None,
                 require: PathSet::default(),
                 forbid_packages: Vec::new(),
                 except: PathSet::default(),

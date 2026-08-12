@@ -32,6 +32,15 @@ pub struct ImportBoundaryEngine {
     scope: Scope,
     forbid: PathSet,
     require: PathSet,
+    /// The only paths allowed, when the rule works that way.
+    ///
+    /// `None` and empty are deliberately different: `None` is "this rule does
+    /// not use an allowlist", empty is "nothing in this repository may be
+    /// imported". Collapsing them would turn a rule somebody has not finished
+    /// writing into the strictest rule in the config.
+    allow: Option<PathSet>,
+    /// The only packages allowed, likewise.
+    allow_packages: Option<Vec<String>>,
     forbid_packages: Vec<String>,
     except: PathSet,
     except_from: PathSet,
@@ -47,6 +56,8 @@ impl ImportBoundaryEngine {
         let CompiledRuleKind::ImportBoundary {
             forbid,
             require,
+            allow,
+            allow_packages,
             forbid_packages,
             except,
             except_from,
@@ -60,6 +71,8 @@ impl ImportBoundaryEngine {
             rule,
             forbid,
             require,
+            allow.clone(),
+            allow_packages.clone(),
             forbid_packages,
             except,
             except_from,
@@ -74,10 +87,17 @@ impl ImportBoundaryEngine {
     /// a kind added without an engine fails to compile. There is no runtime
     /// state in which a rule goes unchecked, which is why a run has nothing to
     /// report as unimplemented.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one per field of the compiled kind, so a field added without \
+                  being wired here fails to build"
+    )]
     pub(crate) fn build(
         rule: &CompiledRule,
         forbid: &PathSet,
         require: &PathSet,
+        allow: Option<PathSet>,
+        allow_packages: Option<Vec<String>>,
         forbid_packages: &[String],
         except: &PathSet,
         except_from: &PathSet,
@@ -90,6 +110,8 @@ impl ImportBoundaryEngine {
             scope: rule.scope.clone(),
             forbid: forbid.clone(),
             require: require.clone(),
+            allow,
+            allow_packages,
             forbid_packages: forbid_packages.to_vec(),
             except: except.clone(),
             except_from: except_from.clone(),
@@ -107,6 +129,53 @@ impl ImportBoundaryEngine {
             return None;
         }
         import.resolved.as_ref()
+    }
+
+    /// Whether `resolved` is one this rule refuses to permit.
+    ///
+    /// Three things are outside an allowlist's jurisdiction and stay allowed,
+    /// and every one of them is a decision rather than an oversight:
+    ///
+    /// - **The rule's own scope.** A file importing its neighbour is not what
+    ///   "only these" was ever meant to refuse, and forbidding it would make
+    ///   the field unusable on any module of more than one file.
+    /// - **Anything that did not resolve here.** A builtin, a dependency, an
+    ///   import nothing could place — none has a repo-relative path, and
+    ///   `allow_packages` is the axis for them.
+    /// - **Nothing at all, when `allow` is `None`.** A rule that does not use
+    ///   an allowlist is not an allowlist of nothing.
+    fn is_not_permitted(&self, resolved: &RepoRelPath) -> bool {
+        let Some(allow) = &self.allow else {
+            return false;
+        };
+        if self.scope.contains_file(resolved.as_path()) {
+            return false;
+        }
+        !allow.is_match(resolved.as_path())
+    }
+
+    /// Whether this specifier names a package the rule did not permit.
+    ///
+    /// Matched the way `forbidden_package` matches: the package and anything
+    /// under it, with `node:` stripped from both sides, so a rule permitting
+    /// `fs` permits `node:fs` and a rule permitting `three` permits a deep
+    /// import of it.
+    fn is_package_not_permitted(&self, specifier: &str) -> bool {
+        let Some(allowed) = &self.allow_packages else {
+            return false;
+        };
+        if specifier.starts_with('.') {
+            return false;
+        }
+        let bare = specifier.strip_prefix("node:").unwrap_or(specifier);
+
+        !allowed.iter().any(|name| {
+            let permitted = name.strip_prefix("node:").unwrap_or(name);
+            bare == permitted
+                || bare
+                    .strip_prefix(permitted)
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
     }
 
     /// Whether `resolved` is one this rule forbids.
@@ -160,6 +229,23 @@ impl ImportBoundaryEngine {
             patterns: self.forbid.patterns().to_vec(),
             except: self.except.patterns().to_vec(),
             include_type_only: self.include_type_only,
+        }
+    }
+
+    fn permitted_expectation(&self) -> Expectation {
+        Expectation::PermittedImports {
+            patterns: self
+                .allow
+                .as_ref()
+                .map(|a| a.patterns().to_vec())
+                .unwrap_or_default(),
+            include_type_only: self.include_type_only,
+        }
+    }
+
+    fn permitted_packages_expectation(&self) -> Expectation {
+        Expectation::PermittedPackages {
+            packages: self.allow_packages.clone().unwrap_or_default(),
         }
     }
 
@@ -240,6 +326,27 @@ impl RuleEngine for ImportBoundaryEngine {
             // else names a package: a dependency, a builtin, or one that did
             // not resolve, which on a repository before `install` is most of
             // them and is exactly where this rule still has to work.
+            if import.resolved.is_none() && self.is_package_not_permitted(&import.specifier) {
+                findings.push(Finding {
+                    span: Some(import.span),
+                    ..self.finding(
+                        ctx.path,
+                        Observed::PackageNotPermitted {
+                            specifier: import.specifier.clone(),
+                            package: import
+                                .specifier
+                                .strip_prefix("node:")
+                                .unwrap_or(&import.specifier)
+                                .split('/')
+                                .next()
+                                .unwrap_or(&import.specifier)
+                                .to_owned(),
+                        },
+                        self.permitted_packages_expectation(),
+                    )
+                });
+            }
+
             if import.resolved.is_none()
                 && let Some(package) = self.forbidden_package(&import.specifier)
             {
@@ -259,6 +366,20 @@ impl RuleEngine for ImportBoundaryEngine {
             let Some(resolved) = self.visible(import) else {
                 continue;
             };
+
+            if self.is_not_permitted(resolved) {
+                findings.push(Finding {
+                    span: Some(import.span),
+                    ..self.finding(
+                        ctx.path,
+                        Observed::ImportNotPermitted {
+                            specifier: import.specifier.clone(),
+                            resolved: resolved.clone(),
+                        },
+                        self.permitted_expectation(),
+                    )
+                });
+            }
 
             if self.is_forbidden(resolved) {
                 findings.push(Finding {
@@ -346,6 +467,8 @@ mod tests {
             scope: Scope::compile(["packages/ui/**"]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {
                 forbid: set(forbid),
+                allow: None,
+                allow_packages: None,
                 require: set(require),
                 forbid_packages: Vec::new(),
                 except: set(except),
@@ -391,6 +514,128 @@ mod tests {
             siblings: &[],
             exists: Exists::none(),
         })
+    }
+
+    /// A rule that permits instead of forbidding.
+    fn allowing(allow: &[&str], packages: Option<&[&str]>) -> ImportBoundaryEngine {
+        let mut rule = rule(&[], &[], &[], true);
+        rule.kind = CompiledRuleKind::ImportBoundary {
+            forbid: PathSet::default(),
+            allow: Some(set(allow)),
+            allow_packages: packages
+                .map(|names| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>()),
+            require: PathSet::default(),
+            forbid_packages: Vec::new(),
+            except: PathSet::default(),
+            except_from: PathSet::default(),
+            include_type_only: true,
+        };
+        ImportBoundaryEngine::from_rule(&rule).expect("an import-boundary rule")
+    }
+
+    /// The allowlist direction, and the whole argument for it: what is not
+    /// named is refused, including what nobody has thought of yet. A denylist
+    /// permits every new package by omission, and omission is invisible.
+    #[test]
+    fn an_import_nothing_permitted_is_reported() {
+        let engine = allowing(&["packages/shared/**"], None);
+
+        let findings = check(
+            &engine,
+            &facts(
+                "packages/ui/button/button.ts",
+                &[
+                    ("@acme/shared", Some("packages/shared/src/x.ts"), false),
+                    ("@acme/secret", Some("packages/secret/src/y.ts"), false),
+                ],
+            ),
+        );
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(matches!(
+            &findings[0].observed,
+            Observed::ImportNotPermitted { resolved, .. }
+                if resolved.as_str() == "packages/secret/src/y.ts"
+        ));
+    }
+
+    /// A file importing its own neighbour is not what "only these" refuses.
+    /// Forbidding it would make the field unusable on any module of more than
+    /// one file, so the rule's own scope is always permitted.
+    #[test]
+    fn a_file_may_always_import_inside_its_own_scope() {
+        let engine = allowing(&["packages/shared/**"], None);
+
+        let findings = check(
+            &engine,
+            &facts(
+                "packages/ui/button/button.ts",
+                &[("./icon", Some("packages/ui/button/icon.ts"), false)],
+            ),
+        );
+
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    /// Builtins and dependencies are a separate axis, and an allowlist of
+    /// paths says nothing about them. Otherwise the first run of the field on
+    /// a real repository is a wall of findings about `react`.
+    #[test]
+    fn a_path_allowlist_says_nothing_about_packages() {
+        let engine = allowing(&["packages/shared/**"], None);
+
+        let findings = check(
+            &engine,
+            &facts(
+                "packages/ui/button/button.ts",
+                &[("node:fs", None, false), ("lodash", None, false)],
+            ),
+        );
+
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    /// And the package axis, when the rule asks for it. A deep import counts
+    /// as the package, and `node:` is the same module either way spelled.
+    #[test]
+    fn a_package_allowlist_refuses_what_it_does_not_name() {
+        let engine = allowing(&["packages/shared/**"], Some(&["lodash", "node:fs"]));
+
+        let findings = check(
+            &engine,
+            &facts(
+                "packages/ui/button/button.ts",
+                &[
+                    ("lodash/fp", None, false),
+                    ("fs", None, false),
+                    ("react", None, false),
+                ],
+            ),
+        );
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(matches!(
+            &findings[0].observed,
+            Observed::PackageNotPermitted { specifier, .. } if specifier == "react"
+        ));
+    }
+
+    /// A rule with no allowlist is not an allowlist of nothing. `None` and an
+    /// empty set have to stay different, or a rule somebody has not finished
+    /// writing becomes the strictest rule in the config.
+    #[test]
+    fn a_rule_with_no_allowlist_permits_everything_it_does_not_forbid() {
+        let engine = engine(&["packages/domain/**"], &[], &[], true);
+
+        let findings = check(
+            &engine,
+            &facts(
+                "packages/ui/button/button.ts",
+                &[("@acme/anything", Some("packages/anything/x.ts"), false)],
+            ),
+        );
+
+        assert!(findings.is_empty(), "{findings:?}");
     }
 
     /// The rule the whole feature exists for: a UI file reaching into domain.
@@ -788,6 +1033,8 @@ mod tests {
             scope: Scope::compile(["src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {
                 forbid: PathSet::default(),
+                allow: None,
+                allow_packages: None,
                 require: PathSet::default(),
                 forbid_packages: packages.iter().map(|p| (*p).to_owned()).collect(),
                 except: PathSet::default(),

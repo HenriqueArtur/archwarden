@@ -769,6 +769,8 @@ mod tests {
     fn boundary(forbid: &[&str], packages: &[&str], except_from: &[&str]) -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: PathSet::compile(forbid.iter().map(|g| (*g).to_owned())).expect("valid globs"),
+            allow: None,
+            allow_packages: None,
             require: PathSet::default(),
             forbid_packages: packages.iter().map(|p| (*p).to_owned()).collect(),
             except: PathSet::default(),

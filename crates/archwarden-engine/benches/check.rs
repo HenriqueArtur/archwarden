@@ -159,6 +159,8 @@ fn resolving() -> CompiledConfig {
         scope: Scope::compile(["src/*"]).expect("valid scope"),
         kind: CompiledRuleKind::ImportBoundary {
             forbid: PathSet::compile(["src/module-39/internal/**"]).expect("valid globs"),
+            allow: None,
+            allow_packages: None,
             require: PathSet::default(),
             forbid_packages: Vec::new(),
             except: PathSet::default(),

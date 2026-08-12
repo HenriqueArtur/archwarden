@@ -571,6 +571,38 @@ pub struct ImportBoundaryRule {
     /// import is illegal.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub forbid_import_from: Patterns,
+    /// Globs matched against the *resolved* import path. Anything not matching
+    /// is illegal.
+    ///
+    /// The allowlist direction. A denylist decays: every new package, app or
+    /// directory is permitted by omission, and omission is invisible. This one
+    /// refuses things that do not exist yet, which is the whole point.
+    ///
+    /// **Governs edges inside this repository only.** A builtin, a dependency
+    /// and an import nothing could resolve have no repo-relative path a glob
+    /// could match; `only_import_from_packages` is the field for those, for the
+    /// same reason `forbid_import_from_packages` is separate from
+    /// `forbid_import_from`. And a file importing its own neighbour is always
+    /// permitted: an import resolving inside the rule's own `from` is not
+    /// something "only these" was ever meant to refuse. Issue #75.
+    ///
+    /// Refused alongside `forbid_import_from` on one rule: "only these, except
+    /// those" is expressible as two rules and clearer as two.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub only_import_from: Patterns,
+    /// Modules whose files may be imported, and no others.
+    ///
+    /// `only_import_from` with the paths written for you, the way
+    /// `forbid_module` is for `forbid_import_from`.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub only_import_from_modules: OneOrMany<ModuleId>,
+    /// Package names this file may import, and no others.
+    ///
+    /// The package axis of `only_import_from`. Absent means packages are not
+    /// governed by this rule at all, which is what keeps `only_import_from`
+    /// from tripping on every dependency in the manifest.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub only_import_from_packages: Patterns,
     /// Modules whose files may not be imported, instead of the globs they are.
     ///
     /// Folded into `forbid_import_from` when the config compiles, so nothing

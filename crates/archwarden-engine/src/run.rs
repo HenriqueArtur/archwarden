@@ -590,6 +590,8 @@ mod tests {
         };
         CompiledRuleKind::ImportBoundary {
             forbid: set(forbid),
+            allow: None,
+            allow_packages: None,
             require: set(require),
             forbid_packages: Vec::new(),
             except: set(except),

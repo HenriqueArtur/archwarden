@@ -50,6 +50,18 @@ pub enum CompileError {
         module: archwarden_core::ids::ModuleId,
     },
 
+    /// A rule says what it permits and what it forbids.
+    #[error(
+        "rule `{rule}` sets `only_import_from` and `{other}`; \
+         \"only these, except those\" is two rules"
+    )]
+    AllowlistAndDenylist {
+        /// The rule.
+        rule: RuleId,
+        /// The field that contradicts the allowlist.
+        other: &'static str,
+    },
+
     /// A rule says its scope twice, in two fields.
     #[error("rule `{rule}` sets both `{one}` and `{other}`; use one")]
     ScopeSaidTwice {
@@ -341,6 +353,67 @@ fn forbidden_paths(
     })
 }
 
+/// The paths a boundary permits, when it works that way at all.
+///
+/// `None` when neither allowlist field is set, and that is not the same as an
+/// empty set: empty would mean "nothing in this repository may be imported",
+/// which is a far louder statement than "this rule does not work by allowlist".
+///
+/// Refused alongside `forbid_import_from`: "only these, except those" reads as
+/// one sentence and is two rules, and two rules is what a reader can follow.
+/// `except` is refused too — it shields against a prohibition, and an
+/// exception to a *permission* is as meaningless as `RULES.md` already says an
+/// exception to a requirement is.
+fn permitted_paths(
+    id: &RuleId,
+    rule: &crate::rule::ImportBoundaryRule,
+    modules: &Modules,
+) -> Result<Option<PathSet>, CompileError> {
+    let by_glob = !rule.only_import_from.is_empty();
+    let by_module = !rule.only_import_from_modules.is_empty();
+
+    if by_glob && by_module {
+        return Err(CompileError::ScopeSaidTwice {
+            rule: id.clone(),
+            one: "only_import_from",
+            other: "only_import_from_modules",
+        });
+    }
+    if !by_glob && !by_module {
+        return Ok(None);
+    }
+    if !rule.forbid_import_from.is_empty() || !rule.forbid_module.is_empty() {
+        return Err(CompileError::AllowlistAndDenylist {
+            rule: id.clone(),
+            other: "forbid_import_from",
+        });
+    }
+    if !rule.except.is_empty() {
+        return Err(CompileError::AllowlistAndDenylist {
+            rule: id.clone(),
+            other: "except",
+        });
+    }
+
+    let patterns: Vec<String> = if by_module {
+        let mut collected = Vec::new();
+        for named in &rule.only_import_from_modules {
+            collected.extend(modules.paths_of(id, named)?.iter().cloned());
+        }
+        collected
+    } else {
+        rule.only_import_from.iter().cloned().collect()
+    };
+
+    PathSet::compile(&patterns)
+        .map(Some)
+        .map_err(|source| CompileError::Glob {
+            rule: id.clone(),
+            field: "only_import_from",
+            source,
+        })
+}
+
 /// A rule's scope, from whichever field it used.
 ///
 /// A boundary may say who it is about as globs (`from`) or as a module
@@ -562,6 +635,9 @@ fn compile_rule(
             // saw, and the config says `infrastructure` instead of repeating
             // that module's globs. Issue #74.
             forbid: forbidden_paths(&id, r, modules)?,
+            allow: permitted_paths(&id, r, modules)?,
+            allow_packages: (!r.only_import_from_packages.is_empty())
+                .then(|| r.only_import_from_packages.iter().cloned().collect()),
             require: globs(&id, "must_import_from", &r.must_import_from)?,
             forbid_packages: r.forbid_import_from_packages.iter().cloned().collect(),
             except: globs(&id, "except", &r.except)?,

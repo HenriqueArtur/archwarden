@@ -126,6 +126,28 @@ pub enum Expectation {
         /// Whether it must contain at least one `it(...)` or `test(...)`.
         non_empty_spec: bool,
     },
+    /// These imports are allowed, and nothing else in the repository is.
+    ///
+    /// The allowlist direction, and the reason it exists: a denylist decays.
+    /// Every new package, app or directory is permitted by omission, and
+    /// omission is invisible — the failure `CONFIG.md` names as the worst a
+    /// linter has, arriving one import at a time. Issue #75.
+    ///
+    /// Governs edges inside this repository only. A dependency has its own
+    /// axis, [`PermittedPackages`](Self::PermittedPackages), for the same
+    /// reason forbidding one does.
+    PermittedImports {
+        /// Glob patterns matched against the resolved import path. Anything
+        /// not matching is refused.
+        patterns: Vec<String>,
+        /// Whether `import type` counts.
+        include_type_only: bool,
+    },
+    /// These packages are allowed, and no others are.
+    PermittedPackages {
+        /// Package names, matched as "this package, and anything under it".
+        packages: Vec<String>,
+    },
     /// Imports matching these patterns are not allowed.
     ForbiddenImport {
         /// Glob patterns matched against the resolved import path.
@@ -319,6 +341,20 @@ pub enum Observed {
     SiblingMissing {
         /// The sibling that was looked for.
         path: RepoRelPath,
+    },
+    /// An import of a file this rule did not permit.
+    ImportNotPermitted {
+        /// The specifier, as written.
+        specifier: String,
+        /// Where it landed.
+        resolved: RepoRelPath,
+    },
+    /// An import of a package this rule did not permit.
+    PackageNotPermitted {
+        /// The specifier, as written.
+        specifier: String,
+        /// The package it names.
+        package: String,
     },
     /// The sibling exists but contains no test cases.
     SpecIsEmpty {

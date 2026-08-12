@@ -45,6 +45,29 @@ saying so.
   reach; naming a module that does not exist, one with no `scope`, or saying a
   scope both ways on one rule is refused when the config compiles.
 
+- **`import-boundary` gained an allowlist**
+  ([#75](https://github.com/HenriqueArtur/archwarden/issues/75)).
+  `only_import_from`, `only_import_from_modules` and
+  `only_import_from_packages`: these, and nothing else.
+
+  ```json
+  { "type": "import-boundary", "id": "api-depends-only-on-libs", "level": "error",
+    "from_module": "api-orders", "only_import_from_modules": ["orders-core"] }
+  ```
+
+  A denylist decays. Every new package, app and directory is permitted by
+  omission, and omission is invisible — the failure `CONFIG.md` names as the
+  worst a linter has, arriving one import at a time. An allowlist refuses
+  things that do not exist yet, which is the point.
+
+  Three things sit outside it and stay allowed: the rule's own scope, because
+  a file importing its neighbour is not what "only these" refuses; anything
+  that did not resolve into this repository, because a builtin or a dependency
+  has no path a glob could match; and packages, which have their own field for
+  the same reason forbidding one does. Setting it alongside
+  `forbid_import_from` or `except` is refused — "only these, except those" is
+  two rules.
+
 - **Three `config doctor` checks** that a module with paths makes possible:
   `module-scope-matches-nothing`, `module-nobody-references`, and
   `rule-reaches-outside-its-module` — the last being the one that stops

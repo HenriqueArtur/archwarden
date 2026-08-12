@@ -121,6 +121,22 @@ would refuse to complete.
 - `rules` — rules that belong to no particular module, typically import
   boundaries (which are cross-module by nature). They report as `[*]`.
 
+### Allowing instead of forbidding
+
+`import-boundary` has three directions. `forbid_import_from` denies,
+`must_import_from` requires, and `only_import_from` permits — everything not
+named is refused, including what nobody has thought of yet.
+
+```json
+{ "type": "import-boundary", "id": "api-depends-only-on-libs", "level": "error",
+  "from_module": "api-orders",
+  "only_import_from_modules": ["orders-core", "shared"] }
+```
+
+A denylist decays. Every new package, app or directory is allowed by omission,
+and omission is the thing nobody notices. See [RULES.md](RULES.md#import-boundary)
+for what sits outside an allowlist and why.
+
 ### Modules with a scope
 
 A module is a name for a group of rules. Give it a `scope` and it also becomes

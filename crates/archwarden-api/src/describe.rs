@@ -23,6 +23,13 @@ use archwarden_core::{facts::ExportKind, finding::Observed};
 /// Shared with the hook and with the baseline file, so a blocked write, a
 /// failing `check` and an accepted entry describe the same problem in the
 /// same words.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per observation, each a sentence. Splitting it by category \
+              would scatter prose that has to read consistently -- the wording \
+              of two findings side by side in one report is the thing being \
+              maintained here, and it is only reviewable in one place"
+)]
 #[must_use]
 pub fn describe_observed(observed: &Observed) -> String {
     match observed {
@@ -123,6 +130,26 @@ pub fn describe_observed(observed: &Observed) -> String {
                 format!("imports the package `{package}`")
             } else {
                 format!("imports `{specifier}`, which is part of the package `{package}`")
+            }
+        }
+        // "is not on the list" rather than "is forbidden": under an allowlist
+        // nothing is forbidden by name, and a reader told their import is
+        // banned would go looking for the ban.
+        Observed::ImportNotPermitted {
+            specifier,
+            resolved,
+        } => format!(
+            "imports `{specifier}`, which resolves to `{resolved}` and is not on this \
+             rule's list"
+        ),
+        Observed::PackageNotPermitted { specifier, package } => {
+            if specifier == package {
+                format!("imports the package `{package}`, which is not on this rule's list")
+            } else {
+                format!(
+                    "imports `{specifier}`, which is part of the package `{package}` and is \
+                     not on this rule's list"
+                )
             }
         }
         Observed::RequiredImportMissing => "no import satisfies the requirement".to_owned(),

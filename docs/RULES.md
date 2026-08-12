@@ -752,6 +752,31 @@ accepted; module membership is only a label for output.
   resolved import path. If `from` matches but no import satisfies the
   requirement, the file is illegal.
 
+**Three directions, not two.** `only_import_from` is an allowlist:
+
+```json
+{ "type": "import-boundary", "id": "api-depends-only-on-libs", "level": "error",
+  "from_module": "api-orders", "only_import_from": ["packages/**"] }
+```
+
+Everything not named is refused, **including things that do not exist yet**.
+That is the difference that matters: a denylist permits every new package, app
+and directory by omission, and omission is invisible.
+
+Three things sit outside an allowlist, and each is a decision rather than an
+oversight:
+
+| | |
+|---|---|
+| the rule's own scope | a file importing its neighbour is not what "only these" refuses |
+| anything that did not resolve here | a builtin or a dependency has no repo path a glob could match |
+| packages | `only_import_from_packages` is their axis, as `forbid_import_from_packages` is |
+
+`only_import_from_modules` names modules instead of globs, the way
+`forbid_module` does. And `only_import_from` is refused alongside
+`forbid_import_from` or `except` on the same rule: "only these, except those"
+is two rules, and two rules is what a reader can follow.
+
 **Naming a module instead of describing it.** When a module declares a `scope`
 (see [CONFIG.md](CONFIG.md#modules-with-a-scope)), `from_module` and
 `forbid_module` take module ids in place of globs:

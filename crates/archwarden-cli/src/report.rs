@@ -1042,6 +1042,12 @@ fn describe_folder_name(allowed: &[String], warn: &[String], patterns: &[String]
     parts.join(", ")
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the same table as `describe_observed`, from the other side: one \
+              arm per expectation, and the two have to read as one sentence \
+              when a finding puts them together"
+)]
 pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
     match expectation {
         Expectation::AllowedSubfolders {
@@ -1110,6 +1116,13 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
             } else {
                 format!("`{path}`")
             }
+        }
+        Expectation::PermittedImports { patterns, .. } => format!(
+            "imports only from {} (its own files always, packages separately)",
+            join_or(patterns, "nowhere")
+        ),
+        Expectation::PermittedPackages { packages } => {
+            format!("imports only these packages: {}", join_or(packages, "none"))
         }
         Expectation::ForbiddenImport {
             patterns, except, ..
