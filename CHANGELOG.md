@@ -17,6 +17,35 @@ saying so.
 
 ## [Unreleased]
 
+### Internal
+
+- **The mutant count is visible between a commit and a push.** `cargo xtask ci`
+  now ends with a line naming how many mutants the current diff would produce
+  and the command that runs them — listing costs **1.0 s for 224 mutants**,
+  where running them costs seven minutes.
+
+  0.16 was written over five commits with no push, so the pre-push hook never
+  ran, and twenty-eight survivors accumulated in silence across four issues
+  until a release turned them up. Nothing between a commit and a push had said
+  a word.
+
+  It is a line rather than a gate on purpose. `cargo xtask ci` is 73.7 s;
+  running the mutants of an ordinary commit would add about 65% to it and of an
+  accumulated branch about 570%, and a gate people run less often because it
+  got slower is a gate that catches less. The block stays at push.
+
+- **`cargo xtask mutants`** is now the whole implementation, and
+  `.githooks/pre-push` is four lines that call it — down from 170. One place
+  decides what an exit code means, what an empty survivor list means, and what
+  a missing tool means, and the number `ci` reports cannot drift from the
+  number that blocks a push. `--since <ref>` scopes the diff, which the hook
+  passes as the sha the remote already has.
+
+  This also fixes a push that broke itself: `git` opens its connection to the
+  remote *before* running `pre-push`, so a fifteen-minute hook has the server
+  time the connection out after every gate has passed. Releasing 0.16.0 hit it
+  twice.
+
 ## [0.16.0] — 2026-08-12
 
 The two questions one file cannot answer. Nothing an existing, unchanged

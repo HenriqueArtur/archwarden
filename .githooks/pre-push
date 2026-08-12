@@ -58,113 +58,36 @@ if ! cargo xtask ci; then
 fi
 printf '\n'
 
-# Not installed by default, and a hook that blocks a push because an optional
-# tool is missing is a hook that gets uninstalled.
-if ! command -v cargo-mutants >/dev/null 2>&1; then
-    printf 'pre-push: mutants... skipped (cargo install cargo-mutants)\n'
-    exit 0
-fi
+# The whole of the mutation check now lives in `cargo xtask mutants`, which
+# `cargo xtask ci` above also *counts* without running. One implementation, so
+# the number that gate reports and the number this one blocks on cannot
+# disagree — and so the reasoning about exit codes, survivor lists and missing
+# tools is written down once, in a place that has tests.
+#
+# Everything this block used to spell out is in `xtask/src/mutants.rs`:
+#
+#   - only survivors block; a run that could not form an opinion is advisory,
+#     because somebody whose laptop cannot link a test binary must not be
+#     unable to push;
+#   - the survivor list wins over the exit code, which is how 190 survivors
+#     went out past a hook that read exit 141 and announced success;
+#   - not installed is not a failure.
+#
+# `git push --no-verify` skips it, which is the point: a hook catches
+# mistakes, it does not take the decision away from whoever is pushing.
 
-# git feeds pre-push one line per ref being pushed:
-#   <local ref> <local sha> <remote ref> <remote sha>
-# A remote sha of all zeros means the branch is new over there, so there is no
-# "since" to diff against and the merge base with the default branch is the
-# honest answer.
+# git feeds pre-push one line per ref: <local ref> <local sha> <remote ref>
+# <remote sha>. An all-zero remote sha means the branch is new over there, so
+# there is nothing to diff since and the merge base is the honest answer --
+# which is what `xtask mutants` picks when `--since` is absent.
 zero=$(git hash-object --stdin </dev/null | tr '[:xdigit:]' '0')
-base=""
-head=""
-
+since=""
 while read -r _local_ref local_sha _remote_ref remote_sha; do
-    # A deletion has an all-zero local sha and nothing to test.
     [ "$local_sha" = "$zero" ] && continue
-
-    head="$local_sha"
-    if [ "$remote_sha" = "$zero" ]; then
-        base=$(git merge-base "$local_sha" refs/heads/main 2>/dev/null || echo "")
-    else
-        base="$remote_sha"
-    fi
+    [ "$remote_sha" = "$zero" ] || since="$remote_sha"
 done
 
-# Nothing on stdin happens when the hook is run by hand. Fall back to the same
-# question the branch would ask.
-if [ -z "$head" ]; then
-    head=$(git rev-parse HEAD)
-    base=$(git merge-base HEAD refs/heads/main 2>/dev/null || echo "")
+if ! cargo xtask mutants ${since:+--since "$since"}; then
+    printf '\npre-push: nothing was pushed. `git push --no-verify` to override.\n'
+    exit 1
 fi
-
-if [ -z "$base" ]; then
-    printf 'pre-push: mutants... skipped (no base to diff against)\n'
-    exit 0
-fi
-
-diff=$(mktemp)
-trap 'rm -f "$diff" "$diff.log"' EXIT
-git diff "$base" "$head" -- '*.rs' >"$diff"
-
-if [ ! -s "$diff" ]; then
-    printf 'pre-push: mutants... skipped (no Rust changed)\n'
-    exit 0
-fi
-
-printf 'pre-push: mutants on the diff... '
-
-# `--in-diff` scopes the mutants to the changed lines; the whole workspace is
-# in scope otherwise, deliberately. The nightly job this replaced tested three
-# crates and left `archwarden-cli` unmutated, which is where `--apply` lives.
-# `|| status=$?` rather than a bare call: `set -e` at the top would otherwise
-# abort the script on the failing command itself, taking its exit code with it
-# — which silently turned "the tool could not run" into a blocked push, the
-# opposite of what the branch below is for.
-status=0
-cargo mutants --in-diff "$diff" >"$diff.log" 2>&1 || status=$?
-
-# Exit codes, and the distinction that decides whether this blocks:
-#
-#   0  every mutant was caught
-#   2  mutants survived  -- your code, untested. Block.
-#   *  cargo-mutants could not run -- a build failure, a timeout, the linker
-#      being killed on a small machine. Not a statement about the tests.
-#
-# Blocking on the second kind is how a hook gets uninstalled: someone whose
-# laptop ran out of memory cannot push, learns `--no-verify`, and never runs it
-# again. It warns and lets the push through instead. That makes the check
-# advisory exactly when it could not form an opinion, which is the honest
-# reading of "the tool did not finish".
-#
-# "Could not form an opinion" is the load-bearing half, and it used to be
-# assumed rather than checked. A run that is interrupted after it has already
-# reported survivors *has* formed one, and the survivors it named are as real
-# as any from a run that finished: 190 of them went out this way, past a hook
-# that read exit 141 and announced the push was going ahead. So the third
-# branch asks the survivor list rather than the exit code.
-case "$status" in
-    0)
-        printf 'ok\n'
-        exit 0
-        ;;
-    2)
-        printf 'FAILED\n\n'
-        printf '  These edits to your code broke nothing that any test noticed:\n\n'
-        sed 's/^/    /' mutants.out/missed.txt 2>/dev/null | head -30
-        printf '\n  Each one is a behaviour with no test. Write the test, or say why the\n'
-        printf '  mutant is harmless.\n'
-        printf '\npre-push: nothing was pushed. `git push --no-verify` to override.\n'
-        exit 1
-        ;;
-    *)
-        if [ -s mutants.out/missed.txt ]; then
-            printf 'stopped early (exit %s), and had already found these:\n\n' "$status"
-            sed 's/^/    /' mutants.out/missed.txt | head -30
-            printf '\n  It did not finish, so there may be more. What it did find is\n'
-            printf '  still a behaviour with no test.\n'
-            printf '\npre-push: nothing was pushed. `git push --no-verify` to override.\n'
-            exit 1
-        fi
-        printf 'could not run (exit %s)\n' "$status"
-        printf '  The push is going ahead: this says nothing about your tests.\n'
-        tail -5 "$diff.log" | sed 's/^/    /'
-        printf '  On a small machine, `cargo mutants --in-diff <diff> -j 1` uses less memory.\n'
-        exit 0
-        ;;
-esac

@@ -75,9 +75,13 @@ exclude_globs = [
 #                       test can tell them apart
 #   `ci::run`           untestable by recursion; the test would run the suite
 #                       that contains it
+#   `mutants::run`      the same recursion, one turn tighter: it runs
+#   `mutants::pending`  cargo-mutants over this workspace, so a test calling
+#                       either would run cargo-mutants over the test
 #
-# A fourth sharing one of those reasons would be fine. A fourth with a new
-# reason is worth stopping for.
+# The last two share `ci::run`'s reason rather than adding one, which is the
+# bar this list sets for itself. Another sharing one of these reasons would be
+# fine. One with a new reason is worth stopping for.
 
 exclude_re = [
     "single\\.rs:\\d+:\\d+: replace && with \\|\\| in check",
@@ -95,4 +99,21 @@ exclude_re = [
     # are not this repository's. The mutant survives the wiring, not the
     # behaviour.
     "ci\\.rs:\\d+:\\d+: replace run -> Result<\\(\\), String> with Ok\\(\\(\\)\\)",
+    # `mutants::run` and `mutants::pending`, for `ci::run`'s reason one turn
+    # tighter. Both shell out to `cargo mutants` over *this* workspace, so a
+    # test calling either would run cargo-mutants over the suite containing
+    # the test -- and each mutated run of it again.
+    #
+    # What is left inside them after that is wiring over pieces that are each
+    # tested on their own: `base`, `pull_request_base`, `diff_against`,
+    # `untracked_sources`, `write_diff`, `count_listed`, `missed_from`,
+    # `verdict_of` and `report`. The mutants survive the wiring, not the
+    # behaviour -- and the wiring is what every `cargo xtask ci` in this
+    # repository exercises, which is how both real bugs in it were found: a
+    # survivor list read from the wrong directory, and an untracked file
+    # producing no mutants at all.
+    "mutants\\.rs:\\d+:\\d+: replace run -> Result<\\(\\), String> with Ok\\(\\(\\)\\)",
+    "mutants\\.rs:\\d+:\\d+: replace pending -> Result<usize, String> with Ok\\(\\d+\\)",
+    "mutants\\.rs:\\d+:\\d+: delete ! in pending",
+    "mutants\\.rs:\\d+:\\d+: delete ! in run",
 ]

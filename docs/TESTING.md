@@ -135,12 +135,60 @@ same policy `pre-commit` applies to `typos`. `git push --no-verify` skips it,
 which is the point — a hook catches mistakes, it does not take the decision
 away from whoever is pushing.
 
-**What it has not been measured at.** A whole branch's accumulated diff — 76
-mutants over 1537 lines — has not been run to completion here: this machine has
-3 GB of RAM and the linker is killed during the unmutated build, which is the
-case the warn-and-continue branch above exists for. At the measured second per
-mutant that would be a minute and a half, but that is arithmetic rather than a
-measurement, and the only numbers stated as fact above are the ones observed.
+**The accumulated branch, now measured.** That paragraph used to say a whole
+branch's diff had never been run to completion here. It has: milestone 0.16
+came to **224 mutants over roughly 4 000 lines, seven minutes**, on a machine
+that could link. Per mutant that is 1.9 s rather than the 1.0 s a single commit
+suggests — the fixed overhead is amortised away and what is left is slower than
+the small case implied.
+
+It also cost more than seven minutes. The push failed twice with `Connection to
+github.com closed by remote host`, after every gate had passed. `git` opens its
+connection to the remote **before** running `pre-push`, so a hook that takes
+fifteen minutes has the server time the connection out underneath it.
+`ssh -o ServerAliveInterval=30` is the fix if you hit it, and the real lesson is
+in the section below: verification slow enough in the common path does not only
+cost time, it breaks the thing it is attached to.
+
+## Between a commit and a push, the number is visible
+
+The hook runs at push. A branch nobody pushes never runs it, and until 0.16
+nothing in between said a word.
+
+That is how twenty-eight survivors accumulated across five commits and four
+issues, and were found in the middle of a release: the whole compile-layer
+lowering of `only_import_from` had no test, and both of `doctor`'s module
+checks could have been deleted with the suite green. None of it was hard to
+fix. It was hard to *see* — and by the time anybody looked it was eight minutes
+of accumulated diff instead of the thirteen seconds any one of those commits
+would have cost.
+
+```
+cargo xtask ci        ... all 14 gates pass.
+                          mutants: 7 to test on this diff, not run here — `cargo xtask mutants`
+```
+
+**`cargo xtask ci` ends with the count, and does not run them.** Listing what
+`--in-diff` would mutate costs **1.0 s for 224 mutants**, where running them
+costs seven minutes. The line names the number and the exact command, because
+whoever reads it next is as often an agent as a person and a number with no
+command beside it is one they scroll past. A diff with nothing in it says
+`nothing to test`, and a count that could not be taken says so rather than
+saying zero.
+
+**It is not a gate, deliberately.** `cargo xtask ci` is 73.7 s. Running the
+mutants of one ordinary commit would add about 65% to that and of an
+accumulated branch about 570%, and a gate people run less often because it got
+slower is a gate that catches less — the same failure from the other side. The
+block stays at push, where the top of this section put it.
+
+**`cargo xtask mutants` is the whole implementation**, and the hook is four
+lines that call it. One place decides what an exit code means, what an empty
+survivor list means, and what a missing tool means; and the number `ci` reports
+cannot drift from the number that blocks you, because they are the same code.
+It takes `--since <ref>`, which the hook passes as the sha the remote already
+has so a second push tests only what it adds — which is what keeps the hook
+short enough not to break its own push.
 
 **Reading a survivor.** Each line is an edit to your code that no test
 objected to. Either write the test, or decide the mutant is harmless and say
