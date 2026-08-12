@@ -17,6 +17,100 @@ saying so.
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-08-12
+
+Nothing unwatched. Three answers to one question — *what is nobody
+looking at?* — and the exception mechanism that makes the answer
+liveable. **No existing configuration reports anything new.**
+
+### Added
+
+- **Inline suppression, with a mandatory reason and no way to hide it**
+  ([#72](https://github.com/HenriqueArtur/archwarden/issues/72)).
+
+  ```ts
+  // archwarden-allow: the vendor SDK ships no types, tracked in ARCH-412
+  import { Widget } from '@vendor/sdk';
+  ```
+
+  The marker governs **the line after it**, and only that one. Naming a rule
+  (`// archwarden-allow ui-forbids-domain: …`) narrows it further.
+
+  Three constraints, and they are the feature rather than details of it.
+  **No reason, no suppression** — a marker with nothing after the colon is a
+  comment. **Never silently dropped** — a suppressed finding is its own line in
+  the report, with its reason, in every format, and the summary line reads
+  `0 errors, 0 warnings, 1 allowed`, so a run with forty does not look like a
+  clean one. **Countable** — that number only ever goes up, visibly.
+
+  **It reaches only findings that point at a line**, which today means
+  `import-boundary` and nothing else: a marker governs the line below it, and
+  `structure` reporting a folder that should not exist has no line to sit
+  above. Stated here rather than left to be discovered, and it is the case the
+  feature was asked for — the request is *"a way to skip the next import
+  line"*. It also only works where archwarden parses comments, so a `.md`
+  under a `presence` rule has nowhere to put one.
+
+  This is not `baseline` and the difference is the promise: `baseline` says
+  *this repository has this debt today* and shrinks; a marker says *this line
+  is a deliberate exception*, with the reason where the next reader finds it.
+
+- **`governance: "closed"` — every file must be governed by some rule**
+  ([#60](https://github.com/HenriqueArtur/archwarden/issues/60)). The gate half
+  of `config coverage`: every file no rule governs becomes a finding, and
+  `ignore` becomes the escape hatch with a meaning it did not have —
+  **deliberately outside the architecture** rather than merely unchecked.
+
+  ```json
+  { "version": 0, "governance": "closed", "rules": [ ... ] }
+  { "version": 0, "governance": { "mode": "closed", "level": "warning" } }
+  ```
+
+  Absent means `open`, which is what every config written before this field
+  means and still means. **No existing configuration reports anything new.**
+
+  The long form carries a level, for the migration the report exists for: two
+  thousand ungoverned files can be closed at `warning` today, watched in CI
+  without blocking anyone, and raised to `error` at zero. `baseline` is the
+  other way and produces a two-thousand-entry committed file; both are honest.
+
+  **One finding per file**, not per directory: `baseline` accepts by rule and
+  path, so a grouped finding would keep matching as new ungoverned files
+  arrived under it — an escape hatch that swallows tomorrow's debt. Findings
+  report under the rule id `governance`, and a rule of your own may not take
+  that id, because a baseline could not tell the two apart.
+
+  A preset cannot set it, for the reason a preset cannot set `root`, one step
+  stronger: it would fail a build over files its author never saw.
+
+- **`archwarden config coverage`** — which files no rule governs, grouped by
+  directory ([#59](https://github.com/HenriqueArtur/archwarden/issues/59)).
+
+  ```
+  1843 of 2800 files are governed by no rule
+
+    packages/legacy/**            412 files
+    apps/admin/src/screens/**     280 files
+    scripts/*                      94 files
+  ```
+
+  `CONFIG.md` calls a rule enforcing nothing the worst failure a linter has.
+  This is that sentence one level up: **a file no rule governs is
+  indistinguishable from a file that satisfies every rule**, and `check`
+  printing `0 errors` over it reads as *the architecture holds* when it may
+  mean *half the tree was never looked at*.
+
+  Every other config command asks per rule — is it broken, does it bite, what
+  does it cover. None of them can be asked what nobody is watching, because a
+  file nothing mentions appears in no rule's answer.
+
+  Governed is decided by the same code `check` uses to pick a file's rules, so
+  the report cannot disagree with the checker. Grouped because per file it
+  would be a thousand paths and nothing to do: a `**` line is a directory where
+  everything below is ungoverned and one rule covers the lot, a `*` line is a
+  directory holding both kinds. Exits 0 always — the gate is `governance:
+  closed`, and nobody should have to enable it to find out what it would cost.
+
 ### Internal
 
 - **The mutant count is visible between a commit and a push.** `cargo xtask ci`
@@ -223,6 +317,22 @@ config reports has moved: both new rules fire only where somebody writes one.
   missing `no-passthrough` since that rule shipped; the test guarding it listed
   five of the then-eight kinds, so it agreed. Both are fixed, and the test now
   builds one rule of every kind and checks the list in both directions.
+
+### Changed
+
+- **The cache format moved to 6.** `FileFacts` now carries the suppression
+  markers a file holds, so a cache written by 0.16 is discarded rather than
+  misread: one cold run, once.
+
+### Fixed
+
+- **A scalar added to the config was silently ignored after a merge.** The
+  `extends` merge copied the entry config's scalars by a hand-written list, so
+  a field not named there kept its *default* for every configuration in the
+  world. `governance` shipped that way during development and reported nothing
+  at all — the exact silence it exists to break. The list is a destructuring
+  now, so the next field fails to build until somebody decides which side it
+  comes from.
 
 ### Internal
 
@@ -1476,7 +1586,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.13.0...v0.14.0

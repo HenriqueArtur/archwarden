@@ -190,6 +190,13 @@ pub struct Summary {
     /// nearly always.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub skipped_checks: Vec<SkippedCheck>,
+    /// How many findings an `archwarden-allow` marker took out of the list.
+    ///
+    /// On the summary line, and never only in a section below it: a number
+    /// that only ever goes up, visibly, is a number somebody eventually acts
+    /// on. Issue #72.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub suppressed: usize,
     /// How long the whole run took, in milliseconds.
     ///
     /// The raw number rather than the prose the text format prints: a consumer
@@ -268,6 +275,7 @@ impl Summary {
             files_parsed: report.files_parsed,
             facts_reused: report.facts_reused,
             checks_skipped: report.checks_skipped,
+            suppressed: report.suppressed.len(),
             skipped_checks: report
                 .skipped_checks
                 .iter()

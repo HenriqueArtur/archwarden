@@ -30,6 +30,14 @@ use crate::{
 #[serde(tag = "type", rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum Expectation {
+    /// Some rule must govern the file.
+    ///
+    /// Carries nothing, like [`NoImportCycle`](Self::NoImportCycle) and for a
+    /// related reason: there is no shape to name. The requirement is that
+    /// *any* rule claim the file, and which rule is the author's choice —
+    /// naming one here would be this crate deciding somebody's architecture.
+    GovernedBySomeRule,
+
     /// The file must not sit on an import loop.
     ///
     /// Carries nothing. Every other expectation names what the file should
@@ -402,6 +410,13 @@ pub enum Observed {
         /// removes the dependency.
         chain: Vec<RepoRelPath>,
     },
+    /// No rule governs the file.
+    ///
+    /// Carries nothing: the finding *is* the absence, and the path on the
+    /// finding is the whole of what a reader needs. Anything else here would
+    /// be a guess at which rule should have covered it.
+    Ungoverned,
+
     /// The file sits on an import loop.
     ImportCycle {
         /// The loop, starting and ending at this file.

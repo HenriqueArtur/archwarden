@@ -109,16 +109,45 @@ pub fn merge(entry: LoadedConfig, resolver: &PresetResolver) -> Result<MergedCon
     } = accumulator;
 
     // Scalars come from the entry config; only its lists were merged.
-    merged.version = config.version;
-    merged.root = config.root;
-    merged.schema = config.schema;
-    merged.skip_dirs = config.skip_dirs;
-    // The entry config's, not a preset's. Which languages a repository asks
-    // archwarden to read is a decision about *this* repository, and a shared
-    // preset cannot know whether the project including it has any `.astro` at
-    // all -- the same reasoning that stops a preset setting `root`.
-    merged.languages = config.languages;
-    merged.language = config.language;
+    //
+    // Destructured rather than assigned field by field, and that is the whole
+    // point of the shape: a scalar added to `Config` and not named here used
+    // to compile and silently keep the *default* for every config in the
+    // world. `governance` shipped that way and reported nothing until an
+    // end-to-end run turned it up. Now a new field fails to build until
+    // somebody decides which side it comes from.
+    let Config {
+        version,
+        root: config_root,
+        schema,
+        skip_dirs,
+        // The entry config's, not a preset's. Which languages a repository
+        // asks archwarden to read is a decision about *this* repository, and a
+        // shared preset cannot know whether the project including it has any
+        // `.astro` at all -- the same reasoning that stops a preset setting
+        // `root`.
+        languages,
+        language,
+        // Likewise, and more so: closing the architecture says every file in
+        // *this* repository is somebody's responsibility, and a preset cannot
+        // know what is in a tree it has never seen. A preset that could turn
+        // it on would fail a build on files its author never heard of.
+        governance,
+        // The lists, already folded across the whole chain by `absorb`.
+        extends: _,
+        ignore: _,
+        modules: _,
+        rules: _,
+        disable: _,
+    } = config;
+
+    merged.version = version;
+    merged.root = config_root;
+    merged.schema = schema;
+    merged.skip_dirs = skip_dirs;
+    merged.languages = languages;
+    merged.language = language;
+    merged.governance = governance;
 
     check_disable_targets(&merged, &origins)?;
 
@@ -261,6 +290,64 @@ mod tests {
 
     fn rule(id: &str, roots: &str) -> String {
         format!(r#"{{"type":"structure","id":"{id}","level":"error","roots":"{roots}"}}"#)
+    }
+
+    /// A scalar the entry config sets survives the merge.
+    ///
+    /// The bug this pins shipped: `governance` was added to `Config` and not
+    /// to the hand-written list of scalars copied here, so every config in the
+    /// world kept the *default* and `governance: closed` reported nothing at
+    /// all — the exact silence the setting exists to break. The destructuring
+    /// above is what stops the next field going the same way; this is what
+    /// says the current one arrived.
+    #[test]
+    fn a_scalar_the_entry_config_sets_survives_the_merge() {
+        let (_guard, root) = tree(&[(
+            "arch.config.json",
+            r#"{"version":0,"governance":"closed","languages":["ts","astro"],"rules":[]}"#,
+        )]);
+
+        let merged = merge_at(&root).expect("merges");
+
+        assert_eq!(
+            merged.config.governance.level(),
+            Some(archwarden_core::level::Level::Error),
+            "the setting reached the merged config"
+        );
+        assert!(
+            merged
+                .config
+                .languages
+                .contains(&crate::config::Language::Astro),
+            "and so did its neighbour, which is the shape being protected"
+        );
+    }
+
+    /// A preset may not close the architecture of a repository it has never
+    /// seen.
+    ///
+    /// The same reasoning that stops a preset setting `root`, one step
+    /// stronger: closing it says every file *here* is somebody's
+    /// responsibility, and a shared package cannot know what is in this tree.
+    /// A preset that could turn it on would fail a build over files its author
+    /// never heard of.
+    #[test]
+    fn a_preset_cannot_close_the_architecture() {
+        let (_guard, root) = tree(&[
+            (
+                "arch.config.json",
+                r#"{"version":0,"extends":"./preset.json","rules":[]}"#,
+            ),
+            ("preset.json", r#"{"version":0,"governance":"closed"}"#),
+        ]);
+
+        let merged = merge_at(&root).expect("merges");
+
+        assert_eq!(
+            merged.config.governance.level(),
+            None,
+            "the entry config said nothing, so the architecture is open"
+        );
     }
 
     #[test]

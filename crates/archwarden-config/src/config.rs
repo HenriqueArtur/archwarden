@@ -1,6 +1,9 @@
 //! The top-level shape of `arch.config.json`.
 
-use archwarden_core::ids::{ModuleId, RuleId};
+use archwarden_core::{
+    ids::{ModuleId, RuleId},
+    level::Level,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -71,6 +74,13 @@ pub struct Config {
     #[serde(default = "default_languages", skip_serializing_if = "Vec::is_empty")]
     pub languages: Vec<Language>,
 
+    /// Whether a file no rule governs is a finding.
+    ///
+    /// Absent means `open`, which is every config written before this field
+    /// and still means what it meant.
+    #[serde(default, skip_serializing_if = "Governance::is_open")]
+    pub governance: Governance,
+
     /// The `_`-prefix escape hatch.
     #[serde(default)]
     pub skip_dirs: SkipDirs,
@@ -137,6 +147,96 @@ pub struct Module {
     /// The rules in it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub rules: Vec<Rule>,
+}
+
+/// Whether every file must be governed by some rule.
+///
+/// `CONFIG.md` calls a rule enforcing nothing the worst failure a linter has,
+/// and a file no rule governs is that sentence one level up: indistinguishable
+/// from a file that satisfies everything. `config coverage` reports the gap;
+/// this turns it into findings. Issue #60.
+///
+/// Written either way:
+///
+/// ```json
+/// { "governance": "closed" }
+/// { "governance": { "mode": "closed", "level": "warning" } }
+/// ```
+///
+/// The shorthand is `error`, because a gate that does not fail a build is a
+/// report. The long form exists for the migration the report is for: a
+/// repository with two thousand ungoverned files can turn this on as a
+/// `warning` today, see the number in CI without blocking anyone, and close it
+/// over time. `baseline` is the other way to do that and produces a
+/// two-thousand-entry committed file; both are honest and they suit different
+/// repositories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum Governance {
+    /// `"open"` or `"closed"`, taking the default level.
+    Mode(GovernanceMode),
+    /// The mode with a level of its own.
+    Detailed {
+        /// Open or closed.
+        mode: GovernanceMode,
+        /// What an ungoverned file reports as. Defaults to `error`.
+        #[serde(default = "default_governance_level")]
+        level: Level,
+    },
+}
+
+/// Whether the architecture is closed to files no rule mentions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
+pub enum GovernanceMode {
+    /// A file no rule governs is not reported. The default, and what every
+    /// config written before this field means.
+    #[default]
+    Open,
+    /// A file no rule governs is a finding, and `ignore` is the escape hatch —
+    /// which gains a meaning it did not have: **deliberately outside the
+    /// architecture**, rather than merely unchecked.
+    Closed,
+}
+
+fn default_governance_level() -> Level {
+    Level::Error
+}
+
+impl Default for Governance {
+    fn default() -> Self {
+        Self::Mode(GovernanceMode::Open)
+    }
+}
+
+impl Governance {
+    /// Whether this configuration reports ungoverned files, and at what level.
+    ///
+    /// `None` is open. Returning the level rather than a bool is what keeps
+    /// the two questions — *does it report* and *how loudly* — from being
+    /// asked separately and answered inconsistently.
+    #[must_use]
+    pub fn level(self) -> Option<Level> {
+        match self {
+            Self::Mode(GovernanceMode::Open)
+            | Self::Detailed {
+                mode: GovernanceMode::Open,
+                ..
+            } => None,
+            Self::Mode(GovernanceMode::Closed) => Some(default_governance_level()),
+            Self::Detailed {
+                mode: GovernanceMode::Closed,
+                level,
+            } => Some(level),
+        }
+    }
+
+    /// Whether this is the default, for `skip_serializing_if`.
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.level().is_none()
+    }
 }
 
 /// A language the HTML pages can be written in.
@@ -456,5 +556,98 @@ mod tests {
         let (module, _, rule) = original.rules().next().expect("one rule");
         assert_eq!(module, None);
         assert_eq!(rule.level(), Level::Warning);
+    }
+}
+
+#[cfg(test)]
+mod governance_tests {
+    use super::{Config, Governance, GovernanceMode};
+    use archwarden_core::level::Level;
+
+    fn parse(json: &str) -> Config {
+        serde_json::from_str(json).expect("should deserialise")
+    }
+
+    /// Every config written before this field means `open`, and still does.
+    ///
+    /// The one that must not regress: a field arriving with a default of
+    /// `closed` would turn every existing configuration into thousands of
+    /// findings on upgrade, over code nobody touched.
+    #[test]
+    fn a_config_that_says_nothing_is_open() {
+        let config = parse(r#"{"version":0,"rules":[]}"#);
+
+        assert_eq!(config.governance, Governance::default());
+        assert_eq!(config.governance.level(), None);
+        assert!(config.governance.is_open());
+    }
+
+    /// The shorthand is `error`, because a gate that does not fail a build is
+    /// a report, and the report is `config coverage`.
+    #[test]
+    fn the_shorthand_closes_at_error() {
+        let config = parse(r#"{"version":0,"governance":"closed","rules":[]}"#);
+
+        assert_eq!(config.governance.level(), Some(Level::Error));
+        assert!(!config.governance.is_open());
+    }
+
+    /// And the long form exists for the migration the report is for: turn it
+    /// on today, see the number in CI, block nobody.
+    #[test]
+    fn the_long_form_carries_a_level_of_its_own() {
+        let config =
+            parse(r#"{"version":0,"governance":{"mode":"closed","level":"warning"},"rules":[]}"#);
+
+        assert_eq!(config.governance.level(), Some(Level::Warning));
+    }
+
+    /// The long form defaults to the shorthand's level rather than to
+    /// something quieter, so writing the mode out longhand never weakens it.
+    #[test]
+    fn spelling_the_mode_out_does_not_change_what_it_means() {
+        let long = parse(r#"{"version":0,"governance":{"mode":"closed"},"rules":[]}"#);
+        let short = parse(r#"{"version":0,"governance":"closed","rules":[]}"#);
+
+        assert_eq!(long.governance.level(), short.governance.level());
+    }
+
+    /// `open` said out loud is still open, at either spelling, and a level
+    /// beside it changes nothing — there is nothing to report.
+    #[test]
+    fn open_reports_nothing_however_it_is_written() {
+        assert_eq!(
+            parse(r#"{"version":0,"governance":"open","rules":[]}"#)
+                .governance
+                .level(),
+            None
+        );
+        assert_eq!(
+            parse(r#"{"version":0,"governance":{"mode":"open","level":"error"},"rules":[]}"#)
+                .governance
+                .level(),
+            None,
+            "a level on an open architecture is not a quiet gate, it is no gate"
+        );
+    }
+
+    /// It survives a round trip, which is what `config explain` and the
+    /// merged-config output depend on.
+    #[test]
+    fn it_round_trips() {
+        for original in [
+            Governance::Mode(GovernanceMode::Closed),
+            Governance::Detailed {
+                mode: GovernanceMode::Closed,
+                level: Level::Warning,
+            },
+        ] {
+            let json = serde_json::to_string(&original).expect("serialises");
+            assert_eq!(
+                serde_json::from_str::<Governance>(&json).expect("deserialises"),
+                original,
+                "{json}"
+            );
+        }
     }
 }

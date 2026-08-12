@@ -71,6 +71,16 @@ pub struct Report {
     /// Reported so a user can see the cache working -- and notice when it is
     /// not, which is otherwise invisible until someone times two runs.
     pub facts_reused: usize,
+    /// Findings an `archwarden-allow` marker took out of the list, with the
+    /// reason its author gave.
+    ///
+    /// **Never silently dropped.** A suppressed finding is not an absent
+    /// finding: it is here, with its reason, in every format, and a run with
+    /// forty of them must not look like a clean one at a glance. That is the
+    /// whole of issue #72 — `// eslint-disable-next-line` with no explanation
+    /// is how debt becomes invisible, and a suppression that hides itself is
+    /// worse than the violation it hides.
+    pub suppressed: Vec<Suppressed>,
     /// Where the imports went, by kind.
     ///
     /// All zero when no rule needed resolution. The `unresolved` count is the
@@ -106,6 +116,17 @@ impl Report {
             .any(|finding| finding.level.fails_build())
     }
 }
+/// A finding somebody allowed on purpose, and why.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Suppressed {
+    /// What would have been reported.
+    pub finding: Finding,
+    /// The author's words, from the marker. Never empty — a marker with no
+    /// reason is not a marker. See
+    /// [`AllowanceFact`](archwarden_core::facts::AllowanceFact).
+    pub reason: String,
+}
+
 /// Everything one run needs.
 ///
 /// A struct rather than four parameters, because the cache is optional and a
@@ -166,6 +187,18 @@ pub fn needs_graph(config: &CompiledConfig) -> bool {
         .any(|engine| engine.needs_graph())
 }
 
+/// The rule id an ungoverned file reports under.
+///
+/// A reserved name rather than `Option<RuleId>` on the finding: every other
+/// finding names the rule that produced it, and `baseline` keys on that name,
+/// so a finding with no rule would need both of those to grow a case for one
+/// value. `config doctor` refuses a rule that takes this name, so the two can
+/// never be confused in a baseline.
+fn governance_id() -> archwarden_core::ids::RuleId {
+    archwarden_core::ids::RuleId::new(archwarden_core::ids::GOVERNANCE_RULE_ID)
+        .unwrap_or_else(|_| unreachable!("the reserved id is a valid rule id"))
+}
+
 /// A file a graph rule wanted, held until there is a graph to answer from.
 ///
 /// Deliberately not every file: only the ones a rule with
@@ -220,6 +253,12 @@ pub fn check(run: Run<'_>) -> Report {
     let building_graph = engines.iter().any(|engine| engine.needs_graph());
     let mut edges: Vec<archwarden_core::graph::FileEdges> = Vec::new();
     let mut deferred: Vec<Deferred> = Vec::new();
+    // Kept per file, and only for files that carry one, so a repository with
+    // no suppressions holds nothing. Issue #72.
+    let mut allowances: std::collections::BTreeMap<
+        RepoRelPath,
+        Vec<archwarden_core::facts::AllowanceFact>,
+    > = std::collections::BTreeMap::new();
     let mut sibling_lists: Vec<Vec<String>> = Vec::new();
 
     // Built once per run, not once per file: `oxc_resolver` caches
@@ -336,6 +375,12 @@ pub fn check(run: Run<'_>) -> Report {
                 imports.absorb(crate::resolve::resolve_imports(resolver, facts));
             }
 
+            if let Some(facts) = facts.as_ref()
+                && !facts.allowances.is_empty()
+            {
+                allowances.insert(file.path.clone(), facts.allowances.clone());
+            }
+
             // After resolution, never before: an edge is where an import
             // landed, and before this point nothing has landed anywhere.
             if let Some(facts) = facts.as_ref()
@@ -435,6 +480,34 @@ pub fn check(run: Run<'_>) -> Report {
         }
     }
 
+    // A file no rule governs, when the configuration says the architecture is
+    // closed. `CONFIG.md` calls a rule enforcing nothing the worst failure a
+    // linter has; this is that sentence one level up, and until it existed a
+    // clean report over an unwatched half of a tree was indistinguishable from
+    // one over a tree that satisfied everything. Issue #60.
+    //
+    // Per file rather than per directory, deliberately. `baseline` accepts a
+    // finding by rule *and path*, so a grouped finding would keep matching as
+    // new ungoverned files appeared under it -- an escape hatch that silently
+    // swallows tomorrow's debt, which is the shape this project keeps refusing.
+    // `config coverage` is where the grouped view lives, and it is a report
+    // rather than a record.
+    if let Some(level) = config.governance() {
+        findings.extend(
+            tree.files()
+                .filter(|file| !engines.iter().any(|engine| engine.applies_to(&file.path)))
+                .map(|file| Finding {
+                    rule_id: governance_id(),
+                    module_id: None,
+                    level,
+                    path: file.path.clone(),
+                    span: None,
+                    observed: archwarden_core::finding::Observed::Ungoverned,
+                    expected: archwarden_core::finding::Expectation::GovernedBySomeRule,
+                }),
+        );
+    }
+
     // The second half of the run, and the only part that can see more than one
     // file at a time. Everything above produced edges; this turns them into a
     // graph and asks the rules that were waiting for one.
@@ -461,6 +534,33 @@ pub fn check(run: Run<'_>) -> Report {
         }
     }
 
+    // Suppression, last: a marker takes a finding out of the list and puts it
+    // in `suppressed` with the reason, rather than making it disappear. Issue
+    // #72, and the constraint that makes the feature safe to have at all.
+    //
+    // Only findings with a span can be reached. A marker governs the line
+    // after it, and `structure` reporting a folder that should not exist has
+    // no line to sit above -- that limit is stated in `docs/CONFIG.md` rather
+    // than left to be discovered.
+    let mut suppressed: Vec<Suppressed> = Vec::new();
+    findings.retain(|finding| {
+        let Some(span) = finding.span else {
+            return true;
+        };
+        let Some(marker) = allowances.get(&finding.path).and_then(|markers| {
+            markers
+                .iter()
+                .find(|marker| marker.covers(span.start, finding.rule_id.as_str()))
+        }) else {
+            return true;
+        };
+        suppressed.push(Suppressed {
+            finding: finding.clone(),
+            reason: marker.reason.clone(),
+        });
+        false
+    });
+
     // Determinism is a design goal: the same inputs must produce byte-identical
     // output, or every snapshot test and CI diff becomes noise. The blind spots
     // arrive in whatever order the walk reached the files, which is not one a
@@ -482,6 +582,10 @@ pub fn check(run: Run<'_>) -> Report {
         files_parsed,
         facts_reused,
         imports,
+        suppressed: {
+            suppressed.sort();
+            suppressed
+        },
     }
 }
 
@@ -1725,6 +1829,238 @@ mod tests {
         assert_eq!(offenders(&report), ["src/user/nope"]);
         assert_eq!(report.files_scanned, 2, "the exempt file is still counted");
     }
+    /// A marker suppresses the finding on the line after it, and the
+    /// suppression is reported rather than dropped.
+    ///
+    /// The whole argument of issue #72: `// eslint-disable-next-line` with no
+    /// explanation is how debt becomes invisible, so a suppression here is
+    /// never absent from a report — it is a line of its own, carrying the
+    /// reason, and a run with forty of them must not look like a clean one.
+    #[test]
+    fn an_allowed_finding_is_moved_to_the_suppressed_list_with_its_reason() {
+        let report = run(
+            &[
+                (
+                    "packages/ui/button.tsx",
+                    "// archwarden-allow: the vendor SDK has no types\n\
+                     import { User } from '../domain/user';\n\
+                     export const Button = () => User;",
+                ),
+                ("packages/domain/user.ts", "export const User = 1;"),
+            ],
+            &config(vec![rule(
+                "ui-forbids-domain",
+                None,
+                &["packages/ui/**"],
+                boundary(&["packages/domain/**"], &[], &[]),
+            )]),
+        );
+
+        assert!(
+            report.findings.is_empty(),
+            "it is not reported as a violation: {:?}",
+            report.findings
+        );
+        assert_eq!(report.suppressed.len(), 1, "{:?}", report.suppressed);
+        assert_eq!(
+            report.suppressed[0].reason, "the vendor SDK has no types",
+            "and the reason travels with it, or the feature is \
+             `eslint-disable` again"
+        );
+        assert_eq!(
+            report.suppressed[0].finding.path.as_str(),
+            "packages/ui/button.tsx"
+        );
+        assert!(!report.fails_build());
+    }
+
+    /// A marker one line too far up suppresses nothing.
+    ///
+    /// It governs the line *after* it, and only that one. A marker that
+    /// reached further would be a file-scoped exception, which is what
+    /// `baseline` is for and is a different promise: *this repository has this
+    /// debt today* against *this line is a deliberate exception*.
+    #[test]
+    fn a_marker_governs_only_the_line_after_it() {
+        let report = run(
+            &[
+                (
+                    "packages/ui/button.tsx",
+                    "// archwarden-allow: this is about the next line\n\
+                     export const spacer = 1;\n\
+                     import { User } from '../domain/user';\n\
+                     export const Button = () => User;",
+                ),
+                ("packages/domain/user.ts", "export const User = 1;"),
+            ],
+            &config(vec![rule(
+                "ui-forbids-domain",
+                None,
+                &["packages/ui/**"],
+                boundary(&["packages/domain/**"], &[], &[]),
+            )]),
+        );
+
+        assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+        assert!(report.suppressed.is_empty());
+    }
+
+    /// A marker naming a rule suppresses that rule and no other.
+    #[test]
+    fn a_marker_that_names_a_rule_leaves_the_others_alone() {
+        let report = run(
+            &[
+                (
+                    "packages/ui/button.tsx",
+                    "// archwarden-allow someone-elses-rule: not this one\n\
+                     import { User } from '../domain/user';\n\
+                     export const Button = () => User;",
+                ),
+                ("packages/domain/user.ts", "export const User = 1;"),
+            ],
+            &config(vec![rule(
+                "ui-forbids-domain",
+                None,
+                &["packages/ui/**"],
+                boundary(&["packages/domain/**"], &[], &[]),
+            )]),
+        );
+
+        assert_eq!(
+            report.findings.len(),
+            1,
+            "the marker is about another rule: {:?}",
+            report.findings
+        );
+    }
+
+    /// `governance: closed` — a file no rule governs is a finding.
+    ///
+    /// `CONFIG.md` calls a rule enforcing nothing the worst failure a linter
+    /// has, and this is that sentence one level up: a file no rule governs is
+    /// indistinguishable from a file that satisfies every rule, and `check`
+    /// reporting `0 errors` over it reads as though the architecture held.
+    /// Issue #60.
+    #[test]
+    fn an_ungoverned_file_is_reported_when_the_architecture_is_closed() {
+        let config = config(vec![rule("shape", None, &["src/*"], structure(&["types"]))])
+            .with_governance(Some(Level::Error));
+
+        let report = run(
+            &[
+                // `roots: src/*` selects `src/user`, so `structure` claims the
+                // files directly in it -- `filename_patterns` is what it would
+                // constrain them with. A file one level deeper is outside the
+                // rule and is reported below, correctly.
+                ("src/user/thing.ts", ""),
+                ("scripts/build.ts", ""),
+                ("scripts/deploy.ts", ""),
+            ],
+            &config,
+        );
+
+        assert_eq!(
+            offenders(&report),
+            ["scripts/build.ts", "scripts/deploy.ts"],
+            "one per file, and the file `structure` claims is not among them: \
+             {:?}",
+            report.findings
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.observed == archwarden_core::finding::Observed::Ungoverned),
+            "{:?}",
+            report.findings
+        );
+        assert!(report.fails_build());
+    }
+
+    /// Deeper than the rule reaches is still ungoverned, and that is the
+    /// answer the report has to give.
+    ///
+    /// `roots: src/*` selects the direct children of `src` and claims the
+    /// files in them. A file two levels down is outside it, and calling that
+    /// governed because a rule mentions an ancestor is exactly the comfortable
+    /// lie `governance: closed` exists to refuse.
+    #[test]
+    fn a_file_deeper_than_any_rule_reaches_is_ungoverned() {
+        let report = run(
+            &[("src/user/thing.ts", ""), ("src/user/types/id.ts", "")],
+            &config(vec![rule("shape", None, &["src/*"], structure(&["types"]))])
+                .with_governance(Some(Level::Error)),
+        );
+
+        assert_eq!(
+            offenders(&report),
+            ["src/user/types/id.ts"],
+            "{:?}",
+            report.findings
+        );
+    }
+
+    /// The default, and the one that must not regress: a configuration that
+    /// says nothing reports nothing new.
+    ///
+    /// A field defaulting the other way would turn every existing config into
+    /// thousands of findings on upgrade, over code nobody touched.
+    #[test]
+    fn an_open_architecture_reports_no_ungoverned_files() {
+        let report = run(
+            &[("src/user/types/id.ts", ""), ("scripts/build.ts", "")],
+            &config(vec![rule("shape", None, &["src/*"], structure(&["types"]))]),
+        );
+
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    /// The level is the configuration's, so a migration can turn this on and
+    /// block nobody while it closes the gap.
+    #[test]
+    fn a_closed_architecture_reports_at_the_level_it_was_given() {
+        let report = run(
+            &[("scripts/build.ts", "")],
+            &config(Vec::new()).with_governance(Some(Level::Warning)),
+        );
+
+        assert_eq!(report.warning_count(), 1);
+        assert_eq!(report.error_count(), 0);
+        assert!(
+            !report.fails_build(),
+            "which is the point of offering the level at all"
+        );
+    }
+
+    /// `ignore` is the escape hatch, and gains a meaning it did not have:
+    /// deliberately outside the architecture rather than merely unchecked.
+    #[test]
+    fn an_ignored_file_is_deliberately_outside_the_architecture() {
+        let (guard, root) = tree_at(&[("scripts/build.ts", ""), ("src/a.ts", "")]);
+        let config = CompiledConfig::new(
+            Vec::new(),
+            PathSet::compile(["scripts/**".to_owned()]).expect("valid globs"),
+            SkipDirs::default(),
+            ContentHash::of(b""),
+        )
+        .with_governance(Some(Level::Error));
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let report = check(Run {
+            root: &root,
+            config: &config,
+            tree: &tree,
+            cache: None,
+        });
+        drop(guard);
+
+        assert_eq!(
+            offenders(&report),
+            ["src/a.ts"],
+            "the ignored file is a decision somebody wrote down: {:?}",
+            report.findings
+        );
+    }
+
     /// The whole reason the graph is built from every file rather than from
     /// the ones a rule's scope reaches.
     ///

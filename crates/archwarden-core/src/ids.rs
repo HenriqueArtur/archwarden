@@ -115,6 +115,19 @@ id_newtype!(
     "A module's identifier. Modules are labels for grouping output, not scopes."
 );
 
+/// The rule id that findings about ungoverned files report under.
+///
+/// Here rather than in the engine that produces them or the crate that
+/// refuses it, because both need the same string and neither depends on the
+/// other. A constant in one place cannot drift from itself; two copies and a
+/// test comparing them can, on the day somebody edits one and the test is not
+/// run.
+///
+/// Reserved: `archwarden-config` refuses a rule that takes this id, because
+/// `arch.baseline.json` keys on rule id and path, so the two would be
+/// indistinguishable there. See issue #60.
+pub const GOVERNANCE_RULE_ID: &str = "governance";
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1134,9 +1134,122 @@ does overlap; the other two are what this exists for.
 
 It resolves the whole repository, so it costs about what a `check` costs.
 
+## Suppressing one finding, with a reason
+
+```ts
+// archwarden-allow: the vendor SDK ships no types, tracked in ARCH-412
+import { Widget } from '@vendor/sdk';
+```
+
+The marker governs **the line after it**, and only that one. Naming a rule
+narrows it further:
+
+```ts
+// archwarden-allow ui-forbids-domain: one screen, being deleted in Q3
+```
+
+**No reason, no suppression.** `// archwarden-allow:` with nothing after the
+colon is not a marker — it is a comment, and it suppresses nothing.
+`// eslint-disable-next-line` with no explanation is how debt becomes
+invisible, and a suppression that hides itself is worse than the violation it
+hides.
+
+**A suppressed finding is never absent from the report.** It appears as its own
+line, with its reason, in every format, and the count is on the summary line:
+
+```
+1 finding allowed on purpose:
+
+  packages/ui/button.tsx · ui-forbids-orders — the vendor SDK ships no types
+
+0 errors, 0 warnings, 1 allowed · 3 files, 5 directories · 1 parsed
+```
+
+A run with forty suppressions must not look like a clean run at a glance. A
+number that only ever goes up, visibly, is one somebody eventually acts on.
+
+### What it can and cannot reach
+
+**Only findings that point at a line.** A marker governs the line below it, so
+a finding with no line has nothing to sit above. Today that means
+`import-boundary` findings — a forbidden import, a forbidden package, an
+import outside an allowlist — and nothing else. `structure` reporting a folder
+that should not exist, `presence` reporting a missing file, `import-cycle`
+reporting a loop: none of these has a line, and some never could.
+
+This is a limit worth knowing before you reach for the feature rather than
+after. It is also the case the feature was asked for: the request it answers is
+*"a way to tell it to skip the next import line"*.
+
+**Only files archwarden parses as code.** The marker lives in a comment, so a
+`.md` or a `.json` under a `presence` rule has nowhere to put one.
+
+### This is not `baseline`, and the difference is the promise
+
+| | means |
+| --- | --- |
+| `baseline` | *this repository has this debt today* — a committed file, reviewable as a diff, that shrinks |
+| `archwarden-allow` | *this line is a deliberate exception* — with the reason, where the next reader finds it |
+
+Reach for `baseline` to adopt archwarden on an existing repository, and for a
+marker when one line is genuinely an exception and will stay one. Using a
+marker for a legacy module means editing hundreds of files; that is what
+`baseline` is for.
+
+## `governance` — is every file somebody's responsibility?
+
+```json
+{ "version": 0, "governance": "closed", "rules": [ ... ] }
+```
+
+Every file no rule governs becomes a finding. Absent means `open`, which is
+what every config written before this field means and still means.
+
+`config coverage` reports the gap; this is the gate. Read that section first —
+nobody should turn this on before seeing what it would cost.
+
+**`ignore` is the escape hatch, and gains a meaning it did not have.** An
+entry there stops meaning *merely unchecked* and starts meaning **deliberately
+outside the architecture** — a decision somebody wrote down, in a file
+reviewable as a diff.
+
+**One finding per file**, not per directory. `baseline` accepts a finding by
+rule *and path*, so a grouped finding would keep matching as new ungoverned
+files appeared under it — an escape hatch that silently swallows tomorrow's
+debt, which is the shape archwarden refuses everywhere else. The grouped view
+is `config coverage`, which is a report rather than a record.
+
+Findings report under the rule id `governance`. A rule of your own may not take
+that id: `arch.baseline.json` keys on rule and path, so the two would be
+indistinguishable there, and the config is refused where the author is looking.
+
+### Turning it on
+
+Two ways, and they suit different repositories:
+
+```json
+{ "governance": { "mode": "closed", "level": "warning" } }
+```
+
+The long form carries a level. A repository with two thousand ungoverned files
+can close the architecture today at `warning`, watch the number in CI without
+blocking anyone, and bring it to `error` when it reaches zero. Writing
+`"closed"` on its own is `error`, because a gate that does not fail a build is
+a report.
+
+The other way is `archwarden baseline`, which accepts today's gap in one
+commit and fails on anything new. That produces a two-thousand-entry committed
+file, which is honest and is a large diff. Neither is more correct.
+
+**A preset cannot set it.** The same reasoning that stops a preset setting
+`root`, one step stronger: closing the architecture says every file *here* is
+somebody's responsibility, and a shared package cannot know what is in a tree
+it has never seen. A preset that could turn it on would fail a build over files
+its author never heard of.
+
 ## Config validation commands
 
-Three commands cover the config itself:
+Four commands cover the config itself:
 
 - `archwarden config validate` — schema-only. Fast. Fails on structural JSON errors.
 - `archwarden config doctor` — semantic. Answers "does this config mean what
@@ -1166,6 +1279,44 @@ Three commands cover the config itself:
 - `archwarden config explain <rule-id>` — lists every path the rule currently
   covers and every one it currently flags, one line each. This is the compact
   answer to "which paths did that rule flag?" after a `--summary`.
+- `archwarden config coverage` — which files **no rule governs**, grouped by
+  directory.
+
+  ```
+  $ archwarden config coverage
+  1843 of 2800 files are governed by no rule
+
+    packages/legacy/**            412 files
+    apps/admin/src/screens/**     280 files
+    scripts/*                      94 files
+
+  A `**` line is one rule away from covered. A `*` line already has a rule
+  beside it, so look at what the two would each catch.
+  ```
+
+  The other three ask **per rule**: is this rule broken, does it bite, what
+  does it cover. This one asks **per file**, and it is the only one that can
+  answer *"what is nobody watching?"* — a file no rule mentions appears in no
+  rule's answer, and `check` reporting `0 errors` over it reads exactly like a
+  file that satisfies everything. `CONFIG.md` calls a rule enforcing nothing
+  the worst failure a linter has; this is that sentence one level up.
+
+  **Governed means a rule would evaluate the file**, decided by the same code
+  `check` uses to pick a file's rules — so this report cannot disagree with the
+  checker about what is covered. One consequence is worth stating: a `presence`
+  rule governs a *directory* and claims no file, so a file dropped into a
+  directory only a `presence` rule governs is reported here. That is right. A
+  `presence` rule does not object to a file you add.
+
+  **The grouping is the report.** Per file it would be a thousand paths and
+  nothing to do; per directory it is one rule to write. A `**` line is a
+  directory where *everything* below is ungoverned, so one rule covers the lot.
+  A `*` line is a directory holding both kinds, which is a different decision:
+  there is already a rule there, and the question is what it does not catch.
+
+  It exits 0 always. The number is worth having before anyone is asked to act
+  on it, and nobody should have to enable a gate to find out what it would
+  cost.
 
 `archwarden describe` asks the same question from the other end. Given a glob
 rather than a path, it answers for every path that matches:

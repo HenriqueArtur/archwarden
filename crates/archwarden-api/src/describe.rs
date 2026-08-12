@@ -172,6 +172,10 @@ pub fn describe_observed(observed: &Observed) -> String {
                 )
             }
         },
+        // "no rule governs it" rather than "it is not governed": the reader's
+        // next action is to write a rule or to ignore the file deliberately,
+        // and naming the absent thing is what points at both.
+        Observed::Ungoverned => "no rule governs it".to_owned(),
         // The chain, not the fact. "is in a cycle" tells a reader they have a
         // problem and not where it is; the arrows name every edge that could
         // be cut, and the repeated first entry is what shows the loop closed.
@@ -211,6 +215,22 @@ mod tests {
 
     fn path(p: &str) -> RepoRelPath {
         RepoRelPath::new(p).expect("valid path")
+    }
+
+    /// "no rule governs it" rather than "it is not governed".
+    ///
+    /// The reader's next action is to write a rule or to say in `ignore` that
+    /// the file is outside the architecture on purpose, and naming the absent
+    /// thing is what points at both. This sentence also lands in
+    /// `arch.baseline.json` as the note on every accepted entry, where a
+    /// repository migrating onto `governance: closed` will have a great many
+    /// of them.
+    #[test]
+    fn an_ungoverned_file_names_the_absent_rule() {
+        assert_eq!(
+            describe_observed(&Observed::Ungoverned),
+            "no rule governs it"
+        );
     }
 
     /// A deep import names both the specifier and the package; a bare one
