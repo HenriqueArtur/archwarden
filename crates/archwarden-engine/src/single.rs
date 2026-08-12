@@ -558,6 +558,7 @@ mod tests {
                     CompiledRuleKind::ImportBoundary {
                         forbid: PathSet::compile(["packages/domain/**".to_owned()])
                             .expect("valid globs"),
+                        groups: Vec::new(),
                         allow: None,
                         allow_packages: None,
                         require: PathSet::default(),
@@ -599,6 +600,7 @@ mod tests {
                     &["packages/domain/**"],
                     CompiledRuleKind::ImportBoundary {
                         forbid: PathSet::compile(["apps/**".to_owned()]).expect("valid globs"),
+                        groups: Vec::new(),
                         allow: None,
                         allow_packages: None,
                         require: PathSet::default(),

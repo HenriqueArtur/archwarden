@@ -114,6 +114,7 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     require,
                     allow,
                     allow_packages,
+                    groups,
                     forbid_packages,
                     except,
                     except_from,
@@ -124,6 +125,7 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     require,
                     allow.clone(),
                     allow_packages.clone(),
+                    groups.clone(),
                     forbid_packages,
                     except,
                     except_from,
@@ -246,6 +248,7 @@ mod tests {
     fn import_boundary_rule() -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: PathSet::compile(["packages/domain/**".to_owned()]).expect("valid"),
+            groups: Vec::new(),
             allow: None,
             allow_packages: None,
             require: PathSet::default(),

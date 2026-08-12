@@ -137,6 +137,14 @@ A denylist decays. Every new package, app or directory is allowed by omission,
 and omission is the thing nobody notices. See [RULES.md](RULES.md#import-boundary)
 for what sits outside an allowlist and why.
 
+### One rule for every module of a sort
+
+A `kind` on each module, and a rule quantifies over it — see
+[RULES.md](RULES.md#import-boundary). One label per module, not a list: one
+axis (assembly versus piece) is what the case needs, and a second vocabulary
+for scope is what carrying a list would cost. If a second real axis appears,
+that is where the conversation resumes.
+
 ### Modules with a scope
 
 A module is a name for a group of rules. Give it a `scope` and it also becomes

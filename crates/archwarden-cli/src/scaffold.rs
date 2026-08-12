@@ -590,6 +590,7 @@ mod tests {
     fn boundary(forbid: &[&str], require: &[&str], except: &[&str]) -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: set(forbid),
+            groups: Vec::new(),
             allow: None,
             allow_packages: None,
             require: set(require),
@@ -677,6 +678,7 @@ mod tests {
             &["src/**"],
             CompiledRuleKind::ImportBoundary {
                 forbid: set(&["src/infra/**"]),
+                groups: Vec::new(),
                 allow: None,
                 allow_packages: None,
                 require: PathSet::default(),
@@ -1197,6 +1199,7 @@ mod tests {
                 &["src/**"],
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
+                    groups: Vec::new(),
                     allow: None,
                     allow_packages: None,
                     require: PathSet::default(),

@@ -113,6 +113,20 @@ pub struct Module {
     /// anything, and whether any rule references it. Issue #74.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub scope: OneOrMany<String>,
+    /// What sort of module this is, for rules that quantify over sorts.
+    ///
+    /// One label, not a list, and the reduction is the design. Nx carries a
+    /// list per project because it combines two independent axes — layer and
+    /// bounded context. That buys composition across dimensions and costs a
+    /// second vocabulary, an extra indirection when a rule does not fire, and
+    /// a place to declare tags.
+    ///
+    /// One axis is what the case needs: assembly versus piece. If a second
+    /// real one appears — context, ownership — that is where the conversation
+    /// resumes, with a repository that cannot be expressed rather than with a
+    /// comparison to another tool. Issue #76.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     /// Why this module exists, in the author's words.
     ///
     /// A module is a bigger decision than any rule inside it — one sentence

@@ -174,6 +174,19 @@ pub enum CompiledRuleKind {
         allow: Option<PathSet>,
         /// Package names that are the only ones allowed. `None` as above.
         allow_packages: Option<Vec<String>>,
+        /// The groups this rule quantifies over, one `PathSet` each.
+        ///
+        /// A rule about a *kind* covers every module wearing it, and its scope
+        /// is their union — so "may this file import that one?" cannot be
+        /// answered by asking whether the target is in scope: for
+        /// `from_kind: "app"` forbidding other apps, every app is in scope and
+        /// the union would exempt exactly the imports the rule exists to
+        /// refuse.
+        ///
+        /// Kept apart so the exemption can be "the same group", which is what
+        /// anybody means: an assembly may import itself and not its siblings.
+        /// Identity decides it, never the label. Issue #76.
+        groups: Vec<PathSet>,
         /// Package names that are illegal, matched as "this package, and
         /// anything under it".
         ///
@@ -352,6 +365,12 @@ pub struct CompiledModule {
     /// anything — is unavailable to those, deliberately, because inventing a
     /// scope for them would be guessing at the thing the field exists to state.
     pub scope: Option<Scope>,
+    /// What sort of module it is, when it said.
+    ///
+    /// A module with no kind is outside every rule that quantifies over kinds
+    /// — which is the omission problem the quantifier exists to remove,
+    /// reappearing one level up. `config doctor` names them.
+    pub kind: Option<String>,
 }
 
 impl CompiledConfig {
@@ -530,10 +549,12 @@ mod tests {
         let declared = vec![
             CompiledModule {
                 id: ModuleId::new("domain").expect("valid id"),
+                kind: None,
                 scope: Some(Scope::compile(["packages/domain/**"]).expect("valid scope")),
             },
             CompiledModule {
                 id: ModuleId::new("loose").expect("valid id"),
+                kind: None,
                 scope: None,
             },
         ];
@@ -708,6 +729,7 @@ mod tests {
             },
             CompiledRuleKind::ImportBoundary {
                 forbid: PathSet::default(),
+                groups: Vec::new(),
                 allow: None,
                 allow_packages: None,
                 require: PathSet::default(),

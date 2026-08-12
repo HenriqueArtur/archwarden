@@ -283,6 +283,7 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
         CompiledRuleKind::ImportBoundary {
             forbid,
             require,
+            groups: _,
             allow,
             allow_packages,
             forbid_packages,
@@ -784,6 +785,7 @@ mod tests {
     fn boundary() -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: set(&["src/infra/**"]),
+            groups: Vec::new(),
             allow: None,
             allow_packages: None,
             require: PathSet::default(),
@@ -798,6 +800,7 @@ mod tests {
     fn package_boundary(except_from: &[&str]) -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: PathSet::default(),
+            groups: Vec::new(),
             allow: None,
             allow_packages: None,
             require: PathSet::default(),
@@ -1189,6 +1192,7 @@ mod tests {
                 &["src/**"],
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
+                    groups: Vec::new(),
                     allow: None,
                     allow_packages: None,
                     require: PathSet::default(),
@@ -1468,6 +1472,7 @@ mod tests {
                 &["src/**"],
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
+                    groups: Vec::new(),
                     allow: None,
                     allow_packages: None,
                     require: set(&["src/telemetry/**"]),

@@ -45,6 +45,35 @@ saying so.
   reach; naming a module that does not exist, one with no `scope`, or saying a
   scope both ways on one rule is refused when the config compiles.
 
+- **A `kind` on each module, so one rule governs every module wearing it**
+  ([#76](https://github.com/HenriqueArtur/archwarden/issues/76)).
+
+  ```json
+  "modules": [
+    { "id": "api-orders",  "kind": "app", "scope": "apps/api-orders/**" },
+    { "id": "api-billing", "kind": "app", "scope": "apps/api-billing/**" },
+    { "id": "orders-core", "kind": "lib", "scope": "packages/orders/**" }
+  ],
+  "rules": [
+    { "type": "import-boundary", "id": "assemblies-are-islands", "level": "error",
+      "from_kind": "app", "only_import_from_kinds": ["lib"] }
+  ]
+  ```
+
+  "An assembly may not import another assembly" was one rule *per* assembly,
+  each listing every other: six assemblies is six rules of five entries, and
+  the seventh means editing the six. Here the seventh is governed because it
+  exists with `kind: "app"`.
+
+  One label per module rather than a list: one axis is what the case needs,
+  and a list would buy composition across dimensions at the cost of a second
+  vocabulary for scope. An allowlist rather than `forbid_kind`, so a kind
+  invented later is refused rather than permitted by omission. **A module never
+  fails this against itself** — an app may import its own files and not a
+  sibling app, decided by identity rather than by the label. A kind no module
+  wears is refused when the config compiles, and `config doctor` reports
+  `module-wears-no-kind`.
+
 - **`import-boundary` gained an allowlist**
   ([#75](https://github.com/HenriqueArtur/archwarden/issues/75)).
   `only_import_from`, `only_import_from_modules` and

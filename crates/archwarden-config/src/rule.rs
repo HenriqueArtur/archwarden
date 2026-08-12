@@ -28,6 +28,17 @@ pub type Patterns = OneOrMany<String>;
 /// lockstep with the checker. See decision 14.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "kebab-case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "456 bytes against 248 for the next largest, and the difference is \
+              `import-boundary`, which has the most fields because it is the \
+              rule with the most directions. This is a wire type: deserialised \
+              once per run and lowered into `CompiledRule` immediately, held in \
+              a Vec of a few dozen. A hundred-rule config is 45 KB. Boxing it \
+              would buy that back and cost an indirection in every match and a \
+              `Box::new` at every construction site, for memory nothing is \
+              short of"
+)]
 pub enum Rule {
     /// Which folders may exist, and which filenames.
     Structure(StructureRule),
@@ -596,6 +607,24 @@ pub struct ImportBoundaryRule {
     /// `forbid_module` is for `forbid_import_from`.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub only_import_from_modules: OneOrMany<ModuleId>,
+    /// The sort of module the importers are, instead of naming each one.
+    ///
+    /// `from_kind: "app"` selects every module that said `kind: "app"`, so the
+    /// seventh assembly is governed because it exists rather than because
+    /// somebody remembered to add it. Issue #76.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_kind: Option<String>,
+    /// The sorts of module those importers may import from, and no others.
+    ///
+    /// An allowlist rather than `forbid_kind`, deliberately: a `kind` invented
+    /// later is refused rather than permitted by omission, which is the same
+    /// argument [`only_import_from`](Self::only_import_from) rests on.
+    ///
+    /// A module never fails this against itself. `from_kind: "app"` permitting
+    /// only `lib` must not stop an app importing its own files — identity
+    /// decides that, not the label.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub only_import_from_kinds: OneOrMany<String>,
     /// Package names this file may import, and no others.
     ///
     /// The package axis of `only_import_from`. Absent means packages are not

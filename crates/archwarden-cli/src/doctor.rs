@@ -57,6 +57,8 @@ pub fn examine(config: &CompiledConfig) -> Vec<Concern> {
 
     module_nobody_references(config, &mut concerns);
 
+    module_wearing_no_kind(config, &mut concerns);
+
     for rule in config.rules() {
         unreachable_scope(config, rule, &mut concerns);
         constrains_nothing(rule, &mut concerns);
@@ -504,6 +506,43 @@ fn module_nobody_references(config: &CompiledConfig, concerns: &mut Vec<Concern>
     }
 }
 
+/// A module with no `kind`, in a config where rules quantify over kinds.
+///
+/// The omission problem one level up, and the reason it is worth a check: a
+/// rule saying "an assembly may not import another assembly" governs every
+/// module wearing `app`, and a module wearing nothing is outside it. Silently.
+/// The seventh assembly declared without a `kind` is exactly the case the
+/// quantifier was written to stop, arriving through the config instead of
+/// through the rule.
+///
+/// Only reported when something quantifies: a config that never uses kinds is
+/// not missing them.
+fn module_wearing_no_kind(config: &CompiledConfig, concerns: &mut Vec<Concern>) {
+    let quantifies = config.modules().any(|module| module.kind.is_some());
+    if !quantifies {
+        return;
+    }
+
+    for module in config.modules() {
+        if module.kind.is_some() || module.scope.is_none() {
+            continue;
+        }
+
+        concerns.push(Concern {
+            code: "module-wears-no-kind",
+            rule_id: None,
+            path: None,
+            message: format!(
+                "module `{}` declares no `kind`, and this config has rules about kinds",
+                module.id
+            ),
+            fix: "give it one, so a rule quantifying over kinds covers it. A \
+                  module outside every such rule is governed by nothing they say"
+                .to_owned(),
+        });
+    }
+}
+
 /// A module whose `scope` selects no directory in the repository.
 ///
 /// The module-level twin of `scope-matches-nothing`, and it costs more,
@@ -946,6 +985,7 @@ mod tests {
     fn boundary() -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: PathSet::compile(["src/infra/**".to_owned()]).expect("valid globs"),
+            groups: Vec::new(),
             allow: None,
             allow_packages: None,
             require: PathSet::default(),
@@ -1508,6 +1548,7 @@ mod tests {
     fn module(id: &str, scope: Option<&str>) -> archwarden_core::compiled::CompiledModule {
         archwarden_core::compiled::CompiledModule {
             id: archwarden_core::ids::ModuleId::new(id).expect("valid id"),
+            kind: None,
             scope: scope.map(|s| Scope::compile([s]).expect("valid scope")),
         }
     }
@@ -1515,6 +1556,29 @@ mod tests {
     fn in_module(mut rule: CompiledRule, id: &str) -> CompiledRule {
         rule.module = Some(archwarden_core::ids::ModuleId::new(id).expect("valid id"));
         rule
+    }
+
+    /// A module wearing no kind, where kinds are used, is outside every rule
+    /// that quantifies over them. Silently — which is the omission the
+    /// quantifier was written to remove, arriving through the config instead.
+    #[test]
+    fn a_module_with_no_kind_is_reported_when_kinds_are_used() {
+        let mut app = module("api", Some("apps/api/**"));
+        app.kind = Some("app".to_owned());
+        let config = config(Vec::new())
+            .with_modules(vec![app, module("orders", Some("packages/orders/**"))]);
+
+        let codes: Vec<&str> = examine(&config).into_iter().map(|c| c.code).collect();
+        assert!(codes.contains(&"module-wears-no-kind"), "{codes:?}");
+    }
+
+    /// And a config that never uses kinds is not missing them.
+    #[test]
+    fn a_config_that_uses_no_kinds_is_not_told_to() {
+        let config = config(Vec::new()).with_modules(vec![module("orders", Some("packages/**"))]);
+
+        let codes: Vec<&str> = examine(&config).into_iter().map(|c| c.code).collect();
+        assert!(!codes.contains(&"module-wears-no-kind"), "{codes:?}");
     }
 
     /// A module that reaches nothing takes every rule inside it down with it,

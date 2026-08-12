@@ -777,6 +777,32 @@ oversight:
 `forbid_import_from` or `except` on the same rule: "only these, except those"
 is two rules, and two rules is what a reader can follow.
 
+**Quantifying over a kind.** Give each module a `kind` and one rule covers
+every module wearing it:
+
+```json
+"modules": [
+  { "id": "api-orders",  "kind": "app", "scope": "apps/api-orders/**" },
+  { "id": "api-billing", "kind": "app", "scope": "apps/api-billing/**" },
+  { "id": "orders-core", "kind": "lib", "scope": "packages/orders/**" }
+],
+"rules": [
+  { "type": "import-boundary", "id": "assemblies-are-islands", "level": "error",
+    "from_kind": "app", "only_import_from_kinds": ["lib"] }
+]
+```
+
+Six assemblies would otherwise be six rules of five entries each, and the
+seventh means editing all six. Here the seventh is governed because it exists
+with `kind: "app"`.
+
+Written as an allowlist rather than `forbid_kind`, so a kind invented later is
+refused rather than permitted by omission. **A module never fails this against
+itself**: an app importing its own files is fine, and importing a sibling app
+is not. Identity decides that, never the label. A kind no module wears is
+refused when the config compiles, and `config doctor` reports a module wearing
+none while other modules do.
+
 **Naming a module instead of describing it.** When a module declares a `scope`
 (see [CONFIG.md](CONFIG.md#modules-with-a-scope)), `from_module` and
 `forbid_module` take module ids in place of globs:

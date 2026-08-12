@@ -41,6 +41,9 @@ pub struct ImportBoundaryEngine {
     allow: Option<PathSet>,
     /// The only packages allowed, likewise.
     allow_packages: Option<Vec<String>>,
+    /// The groups the importers fall into, when the rule quantifies over a
+    /// kind. Empty for a rule about one module or one set of globs.
+    groups: Vec<PathSet>,
     forbid_packages: Vec<String>,
     except: PathSet,
     except_from: PathSet,
@@ -58,6 +61,7 @@ impl ImportBoundaryEngine {
             require,
             allow,
             allow_packages,
+            groups,
             forbid_packages,
             except,
             except_from,
@@ -73,6 +77,7 @@ impl ImportBoundaryEngine {
             require,
             allow.clone(),
             allow_packages.clone(),
+            groups.clone(),
             forbid_packages,
             except,
             except_from,
@@ -98,6 +103,7 @@ impl ImportBoundaryEngine {
         require: &PathSet,
         allow: Option<PathSet>,
         allow_packages: Option<Vec<String>>,
+        groups: Vec<PathSet>,
         forbid_packages: &[String],
         except: &PathSet,
         except_from: &PathSet,
@@ -112,6 +118,7 @@ impl ImportBoundaryEngine {
             require: require.clone(),
             allow,
             allow_packages,
+            groups,
             forbid_packages: forbid_packages.to_vec(),
             except: except.clone(),
             except_from: except_from.clone(),
@@ -144,14 +151,35 @@ impl ImportBoundaryEngine {
     ///   `allow_packages` is the axis for them.
     /// - **Nothing at all, when `allow` is `None`.** A rule that does not use
     ///   an allowlist is not an allowlist of nothing.
-    fn is_not_permitted(&self, resolved: &RepoRelPath) -> bool {
+    fn is_not_permitted(&self, importer: &RepoRelPath, resolved: &RepoRelPath) -> bool {
         let Some(allow) = &self.allow else {
             return false;
         };
-        if self.scope.contains_file(resolved.as_path()) {
+        if self.permits_itself(importer, resolved) {
             return false;
         }
         !allow.is_match(resolved.as_path())
+    }
+
+    /// Whether importer and target are the same module, and so exempt.
+    ///
+    /// For a rule about one module or one set of globs, "the same module" is
+    /// the rule's scope, and being in it is enough.
+    ///
+    /// For a rule about a *kind* it is not, and this is the case the
+    /// distinction exists for: `from_kind: "app"` covers every app, so the
+    /// scope is their union and asking whether the target is in scope would
+    /// exempt one app importing another — exactly what the rule forbids. The
+    /// groups are per module, and both sides must land in the same one.
+    /// Identity decides it, never the label. Issue #76.
+    fn permits_itself(&self, importer: &RepoRelPath, resolved: &RepoRelPath) -> bool {
+        if self.groups.is_empty() {
+            return self.scope.contains_file(resolved.as_path());
+        }
+
+        self.groups
+            .iter()
+            .any(|group| group.is_match(importer.as_path()) && group.is_match(resolved.as_path()))
     }
 
     /// Whether this specifier names a package the rule did not permit.
@@ -367,7 +395,7 @@ impl RuleEngine for ImportBoundaryEngine {
                 continue;
             };
 
-            if self.is_not_permitted(resolved) {
+            if self.is_not_permitted(ctx.path, resolved) {
                 findings.push(Finding {
                     span: Some(import.span),
                     ..self.finding(
@@ -467,6 +495,7 @@ mod tests {
             scope: Scope::compile(["packages/ui/**"]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {
                 forbid: set(forbid),
+                groups: Vec::new(),
                 allow: None,
                 allow_packages: None,
                 require: set(require),
@@ -521,6 +550,7 @@ mod tests {
         let mut rule = rule(&[], &[], &[], true);
         rule.kind = CompiledRuleKind::ImportBoundary {
             forbid: PathSet::default(),
+            groups: Vec::new(),
             allow: Some(set(allow)),
             allow_packages: packages
                 .map(|names| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>()),
@@ -531,6 +561,49 @@ mod tests {
             include_type_only: true,
         };
         ImportBoundaryEngine::from_rule(&rule).expect("an import-boundary rule")
+    }
+
+    /// An assembly may import its own files and not its siblings'.
+    ///
+    /// The case that breaks if the exemption is "anything in scope": a rule
+    /// about `kind: "app"` covers every app, so the scope is their union, and
+    /// asking whether the target is in scope would exempt exactly the imports
+    /// the rule exists to refuse. Identity decides it, never the label.
+    #[test]
+    fn a_module_of_a_kind_may_import_itself_but_not_its_siblings() {
+        let mut rule = rule(&[], &[], &[], true);
+        rule.scope = Scope::compile(["apps/**"]).expect("valid scope");
+        rule.kind = CompiledRuleKind::ImportBoundary {
+            forbid: PathSet::default(),
+            allow: Some(set(&["packages/**"])),
+            allow_packages: None,
+            groups: vec![set(&["apps/orders/**"]), set(&["apps/billing/**"])],
+            require: PathSet::default(),
+            forbid_packages: Vec::new(),
+            except: PathSet::default(),
+            except_from: PathSet::default(),
+            include_type_only: true,
+        };
+        let engine = ImportBoundaryEngine::from_rule(&rule).expect("an import-boundary rule");
+
+        let findings = check(
+            &engine,
+            &facts(
+                "apps/orders/src/handler.ts",
+                &[
+                    ("./util", Some("apps/orders/src/util.ts"), false),
+                    ("@acme/orders-core", Some("packages/orders/src/x.ts"), false),
+                    ("@acme/billing", Some("apps/billing/src/y.ts"), false),
+                ],
+            ),
+        );
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(matches!(
+            &findings[0].observed,
+            Observed::ImportNotPermitted { resolved, .. }
+                if resolved.as_str() == "apps/billing/src/y.ts"
+        ));
     }
 
     /// The allowlist direction, and the whole argument for it: what is not
@@ -1033,6 +1106,7 @@ mod tests {
             scope: Scope::compile(["src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {
                 forbid: PathSet::default(),
+                groups: Vec::new(),
                 allow: None,
                 allow_packages: None,
                 require: PathSet::default(),

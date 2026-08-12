@@ -769,6 +769,7 @@ mod tests {
     fn boundary(forbid: &[&str], packages: &[&str], except_from: &[&str]) -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: PathSet::compile(forbid.iter().map(|g| (*g).to_owned())).expect("valid globs"),
+            groups: Vec::new(),
             allow: None,
             allow_packages: None,
             require: PathSet::default(),

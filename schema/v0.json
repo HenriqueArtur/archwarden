@@ -192,6 +192,13 @@
           "description": "The paths this module is.\n\nOptional, so every config written before this keeps working: a module\nwith no scope is what a module has always been, a namespace for rules.\n\nWith one, the module stops being only a label. A rule inside it reaches\nwhere its own `roots` and this agree, a boundary elsewhere can name the\nmodule instead of re-describing it by glob, and `config doctor` can ask\ntwo questions it could not ask before: whether a module reaches\nanything, and whether any rule references it. Issue #74.",
           "$ref": "#/$defs/OneOrMany"
         },
+        "kind": {
+          "description": "What sort of module this is, for rules that quantify over sorts.\n\nOne label, not a list, and the reduction is the design. Nx carries a\nlist per project because it combines two independent axes — layer and\nbounded context. That buys composition across dimensions and costs a\nsecond vocabulary, an extra indirection when a rule does not fire, and\na place to declare tags.\n\nOne axis is what the case needs: assembly versus piece. If a second\nreal one appears — context, ownership — that is where the conversation\nresumes, with a repository that cannot be expressed rather than with a\ncomparison to another tool. Issue #76.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "why": {
           "description": "Why this module exists, in the author's words.\n\nA module is a bigger decision than any rule inside it — one sentence\nexplaining why `domain` is sealed explains every rule under it — so it\ngets its own, and a rule's `why` never substitutes for it. Issue #46.",
           "type": [
@@ -458,6 +465,17 @@
             "only_import_from_modules": {
               "description": "Modules whose files may be imported, and no others.\n\n`only_import_from` with the paths written for you, the way\n`forbid_module` is for `forbid_import_from`.",
               "$ref": "#/$defs/OneOrMany2"
+            },
+            "from_kind": {
+              "description": "The sort of module the importers are, instead of naming each one.\n\n`from_kind: \"app\"` selects every module that said `kind: \"app\"`, so the\nseventh assembly is governed because it exists rather than because\nsomebody remembered to add it. Issue #76.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "only_import_from_kinds": {
+              "description": "The sorts of module those importers may import from, and no others.\n\nAn allowlist rather than `forbid_kind`, deliberately: a `kind` invented\nlater is refused rather than permitted by omission, which is the same\nargument [`only_import_from`](Self::only_import_from) rests on.\n\nA module never fails this against itself. `from_kind: \"app\"` permitting\nonly `lib` must not stop an app importing its own files — identity\ndecides that, not the label.",
+              "$ref": "#/$defs/OneOrMany"
             },
             "only_import_from_packages": {
               "description": "Package names this file may import, and no others.\n\nThe package axis of `only_import_from`. Absent means packages are not\ngoverned by this rule at all, which is what keeps `only_import_from`\nfrom tripping on every dependency in the manifest.",

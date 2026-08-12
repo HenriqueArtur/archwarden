@@ -50,6 +50,15 @@ pub enum CompileError {
         module: archwarden_core::ids::ModuleId,
     },
 
+    /// A rule quantifies over a kind no module wears.
+    #[error("rule `{rule}` is about kind `{kind}`, which no module with a `scope` declares")]
+    UnknownKind {
+        /// The rule.
+        rule: RuleId,
+        /// The label nothing wears.
+        kind: String,
+    },
+
     /// A rule says what it permits and what it forbids.
     #[error(
         "rule `{rule}` sets `only_import_from` and `{other}`; \
@@ -353,6 +362,38 @@ fn forbidden_paths(
     })
 }
 
+/// The groups a boundary's importers fall into, one per module it covers.
+///
+/// One group for a rule about one module or one set of globs, and one *per
+/// module* for a rule about a kind. That distinction is the whole of the
+/// self-import question: an assembly may import its own files and not its
+/// siblings', and only per-module groups can tell those apart.
+fn importer_groups(
+    id: &RuleId,
+    rule: &crate::rule::ImportBoundaryRule,
+    modules: &Modules,
+) -> Result<Vec<PathSet>, CompileError> {
+    let Some(kind) = &rule.from_kind else {
+        return Ok(Vec::new());
+    };
+
+    let mut groups = Vec::new();
+    for (module, worn) in &modules.kinds {
+        if worn != kind {
+            continue;
+        }
+        let paths = modules.paths_of(id, module)?;
+        groups.push(
+            PathSet::compile(paths).map_err(|source| CompileError::Glob {
+                rule: id.clone(),
+                field: "from_kind",
+                source,
+            })?,
+        );
+    }
+    Ok(groups)
+}
+
 /// The paths a boundary permits, when it works that way at all.
 ///
 /// `None` when neither allowlist field is set, and that is not the same as an
@@ -371,6 +412,28 @@ fn permitted_paths(
 ) -> Result<Option<PathSet>, CompileError> {
     let by_glob = !rule.only_import_from.is_empty();
     let by_module = !rule.only_import_from_modules.is_empty();
+    let by_kind = !rule.only_import_from_kinds.is_empty();
+
+    if by_kind {
+        if by_glob || by_module {
+            return Err(CompileError::ScopeSaidTwice {
+                rule: id.clone(),
+                one: "only_import_from_kinds",
+                other: "only_import_from",
+            });
+        }
+        let mut patterns = Vec::new();
+        for kind in &rule.only_import_from_kinds {
+            patterns.extend(modules.paths_of_kind(id, kind)?);
+        }
+        return PathSet::compile(&patterns)
+            .map(Some)
+            .map_err(|source| CompileError::Glob {
+                rule: id.clone(),
+                field: "only_import_from_kinds",
+                source,
+            });
+    }
 
     if by_glob && by_module {
         return Err(CompileError::ScopeSaidTwice {
@@ -428,6 +491,29 @@ fn compile_scope(
     inside: Option<&archwarden_core::ids::ModuleId>,
 ) -> Result<Scope, CompileError> {
     let own = if let Rule::ImportBoundary(boundary) = rule {
+        // A kind selects every module that wears it, which is the whole point:
+        // the seventh assembly is governed because it exists, not because
+        // somebody remembered. Issue #76.
+        if let Some(kind) = &boundary.from_kind {
+            if !boundary.from.is_empty() || boundary.from_module.is_some() {
+                return Err(CompileError::ScopeSaidTwice {
+                    rule: id.clone(),
+                    one: "from_kind",
+                    other: "from",
+                });
+            }
+            let patterns = modules.paths_of_kind(id, kind)?;
+            return Scope::compile(&patterns)
+                .map_err(|source| CompileError::Scope {
+                    rule: id.clone(),
+                    source,
+                })
+                .map(|own| {
+                    inside
+                        .and_then(|m| modules.scopes.get(m))
+                        .map_or(own.clone(), |outer| own.within(outer))
+                });
+        }
         match (boundary.from.is_empty(), boundary.from_module.as_ref()) {
             (false, Some(_)) => {
                 return Err(CompileError::ScopeSaidTwice {
@@ -488,6 +574,8 @@ struct Modules {
     /// of those is a different mistake from naming one that does not exist,
     /// and the two deserve different sentences.
     declared: std::collections::BTreeSet<archwarden_core::ids::ModuleId>,
+    /// What sort each module said it is, for rules that quantify over sorts.
+    kinds: std::collections::BTreeMap<archwarden_core::ids::ModuleId, String>,
 }
 
 impl Modules {
@@ -495,9 +583,13 @@ impl Modules {
         let mut scopes = std::collections::BTreeMap::new();
         let mut patterns = std::collections::BTreeMap::new();
         let mut declared = std::collections::BTreeSet::new();
+        let mut kinds = std::collections::BTreeMap::new();
 
         for module in &config.modules {
             declared.insert(module.id.clone());
+            if let Some(kind) = &module.kind {
+                kinds.insert(module.id.clone(), kind.clone());
+            }
             if module.scope.is_empty() {
                 continue;
             }
@@ -517,7 +609,31 @@ impl Modules {
             scopes,
             patterns,
             declared,
+            kinds,
         })
+    }
+
+    /// The paths every module of this sort is.
+    ///
+    /// A kind nothing wears is refused rather than compiled into a scope that
+    /// selects nothing: a rule quantifying over an empty set governs nothing,
+    /// silently, which is the failure the quantifier exists to remove.
+    fn paths_of_kind(&self, rule: &RuleId, kind: &str) -> Result<Vec<String>, CompileError> {
+        let mut collected = Vec::new();
+        for (id, worn) in &self.kinds {
+            if worn != kind {
+                continue;
+            }
+            collected.extend(self.paths_of(rule, id)?.iter().cloned());
+        }
+
+        if collected.is_empty() {
+            return Err(CompileError::UnknownKind {
+                rule: rule.clone(),
+                kind: kind.to_owned(),
+            });
+        }
+        Ok(collected)
     }
 
     /// The modules, as the rest of the run sees them.
@@ -527,6 +643,7 @@ impl Modules {
             .map(|id| archwarden_core::compiled::CompiledModule {
                 id: id.clone(),
                 scope: self.scopes.get(id).cloned(),
+                kind: self.kinds.get(id).cloned(),
             })
             .collect()
     }
@@ -636,6 +753,7 @@ fn compile_rule(
             // that module's globs. Issue #74.
             forbid: forbidden_paths(&id, r, modules)?,
             allow: permitted_paths(&id, r, modules)?,
+            groups: importer_groups(&id, r, modules)?,
             allow_packages: (!r.only_import_from_packages.is_empty())
                 .then(|| r.only_import_from_packages.iter().cloned().collect()),
             require: globs(&id, "must_import_from", &r.must_import_from)?,
