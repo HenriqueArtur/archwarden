@@ -1582,6 +1582,66 @@ mod tests {
         assert!(!codes.contains(&"module-wears-no-kind"), "{codes:?}");
     }
 
+    /// The module *wearing* a kind is not reported for not wearing one.
+    ///
+    /// The test above asserts the concern appears and cannot see which module
+    /// it is about, so a check that reported every module — including the one
+    /// that is fine — would satisfy it. `doctor` telling somebody to give a
+    /// `kind` to a module that has one is how a reader learns to stop reading
+    /// it.
+    #[test]
+    fn only_the_module_missing_a_kind_is_named() {
+        let mut app = module("api", Some("apps/api/**"));
+        app.kind = Some("app".to_owned());
+        let config = config(Vec::new())
+            .with_modules(vec![app, module("orders", Some("packages/orders/**"))]);
+
+        let named: Vec<String> = examine(&config)
+            .into_iter()
+            .filter(|concern| concern.code == "module-wears-no-kind")
+            .map(|concern| concern.message)
+            .collect();
+
+        assert_eq!(named.len(), 1, "{named:?}");
+        assert!(named[0].contains("`orders`"), "{named:?}");
+    }
+
+    /// A module nothing references is a name somebody wrote down and a
+    /// constraint nobody wrote.
+    #[test]
+    fn a_module_nothing_references_is_reported() {
+        let config = config(Vec::new()).with_modules(vec![module("orders", Some("packages/**"))]);
+
+        let named: Vec<String> = examine(&config)
+            .into_iter()
+            .filter(|concern| concern.code == "module-nobody-references")
+            .map(|concern| concern.message)
+            .collect();
+
+        assert_eq!(named.len(), 1, "{named:?}");
+        assert!(named[0].contains("`orders`"), "{named:?}");
+    }
+
+    /// And a module that holds a rule references itself.
+    ///
+    /// The half that makes the check usable: without it, every module in every
+    /// config is reported, and a concern that fires on the correct state is one
+    /// nobody can act on.
+    #[test]
+    fn a_module_that_holds_a_rule_is_not_reported_as_unreferenced() {
+        let config = config(vec![in_module(
+            rule("shape", &["packages/*"], structure(&["types"], &[])),
+            "orders",
+        )])
+        .with_modules(vec![module("orders", Some("packages/**"))]);
+
+        let codes = codes(&config);
+        assert!(
+            !codes.contains(&"module-nobody-references"),
+            "the rule inside it is the reference: {codes:?}"
+        );
+    }
+
     /// A module that reaches nothing takes every rule inside it down with it,
     /// because each is narrowed to the intersection and the intersection of
     /// anything with nothing is nothing. One typo, nine silent rules, and a

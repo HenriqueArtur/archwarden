@@ -213,6 +213,38 @@ mod tests {
         RepoRelPath::new(p).expect("valid path")
     }
 
+    /// A deep import names both the specifier and the package; a bare one
+    /// names it once.
+    ///
+    /// Reading "imports `three`, which is part of the package `three`" is the
+    /// sentence the `if` exists to avoid, and the shorter half is the one
+    /// almost every finding takes — so getting it backwards would be the
+    /// common case.
+    #[test]
+    fn a_package_that_is_not_permitted_names_the_subpath_only_when_there_is_one() {
+        assert_eq!(
+            describe_observed(&Observed::PackageNotPermitted {
+                specifier: "three".to_owned(),
+                package: "three".to_owned(),
+            }),
+            "imports the package `three`, which is not on this rule's list"
+        );
+
+        let deep = describe_observed(&Observed::PackageNotPermitted {
+            specifier: "three/examples/jsm/loaders/GLTFLoader.js".to_owned(),
+            package: "three".to_owned(),
+        });
+        assert!(
+            deep.contains("three/examples/jsm/loaders/GLTFLoader.js"),
+            "{deep}"
+        );
+        assert!(
+            deep.contains("part of the package `three`"),
+            "the package is what the rule named, and the reader has to see the \
+             link between it and what they wrote: {deep}"
+        );
+    }
+
     /// The sentence names the destination *and* the way in. A reader told
     /// "depends on `packages/db`" opens the file and finds no such import;
     /// what they need is the middle of the chain, which is where the edit goes.

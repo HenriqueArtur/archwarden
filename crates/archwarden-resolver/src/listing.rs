@@ -266,6 +266,45 @@ mod tests {
         );
     }
 
+    /// `canonicalize` is the one method here that must **not** be answered
+    /// from the listing.
+    ///
+    /// The listing knows which names a directory holds and nothing about where
+    /// a symlink points. `oxc_resolver` canonicalises to decide that two
+    /// specifiers reached the same file — which is how a pnpm store, a
+    /// workspace symlink and a `tsconfig` alias collapse onto one path — so an
+    /// answer invented here would have the resolver treat one file as two. It
+    /// delegates to the real filesystem, and this says so out loud.
+    #[test]
+    fn canonicalising_goes_to_the_filesystem_and_follows_the_link() {
+        let (_guard, root) = repository(&["packages/orders/src/cart.ts"]);
+        let fs = Listings::default();
+
+        let real = root.join("packages/orders");
+        let link = root.join("node_modules/@acme/orders");
+        std::fs::create_dir_all(link.parent().expect("a link has a parent")).expect("dirs");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+        #[cfg(not(unix))]
+        std::os::windows::fs::symlink_dir(&real, &link).expect("symlink");
+
+        assert_eq!(
+            fs.canonicalize(&link.join("src/cart.ts"))
+                .expect("the link resolves"),
+            std::fs::canonicalize(real.join("src/cart.ts")).expect("the target resolves"),
+            "the two specifiers are one file, and only the filesystem knows it"
+        );
+    }
+
+    /// And a path with nothing behind it is an error rather than a guess.
+    #[test]
+    fn canonicalising_something_that_is_not_there_fails() {
+        let (_guard, root) = repository(&["src/order.ts"]);
+        let fs = Listings::default();
+
+        assert!(fs.canonicalize(&root.join("src/nowhere.ts")).is_err());
+    }
+
     /// Once a directory has been listed the answer comes from the listing, and
     /// that is also the contract: **this is a cache for the duration of one
     /// run.** A file appearing under a directory already listed stays

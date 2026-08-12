@@ -844,6 +844,13 @@ mod tests {
             Observed::ImportNotPermitted { resolved, .. }
                 if resolved.as_str() == "apps/billing/src/y.ts"
         ));
+        assert_eq!(
+            findings[0].span,
+            Some(Span::new(200, 240)),
+            "the third import, and the finding carries its span -- without one \
+             the caret has nothing to point at and a file of forty imports \
+             leaves the reader searching"
+        );
     }
 
     /// The allowlist direction, and the whole argument for it: what is not
@@ -931,6 +938,11 @@ mod tests {
             &findings[0].observed,
             Observed::PackageNotPermitted { specifier, .. } if specifier == "react"
         ));
+        assert_eq!(
+            findings[0].span,
+            Some(Span::new(200, 240)),
+            "the third import, and the finding points at it"
+        );
     }
 
     /// A rule with no allowlist is not an allowlist of nothing. `None` and an
