@@ -241,10 +241,15 @@ taken. Tracked in the issues.
   pool and the rayon pool are separate and must be sized together, or they
   oversubscribe the machine.
 - Parsing and fact extraction: parallel via `rayon`, one task per file.
-- Rule engines run against the fact set. Structure, naming, and spec-pair
-  rules are file-local and trivially parallel. Import boundaries and call
-  obligations need the assembled graph and run after fact extraction
-  completes.
+- Rule engines run against the fact set. Almost all of them are file-local and
+  trivially parallel — including import boundaries and call obligations, which
+  need their own file's imports *resolved* but nothing from any other file.
+  The exceptions are the two graph rules, `import-cycle` and an
+  `import-boundary` that sets `forbid_reaching`: those need every file's edges
+  before any of them can be answered, so the run holds them back, builds one
+  `ImportGraph` when the walk is done, and asks them then. A configuration
+  carrying one also suspends the per-file gating below — see decision 21 for
+  what that costs.
 - The pipeline is a `par_iter().map().collect()` over the file list: each
   stage takes owned inputs and returns owned outputs, so no stage needs
   shared mutable state. Cache writes are collected and batch-flushed once at

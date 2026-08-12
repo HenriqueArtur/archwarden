@@ -17,6 +17,192 @@ saying so.
 
 ## [Unreleased]
 
+### Added
+
+- **`import-cycle`: no file in scope may sit on an import loop**
+  ([#70](https://github.com/HenriqueArtur/archwarden/issues/70)).
+
+  ```json
+  { "type": "import-cycle", "id": "no-cycles", "level": "error",
+    "roots": "packages/**" }
+  ```
+
+  The finding carries the whole chain — `a.ts → b.ts → a.ts`, with both ends,
+  so a reader can see it closed. Breadth-first, so the *shortest* loop is the
+  one reported; the shortest is not always the one to fix and it is always the
+  one somebody can read. A chain longer than twelve files is not walked, because
+  a forty-file loop is technically correct and useless.
+
+  **Every file of the loop that the scope covers is reported, once each.** A
+  loop has no owner. dependency-cruiser reports the closing edge, which depends
+  on where its walk started, so the same cycle moves between machines. N files
+  have to change or N people have to agree not to, and `baseline` accepts
+  findings per rule and per path, so an accepted cycle is accepted at that same
+  N. There is deliberately **no `ignored_circular_dependencies`**: a cycle is a
+  finding, `baseline` already accepts findings, and a second mechanism for the
+  same thing disagrees with the first the day somebody uses both.
+
+  A file importing itself is a typo, not an architecture fault, and is not a
+  loop. `include_type_only` defaults to `true` and spells what
+  `import-boundary` spells: a loop of `import type` is erased at runtime and is
+  still a loop the compiler walks.
+
+- **`forbid_reaching` on `import-boundary`: the dependency nobody wrote down**
+  ([#71](https://github.com/HenriqueArtur/archwarden/issues/71)).
+
+  ```json
+  { "type": "import-boundary", "id": "ui-must-not-reach-db", "level": "error",
+    "from": "packages/ui/**", "forbid_reaching": ["packages/db/**"] }
+  ```
+
+  `packages/ui` does not import `packages/db`, and it depends on it through
+  `packages/orders` anyway. `forbid_reaching_modules` names a declared module
+  instead of repeating its globs, the way `forbid_module` already does for the
+  direct form, and `except` applies to both.
+
+  The finding carries the chain, because *"ui reaches db"* is not actionable
+  and *"ui → orders → db"* names the edge to cut. A **direct** import is not
+  reported here: that is `forbid_import_from`'s finding, and reporting it twice
+  would make one fault look like two.
+
+- **What these two cost, stated rather than discovered.** A rule that reads the
+  import graph makes the run parse and resolve **every source file in the
+  repository**, whatever any scope says — because a chain that leaves the scope
+  and comes back is still a chain, and a graph built only from what the scope
+  reaches would report a clean repository over a real cycle.
+
+  Measured on a 10 000-file repository with 30 000 in-repo edges: a boundary
+  rule governing one module of forty runs in **0.01 s / 8 MB**; the same scope
+  with `import-cycle` runs in **0.22 s / 28 MB**. The run stops being
+  proportional to the scope and becomes proportional to the repository. Holding
+  the edges is the small part of that — **+5 MB for 30 000 edges** — and the
+  resolution pass is the rest.
+
+  A configuration with no graph rule pays none of it, and an `import-boundary`
+  rule that leaves `forbid_reaching` empty is exactly as cheap as it was.
+
+- **A module can declare the paths it is, and a boundary can name it**
+  ([#74](https://github.com/HenriqueArtur/archwarden/issues/74)). `scope` on a
+  module, `from_module` and `forbid_module` on an `import-boundary`:
+
+  ```json
+  "modules": [
+    { "id": "domain",         "scope": "packages/domain/**", "rules": [ ... ] },
+    { "id": "infrastructure", "scope": "packages/infrastructure/**" }
+  ],
+  "rules": [
+    { "type": "import-boundary", "id": "domain-is-sealed", "level": "error",
+      "from_module": "domain", "forbid_module": ["infrastructure"] }
+  ]
+  ```
+
+  This repository's own fixture said `packages/domain/**` in a boundary and
+  `packages/domain/src/*` in the rules of a module called `domain`, and
+  forbade `infrastructure` — a declared module — by glob. Moving the package
+  meant editing four places, and missing one made a rule stop reaching with
+  nothing reporting it.
+
+  `scope` is optional and a module without one behaves exactly as before, so
+  no existing config changes. A rule inside a scoped module reaches where both
+  reach; naming a module that does not exist, one with no `scope`, or saying a
+  scope both ways on one rule is refused when the config compiles.
+
+- **A `kind` on each module, so one rule governs every module wearing it**
+  ([#76](https://github.com/HenriqueArtur/archwarden/issues/76)).
+
+  ```json
+  "modules": [
+    { "id": "api-orders",  "kind": "app", "scope": "apps/api-orders/**" },
+    { "id": "api-billing", "kind": "app", "scope": "apps/api-billing/**" },
+    { "id": "orders-core", "kind": "lib", "scope": "packages/orders/**" }
+  ],
+  "rules": [
+    { "type": "import-boundary", "id": "assemblies-are-islands", "level": "error",
+      "from_kind": "app", "only_import_from_kinds": ["lib"] }
+  ]
+  ```
+
+  "An assembly may not import another assembly" was one rule *per* assembly,
+  each listing every other: six assemblies is six rules of five entries, and
+  the seventh means editing the six. Here the seventh is governed because it
+  exists with `kind: "app"`.
+
+  One label per module rather than a list: one axis is what the case needs,
+  and a list would buy composition across dimensions at the cost of a second
+  vocabulary for scope. An allowlist rather than `forbid_kind`, so a kind
+  invented later is refused rather than permitted by omission. **A module never
+  fails this against itself** — an app may import its own files and not a
+  sibling app, decided by identity rather than by the label. A kind no module
+  wears is refused when the config compiles, and `config doctor` reports
+  `module-wears-no-kind`.
+
+- **`import-boundary` gained an allowlist**
+  ([#75](https://github.com/HenriqueArtur/archwarden/issues/75)).
+  `only_import_from`, `only_import_from_modules` and
+  `only_import_from_packages`: these, and nothing else.
+
+  ```json
+  { "type": "import-boundary", "id": "api-depends-only-on-libs", "level": "error",
+    "from_module": "api-orders", "only_import_from_modules": ["orders-core"] }
+  ```
+
+  A denylist decays. Every new package, app and directory is permitted by
+  omission, and omission is invisible — the failure `CONFIG.md` names as the
+  worst a linter has, arriving one import at a time. An allowlist refuses
+  things that do not exist yet, which is the point.
+
+  Three things sit outside it and stay allowed: the rule's own scope, because
+  a file importing its neighbour is not what "only these" refuses; anything
+  that did not resolve into this repository, because a builtin or a dependency
+  has no path a glob could match; and packages, which have their own field for
+  the same reason forbidding one does. Setting it alongside
+  `forbid_import_from` or `except` is refused — "only these, except those" is
+  two rules.
+
+- **Three `config doctor` checks** that a module with paths makes possible:
+  `module-scope-matches-nothing`, `module-nobody-references`, and
+  `rule-reaches-outside-its-module` — the last being the one that stops
+  narrowing from being silent.
+
+### Fixed
+
+- **A warm `check` on a shared mount spent most of its time on `stat` calls
+  that found nothing**
+  ([#82](https://github.com/HenriqueArtur/archwarden/issues/82)). Node
+  resolution is a ladder — `./order` means try `.ts`, then `.tsx`, `.js`,
+  `/index.ts` — and over half of those probes miss. On a filesystem that is
+  really a network, a failed `stat` is a full round trip that returns nothing.
+  One directory listing now answers every rung at once.
+
+  Measured over 3 030 files and 15 000 import specifiers, warm, resolution
+  only: **186 ms → 58 ms** on a shared mount. A local disk pays **0.8 ms
+  more**, because a failed `stat` there is a page-cache lookup and the listing
+  buys nothing — a small regression on the fast path, stated rather than
+  rounded away.
+
+  This is not a niche case. Docker Desktop on macOS and Windows, WSL2 with the
+  repository on the Windows side, and any devcontainer with a bind mount all
+  produce it.
+
+- **`agent-guide --kinds no-passthrough` refused a kind archwarden has.** The
+  list of kinds that command validates against was hand-written and had been
+  missing `no-passthrough` since that rule shipped; the test guarding it listed
+  five of the then-eight kinds, so it agreed. Both are fixed, and the test now
+  builds one rule of every kind and checks the list in both directions.
+
+### Internal
+
+- `check --file` and the pre-write hook **refuse** a rule that reads the import
+  graph, under a new `needs-repository` skip reason, rather than evaluating it
+  against one file. A cycle rule with no graph reports nothing, and nothing is
+  what a repository with no cycles reports — a hook that let a write through on
+  that basis would be approving a file it never examined.
+
+- The benchmark gained a case that resolves imports. Every case in it ran a
+  `naming` rule, which reads no imports at all, so the half of a warm run this
+  release is about was never measured — which is why it went unnoticed until
+  somebody timed the same repository on two filesystems.
+
 ## [0.15.0] — 2026-08-11
 
 One implementation of every operation, and a boundary the surfaces sit on.

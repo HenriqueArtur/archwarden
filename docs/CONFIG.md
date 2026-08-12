@@ -95,9 +95,9 @@ would refuse to complete.
   },
 
   "modules": [
-    { "id": "domain",       "rules": [ ... ] },
-    { "id": "application",  "rules": [ ... ] },
-    { "id": "api-routes",   "rules": [ ... ] }
+    { "id": "domain",      "scope": "packages/domain/**",      "rules": [ ... ] },
+    { "id": "application", "scope": "packages/application/**", "rules": [ ... ] },
+    { "id": "api-routes",  "scope": "apps/api/src/routes/**",  "rules": [ ... ] }
   ],
 
   "rules": [ ... ]
@@ -114,11 +114,76 @@ would refuse to complete.
   is JavaScript and TypeScript together. `["ts", "astro"]` adds the TypeScript
   module inside an `.astro` file's `---` fence.
 - `skip_dirs` — the `_`-prefix escape hatch, see [`RULES.md`](RULES.md).
-- `modules` — logical groupings of rules. A "module" is just a name that
-  scopes a set of rules to a set of paths. Naming things helps error
-  reporting: findings show `[domain] packages/domain/src/user/wrong-folder/`.
+- `modules` — logical groupings of rules, optionally with paths of their own.
+  Naming things helps error reporting: findings show
+  `[domain] packages/domain/src/user/wrong-folder/`. See
+  [modules with a scope](#modules-with-a-scope) for what `scope` adds.
 - `rules` — rules that belong to no particular module, typically import
   boundaries (which are cross-module by nature). They report as `[*]`.
+
+### Allowing instead of forbidding
+
+`import-boundary` has three directions. `forbid_import_from` denies,
+`must_import_from` requires, and `only_import_from` permits — everything not
+named is refused, including what nobody has thought of yet.
+
+```json
+{ "type": "import-boundary", "id": "api-depends-only-on-libs", "level": "error",
+  "from_module": "api-orders",
+  "only_import_from_modules": ["orders-core", "shared"] }
+```
+
+A denylist decays. Every new package, app or directory is allowed by omission,
+and omission is the thing nobody notices. See [RULES.md](RULES.md#import-boundary)
+for what sits outside an allowlist and why.
+
+### One rule for every module of a sort
+
+A `kind` on each module, and a rule quantifies over it — see
+[RULES.md](RULES.md#import-boundary). One label per module, not a list: one
+axis (assembly versus piece) is what the case needs, and a second vocabulary
+for scope is what carrying a list would cost. If a second real axis appears,
+that is where the conversation resumes.
+
+### Modules with a scope
+
+A module is a name for a group of rules. Give it a `scope` and it also becomes
+a name for a part of the repository:
+
+```json
+{
+  "modules": [
+    { "id": "domain",         "scope": "packages/domain/**", "rules": [ ... ] },
+    { "id": "infrastructure", "scope": "packages/infrastructure/**" }
+  ],
+  "rules": [
+    { "type": "import-boundary", "id": "domain-is-sealed", "level": "error",
+      "from_module": "domain", "forbid_module": ["infrastructure"] }
+  ]
+}
+```
+
+`scope` is optional, and a module without one is exactly what modules have
+always been.
+
+**A rule inside a scoped module reaches where both reach.** It keeps its own
+`roots`, and the module narrows it. In practice the rule's `roots` is already
+inside the module and nothing changes; when it is not, the rule reaches
+*nothing* — so `config doctor` reports `rule-reaches-outside-its-module` rather
+than leaving it silent. Narrowing rather than refusing at compile time is not a
+preference: whether one glob contains another is not a question a glob engine
+answers, and the only honest test is against a tree that has been walked.
+
+**A boundary can name a module instead of re-describing it.** `from_module`
+and `forbid_module` take module ids and become that module's paths when the
+config compiles. Saying it both ways on one rule — `from` *and* `from_module` —
+is refused, as is naming a module that does not exist or one that declared no
+`scope`. Each of those would otherwise be a rule quietly governing nothing.
+
+What it buys beyond less repetition: move a package and one line changes
+instead of four, and `config doctor` gains two questions it could not ask
+while a module was only a label — `module-scope-matches-nothing`, and
+`module-nobody-references` for a module declared and never used.
 
 ### The HTML pages, and their language
 
@@ -513,6 +578,60 @@ anything under it" — so `three/examples/jsm/loaders/GLTFLoader.js` is caught a
 side an exception to a dependency rule sits on: `except` is about what is
 imported. See [`RULES.md`](RULES.md) for the full semantics, including why this
 is a separate field rather than a prefix inside `forbid_import_from`.
+
+A boundary can also forbid what a file **ends up** depending on, however many
+imports away:
+
+```json
+{
+  "type": "import-boundary",
+  "id": "ui-must-not-reach-db",
+  "level": "error",
+  "from": "packages/ui/**",
+  "forbid_reaching": ["packages/db/**"],
+  "except": ["packages/db/types/**"]
+}
+```
+
+`forbid_reaching_modules` names a declared module instead of repeating its
+globs, as `forbid_module` does for the direct form; saying it both ways on one
+rule is refused. A **direct** import is not reported by this field —
+`forbid_import_from` is what reports that one.
+
+**This field makes the run read the whole repository.** See
+[import cycles](#import-cycles) just below and
+[`RULES.md`](RULES.md#what-a-graph-rule-costs) for the measured cost.
+
+### Import cycles
+
+A rule about the files it governs, so its scope field is `roots`:
+
+```json
+{
+  "type": "import-cycle",
+  "id": "no-cycles",
+  "level": "error",
+  "roots": "packages/**"
+}
+```
+
+Every file of a loop that `roots` covers is reported, once each, carrying the
+whole chain. There is no `ignored_circular_dependencies`: a cycle is a finding
+and [`baseline`](#adopting-archwarden-in-an-existing-repository) already accepts
+findings, per rule and per path.
+
+`include_type_only` defaults to `true` and means what it means on
+`import-boundary`.
+
+`roots` decides where a finding is *reported*, not what the graph is built
+from. The graph is always the whole repository, because a loop that leaves the
+scope and comes back is still a loop — which is why a configuration carrying
+this rule, or `forbid_reaching` above, parses and resolves every source file.
+On a 10 000-file repository that is 0.22 s against 0.01 s for the same scope
+without it. A configuration with neither pays nothing.
+
+`check --file` and the pre-write hook refuse these rules, under the
+`needs-repository` skip reason, rather than answering from one file.
 
 ### Call obligation
 

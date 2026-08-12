@@ -197,6 +197,7 @@ mod tests {
             docs: None,
             siblings: &[],
             exists: Exists::new(&exists),
+            graph: None,
         })
     }
 

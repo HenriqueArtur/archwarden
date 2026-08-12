@@ -272,6 +272,7 @@ mod tests {
             docs: None,
             siblings: &[],
             exists: Exists::none(),
+            graph: None,
         })
     }
 
@@ -476,6 +477,7 @@ mod tests {
             docs: None,
             siblings: &[],
             exists: Exists::none(),
+            graph: None,
         });
 
         assert!(findings.is_empty());

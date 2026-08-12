@@ -65,16 +65,23 @@ struct GuideRule<'a> {
 /// line.
 ///
 /// Listed here rather than derived, because `CompiledRuleKind::type_name` maps
-/// one way only. A test walks the enum through this list, so the two cannot
-/// drift.
-pub const KINDS: [&str; 8] = [
+/// one way only. The compiler cannot enforce this list — a variant added to
+/// the enum still compiles with nothing added here — so
+/// `every_kind_the_tool_has_is_accepted` builds one rule of every kind and
+/// checks both directions. It is a test standing where a type would be better,
+/// and it is load-bearing: `no-passthrough` was missing from this list from the
+/// day that rule shipped, so `agent-guide --kinds no-passthrough` refused a
+/// kind archwarden has.
+pub const KINDS: [&str; 10] = [
     "structure",
     "naming",
     "spec-pair",
+    "no-passthrough",
     "presence",
     "pair",
     "frontmatter",
     "import-boundary",
+    "import-cycle",
     "call-obligation",
 ];
 
@@ -280,15 +287,48 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             }
             vec![line]
         }
+        CompiledRuleKind::ImportCycle { include_type_only } => {
+            // One sentence, because the rule is one sentence. The chain that
+            // broke it is a property of the repository rather than of the
+            // rule, so there is nothing here for an agent to satisfy beyond
+            // "do not close a loop".
+            let mut line =
+                "must not sit on an import cycle, directly or through other files".to_owned();
+            if !include_type_only {
+                line.push_str(" (a loop made only of `import type` is exempt)");
+            }
+            vec![line]
+        }
         CompiledRuleKind::ImportBoundary {
             forbid,
             require,
+            groups: _,
+            allow,
+            allow_packages,
             forbid_packages,
+            forbid_reaching,
             except,
             except_from,
             include_type_only,
         } => {
             let mut lines = Vec::new();
+            // First, because it is the strongest sentence a boundary can say:
+            // everything not named is refused, including what does not exist
+            // yet. An agent reading the denials first would take the silence
+            // about everything else for permission.
+            if let Some(allow) = allow {
+                lines.push(format!(
+                    "may import only from {} (its own files are always allowed, \
+                     and packages are governed separately)",
+                    join(allow.patterns())
+                ));
+            }
+            if let Some(packages) = allow_packages {
+                lines.push(format!(
+                    "may import only these packages: {}",
+                    join(packages.as_slice())
+                ));
+            }
             if !forbid.is_empty() {
                 let mut line = format!("must not import from {}", join(forbid.patterns()));
                 if !except.is_empty() {
@@ -296,6 +336,24 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
                 }
                 if !include_type_only {
                     line.push_str(" (type-only imports are exempt)");
+                }
+                lines.push(line);
+            }
+            // A separate sentence from the one above, because it is a
+            // separate obligation: an agent that satisfies "do not import
+            // `packages/db`" can still violate this by importing something
+            // that does, and a digest that folded the two would have it
+            // believe one edit covered both.
+            if !forbid_reaching.is_empty() {
+                let mut line = format!(
+                    "must not end up depending on {}, however many imports away",
+                    join(forbid_reaching.patterns())
+                );
+                if !except.is_empty() {
+                    let _ = write!(line, ", except {}", join(except.patterns()));
+                }
+                if !include_type_only {
+                    line.push_str(" (type-only edges are not followed)");
                 }
                 lines.push(line);
             }
@@ -765,8 +823,12 @@ mod tests {
     fn boundary() -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: set(&["src/infra/**"]),
+            groups: Vec::new(),
+            allow: None,
+            allow_packages: None,
             require: PathSet::default(),
             forbid_packages: Vec::new(),
+            forbid_reaching: PathSet::default(),
             except: PathSet::default(),
             except_from: PathSet::default(),
             include_type_only: true,
@@ -777,8 +839,12 @@ mod tests {
     fn package_boundary(except_from: &[&str]) -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: PathSet::default(),
+            groups: Vec::new(),
+            allow: None,
+            allow_packages: None,
             require: PathSet::default(),
             forbid_packages: vec!["three".to_owned()],
+            forbid_reaching: PathSet::default(),
             except: PathSet::default(),
             except_from: set(except_from),
             include_type_only: true,
@@ -1114,19 +1180,84 @@ mod tests {
         assert!(message.contains("`spec-pair`"), "{message}");
     }
 
-    /// Every kind archwarden has is accepted, so the list cannot drift from
-    /// the enum it describes.
+    /// `KINDS` and the enum say the same thing, in both directions.
+    ///
+    /// The list is hand-written and the compiler cannot check it, so this
+    /// stands in its place. Built from real `CompiledRuleKind` values rather
+    /// than from a second list of strings, because a second list of strings is
+    /// exactly what drifted: `no-passthrough` was absent from `KINDS` from the
+    /// day that rule shipped, and the test that was here listed five of the
+    /// then-eight kinds, so it agreed.
     #[test]
     fn every_kind_the_tool_has_is_accepted() {
-        for kind in [
-            "structure",
-            "naming",
-            "spec-pair",
-            "import-boundary",
-            "call-obligation",
-        ] {
-            guide_kinds(&[kind.to_owned()]).unwrap_or_else(|_| panic!("{kind} is a kind"));
+        let every: Vec<CompiledRuleKind> = vec![
+            CompiledRuleKind::Structure {
+                allowed_subfolders: None,
+                warn_subfolders: Vec::new(),
+                recurse_into: Vec::new(),
+                subfolder_patterns: Vec::new(),
+                filename_patterns: Vec::new(),
+            },
+            naming(),
+            CompiledRuleKind::SpecPair {
+                subfolders: vec![".".to_owned()],
+                spec_markers: vec!["spec".to_owned()],
+                ignore_files: PathSet::default(),
+                spec_dirs: Vec::new(),
+                require_non_empty_spec: false,
+                skip_type_only: false,
+            },
+            CompiledRuleKind::NoPassthrough {
+                forms: archwarden_core::compiled::PassthroughForms {
+                    reexport: true,
+                    alias: true,
+                    wrapper: true,
+                },
+                except: PathSet::default(),
+                allow_package_entrypoints: true,
+                allow_partial: true,
+            },
+            CompiledRuleKind::Presence {
+                require: Vec::new(),
+                require_any: Vec::new(),
+            },
+            CompiledRuleKind::Pair {
+                file_pattern: Pattern::compile(r"^x\.ts$").expect("valid pattern"),
+                must_exist: "y.ts".to_owned(),
+            },
+            CompiledRuleKind::Frontmatter {
+                file_pattern: Pattern::compile(r"^DOC\.md$").expect("valid pattern"),
+                require: Vec::new(),
+                one_of: Vec::new(),
+                equals: Vec::new(),
+            },
+            boundary(),
+            CompiledRuleKind::ImportCycle {
+                include_type_only: true,
+            },
+            CompiledRuleKind::CallObligation {
+                file_pattern: Pattern::compile(r"^route\.ts$").expect("valid pattern"),
+                symbol: "Event.save".to_owned(),
+                imported_from: "@org/events".to_owned(),
+            },
+        ];
+
+        for kind in &every {
+            let name = kind.type_name();
+            guide_kinds(&[name.to_owned()]).unwrap_or_else(|_| {
+                panic!("`{name}` is a kind archwarden has, and `KINDS` omits it")
+            });
         }
+
+        let mut named: Vec<&str> = every.iter().map(CompiledRuleKind::type_name).collect();
+        named.sort_unstable();
+        let mut listed: Vec<&str> = KINDS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(
+            listed, named,
+            "`KINDS` names a kind the enum does not have, or the sample above \
+             is missing one the enum does"
+        );
     }
 
     /// The guide describes a rule generically: the *template*, not a name
@@ -1166,8 +1297,12 @@ mod tests {
                 &["src/**"],
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
+                    groups: Vec::new(),
+                    allow: None,
+                    allow_packages: None,
                     require: PathSet::default(),
                     forbid_packages: Vec::new(),
+                    forbid_reaching: PathSet::default(),
                     except: PathSet::default(),
                     except_from: PathSet::default(),
                     include_type_only: true,
@@ -1443,8 +1578,12 @@ mod tests {
                 &["src/**"],
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
+                    groups: Vec::new(),
+                    allow: None,
+                    allow_packages: None,
                     require: set(&["src/telemetry/**"]),
                     forbid_packages: Vec::new(),
+                    forbid_reaching: PathSet::default(),
                     except: set(&["src/infra/types/**"]),
                     except_from: PathSet::default(),
                     include_type_only: false,
@@ -1502,6 +1641,81 @@ mod tests {
         assert!(
             markdown.contains("must call `Event.save`, imported from `@org/domain/event`"),
             "{markdown}"
+        );
+    }
+
+    /// `forbid_reaching` is its own sentence, and only when it is set.
+    ///
+    /// A digest that folded it into the `forbid_import_from` line would have an
+    /// agent believe one edit covers both, and they are different obligations:
+    /// removing the import it names does not remove the dependency this one is
+    /// about. A digest that printed it for a rule that does not set it would
+    /// teach a constraint nobody wrote.
+    #[test]
+    fn reaching_is_its_own_sentence_and_only_when_it_is_set() {
+        let with = |patterns: &[&str], exceptions: &[&str], type_only: bool| {
+            let mut kind = boundary();
+            let CompiledRuleKind::ImportBoundary {
+                forbid: forbid_slot,
+                forbid_reaching,
+                except,
+                include_type_only,
+                ..
+            } = &mut kind
+            else {
+                panic!("built as an import-boundary rule");
+            };
+            *forbid_slot = PathSet::default();
+            *except = set(exceptions);
+            *forbid_reaching = set(patterns);
+            *include_type_only = type_only;
+            rendered(
+                &config(vec![rule("reach", None, &["packages/ui/*"], kind)]),
+                None,
+                GuideFormat::Markdown,
+            )
+        };
+
+        let markdown = with(&["packages/db/**"], &[], true);
+        assert!(
+            markdown.contains("must not end up depending on `packages/db/**`"),
+            "{markdown}"
+        );
+        assert!(
+            !markdown.contains("must not import from"),
+            "the direct sentence is a different obligation and this rule does \
+             not make it: {markdown}"
+        );
+        assert!(
+            !markdown.contains("type-only"),
+            "the default follows type edges, so there is nothing to say: \
+             {markdown}"
+        );
+        assert!(
+            !markdown.contains("except"),
+            "a rule with no exceptions must not advertise an empty list of \
+             them, which reads as a carve-out nobody wrote: {markdown}"
+        );
+
+        assert!(
+            with(&["packages/db/**"], &["packages/db/types/**"], true)
+                .contains("except `packages/db/types/**`"),
+            "an exception changes what the rule permits, so the digest names it"
+        );
+        assert!(
+            with(&["packages/db/**"], &[], false).contains("type-only edges are not followed"),
+            "the opt-out changes what the rule enforces, so the digest says so"
+        );
+
+        let silent = rendered(
+            &config(vec![rule("plain", None, &["packages/ui/*"], boundary())]),
+            None,
+            GuideFormat::Markdown,
+        );
+        assert!(
+            !silent.contains("end up depending on"),
+            "a rule that says nothing about reach teaches nothing about it: \
+             {silent}"
         );
     }
 

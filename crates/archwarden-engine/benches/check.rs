@@ -85,9 +85,18 @@ fn build(files: usize) -> Repository {
 /// A file with enough in it to be worth parsing: imports, a type, a class and
 /// the exported function the rule is looking for.
 fn source(index: usize) -> String {
+    // Two of these are *relative and extensionless*, which is what makes the
+    // resolver walk its ladder: `./action-N` means try `.ts`, `.tsx`, `.js`,
+    // `.mjs`, then `action-N/index.ts`, and every miss is a failed `stat`.
+    // Without them this repository resolves nothing and the boundary benchmark
+    // below measures an empty loop -- which is what it did until issue #82.
+    let sibling = index.wrapping_add(1);
+    let cousin = index.wrapping_add(2);
     format!(
         "import {{ Repository }} from '@org/domain';\n\
          import type {{ Logger }} from '@org/logging';\n\
+         import {{ Action{sibling} }} from './action-{sibling}.use-case';\n\
+         import {{ Action{cousin} }} from './action-{cousin}.use-case';\n\
          \n\
          export interface Action{index}Input {{ id: string; count: number; }}\n\
          \n\
@@ -132,6 +141,82 @@ fn config() -> CompiledConfig {
             scope: SkipScope::Structure,
         },
         ContentHash::of(b"bench"),
+    )
+}
+
+/// The same configuration with a boundary rule added.
+///
+/// Its own config rather than a second rule in `config()`: every other
+/// benchmark here would then pay for resolution, and the pair of numbers --
+/// with and without -- is the only way to see what resolution costs.
+fn resolving() -> CompiledConfig {
+    let boundary = CompiledRule {
+        id: RuleId::new("no-reaching-into-internals").expect("valid id"),
+        module: None,
+        why: None,
+        module_why: None,
+        level: Level::Error,
+        scope: Scope::compile(["src/*"]).expect("valid scope"),
+        kind: CompiledRuleKind::ImportBoundary {
+            forbid: PathSet::compile(["src/module-39/internal/**"]).expect("valid globs"),
+            groups: Vec::new(),
+            allow: None,
+            allow_packages: None,
+            require: PathSet::default(),
+            forbid_packages: Vec::new(),
+            forbid_reaching: PathSet::default(),
+            except: PathSet::default(),
+            except_from: PathSet::default(),
+            include_type_only: false,
+        },
+    };
+
+    CompiledConfig::new(
+        vec![boundary],
+        PathSet::default(),
+        SkipDirs {
+            prefixes: vec!["_".to_owned()],
+            globs: PathSet::default(),
+            scope: SkipScope::Structure,
+        },
+        ContentHash::of(b"bench-resolving"),
+    )
+}
+
+/// The same configuration with a cycle rule added.
+///
+/// The most expensive shape archwarden has, and the pair with
+/// `check/warm+resolution` is what shows why: a graph rule suspends the
+/// per-file gating entirely, so every source file is parsed and resolved
+/// whatever any scope says. Its own config for the same reason `resolving`
+/// has one — with and without is the only way to see what it costs.
+///
+/// Scoped to **one module of forty** on purpose. That is the shape a user
+/// writes and the shape where the cost is most surprising: the rule governs a
+/// fortieth of the repository and the run reads all of it. A rule scoped to
+/// `src/*` would hide it, because everything would have been read anyway.
+fn cycles() -> CompiledConfig {
+    let cycle = CompiledRule {
+        id: RuleId::new("no-cycles").expect("valid id"),
+        module: None,
+        why: None,
+        module_why: None,
+        level: Level::Error,
+        scope: Scope::compile(["src/module-0"]).expect("valid scope"),
+        kind: CompiledRuleKind::ImportCycle {
+            include_type_only: false,
+        },
+    };
+
+    CompiledConfig::new(
+        vec![cycle],
+        PathSet::default(),
+        SkipDirs {
+            prefixes: vec!["_".to_owned()],
+            globs: PathSet::default(),
+            scope: SkipScope::Structure,
+        },
+        ContentHash::of(b"bench-cycles"),
     )
 }
 
@@ -184,6 +269,65 @@ fn benchmarks(criterion: &mut Criterion) {
                         config: &repository.config,
                         tree: &repository.tree,
                         cache: Some(&mut cache),
+                    })
+                });
+            },
+        );
+
+        // What resolution costs, as a pair with the run above. Kept because it
+        // was missing: every benchmark here ran a `naming` rule, which reads
+        // no imports, so the half of a warm run that issue #82 turned out to
+        // be spending its time in was never measured at all.
+        let resolving_config = resolving();
+        let mut resolving_cache =
+            Cache::open(&repository.root.join(".archwarden/cache/resolve.redb")).expect("opens");
+        let _ = run::check(Run {
+            root: &repository.root,
+            config: &resolving_config,
+            tree: &repository.tree,
+            cache: Some(&mut resolving_cache),
+        });
+        resolving_cache.flush().expect("flushes");
+
+        group.bench_with_input(
+            BenchmarkId::new("check/warm+resolution", files),
+            &files,
+            |bencher, _| {
+                bencher.iter(|| {
+                    run::check(Run {
+                        root: &repository.root,
+                        config: &resolving_config,
+                        tree: &repository.tree,
+                        cache: Some(&mut resolving_cache),
+                    })
+                });
+            },
+        );
+
+        // What a graph rule costs, as a pair with the run above. Decision 21
+        // publishes a table of these numbers, and a number nothing measures is
+        // a number that goes stale.
+        let cycles_config = cycles();
+        let mut cycles_cache =
+            Cache::open(&repository.root.join(".archwarden/cache/cycles.redb")).expect("opens");
+        let _ = run::check(Run {
+            root: &repository.root,
+            config: &cycles_config,
+            tree: &repository.tree,
+            cache: Some(&mut cycles_cache),
+        });
+        cycles_cache.flush().expect("flushes");
+
+        group.bench_with_input(
+            BenchmarkId::new("check/warm+graph", files),
+            &files,
+            |bencher, _| {
+                bencher.iter(|| {
+                    run::check(Run {
+                        root: &repository.root,
+                        config: &cycles_config,
+                        tree: &repository.tree,
+                        cache: Some(&mut cycles_cache),
                     })
                 });
             },

@@ -8,7 +8,10 @@
 //!
 //! See `docs/RULES.md` for semantics and `docs/CONFIG.md` for examples.
 
-use archwarden_core::{ids::RuleId, level::Level};
+use archwarden_core::{
+    ids::{ModuleId, RuleId},
+    level::Level,
+};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +28,17 @@ pub type Patterns = OneOrMany<String>;
 /// lockstep with the checker. See decision 14.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "kebab-case")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "456 bytes against 248 for the next largest, and the difference is \
+              `import-boundary`, which has the most fields because it is the \
+              rule with the most directions. This is a wire type: deserialised \
+              once per run and lowered into `CompiledRule` immediately, held in \
+              a Vec of a few dozen. A hundred-rule config is 45 KB. Boxing it \
+              would buy that back and cost an indirection in every match and a \
+              `Box::new` at every construction site, for memory nothing is \
+              short of"
+)]
 pub enum Rule {
     /// Which folders may exist, and which filenames.
     Structure(StructureRule),
@@ -34,6 +48,8 @@ pub enum Rule {
     SpecPair(SpecPairRule),
     /// Layer A may not import from layer B.
     ImportBoundary(ImportBoundaryRule),
+    /// No file in scope may sit on an import loop.
+    ImportCycle(ImportCycleRule),
     /// Files matching a pattern must call a given symbol.
     CallObligation(CallObligationRule),
     /// A file whose whole content is forwarding another module.
@@ -55,6 +71,7 @@ impl Rule {
             Self::Naming(r) => &r.id,
             Self::SpecPair(r) => &r.id,
             Self::ImportBoundary(r) => &r.id,
+            Self::ImportCycle(r) => &r.id,
             Self::CallObligation(r) => &r.id,
             Self::NoPassthrough(r) => &r.id,
             Self::Presence(r) => &r.id,
@@ -71,6 +88,7 @@ impl Rule {
             Self::Naming(r) => r.level,
             Self::SpecPair(r) => r.level,
             Self::ImportBoundary(r) => r.level,
+            Self::ImportCycle(r) => r.level,
             Self::CallObligation(r) => r.level,
             Self::NoPassthrough(r) => r.level,
             Self::Presence(r) => r.level,
@@ -87,6 +105,7 @@ impl Rule {
             Self::Naming(r) => r.why.as_deref(),
             Self::SpecPair(r) => r.why.as_deref(),
             Self::ImportBoundary(r) => r.why.as_deref(),
+            Self::ImportCycle(r) => r.why.as_deref(),
             Self::CallObligation(r) => r.why.as_deref(),
             Self::NoPassthrough(r) => r.why.as_deref(),
             Self::Presence(r) => r.why.as_deref(),
@@ -107,6 +126,7 @@ impl Rule {
             Self::Naming(r) => &r.roots,
             Self::SpecPair(r) => &r.roots,
             Self::ImportBoundary(r) => &r.from,
+            Self::ImportCycle(r) => &r.roots,
             Self::CallObligation(r) => &r.roots,
             Self::NoPassthrough(r) => &r.roots,
             Self::Presence(r) => &r.roots,
@@ -123,6 +143,7 @@ impl Rule {
             Self::Naming(_) => "naming",
             Self::SpecPair(_) => "spec-pair",
             Self::ImportBoundary(_) => "import-boundary",
+            Self::ImportCycle(_) => "import-cycle",
             Self::CallObligation(_) => "call-obligation",
             Self::NoPassthrough(_) => "no-passthrough",
             Self::Presence(_) => "presence",
@@ -549,11 +570,82 @@ pub struct ImportBoundaryRule {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// Directory globs selecting the importer. Same semantics as `roots`.
+    ///
+    /// Exactly one of this and [`from_module`](Self::from_module) is required.
+    /// Saying it both ways is refused when the config compiles: two spellings
+    /// of one scope on one rule is the ambiguity that produces a rule
+    /// enforcing something nobody meant.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub from: Patterns,
+    /// The module the importers are, instead of the globs they match.
+    ///
+    /// A module that declared a `scope` has paths already; naming it here
+    /// stops a boundary from re-describing them. Move the package and one
+    /// place changes instead of two, and nothing silently stops reaching.
+    /// Issue #74.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_module: Option<ModuleId>,
     /// Globs matched against the *resolved* import path. Matching means the
     /// import is illegal.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub forbid_import_from: Patterns,
+    /// Globs matched against the *resolved* import path. Anything not matching
+    /// is illegal.
+    ///
+    /// The allowlist direction. A denylist decays: every new package, app or
+    /// directory is permitted by omission, and omission is invisible. This one
+    /// refuses things that do not exist yet, which is the whole point.
+    ///
+    /// **Governs edges inside this repository only.** A builtin, a dependency
+    /// and an import nothing could resolve have no repo-relative path a glob
+    /// could match; `only_import_from_packages` is the field for those, for the
+    /// same reason `forbid_import_from_packages` is separate from
+    /// `forbid_import_from`. And a file importing its own neighbour is always
+    /// permitted: an import resolving inside the rule's own `from` is not
+    /// something "only these" was ever meant to refuse. Issue #75.
+    ///
+    /// Refused alongside `forbid_import_from` on one rule: "only these, except
+    /// those" is expressible as two rules and clearer as two.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub only_import_from: Patterns,
+    /// Modules whose files may be imported, and no others.
+    ///
+    /// `only_import_from` with the paths written for you, the way
+    /// `forbid_module` is for `forbid_import_from`.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub only_import_from_modules: OneOrMany<ModuleId>,
+    /// The sort of module the importers are, instead of naming each one.
+    ///
+    /// `from_kind: "app"` selects every module that said `kind: "app"`, so the
+    /// seventh assembly is governed because it exists rather than because
+    /// somebody remembered to add it. Issue #76.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_kind: Option<String>,
+    /// The sorts of module those importers may import from, and no others.
+    ///
+    /// An allowlist rather than `forbid_kind`, deliberately: a `kind` invented
+    /// later is refused rather than permitted by omission, which is the same
+    /// argument [`only_import_from`](Self::only_import_from) rests on.
+    ///
+    /// A module never fails this against itself. `from_kind: "app"` permitting
+    /// only `lib` must not stop an app importing its own files — identity
+    /// decides that, not the label.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub only_import_from_kinds: OneOrMany<String>,
+    /// Package names this file may import, and no others.
+    ///
+    /// The package axis of `only_import_from`. Absent means packages are not
+    /// governed by this rule at all, which is what keeps `only_import_from`
+    /// from tripping on every dependency in the manifest.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub only_import_from_packages: Patterns,
+    /// Modules whose files may not be imported, instead of the globs they are.
+    ///
+    /// Folded into `forbid_import_from` when the config compiles, so nothing
+    /// downstream knows the difference — but the config says `infrastructure`
+    /// where it used to repeat that module's paths. Issue #74.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub forbid_module: OneOrMany<ModuleId>,
     /// Globs matched against the resolved import path. If none of the file's
     /// imports match, the file is illegal.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
@@ -576,7 +668,36 @@ pub struct ImportBoundaryRule {
     /// is the field for it.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub forbid_import_from_packages: Patterns,
+    /// Globs matched against every file this one ends up depending on,
+    /// however many imports away. Matching means the dependency is illegal.
+    ///
+    /// The rule `forbid_import_from` cannot express: `packages/ui` does not
+    /// import `packages/db`, and it depends on it through `packages/orders`
+    /// anyway. A *direct* import is not reported here — that is
+    /// `forbid_import_from`'s finding, and reporting it twice would make one
+    /// fault look like two.
+    ///
+    /// **This field is the expensive one.** A rule that sets it makes the run
+    /// parse and resolve every source file in the repository, whatever any
+    /// scope says, because a chain that leaves the scope and comes back is
+    /// still a chain. Measured on a 10,000-file repository, that is about
+    /// twenty times the wall clock of the same rule without it. A boundary
+    /// rule that leaves it empty pays none of that. Issue #71.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub forbid_reaching: Patterns,
+    /// Modules that may not be reached, instead of the globs they are.
+    ///
+    /// What `forbid_module` is to `forbid_import_from`. Folded into
+    /// `forbid_reaching` when the config compiles, and refused alongside it on
+    /// one rule for the same reason: two ways to fill one set is a rule whose
+    /// author has to be told which one won.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub forbid_reaching_modules: OneOrMany<ModuleId>,
     /// Exceptions, also matched against the resolved path.
+    ///
+    /// Applies to `forbid_import_from` and to `forbid_reaching` alike: both
+    /// name destinations, and "may not reach `packages/db`, except
+    /// `packages/db/types`" is one sentence rather than two fields.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub except: Patterns,
     /// Globs matched against the *importing* file, exempting it from the whole
@@ -1142,6 +1263,114 @@ mod tests {
         );
     }
 
+    /// Issue #71: the dependency nobody wrote down. `ui` does not import `db`,
+    /// and it depends on it through `orders` anyway.
+    #[test]
+    fn a_boundary_can_forbid_reaching_as_well_as_importing() {
+        let rule = parse(
+            r#"{
+              "type": "import-boundary",
+              "id": "ui-must-not-reach-db",
+              "level": "error",
+              "from": "packages/ui/**",
+              "forbid_reaching": ["packages/db/**"],
+              "except": ["packages/db/types/**"]
+            }"#,
+        );
+
+        let Rule::ImportBoundary(boundary) = &rule else {
+            panic!("expected an import-boundary rule");
+        };
+        assert_eq!(boundary.forbid_reaching.len(), 1);
+        assert!(
+            boundary.forbid_import_from.is_empty(),
+            "a rule may forbid reaching without forbidding the direct import, \
+             which is the whole case this field exists for"
+        );
+        assert_eq!(boundary.except.len(), 1);
+    }
+
+    /// And it can name a module instead of repeating that module's globs, the
+    /// way `forbid_module` does for the direct form.
+    #[test]
+    fn reaching_can_name_a_module() {
+        let rule = parse(
+            r#"{
+              "type": "import-boundary", "id": "r", "level": "error",
+              "from": "packages/ui/**", "forbid_reaching_modules": ["persistence"]
+            }"#,
+        );
+
+        let Rule::ImportBoundary(boundary) = &rule else {
+            panic!("expected an import-boundary rule");
+        };
+        assert_eq!(boundary.forbid_reaching_modules.len(), 1);
+        assert!(boundary.forbid_reaching.is_empty());
+    }
+
+    /// A boundary that says nothing about reach parses as before, and the
+    /// field is empty rather than absent-and-surprising. This is the case that
+    /// keeps every rule already written as cheap as it was: an empty
+    /// `forbid_reaching` is what tells the runner not to build a graph.
+    #[test]
+    fn a_boundary_that_says_nothing_about_reach_asks_for_nothing() {
+        let rule = parse(
+            r#"{"type":"import-boundary","id":"b","level":"error",
+                "from":"packages/ui/**","forbid_import_from":["packages/domain/**"]}"#,
+        );
+
+        let Rule::ImportBoundary(boundary) = &rule else {
+            panic!("expected an import-boundary rule");
+        };
+        assert!(boundary.forbid_reaching.is_empty());
+        assert!(boundary.forbid_reaching_modules.is_empty());
+    }
+
+    /// `import-cycle` is written like every other rule, and its scope field is
+    /// `roots` rather than `from`: it is not a rule about what may be
+    /// imported, it is a rule about the files it governs.
+    #[test]
+    fn the_documented_import_cycle_example_parses() {
+        let rule = parse(
+            r#"{
+              "type": "import-cycle",
+              "id": "no-cycles",
+              "level": "error",
+              "roots": "packages/**"
+            }"#,
+        );
+
+        let Rule::ImportCycle(cycle) = &rule else {
+            panic!("expected an import-cycle rule");
+        };
+        assert_eq!(rule.type_name(), "import-cycle");
+        assert_eq!(rule.id().as_str(), "no-cycles");
+        assert_eq!(rule.level(), Level::Error);
+        assert_eq!(rule.scope().len(), 1);
+        assert!(
+            cycle.include_type_only,
+            "the same default `import-boundary` has, and the same field name: a \
+             loop of type imports is a loop the compiler walks"
+        );
+    }
+
+    /// And the opt-out, for a project that only cares about loops that exist
+    /// at runtime.
+    #[test]
+    fn an_import_cycle_rule_can_ignore_type_only_loops() {
+        let rule = parse(
+            r#"{
+              "type": "import-cycle", "id": "no-cycles", "level": "error",
+              "roots": "packages/**", "include_type_only": false
+            }"#,
+        );
+
+        let Rule::ImportCycle(cycle) = &rule else {
+            panic!("expected an import-cycle rule");
+        };
+        assert!(!cycle.include_type_only);
+    }
+
     /// `from` and `roots` are the same thing under two names, so one accessor
     /// serves both and the matcher never has to care which rule it holds.
     #[test]
@@ -1266,6 +1495,51 @@ mod tests {
         );
         assert!(json.contains(r#""type":"import-boundary""#), "{json}");
     }
+}
+
+/// No file in scope may sit on an import loop.
+///
+/// The first rule whose question cannot be answered from one file, and the
+/// reason a configuration carrying one costs a resolution pass over the whole
+/// repository. See `docs/RULES.md`.
+///
+/// Deliberately no `ignored_circular_dependencies`. A cycle is a finding, and
+/// `baseline` already accepts findings — per rule and per path, which is the
+/// right granularity because every file on a loop is reported. Nx has such an
+/// option because it has no baseline. Adding one here would be a second
+/// mechanism for accepting a finding, and the two would disagree the first
+/// time somebody used both.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ImportCycleRule {
+    /// Stable identifier.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Directory globs this rule applies to.
+    ///
+    /// `roots` rather than `from`: `import-boundary` calls its scope `from`
+    /// because it reads against `forbid_import_from`, and this rule forbids no
+    /// destination. It is a rule about the files it governs, like the other
+    /// four that spell it `roots`.
+    ///
+    /// It governs where a finding is *reported*, not what the graph is built
+    /// from. The graph is always the whole repository, because a loop that
+    /// leaves the scope and comes back is still a loop.
+    pub roots: Patterns,
+    /// Whether `import type` and inline `type` marks close a loop. Default
+    /// `true`.
+    ///
+    /// Spelled and defaulted the same way `import-boundary` spells it. A type
+    /// import is erased at runtime, so a loop made only of them cannot
+    /// deadlock anything — and it is still a loop the compiler walks, which is
+    /// why the default counts it and the opt-out exists for projects that only
+    /// care about runtime.
+    #[serde(default = "default_true")]
+    pub include_type_only: bool,
 }
 
 /// Which shapes of pure forwarding are refused, and where.

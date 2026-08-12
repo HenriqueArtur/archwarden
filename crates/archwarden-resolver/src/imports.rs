@@ -86,7 +86,7 @@ pub enum ImportError {
 /// Resolves import specifiers against a repository.
 #[derive(Debug)]
 pub struct ImportResolver {
-    inner: oxc_resolver::Resolver,
+    inner: oxc_resolver::ResolverGeneric<crate::listing::Listings>,
     root: Utf8PathBuf,
     workspace: crate::workspace::Workspace,
 }
@@ -143,7 +143,15 @@ impl ImportResolver {
         };
 
         Self {
-            inner: oxc_resolver::Resolver::new(options),
+            // `ResolverGeneric<Listings>` rather than `Resolver`, which is
+            // `ResolverGeneric<FileSystemOs>`. The only difference is that a
+            // name no directory holds is answered from a listing instead of a
+            // `statx` that returns nothing — over half of resolution's calls,
+            // and the whole of the 10x a shared mount costs. Issue #82.
+            inner: oxc_resolver::ResolverGeneric::new_with_file_system(
+                crate::listing::Listings::default(),
+                options,
+            ),
             root: root.to_owned(),
             workspace,
         }

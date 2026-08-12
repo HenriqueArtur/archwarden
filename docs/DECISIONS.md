@@ -17,6 +17,53 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 21 — A graph rule reads the whole repository, and says what that costs
+Status: accepted.
+Context: issues #70 and #71. `run::check` walked the tree parsing and
+resolving a file only when a rule whose scope covered *that file* asked
+for it — the per-file gating issue #79 had just tightened, worth 0.2 s on a
+real repository. A cycle rule cannot work that way. A loop that leaves the
+scope and comes back is still a loop, so a graph built only from what the
+scope reaches reports a clean repository over a real cycle, which
+`CONFIG.md` calls the worst failure a linter has.
+Decision: `RuleEngine::needs_graph()` — a third question beside
+`needs_facts` and `needs_resolution`. When any rule answers `true`, the run
+parses and resolves **every source file in the repository**, whatever any
+scope says, collects each file's edges, and runs the graph rules after the
+walk against one graph built from all of them. Rules that read the graph are
+held back from the main loop rather than handed `graph: None`, because a
+cycle rule with no graph reports nothing and nothing is what a clean
+repository reports. `import-boundary` answers `needs_graph` from its
+`forbid_reaching` field rather than from its kind, so every boundary rule
+already written stays as cheap as it was.
+Alternatives:
+- **A graph limited to what the scope reaches.** Rejected: cheap, and
+  silently wrong in exactly the case the rule exists for.
+- **Resolve only the frontier within `MAX_DEPTH` hops of the scope.**
+  Correct — a file more than twelve hops away cannot appear in a reportable
+  chain — and genuinely cheaper on a monorepo with narrow scopes. Deferred
+  rather than rejected: it replaces the single-pass walk with a worklist,
+  its correctness argument needs its own tests, and getting it wrong fails
+  as a silent clean report. It is a purely internal change that no rule or
+  config field depends on, so it can be added later against a measured
+  complaint. Recorded here so the next person does not re-derive it.
+- **Holding every file's `FileFacts` to build the graph from.** Rejected on
+  measurement: only paths and a type-only flag are read, so the run keeps
+  `FileEdges` for every file and `FileFacts` only for the files a graph rule
+  actually covers.
+- **Interning paths to `u32` indices inside the graph.** Rejected on
+  measurement: 30 000 edges cost 5 MB of a 28 MB run, and interning would
+  return about 4 MB of it.
+Consequences: the cost is real and stated rather than discovered. On a
+10 000-file repository with 30 000 in-repo edges, a boundary rule governing
+one module of forty runs in 0.01 s and 8 MB; the same scope with
+`import-cycle` runs in 0.22 s and 28 MB. The run stops being proportional to
+the scope and becomes proportional to the repository. It is opt-in — a
+configuration with no graph rule pays none of it — and `RULES.md` publishes
+the table. `check --file` and the pre-write hook cannot build a graph from
+one file and so refuse such a rule under a `needs-repository` skip reason,
+rather than evaluating it into silence.
+
 ### 20 — The operations are a crate, and nothing in it writes
 Status: accepted.
 Context: issue #63. `prepare()` — discovery, load, version guard,

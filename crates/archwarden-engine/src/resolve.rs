@@ -4,11 +4,16 @@
 //! only sees what was written, so something has to close the gap, and this is
 //! it: one pass over a file's imports, filling in the resolved path.
 //!
-//! Deliberately not a graph. The reverse index `ARCHITECTURE.md:195` describes
-//! -- "if file A changed, who imports A?" -- exists to invalidate a cache
+//! Deliberately not a graph, still. The *forward* graph now exists —
+//! [`archwarden_core::graph::ImportGraph`], built by `run.rs` from what this
+//! pass fills in, for the two rules that ask about more than one file. It is
+//! built there rather than here because it is built only when a rule asks, and
+//! this pass runs whenever any boundary rule does.
+//!
+//! The **reverse** index `ARCHITECTURE.md:195` describes — "if file A changed,
+//! who imports A?" — is what is still absent. It exists to invalidate a cache
 //! incrementally, and v0 has no watch mode and re-checks the whole repository
-//! every run. Every v0 rule that touches imports asks about *its own*
-//! imports. Building an index with no reader would be code nobody can test
+//! every run. Building an index with no reader would be code nobody can test
 //! against a requirement.
 
 use archwarden_core::{

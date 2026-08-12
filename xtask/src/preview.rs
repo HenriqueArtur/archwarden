@@ -243,6 +243,7 @@ const CONFIG: &str = r#"{
   "modules": [
     {
       "id": "domain",
+      "scope": "packages/domain/**",
       "why": "Extracted from the monolith in 2025-11 so billing could depend on it without depending on the API. Every rule under it defends that one property.",
       "rules": [
         {
@@ -260,6 +261,7 @@ const CONFIG: &str = r#"{
     },
     {
       "id": "application",
+      "scope": "packages/application/**",
       "why": "Use cases are the only thing the API is allowed to call, so the transport can be replaced without touching a decision.",
       "rules": [
         {
@@ -273,6 +275,7 @@ const CONFIG: &str = r#"{
     },
     {
       "id": "infrastructure",
+      "scope": "packages/infrastructure/**",
       "why": "Everything that talks to the outside world, swapped per environment. Nothing above it may name a driver.",
       "rules": [
         {
@@ -317,12 +320,12 @@ const CONFIG: &str = r#"{
     {
       "type": "import-boundary", "id": "domain-forbids-infrastructure", "level": "error",
       "why": "The published @acme/domain package cannot resolve a driver at build time, so an import here makes the artefact unbuildable outside this repository.",
-      "from": "packages/domain/**", "forbid_import_from": ["packages/infrastructure/**"]
+      "from_module": "domain", "forbid_module": ["infrastructure"]
     },
     {
       "type": "import-boundary", "id": "domain-forbids-app", "level": "error",
       "why": "domain is published as its own package and the app is not.",
-      "from": "packages/domain/**", "forbid_import_from": ["apps/**"]
+      "from_module": "domain", "forbid_import_from": ["apps/**"]
     },
     {
       "type": "import-boundary", "id": "api-through-use-cases", "level": "error",

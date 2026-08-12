@@ -30,6 +30,14 @@ use crate::{
 #[serde(tag = "type", rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum Expectation {
+    /// The file must not sit on an import loop.
+    ///
+    /// Carries nothing. Every other expectation names what the file should
+    /// have looked like, and there is nothing to name here: the requirement is
+    /// the absence of a shape, and the shape that broke it is in the
+    /// [`Observed::ImportCycle`] beside it.
+    NoImportCycle,
+
     /// Exports that are nothing but a forward of another module.
     NoPassthrough {
         /// The shapes the rule refuses.
@@ -126,6 +134,28 @@ pub enum Expectation {
         /// Whether it must contain at least one `it(...)` or `test(...)`.
         non_empty_spec: bool,
     },
+    /// These imports are allowed, and nothing else in the repository is.
+    ///
+    /// The allowlist direction, and the reason it exists: a denylist decays.
+    /// Every new package, app or directory is permitted by omission, and
+    /// omission is invisible — the failure `CONFIG.md` names as the worst a
+    /// linter has, arriving one import at a time. Issue #75.
+    ///
+    /// Governs edges inside this repository only. A dependency has its own
+    /// axis, [`PermittedPackages`](Self::PermittedPackages), for the same
+    /// reason forbidding one does.
+    PermittedImports {
+        /// Glob patterns matched against the resolved import path. Anything
+        /// not matching is refused.
+        patterns: Vec<String>,
+        /// Whether `import type` counts.
+        include_type_only: bool,
+    },
+    /// These packages are allowed, and no others are.
+    PermittedPackages {
+        /// Package names, matched as "this package, and anything under it".
+        packages: Vec<String>,
+    },
     /// Imports matching these patterns are not allowed.
     ForbiddenImport {
         /// Glob patterns matched against the resolved import path.
@@ -133,6 +163,21 @@ pub enum Expectation {
         /// Exceptions, also matched against the resolved path.
         except: Vec<String>,
         /// Whether `import type` counts.
+        include_type_only: bool,
+    },
+    /// Depending on these, at any distance, is not allowed.
+    ///
+    /// Separate from [`ForbiddenImport`](Self::ForbiddenImport) because the
+    /// two are satisfied by different work. A forbidden *import* is removed by
+    /// editing the file the finding names; a forbidden *reach* usually is not,
+    /// because the file that closes the chain may be several packages away and
+    /// the fix is to cut an edge somewhere in the middle.
+    ForbiddenReach {
+        /// Glob patterns matched against every file reachable from this one.
+        patterns: Vec<String>,
+        /// Exceptions, also matched against the reached path.
+        except: Vec<String>,
+        /// Whether `import type` edges are followed.
         include_type_only: bool,
     },
     /// Imports of these packages are not allowed.
@@ -320,6 +365,20 @@ pub enum Observed {
         /// The sibling that was looked for.
         path: RepoRelPath,
     },
+    /// An import of a file this rule did not permit.
+    ImportNotPermitted {
+        /// The specifier, as written.
+        specifier: String,
+        /// Where it landed.
+        resolved: RepoRelPath,
+    },
+    /// An import of a package this rule did not permit.
+    PackageNotPermitted {
+        /// The specifier, as written.
+        specifier: String,
+        /// The package it names.
+        package: String,
+    },
     /// The sibling exists but contains no test cases.
     SpecIsEmpty {
         /// The spec file.
@@ -331,6 +390,27 @@ pub enum Observed {
         specifier: String,
         /// Where it resolved to.
         resolved: RepoRelPath,
+    },
+    /// The file ends up depending on something the rule forbids, without
+    /// importing it.
+    ForbiddenReach {
+        /// The chain, from this file to the forbidden destination.
+        ///
+        /// At least three entries, because a two-entry chain is a direct
+        /// import and `ForbiddenImport` already reports that one. The middle
+        /// of the chain is the actionable part: it names the edge that, cut,
+        /// removes the dependency.
+        chain: Vec<RepoRelPath>,
+    },
+    /// The file sits on an import loop.
+    ImportCycle {
+        /// The loop, starting and ending at this file.
+        ///
+        /// Both ends are named so a reader can see that it closed: `a -> b ->
+        /// a` is three entries, not two. The whole chain rather than the fact,
+        /// because "this file is in a cycle" is not actionable and the chain
+        /// names every edge that could be cut to break it.
+        chain: Vec<RepoRelPath>,
     },
     /// An import of a package the rule forbids.
     ForbiddenPackageImport {

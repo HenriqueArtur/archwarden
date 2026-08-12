@@ -160,12 +160,48 @@ pub enum CompiledRuleKind {
         /// allowed.
         allow_partial: bool,
     },
+    /// No file in scope may sit on an import loop.
+    ///
+    /// The only kind whose question cannot be answered from one file, which is
+    /// why the engine reads the import graph and why a configuration carrying
+    /// one costs a resolution pass over the whole repository. See
+    /// `RuleEngine::needs_graph`.
+    ImportCycle {
+        /// Whether `import type` closes a loop.
+        ///
+        /// A type import is erased at runtime, so a loop made only of them
+        /// cannot deadlock anything — and it is still a loop the compiler
+        /// walks. Spelled the same way `ImportBoundary` spells it, and read at
+        /// query time, so one graph answers both.
+        include_type_only: bool,
+    },
     /// Layer A may not import from layer B, or must import from layer C.
     ImportBoundary {
         /// Resolved import paths that are illegal.
         forbid: PathSet,
         /// Resolved import paths at least one import must match.
         require: PathSet,
+        /// Resolved import paths that are the *only* ones allowed.
+        ///
+        /// `None` means the rule does not work this way. An empty `PathSet`
+        /// would mean "nothing is allowed", which is a different and much
+        /// louder statement, so the two must not be the same value.
+        allow: Option<PathSet>,
+        /// Package names that are the only ones allowed. `None` as above.
+        allow_packages: Option<Vec<String>>,
+        /// The groups this rule quantifies over, one `PathSet` each.
+        ///
+        /// A rule about a *kind* covers every module wearing it, and its scope
+        /// is their union — so "may this file import that one?" cannot be
+        /// answered by asking whether the target is in scope: for
+        /// `from_kind: "app"` forbidding other apps, every app is in scope and
+        /// the union would exempt exactly the imports the rule exists to
+        /// refuse.
+        ///
+        /// Kept apart so the exemption can be "the same group", which is what
+        /// anybody means: an assembly may import itself and not its siblings.
+        /// Identity decides it, never the label. Issue #76.
+        groups: Vec<PathSet>,
         /// Package names that are illegal, matched as "this package, and
         /// anything under it".
         ///
@@ -173,7 +209,24 @@ pub enum CompiledRuleKind {
         /// repo-relative path, and under pnpm's store layout or yarn `PnP` it may
         /// have no path this repository could name at all.
         forbid_packages: Vec<String>,
-        /// Exceptions to `forbid`.
+        /// Resolved import paths this file may not *end up* depending on,
+        /// however many files away.
+        ///
+        /// Empty for almost every rule, and that emptiness is load-bearing:
+        /// it is what `RuleEngine::needs_graph` answers from, and a graph
+        /// costs a resolution pass over the whole repository. A boundary rule
+        /// that does not ask about reach must stay as cheap as it was.
+        ///
+        /// Direct imports are `forbid`'s to report. This is about the
+        /// dependency nobody wrote down. Issue #71.
+        forbid_reaching: PathSet,
+        /// Exceptions to `forbid`, and to `forbid_reaching`.
+        ///
+        /// One field for both because it means the same thing to each: a
+        /// destination this rule tolerates. "May not reach `packages/db`,
+        /// except `packages/db/types`" is the sentence somebody writes, and a
+        /// second `except_reaching` would be a field whose only purpose is to
+        /// be forgotten.
         except: PathSet,
         /// Importing files exempt from the whole rule.
         except_from: PathSet,
@@ -228,6 +281,7 @@ impl CompiledRuleKind {
             Self::SpecPair { .. } => "spec-pair",
             Self::NoPassthrough { .. } => "no-passthrough",
             Self::ImportBoundary { .. } => "import-boundary",
+            Self::ImportCycle { .. } => "import-cycle",
             Self::Presence { .. } => "presence",
             Self::Pair { .. } => "pair",
             Self::Frontmatter { .. } => "frontmatter",
@@ -258,6 +312,7 @@ impl CompiledRuleKind {
             } => *require_non_empty_spec || *skip_type_only,
             Self::Naming { .. }
             | Self::ImportBoundary { .. }
+            | Self::ImportCycle { .. }
             | Self::CallObligation { .. }
             | Self::NoPassthrough { .. } => true,
         }
@@ -324,10 +379,32 @@ impl CompiledRule {
 #[derive(Debug, Clone)]
 pub struct CompiledConfig {
     rules: Vec<CompiledRule>,
+    modules: Vec<CompiledModule>,
     ignore: PathSet,
     skip_dirs: SkipDirs,
     rules_hash: ContentHash,
     languages: Languages,
+}
+
+/// A module, as the rest of the run sees it.
+#[derive(Debug, Clone)]
+pub struct CompiledModule {
+    /// The label.
+    pub id: ModuleId,
+    /// The paths it is, when it declared any.
+    ///
+    /// `None` is what a module has always been: a namespace for rules, with no
+    /// paths of its own. Everything a scope unlocks — narrowing the rules
+    /// inside it, being named by a boundary, being asked whether it reaches
+    /// anything — is unavailable to those, deliberately, because inventing a
+    /// scope for them would be guessing at the thing the field exists to state.
+    pub scope: Option<Scope>,
+    /// What sort of module it is, when it said.
+    ///
+    /// A module with no kind is outside every rule that quantifies over kinds
+    /// — which is the omission problem the quantifier exists to remove,
+    /// reappearing one level up. `config doctor` names them.
+    pub kind: Option<String>,
 }
 
 impl CompiledConfig {
@@ -359,11 +436,33 @@ impl CompiledConfig {
     ) -> Self {
         Self {
             rules,
+            modules: Vec::new(),
             ignore,
             skip_dirs,
             rules_hash,
             languages: Languages::default(),
         }
+    }
+
+    /// Records the modules the configuration declared.
+    ///
+    /// A builder step for the same reason `with_languages` is one: every test
+    /// of a rule keeps the constructor it had, and the caller that cares says
+    /// so on a line that names what it is setting.
+    #[must_use]
+    pub fn with_modules(mut self, modules: Vec<CompiledModule>) -> Self {
+        self.modules = modules;
+        self
+    }
+
+    /// Every module, in declaration order.
+    ///
+    /// Carried past compilation because two questions need them and neither
+    /// is a rule's: whether a module reaches any file, and whether any rule
+    /// references it. Both are `config doctor`'s, and neither could be asked
+    /// while a module was only a namespace. Issue #74.
+    pub fn modules(&self) -> impl Iterator<Item = &CompiledModule> {
+        self.modules.iter()
     }
 
     /// Every rule, in declaration order.
@@ -474,6 +573,49 @@ mod tests {
             SkipDirs::default(),
             ContentHash::of(b"rules"),
         )
+    }
+
+    /// The modules a config declared travel with it, because two questions
+    /// need them and neither belongs to a rule: whether a module reaches any
+    /// file, and whether anything references it. Issue #74.
+    #[test]
+    fn the_modules_a_configuration_declared_travel_with_it() {
+        let declared = vec![
+            CompiledModule {
+                id: ModuleId::new("domain").expect("valid id"),
+                kind: None,
+                scope: Some(Scope::compile(["packages/domain/**"]).expect("valid scope")),
+            },
+            CompiledModule {
+                id: ModuleId::new("loose").expect("valid id"),
+                kind: None,
+                scope: None,
+            },
+        ];
+
+        let compiled = config(Vec::new(), &[]).with_modules(declared);
+
+        let seen: Vec<&str> = compiled.modules().map(|m| m.id.as_str()).collect();
+        assert_eq!(seen, ["domain", "loose"]);
+
+        let domain = compiled.modules().next().expect("the first");
+        assert!(
+            domain
+                .scope
+                .as_ref()
+                .is_some_and(|s| s.matches_dir(camino::Utf8Path::new("packages/domain/src"))),
+        );
+        assert!(
+            compiled.modules().nth(1).is_some_and(|m| m.scope.is_none()),
+            "a module with no paths is what a module has always been"
+        );
+    }
+
+    /// And a configuration that declared none has none, rather than an
+    /// invented empty module for the rules that belong to no module.
+    #[test]
+    fn a_configuration_with_no_modules_reports_none() {
+        assert_eq!(config(Vec::new(), &[]).modules().count(), 0);
     }
 
     /// Which languages a configuration asked for travels with it, and a
@@ -621,8 +763,12 @@ mod tests {
             },
             CompiledRuleKind::ImportBoundary {
                 forbid: PathSet::default(),
+                groups: Vec::new(),
+                allow: None,
+                allow_packages: None,
                 require: PathSet::default(),
                 forbid_packages: Vec::new(),
+                forbid_reaching: PathSet::default(),
                 except: PathSet::default(),
                 except_from: PathSet::default(),
                 include_type_only: true,

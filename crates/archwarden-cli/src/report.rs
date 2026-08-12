@@ -1042,6 +1042,12 @@ fn describe_folder_name(allowed: &[String], warn: &[String], patterns: &[String]
     parts.join(", ")
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "the same table as `describe_observed`, from the other side: one \
+              arm per expectation, and the two have to read as one sentence \
+              when a finding puts them together"
+)]
 pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
     match expectation {
         Expectation::AllowedSubfolders {
@@ -1111,10 +1117,35 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
                 format!("`{path}`")
             }
         }
+        Expectation::PermittedImports { patterns, .. } => format!(
+            "imports only from {} (its own files always, packages separately)",
+            join_or(patterns, "nowhere")
+        ),
+        Expectation::PermittedPackages { packages } => {
+            format!("imports only these packages: {}", join_or(packages, "none"))
+        }
         Expectation::ForbiddenImport {
             patterns, except, ..
         } => {
             let base = format!("no import from {}", join_or(patterns, "anywhere"));
+            if except.is_empty() {
+                base
+            } else {
+                format!("{base}, except {}", join_or(except, ""))
+            }
+        }
+        Expectation::NoImportCycle => "no import cycle through it".to_owned(),
+        // "depend on" rather than "import from", so that a report carrying both
+        // this and a `ForbiddenImport` does not read as the same sentence
+        // twice. They are different obligations and one edit rarely satisfies
+        // both.
+        Expectation::ForbiddenReach {
+            patterns, except, ..
+        } => {
+            let base = format!(
+                "not to depend on {}, at any distance",
+                join_or(patterns, "anything")
+            );
             if except.is_empty() {
                 base
             } else {
@@ -1956,6 +1987,32 @@ mod tests {
             include_type_only: true,
         });
         assert_eq!(no_exemption, "no import of `three`");
+    }
+
+    /// The two expectations a graph rule carries.
+    ///
+    /// Both would otherwise fall through to the `non_exhaustive` arm and reach
+    /// a reader as a Rust `Debug` dump, which is the failure that arm exists to
+    /// soften rather than a place to leave a shipped variant.
+    #[test]
+    fn the_graph_rules_expectations_read_as_sentences() {
+        let cycle = describe_expectation(&Expectation::NoImportCycle);
+        assert_eq!(cycle, "no import cycle through it");
+
+        let reach = describe_expectation(&Expectation::ForbiddenReach {
+            patterns: vec!["packages/db/**".to_owned()],
+            except: vec!["packages/db/types/**".to_owned()],
+            include_type_only: true,
+        });
+        assert!(
+            reach.contains("packages/db/**") && reach.contains("except"),
+            "{reach}"
+        );
+        assert!(
+            reach.contains("depend"),
+            "the sentence has to say it is about depending rather than \
+             importing, or it reads as a duplicate of `ForbiddenImport`: {reach}"
+        );
     }
 
     /// A warn-listed folder is part of the expectation, so a reader can see

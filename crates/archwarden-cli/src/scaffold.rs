@@ -590,8 +590,12 @@ mod tests {
     fn boundary(forbid: &[&str], require: &[&str], except: &[&str]) -> CompiledRuleKind {
         CompiledRuleKind::ImportBoundary {
             forbid: set(forbid),
+            groups: Vec::new(),
+            allow: None,
+            allow_packages: None,
             require: set(require),
             forbid_packages: Vec::new(),
+            forbid_reaching: PathSet::default(),
             except: set(except),
             except_from: PathSet::default(),
             include_type_only: true,
@@ -675,8 +679,12 @@ mod tests {
             &["src/**"],
             CompiledRuleKind::ImportBoundary {
                 forbid: set(&["src/infra/**"]),
+                groups: Vec::new(),
+                allow: None,
+                allow_packages: None,
                 require: PathSet::default(),
                 forbid_packages: vec!["three".to_owned()],
+                forbid_reaching: PathSet::default(),
                 except: PathSet::default(),
                 except_from: set(&["src/scripts/three/**"]),
                 include_type_only: true,
@@ -1193,8 +1201,12 @@ mod tests {
                 &["src/**"],
                 CompiledRuleKind::ImportBoundary {
                     forbid: set(&["src/infra/**"]),
+                    groups: Vec::new(),
+                    allow: None,
+                    allow_packages: None,
                     require: PathSet::default(),
                     forbid_packages: Vec::new(),
+                    forbid_reaching: PathSet::default(),
                     except: PathSet::default(),
                     except_from: PathSet::default(),
                     include_type_only: false,

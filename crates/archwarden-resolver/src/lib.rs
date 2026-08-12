@@ -15,6 +15,7 @@
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
 pub mod imports;
+pub mod listing;
 pub mod memory;
 pub mod preset;
 pub mod tsconfig;
