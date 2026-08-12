@@ -1420,6 +1420,7 @@ mod tests {
                 .collect(),
             exports: Vec::new(),
             calls: Vec::new(),
+            allowances: Vec::new(),
             has_opaque_import: false,
         }
     }

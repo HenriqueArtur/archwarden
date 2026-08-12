@@ -19,6 +19,36 @@ saying so.
 
 ### Added
 
+- **Inline suppression, with a mandatory reason and no way to hide it**
+  ([#72](https://github.com/HenriqueArtur/archwarden/issues/72)).
+
+  ```ts
+  // archwarden-allow: the vendor SDK ships no types, tracked in ARCH-412
+  import { Widget } from '@vendor/sdk';
+  ```
+
+  The marker governs **the line after it**, and only that one. Naming a rule
+  (`// archwarden-allow ui-forbids-domain: …`) narrows it further.
+
+  Three constraints, and they are the feature rather than details of it.
+  **No reason, no suppression** — a marker with nothing after the colon is a
+  comment. **Never silently dropped** — a suppressed finding is its own line in
+  the report, with its reason, in every format, and the summary line reads
+  `0 errors, 0 warnings, 1 allowed`, so a run with forty does not look like a
+  clean one. **Countable** — that number only ever goes up, visibly.
+
+  **It reaches only findings that point at a line**, which today means
+  `import-boundary` and nothing else: a marker governs the line below it, and
+  `structure` reporting a folder that should not exist has no line to sit
+  above. Stated here rather than left to be discovered, and it is the case the
+  feature was asked for — the request is *"a way to skip the next import
+  line"*. It also only works where archwarden parses comments, so a `.md`
+  under a `presence` rule has nowhere to put one.
+
+  This is not `baseline` and the difference is the promise: `baseline` says
+  *this repository has this debt today* and shrinks; a marker says *this line
+  is a deliberate exception*, with the reason where the next reader finds it.
+
 - **`governance: "closed"` — every file must be governed by some rule**
   ([#60](https://github.com/HenriqueArtur/archwarden/issues/60)). The gate half
   of `config coverage`: every file no rule governs becomes a finding, and
@@ -281,6 +311,12 @@ config reports has moved: both new rules fire only where somebody writes one.
   missing `no-passthrough` since that rule shipped; the test guarding it listed
   five of the then-eight kinds, so it agreed. Both are fixed, and the test now
   builds one rule of every kind and checks the list in both directions.
+
+### Changed
+
+- **The cache format moved to 6.** `FileFacts` now carries the suppression
+  markers a file holds, so a cache written by 0.16 is discarded rather than
+  misread: one cold run, once.
 
 ### Fixed
 

@@ -295,6 +295,86 @@ pub struct CallFact {
     pub span: Span,
 }
 
+/// An `archwarden-allow` marker, as written in a comment.
+///
+/// The reason is not optional and there is no variant without one: a
+/// suppression that hides itself is worse than the violation it hides, which
+/// is the whole argument of issue #72. A comment with no reason after the
+/// colon is not a marker and is not carried here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AllowanceFact {
+    /// The rule it names, or `None` for every rule.
+    pub rule_id: Option<String>,
+    /// Why, in the author's words. Never empty.
+    pub reason: String,
+    /// The byte range of the line this marker governs — the one after it.
+    ///
+    /// Worked out by the front-end, where the source text is in hand, rather
+    /// than carried as the comment's own position for the runner to resolve
+    /// later. By then the text is gone: facts are cached and the file is not
+    /// read again, so a marker that stored where *it* was could never find out
+    /// what was under it.
+    pub governs: Span,
+}
+
+impl AllowanceFact {
+    /// The marker a comment's text spells, if it spells one.
+    ///
+    /// Two shapes, and the rule id is the only optional part:
+    ///
+    /// ```text
+    /// // archwarden-allow: the vendor SDK has no types
+    /// // archwarden-allow ui-forbids-domain: one screen, being deleted in Q3
+    /// ```
+    ///
+    /// **No reason, no suppression.** A marker with nothing after the colon,
+    /// or with only whitespace, is not a marker — it is a comment, and it
+    /// suppresses nothing. That is the constraint the feature *is*: an
+    /// unexplained suppression is how debt becomes invisible, and refusing to
+    /// recognise one is cheaper than reporting it and hoping somebody looks.
+    #[must_use]
+    pub fn parse(text: &str, governs: Span) -> Option<Self> {
+        let rest = text.trim_start().strip_prefix(MARKER)?;
+        let (head, reason) = rest.split_once(':')?;
+
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return None;
+        }
+
+        let named = head.trim();
+        // Anything between the marker and the colon is a rule id. Empty means
+        // every rule; whitespace inside means the comment was prose that
+        // happened to start with the word, and is not a marker.
+        if named.chars().any(char::is_whitespace) {
+            return None;
+        }
+
+        Some(Self {
+            rule_id: (!named.is_empty()).then(|| named.to_owned()),
+            reason: reason.to_owned(),
+            governs,
+        })
+    }
+
+    /// Whether this marker speaks for `rule` at `offset`.
+    ///
+    /// A marker with no rule id speaks for every rule on the line it governs.
+    /// One that names a rule speaks for that rule alone, which is what lets a
+    /// file carry an exception to one boundary without going quiet about the
+    /// rest.
+    #[must_use]
+    pub fn covers(&self, offset: u32, rule: &str) -> bool {
+        if self.governs.start > offset || offset >= self.governs.end {
+            return false;
+        }
+        self.rule_id.as_deref().is_none_or(|named| named == rule)
+    }
+}
+
+/// The word a suppression comment starts with.
+pub const MARKER: &str = "archwarden-allow";
+
 /// Everything archwarden knows about one file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileFacts {
@@ -308,6 +388,13 @@ pub struct FileFacts {
     pub exports: Vec<ExportFact>,
     /// Call expressions, in source order.
     pub calls: Vec<CallFact>,
+    /// Suppression markers found in comments, in source order.
+    ///
+    /// Only the ones that parse as a marker; ordinary prose is not carried,
+    /// because this is cached per file and a repository's comments are larger
+    /// than its code. Issue #72.
+    #[serde(default)]
+    pub allowances: Vec<AllowanceFact>,
     /// Whether the file has a dynamic import naming no single module.
     ///
     /// `import(name)` and ``import(`./locales/${name}`)`` are recorded nowhere
@@ -359,6 +446,7 @@ impl FileFacts {
             imports: Vec::new(),
             exports: Vec::new(),
             calls: Vec::new(),
+            allowances: Vec::new(),
             has_opaque_import: false,
         }
     }
@@ -615,5 +703,118 @@ mod tests {
         let json = serde_json::to_string(&facts).expect("serialises");
         let parsed: FileFacts = serde_json::from_str(&json).expect("deserialises");
         assert_eq!(parsed, facts);
+    }
+
+    /// The constraint the feature is: no reason, no suppression.
+    ///
+    /// `// eslint-disable-next-line` with no explanation is how debt becomes
+    /// invisible, and a suppression that hides itself is worse than the
+    /// violation it hides. Refusing to *recognise* an unexplained marker is
+    /// cheaper than recognising it and hoping somebody reads a report.
+    #[test]
+    fn a_marker_without_a_reason_is_not_a_marker() {
+        let span = Span::new(0, 10);
+
+        assert!(AllowanceFact::parse("archwarden-allow:", span).is_none());
+        assert!(AllowanceFact::parse("archwarden-allow:    ", span).is_none());
+        assert!(
+            AllowanceFact::parse("archwarden-allow", span).is_none(),
+            "and no colon at all is a word somebody wrote, not a suppression"
+        );
+    }
+
+    /// A marker speaks for the line it governs and for nobody else's rule.
+    ///
+    /// The two halves of what makes a suppression narrow: a byte outside the
+    /// governed line is not covered, however close, and a marker naming one
+    /// rule leaves every other rule reporting. Without the second, a file with
+    /// one legitimate exception would go quiet about everything.
+    #[test]
+    fn a_marker_covers_its_own_line_and_its_own_rule() {
+        let marker = AllowanceFact {
+            rule_id: None,
+            reason: "because".to_owned(),
+            governs: Span::new(10, 20),
+        };
+
+        assert!(marker.covers(10, "any-rule"), "the first byte is inside");
+        assert!(marker.covers(19, "any-rule"));
+        assert!(!marker.covers(9, "any-rule"), "the byte before is not");
+        assert!(
+            !marker.covers(20, "any-rule"),
+            "and neither is the one after the end"
+        );
+
+        let named = AllowanceFact {
+            rule_id: Some("ui-forbids-domain".to_owned()),
+            reason: "because".to_owned(),
+            governs: Span::new(10, 20),
+        };
+        assert!(named.covers(12, "ui-forbids-domain"));
+        assert!(
+            !named.covers(12, "another-rule"),
+            "one exception must not silence the rest of the file"
+        );
+    }
+
+    /// A file with no markers carries none, which is what keeps the cache from
+    /// growing for every repository that never uses the feature.
+    #[test]
+    fn a_file_without_markers_carries_none() {
+        let facts = FileFacts::unparsed(
+            RepoRelPath::new("src/a.ts").expect("valid"),
+            ContentHash::of(b"source"),
+        );
+
+        assert!(facts.allowances.is_empty());
+    }
+
+    /// The two shapes, and the rule id is the only optional part.
+    #[test]
+    fn a_marker_may_name_one_rule_or_all_of_them() {
+        let span = Span::new(0, 10);
+
+        assert_eq!(
+            AllowanceFact::parse("archwarden-allow: the vendor SDK has no types", span),
+            Some(AllowanceFact {
+                rule_id: None,
+                reason: "the vendor SDK has no types".to_owned(),
+                governs: span,
+            })
+        );
+        assert_eq!(
+            AllowanceFact::parse("archwarden-allow ui-forbids-domain: one screen", span),
+            Some(AllowanceFact {
+                rule_id: Some("ui-forbids-domain".to_owned()),
+                reason: "one screen".to_owned(),
+                governs: span,
+            })
+        );
+    }
+
+    /// Leading whitespace is the comment's, not the author's.
+    #[test]
+    fn the_comment_marker_may_be_indented() {
+        let span = Span::new(0, 10);
+
+        assert!(AllowanceFact::parse("   archwarden-allow: because", span).is_some());
+    }
+
+    /// Prose that happens to begin with the word is prose.
+    ///
+    /// "archwarden-allow rules are documented in ADR 7: see there" reads as a
+    /// marker to a naive parser and is a sentence. Two words before the colon
+    /// is what tells them apart, because a rule id has no spaces in it.
+    #[test]
+    fn a_sentence_that_starts_with_the_word_is_not_a_marker() {
+        let span = Span::new(0, 10);
+
+        assert!(
+            AllowanceFact::parse(
+                "archwarden-allow rules are documented in ADR 7: see there",
+                span
+            )
+            .is_none()
+        );
     }
 }

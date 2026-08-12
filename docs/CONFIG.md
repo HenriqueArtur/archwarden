@@ -1134,6 +1134,68 @@ does overlap; the other two are what this exists for.
 
 It resolves the whole repository, so it costs about what a `check` costs.
 
+## Suppressing one finding, with a reason
+
+```ts
+// archwarden-allow: the vendor SDK ships no types, tracked in ARCH-412
+import { Widget } from '@vendor/sdk';
+```
+
+The marker governs **the line after it**, and only that one. Naming a rule
+narrows it further:
+
+```ts
+// archwarden-allow ui-forbids-domain: one screen, being deleted in Q3
+```
+
+**No reason, no suppression.** `// archwarden-allow:` with nothing after the
+colon is not a marker — it is a comment, and it suppresses nothing.
+`// eslint-disable-next-line` with no explanation is how debt becomes
+invisible, and a suppression that hides itself is worse than the violation it
+hides.
+
+**A suppressed finding is never absent from the report.** It appears as its own
+line, with its reason, in every format, and the count is on the summary line:
+
+```
+1 finding allowed on purpose:
+
+  packages/ui/button.tsx · ui-forbids-orders — the vendor SDK ships no types
+
+0 errors, 0 warnings, 1 allowed · 3 files, 5 directories · 1 parsed
+```
+
+A run with forty suppressions must not look like a clean run at a glance. A
+number that only ever goes up, visibly, is one somebody eventually acts on.
+
+### What it can and cannot reach
+
+**Only findings that point at a line.** A marker governs the line below it, so
+a finding with no line has nothing to sit above. Today that means
+`import-boundary` findings — a forbidden import, a forbidden package, an
+import outside an allowlist — and nothing else. `structure` reporting a folder
+that should not exist, `presence` reporting a missing file, `import-cycle`
+reporting a loop: none of these has a line, and some never could.
+
+This is a limit worth knowing before you reach for the feature rather than
+after. It is also the case the feature was asked for: the request it answers is
+*"a way to tell it to skip the next import line"*.
+
+**Only files archwarden parses as code.** The marker lives in a comment, so a
+`.md` or a `.json` under a `presence` rule has nowhere to put one.
+
+### This is not `baseline`, and the difference is the promise
+
+| | means |
+| --- | --- |
+| `baseline` | *this repository has this debt today* — a committed file, reviewable as a diff, that shrinks |
+| `archwarden-allow` | *this line is a deliberate exception* — with the reason, where the next reader finds it |
+
+Reach for `baseline` to adopt archwarden on an existing repository, and for a
+marker when one line is genuinely an exception and will stay one. Using a
+marker for a legacy module means editing hundreds of files; that is what
+`baseline` is for.
+
 ## `governance` — is every file somebody's responsibility?
 
 ```json

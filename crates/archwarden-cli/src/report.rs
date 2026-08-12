@@ -178,6 +178,38 @@ fn human_duration(elapsed: std::time::Duration) -> String {
 ///
 /// Shared by the full report and the single-file check, so a hook and a
 /// commit-time run word the same finding identically.
+/// The findings somebody allowed on purpose, and why.
+///
+/// A section of its own rather than a count, and never omitted when there is
+/// one: a suppressed finding is not an absent finding. A run with forty of
+/// them must not look like a clean run at a glance, which is the constraint
+/// issue #72 is built on -- `// eslint-disable-next-line` with no explanation
+/// is how debt becomes invisible. The reason is on the line for the same
+/// reason it is mandatory in the marker.
+fn render_suppressed(
+    suppressed: &[archwarden_engine::run::Suppressed],
+    out: &mut dyn std::io::Write,
+) {
+    if suppressed.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(
+        out,
+        "\n{} {} allowed on purpose:\n",
+        suppressed.len(),
+        plural(suppressed.len(), "finding", "findings")
+    );
+    for allowed in suppressed {
+        let _ = writeln!(
+            out,
+            "  {} · {} — {}",
+            allowed.finding.path, allowed.finding.rule_id, allowed.reason
+        );
+    }
+    let _ = writeln!(out);
+}
+
 fn render_finding(finding: &Finding, at: &str, why: Option<&str>, out: &mut dyn std::io::Write) {
     let module = finding
         .module_id
@@ -271,6 +303,15 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         }
     }
 
+    // Suppressions, above the unreadable files and below the findings. Never
+    // omitted and never folded into a count: a suppressed finding is not an
+    // absent finding, and a run with forty of them must not look like a clean
+    // one at a glance. That is the constraint issue #72 is built on --
+    // `// eslint-disable-next-line` with no explanation is how debt becomes
+    // invisible, and the reason is on the line here for the same reason it is
+    // mandatory in the marker.
+    render_suppressed(&report.suppressed, out);
+
     for (path, reason) in &report.unreadable_files {
         let _ = writeln!(out, "note: `{path}` was not checked — {reason}");
 
@@ -353,6 +394,13 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
     // answered. Omitted when there is nothing to say, which is nearly always.
     if summary.checks_skipped > 0 {
         let _ = write!(out, ", {} skipped", summary.checks_skipped);
+    }
+
+    // In the one line everybody reads, so a repository whose suppressions are
+    // growing finds out without anybody running a second command. A number
+    // that only ever goes up, visibly, is a number somebody eventually acts on.
+    if summary.suppressed > 0 {
+        let _ = write!(out, ", {} allowed", summary.suppressed);
     }
 
     let _ = write!(
@@ -1225,6 +1273,7 @@ mod tests {
             skipped_checks: Vec::new(),
             facts_reused: 0,
             imports: archwarden_engine::resolve::Outcomes::default(),
+            suppressed: Vec::new(),
         }
     }
 
@@ -1393,6 +1442,7 @@ mod tests {
 
     /// `--summary` suppresses the per-finding listing. That is the whole
     /// point: on a first migration the listing is hundreds of lines.
+
     #[test]
     fn a_summary_does_not_list_the_findings() {
         let (report, breakdown) = four_rules();
@@ -2326,6 +2376,44 @@ mod tests {
             named.as_array().map(Vec::len),
             Some(2),
             "as many as the count: {json}"
+        );
+    }
+
+    /// A suppressed finding is a line of its own and a number on the
+    /// summary, never an absence.
+    ///
+    /// The constraint issue #72 is built on: a run with forty of them must
+    /// not look like a clean run at a glance.
+    #[test]
+    fn suppressions_are_a_section_and_a_number_on_the_summary_line() {
+        let make_report = report;
+        let mut report = make_report(Vec::new());
+        report.suppressed = vec![archwarden_engine::run::Suppressed {
+            finding: finding(Level::Error, None),
+            reason: "the vendor SDK ships no types, tracked in ARCH-412".to_owned(),
+        }];
+
+        let text = rendered(&report, Format::Text);
+
+        assert!(
+            text.contains("1 finding allowed on purpose"),
+            "a suppressed finding is not an absent one: {text}"
+        );
+        assert!(
+            text.contains("the vendor SDK ships no types, tracked in ARCH-412"),
+            "and the reason is on the line, or this is `eslint-disable` again: \
+             {text}"
+        );
+        assert!(
+            text.contains("1 allowed"),
+            "on the summary line too, so a repository whose suppressions are \
+             growing finds out without running a second command: {text}"
+        );
+
+        let clean = rendered(&make_report(Vec::new()), Format::Text);
+        assert!(
+            !clean.contains("allowed"),
+            "and a run with none says nothing about them: {clean}"
         );
     }
 }

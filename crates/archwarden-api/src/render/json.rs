@@ -219,6 +219,7 @@ mod tests {
             skipped_checks: Vec::new(),
             facts_reused: 0,
             imports: archwarden_engine::resolve::Outcomes::default(),
+            suppressed: Vec::new(),
         }
     }
 

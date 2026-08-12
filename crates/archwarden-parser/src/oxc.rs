@@ -106,6 +106,7 @@ impl OxcParser {
         let forwarded = forwarded_bindings(&parsed.program);
 
         let (imports, has_opaque_import) = imports(&parsed.module_record, &parsed.program);
+        let allowances = allowances(&parsed.program, source);
 
         Ok(FileFacts {
             path: path.clone(),
@@ -118,6 +119,7 @@ impl OxcParser {
                 &forwarded,
             ),
             calls: calls(&parsed.program),
+            allowances,
             has_opaque_import,
         })
     }
@@ -352,6 +354,48 @@ fn record_declaration(declaration: &Declaration<'_>, tags: &mut HashMap<String, 
 /// through [`declaration_tags`]: that one answers "how was this declared", this
 /// one answers "what does it claim to be", and the two are separately
 /// interesting.
+/// Every `archwarden-allow` marker in the file, in source order.
+///
+/// Read from oxc's comment list rather than by scanning the text, so a marker
+/// inside a string literal is not one — `"// archwarden-allow: x"` in a test
+/// fixture would otherwise suppress the line after it.
+///
+/// Only markers are carried. Ordinary comments are not: `FileFacts` is cached
+/// per file, and a repository's prose is larger than its code. Issue #72.
+fn allowances(program: &Program<'_>, source: &str) -> Vec<archwarden_core::facts::AllowanceFact> {
+    program
+        .comments
+        .iter()
+        .filter_map(|comment| {
+            let span = comment.content_span();
+            let text = source.get(span.start as usize..span.end as usize)?;
+            archwarden_core::facts::AllowanceFact::parse(text, next_line(source, comment.span.end))
+        })
+        .collect()
+}
+
+/// The byte range of the line beginning after `offset`.
+///
+/// Empty when the marker is the last thing in the file, which suppresses
+/// nothing and is the honest answer: there is no next line to be about.
+fn next_line(source: &str, offset: u32) -> archwarden_core::facts::Span {
+    let from = offset as usize;
+    let Some(newline) = source.get(from..).and_then(|rest| rest.find('\n')) else {
+        return archwarden_core::facts::Span::new(offset, offset);
+    };
+
+    let start = from + newline + 1;
+    let end = source
+        .get(start..)
+        .and_then(|rest| rest.find('\n'))
+        .map_or(source.len(), |at| start + at);
+
+    archwarden_core::facts::Span::new(
+        u32::try_from(start).unwrap_or(u32::MAX),
+        u32::try_from(end).unwrap_or(u32::MAX),
+    )
+}
+
 fn declaration_annotations(program: &Program<'_>, source: &str) -> HashMap<String, Vec<String>> {
     let mut annotations = HashMap::new();
 
@@ -750,6 +794,99 @@ mod tests {
             .iter()
             .map(ExportKind::as_str)
             .collect()
+    }
+
+    /// The marker governs the line after it, named by byte range, and the
+    /// range is what the runner matches a finding's span against.
+    ///
+    /// Computed here because this is where the source text is: facts are
+    /// cached and the file is never read again, so a marker that only knew
+    /// where *it* sat could never find out what was under it.
+    #[test]
+    fn a_marker_carries_the_byte_range_of_the_line_below_it() {
+        let source = "// archwarden-allow: the vendor SDK has no types\n\
+                      import { User } from './user';\n\
+                      export const x = User;\n";
+        let facts = parse("src/a.ts", source);
+
+        assert_eq!(facts.allowances.len(), 1, "{:?}", facts.allowances);
+        let marker = &facts.allowances[0];
+        assert_eq!(marker.reason, "the vendor SDK has no types");
+        assert_eq!(marker.rule_id, None);
+
+        let governed = &source[marker.governs.start as usize..marker.governs.end as usize];
+        assert_eq!(
+            governed, "import { User } from './user';",
+            "the line below, exactly -- not the comment and not the one after"
+        );
+
+        // Which is what makes the runner's question answerable at all.
+        let import_at = u32::try_from(source.find("import").expect("it is there")).expect("small");
+        assert!(marker.covers(import_at, "any-rule"));
+    }
+
+    /// A marker on the last line of a file governs nothing, and says so by
+    /// covering no byte rather than by covering everything.
+    #[test]
+    fn a_marker_with_no_line_below_it_suppresses_nothing() {
+        let facts = parse(
+            "src/a.ts",
+            "export const x = 1;\n// archwarden-allow: nothing follows this",
+        );
+
+        assert_eq!(facts.allowances.len(), 1);
+        assert!(
+            !facts.allowances[0].covers(0, "any-rule"),
+            "an empty range covers no offset, including the start of the file"
+        );
+    }
+
+    /// A block-comment marker with code after it on the same line still
+    /// governs the *next* line.
+    ///
+    /// The case that tells the arithmetic apart. Every line comment ends where
+    /// its line does, so "the newline after the comment" is zero bytes away
+    /// and a wrong sign lands on the same answer. With code between the
+    /// comment and the newline it does not, and a wrong sign points into the
+    /// middle of the line above.
+    #[test]
+    fn a_block_marker_followed_by_code_still_governs_the_line_below() {
+        let source = "/* archwarden-allow: reason */ const spacer = 1;\n\
+                      import { User } from './user';\n";
+        let facts = parse("src/a.ts", source);
+
+        assert_eq!(facts.allowances.len(), 1, "{:?}", facts.allowances);
+        let governed = &source
+            [facts.allowances[0].governs.start as usize..facts.allowances[0].governs.end as usize];
+        assert_eq!(
+            governed, "import { User } from './user';",
+            "the line below the comment, not the rest of the comment's own line"
+        );
+    }
+
+    /// A marker inside a string is a string.
+    ///
+    /// Read from the parser's comment list rather than by scanning the text,
+    /// so a fixture that contains the words in a literal does not silence the
+    /// line after it. A repository whose tests are about archwarden is exactly
+    /// where that would bite.
+    #[test]
+    fn the_words_inside_a_string_are_not_a_marker() {
+        let facts = parse(
+            "src/a.ts",
+            "const sample = \"// archwarden-allow: not real\";\nexport const x = sample;\n",
+        );
+
+        assert!(facts.allowances.is_empty(), "{:?}", facts.allowances);
+    }
+
+    /// A file with no markers carries none, which is what keeps the cache from
+    /// growing for every repository that never uses the feature.
+    #[test]
+    fn an_ordinary_file_carries_no_markers() {
+        let facts = parse("src/a.ts", "// an ordinary comment\nexport const x = 1;\n");
+
+        assert!(facts.allowances.is_empty());
     }
 
     /// The table in docs/RULES.md, checked against a real parser rather than

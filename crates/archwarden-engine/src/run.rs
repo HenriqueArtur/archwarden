@@ -71,6 +71,16 @@ pub struct Report {
     /// Reported so a user can see the cache working -- and notice when it is
     /// not, which is otherwise invisible until someone times two runs.
     pub facts_reused: usize,
+    /// Findings an `archwarden-allow` marker took out of the list, with the
+    /// reason its author gave.
+    ///
+    /// **Never silently dropped.** A suppressed finding is not an absent
+    /// finding: it is here, with its reason, in every format, and a run with
+    /// forty of them must not look like a clean one at a glance. That is the
+    /// whole of issue #72 — `// eslint-disable-next-line` with no explanation
+    /// is how debt becomes invisible, and a suppression that hides itself is
+    /// worse than the violation it hides.
+    pub suppressed: Vec<Suppressed>,
     /// Where the imports went, by kind.
     ///
     /// All zero when no rule needed resolution. The `unresolved` count is the
@@ -106,6 +116,17 @@ impl Report {
             .any(|finding| finding.level.fails_build())
     }
 }
+/// A finding somebody allowed on purpose, and why.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Suppressed {
+    /// What would have been reported.
+    pub finding: Finding,
+    /// The author's words, from the marker. Never empty — a marker with no
+    /// reason is not a marker. See
+    /// [`AllowanceFact`](archwarden_core::facts::AllowanceFact).
+    pub reason: String,
+}
+
 /// Everything one run needs.
 ///
 /// A struct rather than four parameters, because the cache is optional and a
@@ -232,6 +253,12 @@ pub fn check(run: Run<'_>) -> Report {
     let building_graph = engines.iter().any(|engine| engine.needs_graph());
     let mut edges: Vec<archwarden_core::graph::FileEdges> = Vec::new();
     let mut deferred: Vec<Deferred> = Vec::new();
+    // Kept per file, and only for files that carry one, so a repository with
+    // no suppressions holds nothing. Issue #72.
+    let mut allowances: std::collections::BTreeMap<
+        RepoRelPath,
+        Vec<archwarden_core::facts::AllowanceFact>,
+    > = std::collections::BTreeMap::new();
     let mut sibling_lists: Vec<Vec<String>> = Vec::new();
 
     // Built once per run, not once per file: `oxc_resolver` caches
@@ -346,6 +373,12 @@ pub fn check(run: Run<'_>) -> Report {
                 && (feeds_graph || wanted_by.iter().any(|engine| engine.needs_resolution()))
             {
                 imports.absorb(crate::resolve::resolve_imports(resolver, facts));
+            }
+
+            if let Some(facts) = facts.as_ref()
+                && !facts.allowances.is_empty()
+            {
+                allowances.insert(file.path.clone(), facts.allowances.clone());
             }
 
             // After resolution, never before: an edge is where an import
@@ -501,6 +534,33 @@ pub fn check(run: Run<'_>) -> Report {
         }
     }
 
+    // Suppression, last: a marker takes a finding out of the list and puts it
+    // in `suppressed` with the reason, rather than making it disappear. Issue
+    // #72, and the constraint that makes the feature safe to have at all.
+    //
+    // Only findings with a span can be reached. A marker governs the line
+    // after it, and `structure` reporting a folder that should not exist has
+    // no line to sit above -- that limit is stated in `docs/CONFIG.md` rather
+    // than left to be discovered.
+    let mut suppressed: Vec<Suppressed> = Vec::new();
+    findings.retain(|finding| {
+        let Some(span) = finding.span else {
+            return true;
+        };
+        let Some(marker) = allowances.get(&finding.path).and_then(|markers| {
+            markers
+                .iter()
+                .find(|marker| marker.covers(span.start, finding.rule_id.as_str()))
+        }) else {
+            return true;
+        };
+        suppressed.push(Suppressed {
+            finding: finding.clone(),
+            reason: marker.reason.clone(),
+        });
+        false
+    });
+
     // Determinism is a design goal: the same inputs must produce byte-identical
     // output, or every snapshot test and CI diff becomes noise. The blind spots
     // arrive in whatever order the walk reached the files, which is not one a
@@ -522,6 +582,10 @@ pub fn check(run: Run<'_>) -> Report {
         files_parsed,
         facts_reused,
         imports,
+        suppressed: {
+            suppressed.sort();
+            suppressed
+        },
     }
 }
 
@@ -1765,6 +1829,111 @@ mod tests {
         assert_eq!(offenders(&report), ["src/user/nope"]);
         assert_eq!(report.files_scanned, 2, "the exempt file is still counted");
     }
+    /// A marker suppresses the finding on the line after it, and the
+    /// suppression is reported rather than dropped.
+    ///
+    /// The whole argument of issue #72: `// eslint-disable-next-line` with no
+    /// explanation is how debt becomes invisible, so a suppression here is
+    /// never absent from a report — it is a line of its own, carrying the
+    /// reason, and a run with forty of them must not look like a clean one.
+    #[test]
+    fn an_allowed_finding_is_moved_to_the_suppressed_list_with_its_reason() {
+        let report = run(
+            &[
+                (
+                    "packages/ui/button.tsx",
+                    "// archwarden-allow: the vendor SDK has no types\n\
+                     import { User } from '../domain/user';\n\
+                     export const Button = () => User;",
+                ),
+                ("packages/domain/user.ts", "export const User = 1;"),
+            ],
+            &config(vec![rule(
+                "ui-forbids-domain",
+                None,
+                &["packages/ui/**"],
+                boundary(&["packages/domain/**"], &[], &[]),
+            )]),
+        );
+
+        assert!(
+            report.findings.is_empty(),
+            "it is not reported as a violation: {:?}",
+            report.findings
+        );
+        assert_eq!(report.suppressed.len(), 1, "{:?}", report.suppressed);
+        assert_eq!(
+            report.suppressed[0].reason, "the vendor SDK has no types",
+            "and the reason travels with it, or the feature is \
+             `eslint-disable` again"
+        );
+        assert_eq!(
+            report.suppressed[0].finding.path.as_str(),
+            "packages/ui/button.tsx"
+        );
+        assert!(!report.fails_build());
+    }
+
+    /// A marker one line too far up suppresses nothing.
+    ///
+    /// It governs the line *after* it, and only that one. A marker that
+    /// reached further would be a file-scoped exception, which is what
+    /// `baseline` is for and is a different promise: *this repository has this
+    /// debt today* against *this line is a deliberate exception*.
+    #[test]
+    fn a_marker_governs_only_the_line_after_it() {
+        let report = run(
+            &[
+                (
+                    "packages/ui/button.tsx",
+                    "// archwarden-allow: this is about the next line\n\
+                     export const spacer = 1;\n\
+                     import { User } from '../domain/user';\n\
+                     export const Button = () => User;",
+                ),
+                ("packages/domain/user.ts", "export const User = 1;"),
+            ],
+            &config(vec![rule(
+                "ui-forbids-domain",
+                None,
+                &["packages/ui/**"],
+                boundary(&["packages/domain/**"], &[], &[]),
+            )]),
+        );
+
+        assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+        assert!(report.suppressed.is_empty());
+    }
+
+    /// A marker naming a rule suppresses that rule and no other.
+    #[test]
+    fn a_marker_that_names_a_rule_leaves_the_others_alone() {
+        let report = run(
+            &[
+                (
+                    "packages/ui/button.tsx",
+                    "// archwarden-allow someone-elses-rule: not this one\n\
+                     import { User } from '../domain/user';\n\
+                     export const Button = () => User;",
+                ),
+                ("packages/domain/user.ts", "export const User = 1;"),
+            ],
+            &config(vec![rule(
+                "ui-forbids-domain",
+                None,
+                &["packages/ui/**"],
+                boundary(&["packages/domain/**"], &[], &[]),
+            )]),
+        );
+
+        assert_eq!(
+            report.findings.len(),
+            1,
+            "the marker is about another rule: {:?}",
+            report.findings
+        );
+    }
+
     /// `governance: closed` — a file no rule governs is a finding.
     ///
     /// `CONFIG.md` calls a rule enforcing nothing the worst failure a linter
