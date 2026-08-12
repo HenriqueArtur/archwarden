@@ -17,6 +17,12 @@ saying so.
 
 ## [Unreleased]
 
+## [0.17.0] — 2026-08-12
+
+Nothing unwatched. Three answers to one question — *what is nobody
+looking at?* — and the exception mechanism that makes the answer
+liveable. **No existing configuration reports anything new.**
+
 ### Added
 
 - **Inline suppression, with a mandatory reason and no way to hide it**
@@ -1580,7 +1586,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.16.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.17.0...HEAD
+[0.17.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.13.0...v0.14.0
