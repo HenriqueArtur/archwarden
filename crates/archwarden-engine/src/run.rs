@@ -146,6 +146,42 @@ pub fn resolves_imports(config: &CompiledConfig) -> bool {
         .any(|engine| engine.needs_resolution())
 }
 
+/// Whether any rule in this configuration reads the whole import graph.
+///
+/// The same shape as [`resolves_imports`] and a different question, and the
+/// difference is what it costs. A boundary rule wants every specifier of *its
+/// own* file placed, and pays once per file it covers. A cycle rule wants the
+/// edges of every file at once — including files no scope reaches, because a
+/// loop that leaves the scope and comes back is still a loop. So this one is
+/// paid once per run, over the whole repository, whatever any scope says.
+///
+/// Measured on the 10,000-file benchmark, resolution is roughly three quarters
+/// of a warm run. A configuration that answers `true` here is therefore about
+/// four times the cost of one that does not, and one that answers `false` pays
+/// nothing at all.
+#[must_use]
+pub fn needs_graph(config: &CompiledConfig) -> bool {
+    archwarden_rules::engines_for(config)
+        .iter()
+        .any(|engine| engine.needs_graph())
+}
+
+/// A file a graph rule wanted, held until there is a graph to answer from.
+///
+/// Deliberately not every file: only the ones a rule with
+/// [`needs_graph`](archwarden_core::traits::RuleEngine::needs_graph) applies
+/// to. Every *other* file contributes its
+/// [`FileEdges`](archwarden_core::graph::FileEdges) and nothing else — paths
+/// and a flag, rather than the exports, calls and names that answering "who
+/// imports whom" has no use for.
+struct Deferred {
+    path: RepoRelPath,
+    facts: Option<FileFacts>,
+    /// Which entry of the run's sibling lists belongs to this file, so a
+    /// directory's names are cloned once rather than once per file in it.
+    siblings: usize,
+}
+
 /// Runs every rule against the walked tree.
 ///
 /// A configuration whose rules are all structural never reads a byte, cache or
@@ -177,12 +213,24 @@ pub fn check(run: Run<'_>) -> Report {
     let mut facts_reused = 0;
     let mut imports = crate::resolve::Outcomes::default();
 
+    // Decided once, before anything is walked. `true` changes what the loop
+    // below is allowed to skip: a graph needs the edges of every file, so the
+    // per-file gating that keeps a scoped configuration off the disk has to be
+    // suspended for this run. See `needs_graph`.
+    let building_graph = engines.iter().any(|engine| engine.needs_graph());
+    let mut edges: Vec<archwarden_core::graph::FileEdges> = Vec::new();
+    let mut deferred: Vec<Deferred> = Vec::new();
+    let mut sibling_lists: Vec<Vec<String>> = Vec::new();
+
     // Built once per run, not once per file: `oxc_resolver` caches
     // `tsconfig` and `package.json` reads internally, and a fresh resolver
     // per file would throw that away thousands of times.
-    let resolver = engines
-        .iter()
-        .any(|engine| engine.needs_resolution())
+    //
+    // `building_graph` forces one even if no engine declared
+    // `needs_resolution`, because an edge is a *resolved* import and a graph
+    // built without a resolver would be empty -- which a cycle rule reports as
+    // "no cycles".
+    let resolver = (building_graph || engines.iter().any(|engine| engine.needs_resolution()))
         .then(|| archwarden_resolver::imports::ImportResolver::new(root));
 
     for (path, directory) in tree.directories() {
@@ -199,12 +247,21 @@ pub fn check(run: Run<'_>) -> Report {
             );
         }
 
+        // Cloned at most once per directory, and only when a graph rule
+        // actually holds a file in it.
+        let mut siblings_index: Option<usize> = None;
+
         for file in &directory.files {
             let wanted_by: Vec<_> = engines
                 .iter()
                 .filter(|engine| engine.applies_to(&file.path))
                 .collect();
-            if wanted_by.is_empty() {
+            // A file nothing governs is normally not opened at all. While a
+            // graph is being built it is opened anyway, if it is source: its
+            // imports are edges, and a loop is made of edges from files whose
+            // own scope has nothing to do with the rule that reports it.
+            let feeds_graph = building_graph && reads_as_code(file.class, config.languages());
+            if wanted_by.is_empty() && !feeds_graph {
                 continue;
             }
 
@@ -233,9 +290,10 @@ pub fn check(run: Run<'_>) -> Report {
             };
 
             let mut facts = if reads_as_code(file.class, config.languages())
-                && wanted_by
-                    .iter()
-                    .any(|engine| engine.needs_facts() == FactsNeeded::Code)
+                && (feeds_graph
+                    || wanted_by
+                        .iter()
+                        .any(|engine| engine.needs_facts() == FactsNeeded::Code))
             {
                 match facts_for(root, &file.path, cache.as_deref_mut()) {
                     Ok((facts, Source::Cache)) => {
@@ -266,11 +324,29 @@ pub fn check(run: Run<'_>) -> Report {
             // facts for any reason -- so a `naming` rule over `apps/**` paid
             // for resolving all of it because a boundary rule somewhere else
             // wanted resolution for one file.
+            //
+            // `feeds_graph` is the one case that overrides the per-file
+            // question, and for the same reason it overrides the parse: an
+            // unresolved import is not an edge, so a file whose imports were
+            // never placed is a hole in the graph rather than a file the rule
+            // was not about.
             if let (Some(resolver), Some(facts)) = (resolver.as_ref(), facts.as_mut())
-                && wanted_by.iter().any(|engine| engine.needs_resolution())
+                && (feeds_graph || wanted_by.iter().any(|engine| engine.needs_resolution()))
             {
                 imports.absorb(crate::resolve::resolve_imports(resolver, facts));
             }
+
+            // After resolution, never before: an edge is where an import
+            // landed, and before this point nothing has landed anywhere.
+            if let Some(facts) = facts.as_ref()
+                && feeds_graph
+            {
+                edges.push(archwarden_core::graph::FileEdges::of(facts));
+            }
+
+            // Whether any rule that reads the graph wanted this file, so it can
+            // be asked again once there is one.
+            let mut held = false;
 
             for engine in wanted_by {
                 // A rule that reads inside a file, handed no facts, cannot
@@ -313,6 +389,16 @@ pub fn check(run: Run<'_>) -> Report {
                     checks_skipped += 1;
                     skipped_checks.push((engine.id().to_string(), file.path.clone()));
                 }
+                // A rule that reads the graph cannot be answered yet: the
+                // graph is not built until every file has been seen. Held back
+                // rather than offered `graph: None`, because a cycle rule with
+                // no graph reports nothing and nothing is what a repository
+                // with no cycles reports. The accounting above still happens
+                // here, where the file's class and facts are in hand.
+                if engine.needs_graph() {
+                    held = true;
+                    continue;
+                }
                 findings.extend(engine.check_file(FileContext {
                     path: &file.path,
                     facts: facts.as_ref(),
@@ -322,6 +408,54 @@ pub fn check(run: Run<'_>) -> Report {
                     // asking about a path outside this directory costs a map
                     // lookup and no disk.
                     exists: Exists::new(&|candidate| tree.contains_file(candidate)),
+                    graph: None,
+                }));
+            }
+
+            if held {
+                let index = if let Some(index) = siblings_index {
+                    index
+                } else {
+                    // Read before the push, so it *is* the index of what is
+                    // about to be pushed. Taking the length afterwards and
+                    // subtracting one is the same number and one arithmetic
+                    // mistake away from a rule silently seeing another
+                    // directory's siblings.
+                    let index = sibling_lists.len();
+                    sibling_lists.push(file_names.clone());
+                    siblings_index = Some(index);
+                    index
+                };
+                deferred.push(Deferred {
+                    path: file.path.clone(),
+                    facts,
+                    siblings: index,
+                });
+            }
+        }
+    }
+
+    // The second half of the run, and the only part that can see more than one
+    // file at a time. Everything above produced edges; this turns them into a
+    // graph and asks the rules that were waiting for one.
+    if building_graph {
+        let graph = archwarden_core::graph::ImportGraph::of(edges.into_iter());
+
+        for held in &deferred {
+            for engine in engines
+                .iter()
+                .filter(|engine| engine.needs_graph() && engine.applies_to(&held.path))
+            {
+                findings.extend(engine.check_file(FileContext {
+                    path: &held.path,
+                    facts: held.facts.as_ref(),
+                    // No graph rule reads a document today. One that did would
+                    // need its `DocFacts` held here the way its `FileFacts`
+                    // are, and `needs_facts` is where it would say so.
+                    docs: None,
+                    siblings: sibling_lists.get(held.siblings).map_or(&[], Vec::as_slice),
+                    exists: Exists::new(&|candidate| tree.contains_file(candidate)),
+                    graph: Some(&graph),
                 }));
             }
         }
@@ -595,10 +729,26 @@ mod tests {
             allow_packages: None,
             require: set(require),
             forbid_packages: Vec::new(),
+            forbid_reaching: PathSet::default(),
             except: set(except),
             except_from: PathSet::default(),
             include_type_only: true,
         }
+    }
+
+    /// A boundary rule that forbids *reaching* rather than importing.
+    fn reaching(forbid_reaching: &[&str]) -> CompiledRuleKind {
+        let mut kind = boundary(&[], &[], &[]);
+        let CompiledRuleKind::ImportBoundary {
+            forbid_reaching: slot,
+            ..
+        } = &mut kind
+        else {
+            panic!("built as an import-boundary rule");
+        };
+        *slot =
+            PathSet::compile(forbid_reaching.iter().map(|p| (*p).to_owned())).expect("valid globs");
+        kind
     }
 
     fn naming() -> CompiledRuleKind {
@@ -1575,6 +1725,313 @@ mod tests {
         assert_eq!(offenders(&report), ["src/user/nope"]);
         assert_eq!(report.files_scanned, 2, "the exempt file is still counted");
     }
+    /// The whole reason the graph is built from every file rather than from
+    /// the ones a rule's scope reaches.
+    ///
+    /// The rule governs `apps/**`. The loop leaves it, passes through
+    /// `packages/db`, and comes back. Nothing else in the configuration
+    /// mentions `packages`, so under the per-file gating every other rule
+    /// enjoys, that file is never parsed, never resolved, and contributes no
+    /// edge — and the cycle rule reports a clean repository. A rule that
+    /// enforces nothing looks exactly like a repository that satisfies it,
+    /// which `CONFIG.md` calls the worst failure a linter has.
+    #[test]
+    fn a_loop_that_leaves_the_scope_and_comes_back_is_still_reported() {
+        let report = run(
+            &[
+                (
+                    "apps/api/handler.ts",
+                    "import { save } from '../../packages/db/save';\n\
+                     export const handle = () => save();",
+                ),
+                (
+                    "packages/db/save.ts",
+                    "import { handle } from '../../apps/api/handler';\n\
+                     export const save = () => handle();",
+                ),
+            ],
+            &config(vec![rule(
+                "no-cycles",
+                None,
+                &["apps/**"],
+                CompiledRuleKind::ImportCycle {
+                    include_type_only: false,
+                },
+            )]),
+        );
+
+        assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+        let finding = report.findings.first().expect("one finding");
+        assert_eq!(finding.path.as_str(), "apps/api/handler.ts");
+        assert_eq!(
+            finding.observed,
+            archwarden_core::finding::Observed::ImportCycle {
+                chain: vec![
+                    RepoRelPath::new("apps/api/handler.ts").expect("valid"),
+                    RepoRelPath::new("packages/db/save.ts").expect("valid"),
+                    RepoRelPath::new("apps/api/handler.ts").expect("valid"),
+                ],
+            },
+            "and the chain names the file outside the scope, because that is \
+             the edge somebody has to cut"
+        );
+    }
+
+    /// A rule that does not read the graph runs in the main loop and **not
+    /// again** in the deferred pass, even when it covers a file a graph rule
+    /// held back.
+    ///
+    /// The deferred pass walks the same files a second time. Anything that
+    /// picked engines by "applies to this path" rather than by "reads the
+    /// graph" would evaluate every ordinary rule twice, and a report that
+    /// names one violation twice is one nobody trusts the counts in.
+    #[test]
+    fn a_rule_that_does_not_read_the_graph_is_not_run_twice() {
+        let report = run(
+            &[
+                (
+                    "src/a.ts",
+                    "import { b } from './b';\nexport const a = () => b();",
+                ),
+                (
+                    "src/b.ts",
+                    "import { a } from './a';\nexport const b = () => a();",
+                ),
+            ],
+            &config(vec![
+                rule(
+                    "no-cycles",
+                    None,
+                    &["src/**"],
+                    CompiledRuleKind::ImportCycle {
+                        include_type_only: false,
+                    },
+                ),
+                // Covers exactly the same files, and reads no graph.
+                rule(
+                    "nothing-imports-nowhere",
+                    None,
+                    &["src/**"],
+                    boundary(&["nowhere/**"], &["src/**"], &[]),
+                ),
+            ]),
+        );
+
+        let by_rule = |id: &str| {
+            report
+                .findings
+                .iter()
+                .filter(|finding| finding.rule_id.as_str() == id)
+                .count()
+        };
+
+        assert_eq!(
+            by_rule("no-cycles"),
+            2,
+            "both files of the loop: {:?}",
+            report.findings
+        );
+        assert_eq!(
+            by_rule("nothing-imports-nowhere"),
+            0,
+            "it is satisfied, and being satisfied twice is still zero -- the \
+             count below is what would move: {:?}",
+            report.findings
+        );
+
+        // The half that actually bites. A rule reporting a violation on a file
+        // a graph rule also covers must report it once.
+        let doubled = run(
+            &[
+                (
+                    "src/a.ts",
+                    "import { b } from './b';\nexport const a = () => b();",
+                ),
+                (
+                    "src/b.ts",
+                    "import { a } from './a';\nexport const b = () => a();",
+                ),
+            ],
+            &config(vec![
+                rule(
+                    "no-cycles",
+                    None,
+                    &["src/**"],
+                    CompiledRuleKind::ImportCycle {
+                        include_type_only: false,
+                    },
+                ),
+                rule(
+                    "must-import-elsewhere",
+                    None,
+                    &["src/**"],
+                    boundary(&[], &["packages/**"], &[]),
+                ),
+            ]),
+        );
+
+        assert_eq!(
+            doubled
+                .findings
+                .iter()
+                .filter(|finding| finding.rule_id.as_str() == "must-import-elsewhere")
+                .count(),
+            2,
+            "one per file, not two per file: {:?}",
+            doubled.findings
+        );
+    }
+
+    /// Issue #71, through the whole pipeline: real files, a real resolver, and
+    /// a dependency nobody wrote down.
+    ///
+    /// `apps/api` never mentions `packages/db`. It imports `packages/orders`,
+    /// which does — and neither of those two files is in the rule's scope, so
+    /// this is also the graph being built from more than the scope reaches.
+    #[test]
+    fn a_dependency_reached_through_another_package_is_found() {
+        let report = run(
+            &[
+                (
+                    "apps/api/handler.ts",
+                    "import { place } from '../../packages/orders/place';\n\
+                     export const handle = () => place();",
+                ),
+                (
+                    "packages/orders/place.ts",
+                    "import { save } from '../db/client';\n\
+                     export const place = () => save();",
+                ),
+                ("packages/db/client.ts", "export const save = () => 1;"),
+            ],
+            &config(vec![rule(
+                "api-must-not-reach-db",
+                None,
+                &["apps/**"],
+                reaching(&["packages/db/**"]),
+            )]),
+        );
+
+        assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+        let finding = report.findings.first().expect("one finding");
+        assert_eq!(finding.path.as_str(), "apps/api/handler.ts");
+        assert_eq!(
+            finding.observed,
+            archwarden_core::finding::Observed::ForbiddenReach {
+                chain: vec![
+                    RepoRelPath::new("apps/api/handler.ts").expect("valid"),
+                    RepoRelPath::new("packages/orders/place.ts").expect("valid"),
+                    RepoRelPath::new("packages/db/client.ts").expect("valid"),
+                ],
+            }
+        );
+    }
+
+    /// And the direct import stays `forbid_import_from`'s finding. One fault,
+    /// one finding: a rule that set both would otherwise report a direct
+    /// import twice.
+    #[test]
+    fn a_direct_import_is_not_also_reported_as_reach() {
+        let report = run(
+            &[
+                (
+                    "apps/api/handler.ts",
+                    "import { save } from '../../packages/db/client';\n\
+                     export const handle = () => save();",
+                ),
+                ("packages/db/client.ts", "export const save = () => 1;"),
+            ],
+            &config(vec![rule(
+                "api-must-not-reach-db",
+                None,
+                &["apps/**"],
+                reaching(&["packages/db/**"]),
+            )]),
+        );
+
+        assert!(
+            report.findings.is_empty(),
+            "the direct import is not this rule's finding: {:?}",
+            report.findings
+        );
+    }
+
+    /// Both ends of the same loop, when the scope covers both. A loop has no
+    /// owner: N files have to change, and the report says N.
+    #[test]
+    fn every_file_of_a_loop_inside_the_scope_is_reported() {
+        let report = run(
+            &[
+                (
+                    "src/a.ts",
+                    "import { b } from './b';\nexport const a = () => b();",
+                ),
+                (
+                    "src/b.ts",
+                    "import { a } from './a';\nexport const b = () => a();",
+                ),
+            ],
+            &config(vec![rule(
+                "no-cycles",
+                None,
+                &["src/**"],
+                CompiledRuleKind::ImportCycle {
+                    include_type_only: false,
+                },
+            )]),
+        );
+
+        assert_eq!(
+            offenders(&report),
+            ["src/a.ts", "src/b.ts"],
+            "{:?}",
+            report.findings
+        );
+    }
+
+    /// The fast path, which is the point of gating the graph behind a
+    /// question. A configuration with no graph rule must not start parsing
+    /// files nothing asked about.
+    #[test]
+    fn a_configuration_without_a_graph_rule_parses_only_what_a_rule_covers() {
+        let report = run(
+            &[
+                (
+                    "src/user/create-client.use-case.ts",
+                    "export function CreateClient() {}",
+                ),
+                ("elsewhere/untouched.ts", "export const x = 1;"),
+            ],
+            &config(vec![rule("usecase-name", None, &["src/*"], naming())]),
+        );
+
+        assert!(!needs_graph(&config(vec![rule(
+            "usecase-name",
+            None,
+            &["src/*"],
+            naming(),
+        )])));
+        assert_eq!(
+            report.files_parsed, 1,
+            "the file outside every scope was never opened"
+        );
+    }
+
+    /// And the question is answerable before any walking happens, which is
+    /// what lets the run decide once rather than per file.
+    #[test]
+    fn a_configuration_says_whether_it_needs_the_graph() {
+        assert!(needs_graph(&config(vec![rule(
+            "no-cycles",
+            None,
+            &["src/**"],
+            CompiledRuleKind::ImportCycle {
+                include_type_only: false,
+            },
+        )])));
+        assert!(!needs_graph(&config(Vec::new())), "no rules, no graph");
+    }
+
     /// Resolution is asked of the rules that apply to *this* file, not of the
     /// run as a whole.
     ///

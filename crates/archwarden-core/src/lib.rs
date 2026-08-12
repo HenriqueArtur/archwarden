@@ -15,6 +15,7 @@
 //! - [`facts`] — what a parser extracts from one file
 //! - [`finding`] — what a rule reports, and why
 //! - [`glob`] — glob sets matched against whole paths
+//! - [`graph`] — who imports whom, for the rules one file cannot answer
 //! - [`hash`] — content hashing, the basis of both cache keys
 //! - [`ids`] — stable identifiers for rules and modules
 //! - [`level`] — severity, of which there are exactly two
@@ -35,6 +36,7 @@ pub mod docs;
 pub mod facts;
 pub mod finding;
 pub mod glob;
+pub mod graph;
 pub mod hash;
 pub mod ids;
 pub mod level;

@@ -362,6 +362,40 @@ fn forbidden_paths(
     })
 }
 
+/// The paths a boundary rule refuses to let its files *end up* depending on.
+///
+/// The same shape as [`forbidden_paths`], and the same refusal when both the
+/// globs and the modules are given: two ways to fill one set means an author
+/// has to be told which one won, and a rule nobody can predict is worse than a
+/// rule that will not compile.
+fn reaching_paths(
+    id: &RuleId,
+    rule: &crate::rule::ImportBoundaryRule,
+    modules: &Modules,
+) -> Result<PathSet, CompileError> {
+    if !rule.forbid_reaching_modules.is_empty() && !rule.forbid_reaching.is_empty() {
+        return Err(CompileError::ScopeSaidTwice {
+            rule: id.clone(),
+            one: "forbid_reaching",
+            other: "forbid_reaching_modules",
+        });
+    }
+
+    if rule.forbid_reaching_modules.is_empty() {
+        return globs(id, "forbid_reaching", &rule.forbid_reaching);
+    }
+
+    let mut patterns: Vec<String> = Vec::new();
+    for named in &rule.forbid_reaching_modules {
+        patterns.extend(modules.paths_of(id, named)?.iter().cloned());
+    }
+    PathSet::compile(&patterns).map_err(|source| CompileError::Glob {
+        rule: id.clone(),
+        field: "forbid_reaching_modules",
+        source,
+    })
+}
+
 /// The groups a boundary's importers fall into, one per module it covers.
 ///
 /// One group for a rule about one module or one set of globs, and one *per
@@ -746,6 +780,10 @@ fn compile_rule(
             allow_partial: r.allow_partial,
         },
 
+        Rule::ImportCycle(r) => CompiledRuleKind::ImportCycle {
+            include_type_only: r.include_type_only,
+        },
+
         Rule::ImportBoundary(r) => CompiledRuleKind::ImportBoundary {
             // A named module becomes its paths here, so nothing downstream
             // knows the difference: the engine sees the `PathSet` it always
@@ -758,6 +796,7 @@ fn compile_rule(
                 .then(|| r.only_import_from_packages.iter().cloned().collect()),
             require: globs(&id, "must_import_from", &r.must_import_from)?,
             forbid_packages: r.forbid_import_from_packages.iter().cloned().collect(),
+            forbid_reaching: reaching_paths(&id, r, modules)?,
             except: globs(&id, "except", &r.except)?,
             except_from: globs(&id, "except_from", &r.except_from)?,
             include_type_only: r.include_type_only,
@@ -1374,6 +1413,99 @@ mod tests {
             matches!(&error, CompileError::ScopeSaidTwice { rule, .. } if rule.as_str() == "sealed"),
             "{error:?}"
         );
+    }
+
+    /// `forbid_reaching` reaches the compiled rule as globs, or the engine
+    /// answers `needs_graph` with `false` and the rule quietly enforces
+    /// nothing.
+    #[test]
+    fn forbid_reaching_globs_reach_the_compiled_rule() {
+        let config = compile_json(
+            r#"{"version":0,"rules":[
+                  {"type":"import-boundary","id":"ui-must-not-reach-db","level":"error",
+                   "from":"packages/ui/**","forbid_reaching":["packages/db/**"]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = config.rules().next().expect("one rule");
+        let CompiledRuleKind::ImportBoundary {
+            forbid_reaching, ..
+        } = &rule.kind
+        else {
+            panic!("expected an import-boundary rule");
+        };
+        assert!(forbid_reaching.is_match(path("packages/db/client.ts").as_path()));
+        assert!(!forbid_reaching.is_match(path("packages/orders/cart.ts").as_path()));
+    }
+
+    /// And a named module becomes its paths, so nothing downstream knows the
+    /// difference — the same folding `forbid_module` does for the direct form.
+    #[test]
+    fn forbid_reaching_modules_becomes_that_modules_paths() {
+        let config = compile_json(
+            r#"{"version":0,
+                "modules":[{"id":"persistence","scope":"packages/db/**"}],
+                "rules":[
+                  {"type":"import-boundary","id":"ui-must-not-reach-db","level":"error",
+                   "from":"packages/ui/**","forbid_reaching_modules":["persistence"]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = config.rules().next().expect("one rule");
+        let CompiledRuleKind::ImportBoundary {
+            forbid_reaching, ..
+        } = &rule.kind
+        else {
+            panic!("expected an import-boundary rule");
+        };
+        assert!(forbid_reaching.is_match(path("packages/db/client.ts").as_path()));
+        assert!(!forbid_reaching.is_match(path("packages/ui/button.tsx").as_path()));
+    }
+
+    /// Saying the reach both ways on one rule is refused, for the same reason
+    /// saying the scope both ways is: two spellings of one set means somebody
+    /// has to be told which one won.
+    #[test]
+    fn a_boundary_may_not_say_what_it_forbids_reaching_both_ways() {
+        let error = compile_json(
+            r#"{"version":0,
+                "modules":[{"id":"persistence","scope":"packages/db/**"}],
+                "rules":[
+                  {"type":"import-boundary","id":"sealed","level":"error",
+                   "from":"packages/ui/**",
+                   "forbid_reaching":["packages/db/**"],
+                   "forbid_reaching_modules":["persistence"]}]}"#,
+        )
+        .expect_err("both ways");
+
+        assert!(
+            matches!(&error, CompileError::ScopeSaidTwice { rule, one, other }
+                if rule.as_str() == "sealed"
+                    && *one == "forbid_reaching"
+                    && *other == "forbid_reaching_modules"),
+            "{error:?}"
+        );
+    }
+
+    /// A boundary that says nothing about reach compiles to an empty set, and
+    /// that emptiness is what keeps the run off the whole repository.
+    #[test]
+    fn a_boundary_silent_about_reach_compiles_to_an_empty_set() {
+        let config = compile_json(
+            r#"{"version":0,"rules":[
+                  {"type":"import-boundary","id":"sealed","level":"error",
+                   "from":"packages/ui/**","forbid_import_from":["packages/db/**"]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = config.rules().next().expect("one rule");
+        let CompiledRuleKind::ImportBoundary {
+            forbid_reaching, ..
+        } = &rule.kind
+        else {
+            panic!("expected an import-boundary rule");
+        };
+        assert!(forbid_reaching.is_empty());
     }
 
     /// And a boundary that says neither has no importers to be about.

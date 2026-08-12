@@ -579,6 +579,60 @@ side an exception to a dependency rule sits on: `except` is about what is
 imported. See [`RULES.md`](RULES.md) for the full semantics, including why this
 is a separate field rather than a prefix inside `forbid_import_from`.
 
+A boundary can also forbid what a file **ends up** depending on, however many
+imports away:
+
+```json
+{
+  "type": "import-boundary",
+  "id": "ui-must-not-reach-db",
+  "level": "error",
+  "from": "packages/ui/**",
+  "forbid_reaching": ["packages/db/**"],
+  "except": ["packages/db/types/**"]
+}
+```
+
+`forbid_reaching_modules` names a declared module instead of repeating its
+globs, as `forbid_module` does for the direct form; saying it both ways on one
+rule is refused. A **direct** import is not reported by this field —
+`forbid_import_from` is what reports that one.
+
+**This field makes the run read the whole repository.** See
+[import cycles](#import-cycles) just below and
+[`RULES.md`](RULES.md#what-a-graph-rule-costs) for the measured cost.
+
+### Import cycles
+
+A rule about the files it governs, so its scope field is `roots`:
+
+```json
+{
+  "type": "import-cycle",
+  "id": "no-cycles",
+  "level": "error",
+  "roots": "packages/**"
+}
+```
+
+Every file of a loop that `roots` covers is reported, once each, carrying the
+whole chain. There is no `ignored_circular_dependencies`: a cycle is a finding
+and [`baseline`](#adopting-archwarden-in-an-existing-repository) already accepts
+findings, per rule and per path.
+
+`include_type_only` defaults to `true` and means what it means on
+`import-boundary`.
+
+`roots` decides where a finding is *reported*, not what the graph is built
+from. The graph is always the whole repository, because a loop that leaves the
+scope and comes back is still a loop — which is why a configuration carrying
+this rule, or `forbid_reaching` above, parses and resolves every source file.
+On a 10 000-file repository that is 0.22 s against 0.01 s for the same scope
+without it. A configuration with neither pays nothing.
+
+`check --file` and the pre-write hook refuse these rules, under the
+`needs-repository` skip reason, rather than answering from one file.
+
 ### Call obligation
 
 The semantic rule that no lint plugin does well:

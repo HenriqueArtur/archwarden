@@ -493,8 +493,16 @@
               "description": "Package names this file may not import. Matching means the import is\nillegal.\n\nA package name, not a glob: `\"three\"` forbids `three` and everything\nunder it, so `three/examples/jsm/loaders/GLTFLoader.js` does not sail\npast. `node:fs` and `fs` are the same module and either spelling matches\nboth.\n\nA separate field rather than a scheme prefix inside `forbid_import_from`\non purpose: treating `three` as *either* a path glob or a package name\ndepending on what it happened to match is the ambiguity that produces a\nrule enforcing nothing.\n\nAn import that resolves to a file in this repository is never matched\nhere, however it is spelled — that is a path, and `forbid_import_from`\nis the field for it.",
               "$ref": "#/$defs/OneOrMany"
             },
+            "forbid_reaching": {
+              "description": "Globs matched against every file this one ends up depending on,\nhowever many imports away. Matching means the dependency is illegal.\n\nThe rule `forbid_import_from` cannot express: `packages/ui` does not\nimport `packages/db`, and it depends on it through `packages/orders`\nanyway. A *direct* import is not reported here — that is\n`forbid_import_from`'s finding, and reporting it twice would make one\nfault look like two.\n\n**This field is the expensive one.** A rule that sets it makes the run\nparse and resolve every source file in the repository, whatever any\nscope says, because a chain that leaves the scope and comes back is\nstill a chain. Measured on a 10,000-file repository, that is about\ntwenty times the wall clock of the same rule without it. A boundary\nrule that leaves it empty pays none of that. Issue #71.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "forbid_reaching_modules": {
+              "description": "Modules that may not be reached, instead of the globs they are.\n\nWhat `forbid_module` is to `forbid_import_from`. Folded into\n`forbid_reaching` when the config compiles, and refused alongside it on\none rule for the same reason: two ways to fill one set is a rule whose\nauthor has to be told which one won.",
+              "$ref": "#/$defs/OneOrMany2"
+            },
             "except": {
-              "description": "Exceptions, also matched against the resolved path.",
+              "description": "Exceptions, also matched against the resolved path.\n\nApplies to `forbid_import_from` and to `forbid_reaching` alike: both\nname destinations, and \"may not reach `packages/db`, except\n`packages/db/types`\" is one sentence rather than two fields.",
               "$ref": "#/$defs/OneOrMany"
             },
             "except_from": {
@@ -516,6 +524,47 @@
             "type",
             "id",
             "level"
+          ]
+        },
+        {
+          "description": "No file in scope may sit on an import loop.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.\n\n`roots` rather than `from`: `import-boundary` calls its scope `from`\nbecause it reads against `forbid_import_from`, and this rule forbids no\ndestination. It is a rule about the files it governs, like the other\nfour that spell it `roots`.\n\nIt governs where a finding is *reported*, not what the graph is built\nfrom. The graph is always the whole repository, because a loop that\nleaves the scope and comes back is still a loop.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "include_type_only": {
+              "description": "Whether `import type` and inline `type` marks close a loop. Default\n`true`.\n\nSpelled and defaulted the same way `import-boundary` spells it. A type\nimport is erased at runtime, so a loop made only of them cannot\ndeadlock anything — and it is still a loop the compiler walks, which is\nwhy the default counts it and the opt-out exists for projects that only\ncare about runtime.",
+              "type": "boolean",
+              "default": true
+            },
+            "type": {
+              "type": "string",
+              "const": "import-cycle"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots"
           ]
         },
         {

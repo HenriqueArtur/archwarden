@@ -94,6 +94,23 @@ pub struct FileContext<'a> {
     /// because it has no walk, and a rule still never touches the filesystem
     /// itself.
     pub exists: Exists<'a>,
+    /// Who imports whom, for the rules that ask about more than one file.
+    ///
+    /// `None` for every rule that did not ask, which is almost all of them:
+    /// the graph costs a resolution pass over the whole repository, so it is
+    /// built only when [`needs_graph`](RuleEngine::needs_graph) says a rule
+    /// reads it.
+    ///
+    /// A rule that *did* ask is never handed `None`. That is the invariant the
+    /// runner keeps rather than a shape the type enforces, and it is the
+    /// reason the runner holds such rules back from the main loop instead of
+    /// offering them a graph it has not built yet: a cycle rule handed an
+    /// empty graph reports nothing, and nothing is exactly what a repository
+    /// with no cycles reports. `docs/CONFIG.md` calls that the worst failure a
+    /// linter has. A driver that cannot build a graph — `check --file`, which
+    /// sees one file — refuses such a rule and says so, rather than letting it
+    /// pass quietly.
+    pub graph: Option<&'a crate::graph::ImportGraph>,
 }
 
 /// Which facts a rule needs read out of a file, if any.
@@ -218,6 +235,27 @@ pub trait RuleEngine: Send + Sync {
     /// specifier in every file it applies to. A naming rule reads inside a
     /// file and never asks where its imports go, and should not pay for it.
     fn needs_resolution(&self) -> bool {
+        false
+    }
+
+    /// Whether this rule reads the *whole repository's* import graph.
+    ///
+    /// A third question rather than a stronger `needs_resolution`, because the
+    /// two are paid at different times and in different amounts. A boundary
+    /// rule wants every specifier of *its own* file placed, once per file it
+    /// covers. A cycle rule wants the edges of every file at once — including
+    /// files no rule's scope reaches, because a loop that leaves the scope and
+    /// comes back is still a loop, and one built from a partial graph would be
+    /// invisible.
+    ///
+    /// So this is the expensive answer: `true` here makes the run parse and
+    /// resolve every source file in the repository, whatever any scope says.
+    /// Measured on the 10,000-file benchmark, resolution is about three
+    /// quarters of a warm run, so a configuration that turns this on is
+    /// roughly four times the cost of one that does not. It buys the only
+    /// answer there is to "is there a loop here?", and a configuration with no
+    /// such rule pays none of it.
+    fn needs_graph(&self) -> bool {
         false
     }
 
@@ -367,6 +405,54 @@ mod tests {
             !engines[0].needs_resolution(),
             "but it never asks where an import goes"
         );
+        assert!(
+            !engines[0].needs_graph(),
+            "and it certainly does not want the whole repository's edges"
+        );
+    }
+
+    /// A rule that reads the graph is handed it, and one that does not is not.
+    ///
+    /// The `Option` is not a convenience: a run that cannot build a graph must
+    /// not hand a rule an empty one, because a cycle rule over an empty graph
+    /// reports silence, and silence is indistinguishable from a repository
+    /// with no cycles. The runner keeps such a rule out of the loop entirely;
+    /// this is the shape that lets it.
+    #[test]
+    fn a_context_carries_the_graph_for_the_rules_that_read_it() {
+        let facts = facts_for("packages/app/src/a.ts");
+        let graph = crate::graph::ImportGraph::of(
+            [crate::graph::FileEdges {
+                from: facts.path.clone(),
+                to: vec![crate::graph::Edge {
+                    to: RepoRelPath::new("packages/app/src/b.ts").expect("valid"),
+                    type_only: false,
+                }],
+            }]
+            .into_iter(),
+        );
+
+        let ctx = FileContext {
+            path: &facts.path,
+            facts: Some(&facts),
+            docs: None,
+            siblings: &[],
+            exists: Exists::none(),
+            graph: Some(&graph),
+        };
+
+        assert!(
+            ctx.graph
+                .expect("the rule asked for it")
+                .reaches(
+                    &facts.path,
+                    &|p| p.as_str() == "packages/app/src/b.ts",
+                    true
+                )
+                .is_none(),
+            "a direct import is not transitive reach, and the context is what \
+             lets a rule ask at all"
+        );
     }
 
     /// `applies_to` answers for a path with no file behind it, which is what
@@ -395,6 +481,7 @@ mod tests {
             docs: None,
             siblings: &[],
             exists: Exists::none(),
+            graph: None,
         });
 
         let demanded = &findings
@@ -466,7 +553,8 @@ mod tests {
                     facts: Some(&facts),
                     docs: None,
                     siblings: &[],
-                    exists: Exists::none()
+                    exists: Exists::none(),
+                    graph: None,
                 })
                 .is_empty()
         );
@@ -560,6 +648,7 @@ mod tests {
                     docs: None,
                     siblings: &[],
                     exists: Exists::none(),
+                    graph: None,
                 })
                 .is_empty()
         );
@@ -590,6 +679,7 @@ mod tests {
             "a directory rule reads names, not contents"
         );
         assert!(!directory_rule.needs_resolution());
+        assert!(!directory_rule.needs_graph());
 
         // The default, which is the safe way to be wrong: a rule that does not
         // answer this is treated as a rule about files, so `config doctor` may
@@ -615,7 +705,8 @@ mod tests {
                     facts: Some(&facts),
                     docs: None,
                     siblings: &[],
-                    exists: Exists::none()
+                    exists: Exists::none(),
+                    graph: None,
                 })
                 .is_empty()
         );
@@ -637,6 +728,7 @@ mod tests {
             docs: None,
             siblings: &siblings,
             exists: Exists::none(),
+            graph: None,
         };
 
         assert_eq!(ctx.siblings.len(), 2);

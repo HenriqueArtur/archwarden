@@ -990,6 +990,7 @@ mod tests {
             allow_packages: None,
             require: PathSet::default(),
             forbid_packages: Vec::new(),
+            forbid_reaching: PathSet::default(),
             except: PathSet::default(),
             except_from: PathSet::default(),
             include_type_only: true,

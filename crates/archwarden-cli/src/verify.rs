@@ -131,6 +131,26 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
         CompiledRuleKind::Presence { .. } => a_directory_holding_nothing(rule, engine, tree),
         CompiledRuleKind::Pair { .. } => a_file_with_no_companion(rule, engine, tree),
         CompiledRuleKind::Frontmatter { .. } => a_document_with_no_block(rule, engine, tree),
+        // A rule that only forbids *reaching* has nothing a probe can plant.
+        // Every other verdict here hands an engine one synthetic file; a chain
+        // needs at least two, resolved against each other, which is the whole
+        // pipeline run inside a probe. Checked before `crossed_boundary`,
+        // which would otherwise explain it as "the rule only requires an
+        // import" -- a sentence about a different rule.
+        CompiledRuleKind::ImportBoundary {
+            forbid,
+            forbid_packages,
+            forbid_reaching,
+            ..
+        } if forbid.is_empty() && forbid_packages.is_empty() && !forbid_reaching.is_empty() => {
+            Verdict::Unverified {
+                why: "the rule forbids reaching a path rather than importing \
+                      one, and planting that means two files that resolve \
+                      against each other -- the resolver run inside a probe"
+                    .to_owned(),
+            }
+        }
+
         CompiledRuleKind::ImportBoundary {
             forbid,
             forbid_packages,
@@ -150,6 +170,19 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
                     .to_owned(),
             }
         }
+
+        // Planting a violation means two files that import each other and a
+        // resolver that places both, which is the whole `check` pipeline run
+        // inside a probe. Every other probe here hands an engine synthetic
+        // facts and reads the verdict; this one would have to build a
+        // repository on disk to get the edges, and a probe that heavy is a
+        // second implementation of the thing it is checking.
+        CompiledRuleKind::ImportCycle { .. } => Verdict::Unverified {
+            why: "planting a cycle means writing two files that import each \
+                  other and resolving both, which is the resolver run inside a \
+                  probe"
+                .to_owned(),
+        },
 
         // Synthesising a passthrough file is possible and the shapes are
         // configurable -- `reexport`, `alias`, `wrapper`, partial forms, the
@@ -201,6 +234,7 @@ fn a_document_with_no_block(
         docs: Some(&docs),
         siblings: &[],
         exists: Exists::none(),
+        graph: None,
     });
 
     let on = format!("`{covered}` with no frontmatter block");
@@ -243,6 +277,7 @@ fn a_file_with_no_companion(
         docs: None,
         siblings: &[],
         exists: Exists::none(),
+        graph: None,
     });
 
     let on = format!("`{covered}` with its companion missing");
@@ -469,6 +504,7 @@ fn a_file_with_no_spec(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &Repo
         docs: None,
         siblings: std::slice::from_ref(&name),
         exists: Exists::none(),
+        graph: None,
     });
 
     let on = format!("`{lonely}` with no spec beside it");
@@ -538,6 +574,7 @@ fn crossed_boundary(
         docs: None,
         siblings: &[],
         exists: Exists::none(),
+        graph: None,
     });
 
     if findings.is_empty() {
@@ -774,6 +811,7 @@ mod tests {
             allow_packages: None,
             require: PathSet::default(),
             forbid_packages: packages.iter().map(|p| (*p).to_owned()).collect(),
+            forbid_reaching: PathSet::default(),
             except: PathSet::default(),
             except_from: PathSet::compile(except_from.iter().map(|g| (*g).to_owned()))
                 .expect("valid globs"),
@@ -826,6 +864,73 @@ mod tests {
         assert!(
             matches!(verdict, Verdict::Unverified { .. }),
             "every file it covers is exempt, so there is nothing to probe with: {verdict:?}"
+        );
+    }
+
+    /// A rule that only forbids *reaching* cannot be probed, and says so in
+    /// those words.
+    ///
+    /// It fell through to the "only requires an import" branch before, which
+    /// is a true-sounding sentence about a rule that does not require an
+    /// import at all — and a wrong explanation of an `unverified` is worse
+    /// than a vague one, because a reader acts on it.
+    #[test]
+    fn a_boundary_that_only_forbids_reaching_says_why_it_cannot_be_probed() {
+        let mut kind = boundary(&[], &[], &[]);
+        let CompiledRuleKind::ImportBoundary {
+            forbid_reaching: slot,
+            ..
+        } = &mut kind
+        else {
+            panic!("built as an import-boundary rule");
+        };
+        *slot = PathSet::compile(["packages/db/**".to_owned()]).expect("valid globs");
+
+        let verdict = verdict(
+            &["packages/ui/button.tsx", "packages/db/client.ts"],
+            vec![rule("ui-must-not-reach-db", &["packages/ui/**"], kind)],
+        );
+
+        let Verdict::Unverified { why } = &verdict else {
+            panic!("a chain cannot be planted by a probe: {verdict:?}");
+        };
+        assert!(
+            why.contains("reach"),
+            "the reason has to name the half that could not be probed: {why}"
+        );
+    }
+
+    /// A rule that forbids *both* is still probed for the half a probe can
+    /// reach.
+    ///
+    /// The refusal above is for a rule with nothing else to test. A rule that
+    /// also forbids a direct import has a verifiable half, and reporting the
+    /// whole rule as `unverified` would hide a `forbid_import_from` that
+    /// enforces nothing — which is the finding this command exists for.
+    #[test]
+    fn a_boundary_that_forbids_both_is_still_probed_for_the_direct_half() {
+        let mut kind = boundary(&["apps/**"], &[], &[]);
+        let CompiledRuleKind::ImportBoundary {
+            forbid_reaching: slot,
+            ..
+        } = &mut kind
+        else {
+            panic!("built as an import-boundary rule");
+        };
+        *slot = PathSet::compile(["packages/db/**".to_owned()]).expect("valid globs");
+
+        let verdict = verdict(
+            &["packages/domain/order.ts", "apps/api/src/env.ts"],
+            vec![rule(
+                "domain-is-self-contained",
+                &["packages/domain/**"],
+                kind,
+            )],
+        );
+
+        assert!(
+            matches!(verdict, Verdict::Fires { .. }),
+            "the direct half is probeable and must still be probed: {verdict:?}"
         );
     }
 

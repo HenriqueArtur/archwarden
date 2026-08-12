@@ -532,6 +532,7 @@ mod tests {
                     docs: None,
                     siblings: &siblings,
                     exists: Exists::none(),
+                    graph: None,
                 })
             })
             .collect()
@@ -1062,6 +1063,7 @@ mod tests {
                 docs: None,
                 siblings: &[],
                 exists: Exists::none(),
+                graph: None,
             })
         };
 
@@ -1240,6 +1242,7 @@ mod tests {
             docs: None,
             siblings: &owned(&["create.ts"]),
             exists: Exists::new(&there),
+            graph: None,
         });
 
         assert!(
@@ -1265,6 +1268,7 @@ mod tests {
             docs: None,
             siblings: &owned(&["create.ts"]),
             exists: Exists::new(&elsewhere),
+            graph: None,
         });
 
         assert_eq!(findings.len(), 1, "`spec/` was never named: {findings:?}");
@@ -1285,6 +1289,7 @@ mod tests {
             docs: None,
             siblings: &owned(&["create.ts"]),
             exists: Exists::new(&deeper),
+            graph: None,
         });
 
         assert_eq!(findings.len(), 1, "{findings:?}");
@@ -1303,6 +1308,7 @@ mod tests {
             docs: None,
             siblings: &owned(&["create.ts"]),
             exists: Exists::new(&anywhere),
+            graph: None,
         });
 
         assert_eq!(

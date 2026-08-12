@@ -19,6 +19,68 @@ saying so.
 
 ### Added
 
+- **`import-cycle`: no file in scope may sit on an import loop**
+  ([#70](https://github.com/HenriqueArtur/archwarden/issues/70)).
+
+  ```json
+  { "type": "import-cycle", "id": "no-cycles", "level": "error",
+    "roots": "packages/**" }
+  ```
+
+  The finding carries the whole chain — `a.ts → b.ts → a.ts`, with both ends,
+  so a reader can see it closed. Breadth-first, so the *shortest* loop is the
+  one reported; the shortest is not always the one to fix and it is always the
+  one somebody can read. A chain longer than twelve files is not walked, because
+  a forty-file loop is technically correct and useless.
+
+  **Every file of the loop that the scope covers is reported, once each.** A
+  loop has no owner. dependency-cruiser reports the closing edge, which depends
+  on where its walk started, so the same cycle moves between machines. N files
+  have to change or N people have to agree not to, and `baseline` accepts
+  findings per rule and per path, so an accepted cycle is accepted at that same
+  N. There is deliberately **no `ignored_circular_dependencies`**: a cycle is a
+  finding, `baseline` already accepts findings, and a second mechanism for the
+  same thing disagrees with the first the day somebody uses both.
+
+  A file importing itself is a typo, not an architecture fault, and is not a
+  loop. `include_type_only` defaults to `true` and spells what
+  `import-boundary` spells: a loop of `import type` is erased at runtime and is
+  still a loop the compiler walks.
+
+- **`forbid_reaching` on `import-boundary`: the dependency nobody wrote down**
+  ([#71](https://github.com/HenriqueArtur/archwarden/issues/71)).
+
+  ```json
+  { "type": "import-boundary", "id": "ui-must-not-reach-db", "level": "error",
+    "from": "packages/ui/**", "forbid_reaching": ["packages/db/**"] }
+  ```
+
+  `packages/ui` does not import `packages/db`, and it depends on it through
+  `packages/orders` anyway. `forbid_reaching_modules` names a declared module
+  instead of repeating its globs, the way `forbid_module` already does for the
+  direct form, and `except` applies to both.
+
+  The finding carries the chain, because *"ui reaches db"* is not actionable
+  and *"ui → orders → db"* names the edge to cut. A **direct** import is not
+  reported here: that is `forbid_import_from`'s finding, and reporting it twice
+  would make one fault look like two.
+
+- **What these two cost, stated rather than discovered.** A rule that reads the
+  import graph makes the run parse and resolve **every source file in the
+  repository**, whatever any scope says — because a chain that leaves the scope
+  and comes back is still a chain, and a graph built only from what the scope
+  reaches would report a clean repository over a real cycle.
+
+  Measured on a 10 000-file repository with 30 000 in-repo edges: a boundary
+  rule governing one module of forty runs in **0.01 s / 8 MB**; the same scope
+  with `import-cycle` runs in **0.22 s / 28 MB**. The run stops being
+  proportional to the scope and becomes proportional to the repository. Holding
+  the edges is the small part of that — **+5 MB for 30 000 edges** — and the
+  resolution pass is the rest.
+
+  A configuration with no graph rule pays none of it, and an `import-boundary`
+  rule that leaves `forbid_reaching` empty is exactly as cheap as it was.
+
 - **A module can declare the paths it is, and a boundary can name it**
   ([#74](https://github.com/HenriqueArtur/archwarden/issues/74)). `scope` on a
   module, `from_module` and `forbid_module` on an `import-boundary`:
@@ -122,7 +184,19 @@ saying so.
   repository on the Windows side, and any devcontainer with a bind mount all
   produce it.
 
+- **`agent-guide --kinds no-passthrough` refused a kind archwarden has.** The
+  list of kinds that command validates against was hand-written and had been
+  missing `no-passthrough` since that rule shipped; the test guarding it listed
+  five of the then-eight kinds, so it agreed. Both are fixed, and the test now
+  builds one rule of every kind and checks the list in both directions.
+
 ### Internal
+
+- `check --file` and the pre-write hook **refuse** a rule that reads the import
+  graph, under a new `needs-repository` skip reason, rather than evaluating it
+  against one file. A cycle rule with no graph reports nothing, and nothing is
+  what a repository with no cycles reports — a hook that let a write through on
+  that basis would be approving a file it never examined.
 
 - The benchmark gained a case that resolves imports. Every case in it ran a
   `naming` rule, which reads no imports at all, so the half of a warm run this

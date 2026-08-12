@@ -160,6 +160,21 @@ pub enum CompiledRuleKind {
         /// allowed.
         allow_partial: bool,
     },
+    /// No file in scope may sit on an import loop.
+    ///
+    /// The only kind whose question cannot be answered from one file, which is
+    /// why the engine reads the import graph and why a configuration carrying
+    /// one costs a resolution pass over the whole repository. See
+    /// `RuleEngine::needs_graph`.
+    ImportCycle {
+        /// Whether `import type` closes a loop.
+        ///
+        /// A type import is erased at runtime, so a loop made only of them
+        /// cannot deadlock anything — and it is still a loop the compiler
+        /// walks. Spelled the same way `ImportBoundary` spells it, and read at
+        /// query time, so one graph answers both.
+        include_type_only: bool,
+    },
     /// Layer A may not import from layer B, or must import from layer C.
     ImportBoundary {
         /// Resolved import paths that are illegal.
@@ -194,7 +209,24 @@ pub enum CompiledRuleKind {
         /// repo-relative path, and under pnpm's store layout or yarn `PnP` it may
         /// have no path this repository could name at all.
         forbid_packages: Vec<String>,
-        /// Exceptions to `forbid`.
+        /// Resolved import paths this file may not *end up* depending on,
+        /// however many files away.
+        ///
+        /// Empty for almost every rule, and that emptiness is load-bearing:
+        /// it is what `RuleEngine::needs_graph` answers from, and a graph
+        /// costs a resolution pass over the whole repository. A boundary rule
+        /// that does not ask about reach must stay as cheap as it was.
+        ///
+        /// Direct imports are `forbid`'s to report. This is about the
+        /// dependency nobody wrote down. Issue #71.
+        forbid_reaching: PathSet,
+        /// Exceptions to `forbid`, and to `forbid_reaching`.
+        ///
+        /// One field for both because it means the same thing to each: a
+        /// destination this rule tolerates. "May not reach `packages/db`,
+        /// except `packages/db/types`" is the sentence somebody writes, and a
+        /// second `except_reaching` would be a field whose only purpose is to
+        /// be forgotten.
         except: PathSet,
         /// Importing files exempt from the whole rule.
         except_from: PathSet,
@@ -249,6 +281,7 @@ impl CompiledRuleKind {
             Self::SpecPair { .. } => "spec-pair",
             Self::NoPassthrough { .. } => "no-passthrough",
             Self::ImportBoundary { .. } => "import-boundary",
+            Self::ImportCycle { .. } => "import-cycle",
             Self::Presence { .. } => "presence",
             Self::Pair { .. } => "pair",
             Self::Frontmatter { .. } => "frontmatter",
@@ -279,6 +312,7 @@ impl CompiledRuleKind {
             } => *require_non_empty_spec || *skip_type_only,
             Self::Naming { .. }
             | Self::ImportBoundary { .. }
+            | Self::ImportCycle { .. }
             | Self::CallObligation { .. }
             | Self::NoPassthrough { .. } => true,
         }
@@ -734,6 +768,7 @@ mod tests {
                 allow_packages: None,
                 require: PathSet::default(),
                 forbid_packages: Vec::new(),
+                forbid_reaching: PathSet::default(),
                 except: PathSet::default(),
                 except_from: PathSet::default(),
                 include_type_only: true,

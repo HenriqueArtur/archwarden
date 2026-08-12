@@ -1,6 +1,6 @@
 # Rule categories
 
-archwarden ships nine rule categories in v0. Each has narrow, well-defined
+archwarden ships ten rule categories in v0. Each has narrow, well-defined
 semantics. This document is the reference for what each rule can and cannot
 express. Config syntax lives in [`CONFIG.md`](CONFIG.md).
 
@@ -11,8 +11,15 @@ engine runs them in the same order for cache-friendly evaluation.
 reason about names and paths on disk, so they work on a repository in any
 language — or in none. `spec-pair` joins them unless `require_non_empty_spec`
 or `skip_type_only` is set. The rules that do open a file are `naming`,
-`call-obligation`, `no-passthrough` and `import-boundary` for JS/TS, and
-`frontmatter` for markdown. See decision 19 for what a new language costs.
+`call-obligation`, `no-passthrough`, `import-boundary` and `import-cycle` for
+JS/TS, and `frontmatter` for markdown. See decision 19 for what a new language
+costs.
+
+**One of them reads more than the file in front of it.** `import-cycle`, and
+`import-boundary` when it sets `forbid_reaching`, ask about the whole
+repository's import graph — which is a real cost, stated in
+[what a graph rule costs](#what-a-graph-rule-costs), and paid only by a
+configuration that asks for it.
 
 ---
 
@@ -836,9 +843,46 @@ there is exactly one canonical path per import, and rules operate on it.
 are extracted separately. Rules may opt in with `include_type_only: false`
 (default `true`).
 
-**Cannot express**: transitive prohibitions ("X may not reach Y through
-any chain"). That is a graph reachability question and belongs to a future
-rule if there is demand.
+### Forbidding a dependency nobody wrote down
+
+`forbid_reaching` is the transitive half of `forbid_import_from`:
+
+```json
+{
+  "type": "import-boundary",
+  "id": "ui-must-not-reach-db",
+  "level": "error",
+  "from": "packages/ui/**",
+  "forbid_reaching": ["packages/db/**"],
+  "except": ["packages/db/types/**"]
+}
+```
+
+> `packages/ui` does not import `packages/db`. It imports `packages/orders`,
+> which does — so a schema change in the database reaches the button component,
+> and nothing in either file says so.
+
+The finding carries the **whole chain**, `packages/ui/button.tsx →
+packages/orders/cart.ts → packages/db/client.ts`, because *"ui reaches db"* is
+not actionable and the middle of the chain is where the edit goes.
+
+- **A direct import is not reported here.** That is `forbid_import_from`'s
+  finding. A rule that set both would otherwise report one fault twice. Set
+  both when you want both; they are different sentences.
+- **`forbid_reaching_modules`** names a declared module instead of repeating its
+  globs, the way `forbid_module` does for the direct form. Saying it both ways
+  on one rule is refused when the config compiles.
+- **`except` applies to both.** It names destinations the rule tolerates, and
+  that means the same thing at the end of a chain as at the end of an edge.
+- **Chains longer than twelve files are not followed**, for the reason
+  `import-cycle` gives below.
+
+**This field is the expensive one.** A rule that sets it makes the run parse and
+resolve **every source file in the repository**, whatever `from` says — because
+a chain that leaves the scope and comes back is still a chain, and a graph built
+only from what the scope reaches would report a clean repository over a real
+violation. See [what a graph rule costs](#what-a-graph-rule-costs). A boundary
+rule that leaves `forbid_reaching` empty pays none of it.
 
 ### Forbidding a dependency
 
@@ -891,13 +935,101 @@ A separate field rather than a scheme prefix (`"pkg:three"`) inside
 *either* a path glob or a package name depending on what it happened to match is
 the ambiguity that produces a rule enforcing nothing.
 
-**Still cannot express**: transitivity. `src/lib` importing `src/scripts/three`,
-which imports `three`, is not flagged — the same reachability question declined
-above, declined the same way.
+**Still cannot express**: transitivity *for packages*. `src/lib` importing
+`src/scripts/three`, which imports `three`, is not flagged. `forbid_reaching`
+covers the path half of the question and not this one: the graph is built from
+imports that resolved **into this repository**, and a package has no node in it.
 
 ---
 
-## 8. Call obligations
+## 8. Import cycles
+
+**What it enforces**: no file in scope sits on an import loop.
+
+**Scope**: the whole repository's import graph.
+
+```json
+{
+  "type": "import-cycle",
+  "id": "no-cycles",
+  "level": "error",
+  "roots": "packages/**"
+}
+```
+
+The first rule whose question cannot be answered from one file. Everything else
+here reads the file in front of it — its name, its exports, its own imports —
+and this one asks about the shape of the repository.
+
+The finding carries the loop with **both ends**, `a.ts → b.ts → a.ts`, so a
+reader can see that it closed.
+
+- **The shortest loop is the one reported.** The search is breadth-first, so a
+  file sitting on a two-file loop and a nine-file loop is reported with the
+  two-file one. The shortest is not always the one to fix, and it is always the
+  one somebody can read.
+- **Chains longer than twelve files are not followed.** A forty-file loop is
+  technically correct and useless: nobody reads it and nobody acts on it.
+- **A file importing itself is not a loop.** That is a typo, and reporting it
+  as an architecture fault helps nobody.
+- **`include_type_only`** defaults to `true`, spelled the way
+  `import-boundary` spells it. A loop of `import type` is erased at runtime and
+  cannot deadlock anything; it is still a loop the compiler walks.
+
+### Every file of the loop is reported
+
+Once each, each carrying the loop as seen from itself.
+
+A loop has no owner. dependency-cruiser reports the *closing edge*, which
+depends on which file its walk happened to start from — so the same cycle moves
+between runs and between machines, and the file blamed for it is an artefact of
+traversal order. N files have to change, or N people have to agree not to, and
+the report says N.
+
+`baseline` accepts findings per rule and per path, so an accepted cycle is
+accepted at that same N — you see how many files you signed off on.
+
+**There is deliberately no `ignored_circular_dependencies`.** A cycle is a
+finding and `baseline` already accepts findings. Nx has such an option because
+it has no baseline. A second mechanism for accepting the same thing disagrees
+with the first the day somebody uses both.
+
+`config verify-rules` reports this kind as `unverified`: planting a violation
+means writing two files that import each other and resolving both, which is the
+resolver run inside a probe.
+
+### What a graph rule costs
+
+Both `import-cycle` and `import-boundary`'s `forbid_reaching` read the import
+graph, and a graph is the whole repository's edges. A run carrying either one
+**parses and resolves every source file**, whatever any rule's scope says.
+
+Measured on a 10 000-file repository with 30 000 in-repo edges:
+
+| configuration | wall clock | peak memory |
+| --- | --- | --- |
+| `import-boundary` over one module of forty | 0.01 s | 8 MB |
+| `import-cycle` over the same one module | 0.22 s | 28 MB |
+| `import-boundary` over everything | 0.12 s | 23 MB |
+| the same, plus `import-cycle` | 0.23 s | 29 MB |
+
+The run stops being proportional to the scope and becomes proportional to the
+repository. Holding the edges is the small part — about 5 MB for 30 000 of them
+— and the resolution pass is the rest.
+
+This is the trade the rule exists to make: there is no cheaper way to answer
+"is there a loop here?", and a graph built from less than the whole repository
+answers it wrongly and quietly. A configuration with no graph rule pays nothing,
+and neither does an `import-boundary` rule that leaves `forbid_reaching` empty.
+
+`check --file` and the pre-write hook **refuse** these rules rather than
+evaluating them, under the `needs-repository` skip reason: they see one file,
+and a cycle rule with no graph reports nothing — which is what a repository with
+no cycles reports.
+
+---
+
+## 9. Call obligations
 
 **What it enforces**: files matching a pattern must contain at least one
 call to a specific imported symbol.
@@ -936,7 +1068,7 @@ into program analysis territory and are out of scope.
 
 ---
 
-## 9. No passthrough
+## 10. No passthrough
 
 **What it enforces**: a file must add something of its own. A file whose whole
 content is forwarding another module is an indirection wearing the name of a

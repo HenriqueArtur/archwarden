@@ -338,6 +338,7 @@ mod tests {
             docs: None,
             siblings: &[],
             exists: Exists::none(),
+            graph: None,
         })
     }
 

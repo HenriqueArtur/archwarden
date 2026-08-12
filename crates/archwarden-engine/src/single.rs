@@ -82,6 +82,16 @@ pub enum Reason {
     /// opposite: one means the file is broken, the other means the rule is
     /// pointed at something it cannot be about.
     NotSource,
+    /// The rule reads the whole repository's import graph, and this command
+    /// sees one file.
+    ///
+    /// Distinct from every reason above, because nothing is wrong with the
+    /// file and nothing is wrong with the rule: the *command* cannot answer
+    /// this question, and the fix is to run `check`. Refusing is the whole
+    /// point — a cycle rule handed no graph reports nothing, which is what a
+    /// repository with no cycles reports, so silence here would be a hook
+    /// approving a write it never examined. Issue #70.
+    NeedsRepository,
     /// The file is source in a language this build has no front-end for.
     ///
     /// Distinct from [`NotSource`](Self::NotSource) because the answer to it is
@@ -101,6 +111,7 @@ impl Reason {
             Self::Unreadable => "unreadable",
             Self::NotSource => "not-source",
             Self::NoFrontEnd => "no-front-end",
+            Self::NeedsRepository => "needs-repository",
         }
     }
 
@@ -110,6 +121,10 @@ impl Reason {
         match self {
             Self::Unreadable => "the file could not be read",
             Self::NotSource => "it is not a TypeScript or JavaScript file",
+            Self::NeedsRepository => {
+                "the rule reads the whole repository's import graph, which this \
+                 command cannot build from one file -- run `check`"
+            }
             Self::NoFrontEnd => {
                 "it is source in a language this build has no front-end for, so \
                  the rule is right and archwarden cannot read the file"
@@ -180,9 +195,13 @@ fn check(
         .filter(|engine| engine.applies_to(path))
         .collect();
 
+    // Asked only of the rules that will actually be evaluated. A rule that
+    // reads the graph is refused below whatever this command reads, so parsing
+    // for it buys an answer nobody receives -- and `unresolved_imports` means
+    // "a rule ran blind", which is not what happened when no rule ran at all.
     let needs_facts = applicable
         .iter()
-        .any(|engine| engine.needs_facts() == FactsNeeded::Code);
+        .any(|engine| !engine.needs_graph() && engine.needs_facts() == FactsNeeded::Code);
     let class = path.file_name().map_or(FileClass::Other, FileClass::of);
     let is_source = class == FileClass::Source;
 
@@ -204,7 +223,10 @@ fn check(
                 // Resolution is what a boundary rule needs, and it is a
                 // handful of filesystem probes rather than the cross-file
                 // state the docs expected. Paid only when a rule asks.
-                if applicable.iter().any(|engine| engine.needs_resolution()) {
+                if applicable
+                    .iter()
+                    .any(|engine| !engine.needs_graph() && engine.needs_resolution())
+                {
                     let resolver = archwarden_resolver::imports::ImportResolver::new(root);
                     let outcomes = crate::resolve::resolve_imports(&resolver, &mut facts);
                     // The path in each pair is this file, which the caller
@@ -225,6 +247,21 @@ fn check(
 
     let siblings = listing(root, path.parent().as_ref(), path.file_name());
     for engine in applicable {
+        // Refused before anything else is asked. A graph is the whole
+        // repository's edges and this command has one file, so there is no
+        // arrangement of what is on hand that would answer the question --
+        // unlike an unreadable file, where the same rule over the same
+        // repository would have decided. Checked first because it is a
+        // property of the *rule*: a cycle rule pointed at a `.md` would
+        // otherwise be reported as `NotSource`, which reads as "point it
+        // somewhere else" when the fix is to run `check`.
+        if engine.needs_graph() {
+            skipped.push(Skipped {
+                rule_id: engine.id().to_string(),
+                reason: Reason::NeedsRepository,
+            });
+            continue;
+        }
         // Reported whatever the class, unlike the full run: this command
         // answers "what happened to *this* file", and "nothing, it is not
         // source" is a real answer here. The full `check` counts only what
@@ -254,6 +291,11 @@ fn check(
             // `exists`: a rule looking for `notas.md` and finding a directory
             // of that name has not found its companion.
             exists: Exists::new(&|candidate| root.join(candidate.as_str()).is_file()),
+            // One file, and a graph is the whole repository's edges. A rule
+            // that needs one never reaches here: it is refused above, under
+            // `Reason::NeedsRepository`, rather than handed `None` and left to
+            // report the silence that means "no cycles".
+            graph: None,
         }));
     }
 
@@ -563,6 +605,7 @@ mod tests {
                         allow_packages: None,
                         require: PathSet::default(),
                         forbid_packages: Vec::new(),
+                        forbid_reaching: PathSet::default(),
                         except: PathSet::default(),
                         except_from: PathSet::default(),
                         include_type_only: true,
@@ -605,6 +648,7 @@ mod tests {
                         allow_packages: None,
                         require: PathSet::default(),
                         forbid_packages: Vec::new(),
+                        forbid_reaching: PathSet::default(),
                         except: PathSet::default(),
                         except_from: PathSet::default(),
                         include_type_only: true,
@@ -785,6 +829,103 @@ mod tests {
                 reason: Reason::Unreadable,
             }]
         );
+    }
+
+    /// A rule that reads the import graph cannot be answered here, and is
+    /// refused rather than passed.
+    ///
+    /// This command sees one file. A cycle is a property of the whole
+    /// repository, so the honest answer is "I could not decide", and the
+    /// dishonest one is silence — which is exactly what a cycle rule handed no
+    /// graph would produce, and exactly what a repository with no cycles
+    /// produces. A pre-write hook that let a file through on that basis would
+    /// be reporting a clean write it never checked.
+    #[test]
+    fn a_rule_that_needs_the_whole_repository_is_refused_not_passed() {
+        let (guard, root) = tree_at(&[(
+            "src/user/thing.ts",
+            "import { other } from './other';\nexport const thing = () => other();",
+        )]);
+        let result = check_file(
+            &root,
+            &config(
+                vec![rule(
+                    "no-cycles",
+                    &["src/*"],
+                    CompiledRuleKind::ImportCycle {
+                        include_type_only: false,
+                    },
+                )],
+                &[],
+            ),
+            &path("src/user/thing.ts"),
+        );
+        drop(guard);
+
+        assert!(
+            result.findings.is_empty(),
+            "nothing was decided: {:?}",
+            result.findings
+        );
+        assert_eq!(
+            result.skipped,
+            vec![Skipped {
+                rule_id: "no-cycles".to_owned(),
+                reason: Reason::NeedsRepository,
+            }],
+            "and the refusal names the rule, so a reader knows what went \
+             unchecked"
+        );
+    }
+
+    /// A rule that is going to be refused does not first make the hook read
+    /// the file and probe the filesystem for every specifier in it.
+    ///
+    /// Two costs, one of them wrong rather than merely wasteful. The waste is
+    /// a parse and a handful of resolver probes in the one command whose whole
+    /// point is to answer inside a keystroke. The wrong part is
+    /// `unresolved_imports`: that field means "a rule ran, and ran blind", and
+    /// filling it for a rule that never ran reads as a check that went wrong
+    /// instead of one that did not happen.
+    #[test]
+    fn a_rule_that_will_be_refused_does_not_make_the_hook_read_anything() {
+        let (guard, root) = tree_at(&[(
+            "src/user/thing.ts",
+            "import { x } from '@org/never-installed';\nexport const thing = x;",
+        )]);
+        let result = check_file(
+            &root,
+            &config(
+                vec![rule(
+                    "no-cycles",
+                    &["src/*"],
+                    CompiledRuleKind::ImportCycle {
+                        include_type_only: false,
+                    },
+                )],
+                &[],
+            ),
+            &path("src/user/thing.ts"),
+        );
+        drop(guard);
+
+        assert!(
+            result.unresolved_imports.is_empty(),
+            "no rule ran, so there is no blind spot to report: {:?}",
+            result.unresolved_imports
+        );
+        assert_eq!(
+            result.skipped.len(),
+            1,
+            "and the refusal is still the answer"
+        );
+    }
+
+    /// The slug is part of the JSON a hook emits, so it is pinned here rather
+    /// than left to whatever the enum happens to be renamed to.
+    #[test]
+    fn needing_the_repository_has_a_stable_slug() {
+        assert_eq!(Reason::NeedsRepository.as_str(), "needs-repository");
     }
 
     /// An ignored path is not checked, exactly as in a full run. A hook that

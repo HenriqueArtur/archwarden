@@ -16,6 +16,7 @@
 pub mod call_obligation;
 pub mod frontmatter;
 pub mod import_boundary;
+pub mod import_cycle;
 pub mod naming;
 pub mod no_passthrough;
 pub mod pair;
@@ -116,6 +117,7 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     allow_packages,
                     groups,
                     forbid_packages,
+                    forbid_reaching,
                     except,
                     except_from,
                     include_type_only,
@@ -127,10 +129,14 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     allow_packages.clone(),
                     groups.clone(),
                     forbid_packages,
+                    forbid_reaching,
                     except,
                     except_from,
                     *include_type_only,
                 )),
+                CompiledRuleKind::ImportCycle { include_type_only } => Box::new(
+                    import_cycle::ImportCycleEngine::build(rule, *include_type_only),
+                ),
                 CompiledRuleKind::Frontmatter {
                     file_pattern,
                     require,
@@ -253,6 +259,7 @@ mod tests {
             allow_packages: None,
             require: PathSet::default(),
             forbid_packages: Vec::new(),
+            forbid_reaching: PathSet::default(),
             except: PathSet::default(),
             except_from: PathSet::default(),
             include_type_only: true,

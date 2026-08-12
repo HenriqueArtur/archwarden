@@ -159,6 +159,27 @@ pub fn describe_observed(observed: &Observed) -> String {
         Observed::RequiredImportForCallMissing { symbol, module } => {
             format!("`{symbol}` is not imported from `{module}`")
         }
+        // The destination first, because that is the rule that was broken, and
+        // the chain after it, because that is where the edit goes. A reader
+        // given only the destination opens this file and finds no such import.
+        Observed::ForbiddenReach { chain } => match chain.split_last() {
+            None => "ends up depending on something the rule forbids".to_owned(),
+            Some((last, _)) => {
+                let steps: Vec<String> = chain.iter().map(|step| format!("`{step}`")).collect();
+                format!(
+                    "ends up depending on `{last}`, through {}",
+                    steps.join(" → ")
+                )
+            }
+        },
+        // The chain, not the fact. "is in a cycle" tells a reader they have a
+        // problem and not where it is; the arrows name every edge that could
+        // be cut, and the repeated first entry is what shows the loop closed.
+        Observed::ImportCycle { chain } if chain.is_empty() => "sits on an import cycle".to_owned(),
+        Observed::ImportCycle { chain } => {
+            let steps: Vec<String> = chain.iter().map(|step| format!("`{step}`")).collect();
+            format!("sits on an import cycle: {}", steps.join(" → "))
+        }
         // `Observed` is non_exhaustive; a variant added later says what it is
         // rather than failing to compile here.
         other => format!("{other:?}"),
@@ -190,6 +211,62 @@ mod tests {
 
     fn path(p: &str) -> RepoRelPath {
         RepoRelPath::new(p).expect("valid path")
+    }
+
+    /// The sentence names the destination *and* the way in. A reader told
+    /// "depends on `packages/db`" opens the file and finds no such import;
+    /// what they need is the middle of the chain, which is where the edit goes.
+    #[test]
+    fn a_reach_reads_as_the_chain_that_got_there() {
+        assert_eq!(
+            describe_observed(&Observed::ForbiddenReach {
+                chain: vec![
+                    path("packages/ui/button.tsx"),
+                    path("packages/orders/cart.ts"),
+                    path("packages/db/client.ts"),
+                ],
+            }),
+            "ends up depending on `packages/db/client.ts`, through \
+             `packages/ui/button.tsx` → `packages/orders/cart.ts` → \
+             `packages/db/client.ts`"
+        );
+    }
+
+    /// A chain that arrived without a destination still reads as a sentence.
+    /// Not reachable through the engine, and this is a format a committed
+    /// baseline file carries, where a malformed note outlives the run.
+    #[test]
+    fn a_reach_with_no_chain_still_reads_as_a_sentence() {
+        assert_eq!(
+            describe_observed(&Observed::ForbiddenReach { chain: Vec::new() }),
+            "ends up depending on something the rule forbids"
+        );
+    }
+
+    /// The chain *is* the sentence. "sits on an import cycle" alone leaves a
+    /// reader with nowhere to look; the arrow form names every edge that could
+    /// be cut to break it, which is the whole reason the finding carries a
+    /// chain rather than a boolean.
+    #[test]
+    fn a_cycle_reads_as_the_loop_it_closed() {
+        assert_eq!(
+            describe_observed(&Observed::ImportCycle {
+                chain: vec![path("src/a.ts"), path("src/b.ts"), path("src/a.ts")],
+            }),
+            "sits on an import cycle: `src/a.ts` → `src/b.ts` → `src/a.ts`"
+        );
+    }
+
+    /// A chain that somehow arrived empty still reads as a sentence rather
+    /// than as a stray colon. Not reachable through the engine — the graph
+    /// always returns both ends — and this is a format shared with a committed
+    /// baseline file, where a malformed note outlives the run that wrote it.
+    #[test]
+    fn a_cycle_with_no_chain_still_reads_as_a_sentence() {
+        assert_eq!(
+            describe_observed(&Observed::ImportCycle { chain: Vec::new() }),
+            "sits on an import cycle"
+        );
     }
 
     /// The prose comes from the same values the JSON carries, so the two can
