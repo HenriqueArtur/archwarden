@@ -384,6 +384,9 @@ pub struct CompiledConfig {
     skip_dirs: SkipDirs,
     rules_hash: ContentHash,
     languages: Languages,
+    /// What an ungoverned file reports as, or `None` for an open
+    /// architecture. See [`CompiledConfig::governance`].
+    governance: Option<Level>,
 }
 
 /// A module, as the rest of the run sees it.
@@ -420,6 +423,26 @@ impl CompiledConfig {
         self
     }
 
+    /// Records that this configuration closes the architecture.
+    ///
+    /// A builder step like `with_languages`, so every test of a rule keeps the
+    /// constructor it had.
+    #[must_use]
+    pub fn with_governance(mut self, level: Option<Level>) -> Self {
+        self.governance = level;
+        self
+    }
+
+    /// What an ungoverned file reports as, when this configuration reports one.
+    ///
+    /// `None` is an open architecture, which is every configuration that does
+    /// not ask. Carrying the *level* rather than a flag is what keeps "does it
+    /// report" and "how loudly" from being two questions that can disagree.
+    #[must_use]
+    pub fn governance(&self) -> Option<Level> {
+        self.governance
+    }
+
     /// Which languages this configuration asked archwarden to read.
     #[must_use]
     pub fn languages(&self) -> Languages {
@@ -441,6 +464,7 @@ impl CompiledConfig {
             skip_dirs,
             rules_hash,
             languages: Languages::default(),
+            governance: None,
         }
     }
 
@@ -868,5 +892,42 @@ mod tests {
         assert_eq!(copy.rule_count(), config.rule_count());
         assert!(format!("{config:?}").contains("CompiledConfig"));
         assert!(format!("{:?}", SkipScope::Walk).contains("Walk"));
+    }
+
+    /// An open architecture is the default, and closing it carries the level
+    /// rather than a flag.
+    ///
+    /// The level travels with the decision because "does it report" and "how
+    /// loudly" are one question in the config and would be two here — and two
+    /// that could disagree, which is how a gate ends up firing at a level
+    /// nobody chose.
+    #[test]
+    fn an_architecture_is_open_until_a_configuration_closes_it() {
+        let open = CompiledConfig::new(
+            Vec::new(),
+            PathSet::default(),
+            SkipDirs::default(),
+            ContentHash::of(b""),
+        );
+        assert_eq!(
+            open.governance(),
+            None,
+            "every configuration written before the field, and every one that \
+             does not ask"
+        );
+
+        for level in [Level::Error, Level::Warning] {
+            assert_eq!(
+                CompiledConfig::new(
+                    Vec::new(),
+                    PathSet::default(),
+                    SkipDirs::default(),
+                    ContentHash::of(b""),
+                )
+                .with_governance(Some(level))
+                .governance(),
+                Some(level)
+            );
+        }
     }
 }

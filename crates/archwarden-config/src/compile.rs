@@ -32,6 +32,21 @@ const KIND_ANY: &str = "any";
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub enum CompileError {
+    /// A rule takes the id `governance`, which findings about ungoverned
+    /// files already report under.
+    ///
+    /// Refused rather than resolved, because the two would be indistinguishable
+    /// in `arch.baseline.json` — which keys on rule id and path — so accepting
+    /// one would silently accept the other.
+    #[error(
+        "rule `{rule}` takes the id `governance`, which `governance: closed` \
+         already reports under; a baseline could not tell the two apart"
+    )]
+    ReservedRuleId {
+        /// The rule.
+        rule: RuleId,
+    },
+
     /// A rule names a module the config never declared.
     #[error("rule `{rule}` names module `{module}`, which this config does not declare")]
     UnknownModule {
@@ -297,6 +312,14 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
 
     let mut rules = Vec::new();
     for (module, module_why, rule) in config.rules() {
+        // Before anything else about the rule: an id that collides with the
+        // one `governance: closed` reports under would be indistinguishable
+        // from it in `arch.baseline.json`, which keys on rule and path.
+        if rule.id().as_str() == archwarden_core::ids::GOVERNANCE_RULE_ID {
+            return Err(CompileError::ReservedRuleId {
+                rule: rule.id().clone(),
+            });
+        }
         rules.push(compile_rule(
             rule,
             module.cloned(),
@@ -324,7 +347,8 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
             .with_modules(modules.compiled())
             .with_languages(archwarden_core::compiled::Languages {
                 astro: config.languages.contains(&config::Language::Astro),
-            }),
+            })
+            .with_governance(config.governance.level()),
     )
 }
 

@@ -166,6 +166,18 @@ pub fn needs_graph(config: &CompiledConfig) -> bool {
         .any(|engine| engine.needs_graph())
 }
 
+/// The rule id an ungoverned file reports under.
+///
+/// A reserved name rather than `Option<RuleId>` on the finding: every other
+/// finding names the rule that produced it, and `baseline` keys on that name,
+/// so a finding with no rule would need both of those to grow a case for one
+/// value. `config doctor` refuses a rule that takes this name, so the two can
+/// never be confused in a baseline.
+fn governance_id() -> archwarden_core::ids::RuleId {
+    archwarden_core::ids::RuleId::new(archwarden_core::ids::GOVERNANCE_RULE_ID)
+        .unwrap_or_else(|_| unreachable!("the reserved id is a valid rule id"))
+}
+
 /// A file a graph rule wanted, held until there is a graph to answer from.
 ///
 /// Deliberately not every file: only the ones a rule with
@@ -433,6 +445,34 @@ pub fn check(run: Run<'_>) -> Report {
                 });
             }
         }
+    }
+
+    // A file no rule governs, when the configuration says the architecture is
+    // closed. `CONFIG.md` calls a rule enforcing nothing the worst failure a
+    // linter has; this is that sentence one level up, and until it existed a
+    // clean report over an unwatched half of a tree was indistinguishable from
+    // one over a tree that satisfied everything. Issue #60.
+    //
+    // Per file rather than per directory, deliberately. `baseline` accepts a
+    // finding by rule *and path*, so a grouped finding would keep matching as
+    // new ungoverned files appeared under it -- an escape hatch that silently
+    // swallows tomorrow's debt, which is the shape this project keeps refusing.
+    // `config coverage` is where the grouped view lives, and it is a report
+    // rather than a record.
+    if let Some(level) = config.governance() {
+        findings.extend(
+            tree.files()
+                .filter(|file| !engines.iter().any(|engine| engine.applies_to(&file.path)))
+                .map(|file| Finding {
+                    rule_id: governance_id(),
+                    module_id: None,
+                    level,
+                    path: file.path.clone(),
+                    span: None,
+                    observed: archwarden_core::finding::Observed::Ungoverned,
+                    expected: archwarden_core::finding::Expectation::GovernedBySomeRule,
+                }),
+        );
     }
 
     // The second half of the run, and the only part that can see more than one
@@ -1725,6 +1765,133 @@ mod tests {
         assert_eq!(offenders(&report), ["src/user/nope"]);
         assert_eq!(report.files_scanned, 2, "the exempt file is still counted");
     }
+    /// `governance: closed` — a file no rule governs is a finding.
+    ///
+    /// `CONFIG.md` calls a rule enforcing nothing the worst failure a linter
+    /// has, and this is that sentence one level up: a file no rule governs is
+    /// indistinguishable from a file that satisfies every rule, and `check`
+    /// reporting `0 errors` over it reads as though the architecture held.
+    /// Issue #60.
+    #[test]
+    fn an_ungoverned_file_is_reported_when_the_architecture_is_closed() {
+        let config = config(vec![rule("shape", None, &["src/*"], structure(&["types"]))])
+            .with_governance(Some(Level::Error));
+
+        let report = run(
+            &[
+                // `roots: src/*` selects `src/user`, so `structure` claims the
+                // files directly in it -- `filename_patterns` is what it would
+                // constrain them with. A file one level deeper is outside the
+                // rule and is reported below, correctly.
+                ("src/user/thing.ts", ""),
+                ("scripts/build.ts", ""),
+                ("scripts/deploy.ts", ""),
+            ],
+            &config,
+        );
+
+        assert_eq!(
+            offenders(&report),
+            ["scripts/build.ts", "scripts/deploy.ts"],
+            "one per file, and the file `structure` claims is not among them: \
+             {:?}",
+            report.findings
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.observed == archwarden_core::finding::Observed::Ungoverned),
+            "{:?}",
+            report.findings
+        );
+        assert!(report.fails_build());
+    }
+
+    /// Deeper than the rule reaches is still ungoverned, and that is the
+    /// answer the report has to give.
+    ///
+    /// `roots: src/*` selects the direct children of `src` and claims the
+    /// files in them. A file two levels down is outside it, and calling that
+    /// governed because a rule mentions an ancestor is exactly the comfortable
+    /// lie `governance: closed` exists to refuse.
+    #[test]
+    fn a_file_deeper_than_any_rule_reaches_is_ungoverned() {
+        let report = run(
+            &[("src/user/thing.ts", ""), ("src/user/types/id.ts", "")],
+            &config(vec![rule("shape", None, &["src/*"], structure(&["types"]))])
+                .with_governance(Some(Level::Error)),
+        );
+
+        assert_eq!(
+            offenders(&report),
+            ["src/user/types/id.ts"],
+            "{:?}",
+            report.findings
+        );
+    }
+
+    /// The default, and the one that must not regress: a configuration that
+    /// says nothing reports nothing new.
+    ///
+    /// A field defaulting the other way would turn every existing config into
+    /// thousands of findings on upgrade, over code nobody touched.
+    #[test]
+    fn an_open_architecture_reports_no_ungoverned_files() {
+        let report = run(
+            &[("src/user/types/id.ts", ""), ("scripts/build.ts", "")],
+            &config(vec![rule("shape", None, &["src/*"], structure(&["types"]))]),
+        );
+
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    /// The level is the configuration's, so a migration can turn this on and
+    /// block nobody while it closes the gap.
+    #[test]
+    fn a_closed_architecture_reports_at_the_level_it_was_given() {
+        let report = run(
+            &[("scripts/build.ts", "")],
+            &config(Vec::new()).with_governance(Some(Level::Warning)),
+        );
+
+        assert_eq!(report.warning_count(), 1);
+        assert_eq!(report.error_count(), 0);
+        assert!(
+            !report.fails_build(),
+            "which is the point of offering the level at all"
+        );
+    }
+
+    /// `ignore` is the escape hatch, and gains a meaning it did not have:
+    /// deliberately outside the architecture rather than merely unchecked.
+    #[test]
+    fn an_ignored_file_is_deliberately_outside_the_architecture() {
+        let (guard, root) = tree_at(&[("scripts/build.ts", ""), ("src/a.ts", "")]);
+        let config = CompiledConfig::new(
+            Vec::new(),
+            PathSet::compile(["scripts/**".to_owned()]).expect("valid globs"),
+            SkipDirs::default(),
+            ContentHash::of(b""),
+        )
+        .with_governance(Some(Level::Error));
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let report = check(Run {
+            root: &root,
+            config: &config,
+            tree: &tree,
+            cache: None,
+        });
+        drop(guard);
+
+        assert_eq!(
+            offenders(&report),
+            ["src/a.ts"],
+            "the ignored file is a decision somebody wrote down: {:?}",
+            report.findings
+        );
+    }
+
     /// The whole reason the graph is built from every file rather than from
     /// the ones a rule's scope reaches.
     ///

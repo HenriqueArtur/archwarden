@@ -1134,6 +1134,11 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
                 format!("{base}, except {}", join_or(except, ""))
             }
         }
+        Expectation::GovernedBySomeRule => {
+            "some rule to govern it, or an `ignore` entry saying it is outside \
+             the architecture on purpose"
+                .to_owned()
+        }
         Expectation::NoImportCycle => "no import cycle through it".to_owned(),
         // "depend on" rather than "import from", so that a report carrying both
         // this and a `ForbiddenImport` does not read as the same sentence

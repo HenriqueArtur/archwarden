@@ -19,6 +19,34 @@ saying so.
 
 ### Added
 
+- **`governance: "closed"` — every file must be governed by some rule**
+  ([#60](https://github.com/HenriqueArtur/archwarden/issues/60)). The gate half
+  of `config coverage`: every file no rule governs becomes a finding, and
+  `ignore` becomes the escape hatch with a meaning it did not have —
+  **deliberately outside the architecture** rather than merely unchecked.
+
+  ```json
+  { "version": 0, "governance": "closed", "rules": [ ... ] }
+  { "version": 0, "governance": { "mode": "closed", "level": "warning" } }
+  ```
+
+  Absent means `open`, which is what every config written before this field
+  means and still means. **No existing configuration reports anything new.**
+
+  The long form carries a level, for the migration the report exists for: two
+  thousand ungoverned files can be closed at `warning` today, watched in CI
+  without blocking anyone, and raised to `error` at zero. `baseline` is the
+  other way and produces a two-thousand-entry committed file; both are honest.
+
+  **One finding per file**, not per directory: `baseline` accepts by rule and
+  path, so a grouped finding would keep matching as new ungoverned files
+  arrived under it — an escape hatch that swallows tomorrow's debt. Findings
+  report under the rule id `governance`, and a rule of your own may not take
+  that id, because a baseline could not tell the two apart.
+
+  A preset cannot set it, for the reason a preset cannot set `root`, one step
+  stronger: it would fail a build over files its author never saw.
+
 - **`archwarden config coverage`** — which files no rule governs, grouped by
   directory ([#59](https://github.com/HenriqueArtur/archwarden/issues/59)).
 
@@ -253,6 +281,16 @@ config reports has moved: both new rules fire only where somebody writes one.
   missing `no-passthrough` since that rule shipped; the test guarding it listed
   five of the then-eight kinds, so it agreed. Both are fixed, and the test now
   builds one rule of every kind and checks the list in both directions.
+
+### Fixed
+
+- **A scalar added to the config was silently ignored after a merge.** The
+  `extends` merge copied the entry config's scalars by a hand-written list, so
+  a field not named there kept its *default* for every configuration in the
+  world. `governance` shipped that way during development and reported nothing
+  at all — the exact silence it exists to break. The list is a destructuring
+  now, so the next field fails to build until somebody decides which side it
+  comes from.
 
 ### Internal
 

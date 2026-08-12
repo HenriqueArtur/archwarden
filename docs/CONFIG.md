@@ -1134,6 +1134,57 @@ does overlap; the other two are what this exists for.
 
 It resolves the whole repository, so it costs about what a `check` costs.
 
+## `governance` — is every file somebody's responsibility?
+
+```json
+{ "version": 0, "governance": "closed", "rules": [ ... ] }
+```
+
+Every file no rule governs becomes a finding. Absent means `open`, which is
+what every config written before this field means and still means.
+
+`config coverage` reports the gap; this is the gate. Read that section first —
+nobody should turn this on before seeing what it would cost.
+
+**`ignore` is the escape hatch, and gains a meaning it did not have.** An
+entry there stops meaning *merely unchecked* and starts meaning **deliberately
+outside the architecture** — a decision somebody wrote down, in a file
+reviewable as a diff.
+
+**One finding per file**, not per directory. `baseline` accepts a finding by
+rule *and path*, so a grouped finding would keep matching as new ungoverned
+files appeared under it — an escape hatch that silently swallows tomorrow's
+debt, which is the shape archwarden refuses everywhere else. The grouped view
+is `config coverage`, which is a report rather than a record.
+
+Findings report under the rule id `governance`. A rule of your own may not take
+that id: `arch.baseline.json` keys on rule and path, so the two would be
+indistinguishable there, and the config is refused where the author is looking.
+
+### Turning it on
+
+Two ways, and they suit different repositories:
+
+```json
+{ "governance": { "mode": "closed", "level": "warning" } }
+```
+
+The long form carries a level. A repository with two thousand ungoverned files
+can close the architecture today at `warning`, watch the number in CI without
+blocking anyone, and bring it to `error` when it reaches zero. Writing
+`"closed"` on its own is `error`, because a gate that does not fail a build is
+a report.
+
+The other way is `archwarden baseline`, which accepts today's gap in one
+commit and fails on anything new. That produces a two-thousand-entry committed
+file, which is honest and is a large diff. Neither is more correct.
+
+**A preset cannot set it.** The same reasoning that stops a preset setting
+`root`, one step stronger: closing the architecture says every file *here* is
+somebody's responsibility, and a shared package cannot know what is in a tree
+it has never seen. A preset that could turn it on would fail a build over files
+its author never heard of.
+
 ## Config validation commands
 
 Four commands cover the config itself:

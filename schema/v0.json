@@ -53,6 +53,10 @@
         "ts"
       ]
     },
+    "governance": {
+      "description": "Whether a file no rule governs is a finding.\n\nAbsent means `open`, which is every config written before this field\nand still means what it meant.",
+      "$ref": "#/$defs/Governance"
+    },
     "skip_dirs": {
       "description": "The `_`-prefix escape hatch.",
       "$ref": "#/$defs/SkipDirs",
@@ -133,6 +137,63 @@
           "description": "Astro components: the TypeScript module inside the `---` fence.",
           "type": "string",
           "const": "astro"
+        }
+      ]
+    },
+    "Governance": {
+      "description": "Whether every file must be governed by some rule.\n\n`CONFIG.md` calls a rule enforcing nothing the worst failure a linter has,\nand a file no rule governs is that sentence one level up: indistinguishable\nfrom a file that satisfies everything. `config coverage` reports the gap;\nthis turns it into findings. Issue #60.\n\nWritten either way:\n\n```json\n{ \"governance\": \"closed\" }\n{ \"governance\": { \"mode\": \"closed\", \"level\": \"warning\" } }\n```\n\nThe shorthand is `error`, because a gate that does not fail a build is a\nreport. The long form exists for the migration the report is for: a\nrepository with two thousand ungoverned files can turn this on as a\n`warning` today, see the number in CI without blocking anyone, and close it\nover time. `baseline` is the other way to do that and produces a\ntwo-thousand-entry committed file; both are honest and they suit different\nrepositories.",
+      "anyOf": [
+        {
+          "description": "`\"open\"` or `\"closed\"`, taking the default level.",
+          "$ref": "#/$defs/GovernanceMode"
+        },
+        {
+          "description": "The mode with a level of its own.",
+          "type": "object",
+          "properties": {
+            "mode": {
+              "description": "Open or closed.",
+              "$ref": "#/$defs/GovernanceMode"
+            },
+            "level": {
+              "description": "What an ungoverned file reports as. Defaults to `error`.",
+              "$ref": "#/$defs/Level",
+              "default": "error"
+            }
+          },
+          "required": [
+            "mode"
+          ]
+        }
+      ]
+    },
+    "GovernanceMode": {
+      "description": "Whether the architecture is closed to files no rule mentions.",
+      "oneOf": [
+        {
+          "description": "A file no rule governs is not reported. The default, and what every\nconfig written before this field means.",
+          "type": "string",
+          "const": "open"
+        },
+        {
+          "description": "A file no rule governs is a finding, and `ignore` is the escape hatch —\nwhich gains a meaning it did not have: **deliberately outside the\narchitecture**, rather than merely unchecked.",
+          "type": "string",
+          "const": "closed"
+        }
+      ]
+    },
+    "Level": {
+      "description": "How seriously a finding is taken.",
+      "oneOf": [
+        {
+          "description": "Reported and visible, but the run still succeeds. For technical debt\nthat must stay in sight until it is paid down.",
+          "type": "string",
+          "const": "warning"
+        },
+        {
+          "description": "Fails the run. Blocks CI.",
+          "type": "string",
+          "const": "error"
         }
       ]
     },
@@ -829,21 +890,6 @@
     "RuleId": {
       "description": "A rule's stable identifier, unique across a config and its presets.",
       "type": "string"
-    },
-    "Level": {
-      "description": "How seriously a finding is taken.",
-      "oneOf": [
-        {
-          "description": "Reported and visible, but the run still succeeds. For technical debt\nthat must stay in sight until it is paid down.",
-          "type": "string",
-          "const": "warning"
-        },
-        {
-          "description": "Fails the run. Blocks CI.",
-          "type": "string",
-          "const": "error"
-        }
-      ]
     },
     "MustExport": {
       "description": "The export a `naming` rule requires.",
