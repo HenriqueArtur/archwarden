@@ -7,6 +7,7 @@
 
 mod ci;
 mod clean;
+mod mutants;
 mod preview;
 
 use std::{path::PathBuf, process::ExitCode};
@@ -29,6 +30,16 @@ fn main() -> ExitCode {
         Some("check-schema") => run(gen_schema(Mode::Check)),
         Some("hooks") => run(install_hooks()),
         Some("preview") => run(preview::run(&repository_root())),
+        Some("mutants") => {
+            // `--since <ref>` is what the pre-push hook passes: the sha the
+            // remote already has, so a second push tests only what it adds.
+            // Without it the base is the merge base with the default branch,
+            // which is what `cargo xtask ci` counts and what somebody running
+            // this by hand means.
+            let rest: Vec<String> = std::env::args().skip(2).collect();
+            let since = mutants::since_from(&rest);
+            run(mutants::run(&repository_root(), since.as_deref()))
+        }
         Some("ci") => {
             let rest: Vec<String> = std::env::args().skip(2).collect();
             run(ci::Mode::parse(&rest).and_then(|mode| ci::run(&repository_root(), mode)))

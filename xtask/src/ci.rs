@@ -410,6 +410,12 @@ fn run_gates(root: &Path, gates: &[&Step]) -> Result<(), String> {
 
     if failed.is_empty() {
         println!("\nall {} gates pass.", gates.len());
+        // Not a gate, and deliberately: `crate::mutants` argues why running
+        // them here would make this command slow enough to be run less often,
+        // which is the failure the line exists to prevent. It costs about a
+        // second, it is the only thing between a commit and a push that says
+        // the number out loud, and it names the command that acts on it.
+        println!("{}", crate::mutants::advice(&crate::mutants::pending(root)));
         return Ok(());
     }
 
