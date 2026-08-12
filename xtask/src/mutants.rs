@@ -156,7 +156,7 @@ pub(crate) fn since_from(arguments: &[String]) -> Option<String> {
 /// costs a second where running them costs minutes. That gap is what lets the
 /// count be free enough to print every time.
 pub(crate) fn pending(root: &Path) -> Result<usize, String> {
-    let base = base(root, None)?;
+    let base = base_with(root, None, std::env::var("GITHUB_BASE_REF").ok().as_deref())?;
     let diff = diff_against(root, &base)?;
     if diff.trim().is_empty() {
         return Ok(0);
@@ -208,11 +208,26 @@ pub(crate) fn count_listed(stdout: &str) -> usize {
 ///
 /// Never `HEAD`: accumulating across commits is the failure being prevented,
 /// and a base of `HEAD` cannot see it.
-fn base(root: &Path, since: Option<&str>) -> Result<String, String> {
+/// The pull request's ref is handed in rather than read, for the reason CI
+/// found rather than for tidiness: the tests below build a throwaway
+/// repository and ask for its merge base, and while they read the *process*
+/// environment they passed here and failed on a runner, where
+/// `GITHUB_BASE_REF` is set and names a branch no temporary repository has. A
+/// test whose answer depends on where it runs is not testing what it says it
+/// is.
+///
+/// There is no wrapper that reads it for you. One would be a line of wiring
+/// over a tested function, which is a mutant nobody can kill and a third
+/// entry in `.cargo/mutants.toml` for no behaviour at all.
+fn base_with(
+    root: &Path,
+    since: Option<&str>,
+    pull_request: Option<&str>,
+) -> Result<String, String> {
     if let Some(reference) = since {
         return Ok(reference.to_owned());
     }
-    if let Some(reference) = pull_request_base(std::env::var("GITHUB_BASE_REF").ok().as_deref()) {
+    if let Some(reference) = pull_request_base(pull_request) {
         return Ok(reference);
     }
 
@@ -334,7 +349,11 @@ pub(crate) fn run(root: &Path, since: Option<&str>) -> Result<(), String> {
         return Ok(());
     }
 
-    let base = base(root, since)?;
+    let base = base_with(
+        root,
+        since,
+        std::env::var("GITHUB_BASE_REF").ok().as_deref(),
+    )?;
     let diff = diff_against(root, &base)?;
     if diff.trim().is_empty() {
         println!("mutants: nothing to test on this diff.");
@@ -625,14 +644,25 @@ mod tests {
         .expect("utf-8");
 
         assert_eq!(
-            super::base(&root, None).expect("there is a merge base"),
+            super::base_with(&root, None, None).expect("there is a merge base"),
             head.trim(),
             "one commit, so the merge base with `main` is that commit"
         );
         assert_eq!(
-            super::base(&root, Some("abc123")).expect("given"),
+            super::base_with(&root, Some("abc123"), None).expect("given"),
             "abc123",
             "and an explicit reference is taken as given"
+        );
+        assert_eq!(
+            super::base_with(&root, Some("abc123"), Some("main")).expect("given"),
+            "abc123",
+            "`--since` wins over the environment: the hook knows what the \
+             remote already has, and a runner's `GITHUB_BASE_REF` does not"
+        );
+        assert_eq!(
+            super::base_with(&root, None, Some("release")).expect("given"),
+            "origin/release",
+            "and a pull request's base is used when nothing else names one"
         );
         drop(guard);
     }
@@ -653,7 +683,7 @@ mod tests {
             vec!["brand-new.rs".to_owned()]
         );
 
-        let base = super::base(&root, None).expect("merge base");
+        let base = super::base_with(&root, None, None).expect("merge base");
         let diff = super::diff_against(&root, &base).expect("diff");
         assert!(diff.contains("brand-new.rs"), "{diff}");
         assert!(
@@ -673,7 +703,7 @@ mod tests {
         let (guard, root) = repository();
         std::fs::write(root.join("kept.rs"), "pub fn kept() -> u8 { 99 }\n").expect("write");
 
-        let base = super::base(&root, None).expect("merge base");
+        let base = super::base_with(&root, None, None).expect("merge base");
         let diff = super::diff_against(&root, &base).expect("diff");
 
         assert!(diff.contains("kept.rs"), "{diff}");
@@ -686,7 +716,7 @@ mod tests {
     #[test]
     fn an_untouched_repository_diffs_to_nothing() {
         let (guard, root) = repository();
-        let base = super::base(&root, None).expect("merge base");
+        let base = super::base_with(&root, None, None).expect("merge base");
 
         assert!(
             super::diff_against(&root, &base)
