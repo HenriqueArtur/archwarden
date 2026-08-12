@@ -17,6 +17,36 @@ saying so.
 
 ## [Unreleased]
 
+### Added
+
+- **`archwarden config coverage`** — which files no rule governs, grouped by
+  directory ([#59](https://github.com/HenriqueArtur/archwarden/issues/59)).
+
+  ```
+  1843 of 2800 files are governed by no rule
+
+    packages/legacy/**            412 files
+    apps/admin/src/screens/**     280 files
+    scripts/*                      94 files
+  ```
+
+  `CONFIG.md` calls a rule enforcing nothing the worst failure a linter has.
+  This is that sentence one level up: **a file no rule governs is
+  indistinguishable from a file that satisfies every rule**, and `check`
+  printing `0 errors` over it reads as *the architecture holds* when it may
+  mean *half the tree was never looked at*.
+
+  Every other config command asks per rule — is it broken, does it bite, what
+  does it cover. None of them can be asked what nobody is watching, because a
+  file nothing mentions appears in no rule's answer.
+
+  Governed is decided by the same code `check` uses to pick a file's rules, so
+  the report cannot disagree with the checker. Grouped because per file it
+  would be a thousand paths and nothing to do: a `**` line is a directory where
+  everything below is ungoverned and one rule covers the lot, a `*` line is a
+  directory holding both kinds. Exits 0 always — the gate is `governance:
+  closed`, and nobody should have to enable it to find out what it would cost.
+
 ### Internal
 
 - **The mutant count is visible between a commit and a push.** `cargo xtask ci`

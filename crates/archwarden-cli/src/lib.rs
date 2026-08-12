@@ -13,6 +13,7 @@ pub mod changed;
 // still name them at the fifty-odd call sites that use them.
 pub use archwarden_api::{baseline, filter};
 
+pub mod coverage;
 pub mod describe;
 pub mod diagnostic;
 pub mod doctor;
@@ -481,6 +482,19 @@ pub enum ConfigCommand {
         format: Format,
     },
 
+    /// Say which files no rule governs, grouped by directory.
+    ///
+    /// Every other question here is asked per rule. This one is asked per
+    /// file, and it is the only one that can answer "what is nobody
+    /// watching?" — a file no rule mentions appears in no rule's answer, and
+    /// `check` reporting `0 errors` over it reads exactly like a file that
+    /// satisfies everything.
+    Coverage {
+        /// How to render the report.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+
     /// Show what one rule reaches, and what it is reporting.
     Explain {
         /// The rule's id, as written in the config.
@@ -702,6 +716,9 @@ fn run_config(
         ConfigCommand::Doctor { format } => doctor(location, working_directory, *format, output),
         ConfigCommand::VerifyRules { format } => {
             verify_rules(location, working_directory, *format, output)
+        }
+        ConfigCommand::Coverage { format } => {
+            coverage(location, working_directory, *format, output)
         }
         ConfigCommand::Explain { rule_id, format } => {
             explain(location, working_directory, rule_id, *format, output)
@@ -1994,6 +2011,37 @@ fn verify_rules(
     } else {
         Exit::Clean
     }
+}
+
+/// `config coverage` — which files no rule governs.
+///
+/// Reports and does not fail: issue #59 says the number is worth having on its
+/// own, and nobody should be asked to enable a gate before they can see what
+/// it would cost. The gate is `governance: closed`, issue #60.
+fn coverage(
+    location: Location<'_>,
+    working_directory: &Utf8Path,
+    format: Format,
+    output: &mut Output<'_>,
+) -> Exit {
+    let Ok((merged, compiled)) = prepare(location, working_directory, output) else {
+        return Exit::ConfigProblem;
+    };
+
+    let tree = match archwarden_engine::walk::walk(&merged.root, &compiled) {
+        Ok(tree) => tree,
+        Err(error) => {
+            let _ = writeln!(output.err, "the repository could not be walked — {error}");
+            return Exit::ConfigProblem;
+        }
+    };
+
+    crate::coverage::render(
+        &crate::coverage::examine(&compiled, &tree),
+        format,
+        output.out,
+    );
+    Exit::Clean
 }
 
 fn doctor(
