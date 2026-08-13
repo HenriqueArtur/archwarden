@@ -321,6 +321,14 @@ pub enum Command {
         harness: Harness,
     },
 
+    /// Serve the operations over MCP, speaking JSON-RPC on stdin and stdout.
+    ///
+    /// Not usually run by hand: a client spawns it and speaks to its pipes.
+    /// A `.mcp.json` at the repository root names the command, and `check_write`
+    /// is the tool that earns it — the same judgement the pre-write hook makes,
+    /// asked *before* the write instead of after.
+    Mcp,
+
     /// Wire archwarden into a harness as a pre-write hook.
     InstallHooks {
         /// Install for Claude Code, in `.claude/settings.json`.
@@ -689,14 +697,38 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             *format,
             output,
         ),
-        Command::Hook { harness } => hook(*harness, cli.location(), working_directory, output),
+        Command::Hook { .. } | Command::Mcp | Command::InstallHooks { .. } => {
+            run_harness(&cli.command, cli.location(), working_directory, output)
+        }
+        Command::Config { command } => {
+            run_config(command, cli.location(), working_directory, output)
+        }
+    }
+}
+
+/// The harness family: the three commands a coding agent's tooling runs.
+///
+/// Its own function rather than three more arms, on the same argument
+/// [`run_config`] is extracted under — and because these three belong together
+/// for a second reason: they are the surfaces of `AGENT-INTEGRATION.md`, and a
+/// fourth would go here rather than into a dispatch that is already long.
+fn run_harness(
+    command: &Command,
+    location: Location<'_>,
+    working_directory: &Utf8Path,
+    output: &mut Output<'_>,
+) -> Exit {
+    match command {
+        Command::Hook { harness } => hook(*harness, location, working_directory, output),
+        Command::Mcp => mcp(working_directory, output),
         Command::InstallHooks {
             claude_code,
             remove,
         } => install_hooks(*claude_code, *remove, working_directory, output),
-        Command::Config { command } => {
-            run_config(command, cli.location(), working_directory, output)
-        }
+        // Unreachable by construction: `run` sends only the three above. A
+        // match arm rather than a panic, because a command routed here by
+        // mistake should do nothing rather than take the process down.
+        _ => Exit::Clean,
     }
 }
 
@@ -783,15 +815,16 @@ fn describe(
         );
     }
 
-    let path = match crate::describe::repo_relative(&merged.root, working_directory, argument) {
-        Ok(path) => path,
-        Err(message) => {
-            let _ = writeln!(output.err, "{message}");
-            return Exit::ConfigProblem;
-        }
-    };
+    let path =
+        match archwarden_api::describe::repo_relative(&merged.root, working_directory, argument) {
+            Ok(path) => path,
+            Err(message) => {
+                let _ = writeln!(output.err, "{message}");
+                return Exit::ConfigProblem;
+            }
+        };
 
-    let applies = crate::describe::describe(&compiled, &path);
+    let applies = archwarden_api::describe::describe(&compiled, &path);
     crate::describe::render(&path, &applies, format, output.out);
     Exit::Clean
 }
@@ -1255,6 +1288,9 @@ fn hook(
         crate::hook::Event::Stop => {
             return stopped(location, working_directory, output);
         }
+        crate::hook::Event::SessionStart => {
+            return session_started(location, working_directory, output);
+        }
         // Not guessed at. A harness that grows an event this build has never
         // seen gets silence rather than a pre-write answer to a question that
         // was not one.
@@ -1295,14 +1331,15 @@ fn hook(
             Err(error) => return unable(output, &crate::hook::unexamined(&error)),
         };
 
-    let path = match crate::describe::repo_relative(&merged.root, working_directory, &argument) {
-        Ok(path) => path,
-        // `repo_relative` resolves a second route to the same directory, so
-        // reaching here means the path really is somewhere else. Which is a
-        // fine thing for a write to be — and the hook still has to say that it
-        // formed no opinion, rather than nodding.
-        Err(reason) => return unable(output, &reason),
-    };
+    let path =
+        match archwarden_api::describe::repo_relative(&merged.root, working_directory, &argument) {
+            Ok(path) => path,
+            // `repo_relative` resolves a second route to the same directory, so
+            // reaching here means the path really is somewhere else. Which is a
+            // fine thing for a write to be — and the hook still has to say that it
+            // formed no opinion, rather than nodding.
+            Err(reason) => return unable(output, &reason),
+        };
 
     // The write, not the file. A `PreToolUse` hook is asked whether something
     // that has not happened would be legal, and answering from disk answers
@@ -1314,27 +1351,23 @@ fn hook(
     // document and the result has to be reconstructed. A file that is not there
     // reads as empty, which is the case this most exists for.
     let on_disk = std::fs::read_to_string(merged.root.join(path.as_str())).unwrap_or_default();
-    let mut single = match crate::hook::pending(&payload, &on_disk) {
-        Some(content) => {
-            archwarden_engine::single::check_write(&merged.root, &compiled, &path, &content)
-        }
-        // A tool this cannot replay, or an edit that will not apply. Judging
-        // the file as it stands is the honest answer, and it is what the hook
-        // did for everything before this.
-        None => archwarden_engine::single::check_file(&merged.root, &compiled, &path),
-    };
-    // Debt the project already accepted must not block a write. An agent asked
-    // to edit a legacy file would otherwise be refused for something that is
-    // not its doing, and the hook would be uninstalled by lunchtime.
-    //
-    // A broken baseline allows the write rather than refusing it, like every
-    // other failure on this path: a configuration problem is the user's to fix
-    // at their own pace, not a reason to stop them typing.
-    if let Ok(Some(baseline)) = crate::baseline::Baseline::load(&merged.root) {
-        single.findings.retain(|finding| !baseline.accepts(finding));
-    }
 
-    let mut fixing = Vec::new();
+    // Everything from here to the decision is [`archwarden_api::single::check`]
+    // — the engine, the baseline, and the split between what this write breaks
+    // and what it is fixing. It was written out here while the hook was the
+    // only surface asking. MCP asks the same question, and a server that ran
+    // the engine without the other two would refuse a write this permits.
+    //
+    // Reconstructing the text stays here: replaying an `Edit` is the harness's
+    // protocol, not an operation. A tool this cannot replay yields `None`, and
+    // judging the file as it stands is the honest answer to that.
+    let checked = archwarden_api::single::check(
+        &merged.root,
+        &compiled,
+        &path,
+        crate::hook::pending(&payload, &on_disk).as_deref(),
+    );
+    let archwarden_api::single::Checked { single, fixing } = &checked;
 
     // Probed at the config root rather than the working directory: that is
     // where `node_modules` sits in a monorepo, and where the harness will be
@@ -1342,35 +1375,18 @@ fn hook(
     let invocation = crate::hooks::invocation(&merged.root);
     let reasons = crate::report::Reasons::of(&compiled);
 
-    // A write supplying one of a directory's required files is fixing it, not
-    // breaking it. Refusing that made a `presence` rule of several files
-    // unsatisfiable in any order -- the directory could not be created at all.
-    // The finding stays and is shown; it just stops being a denial. Issue #57.
-    //
-    // A write supplying none of them leaves the directory as broken as it was,
-    // and is refused exactly as before.
-    if let Some(name) = path.file_name() {
-        single.findings.retain(|finding| {
-            let progress = crate::hook::is_progress(finding, name);
-            if progress {
-                fixing.push(finding.clone());
-            }
-            !progress
-        });
-    }
-
-    let decision = if single.fails_build() {
-        crate::hook::Decision::Deny(crate::hook::explain(&single, &reasons, &invocation))
+    let decision = if checked.refuses() {
+        crate::hook::Decision::Deny(crate::hook::explain(single, &reasons, &invocation))
     } else if single.findings.is_empty() && fixing.is_empty() {
         crate::hook::Decision::Allow
     } else if single.findings.is_empty() {
         // Only progress. "Would break these rules" is false about a write that
         // is fixing the directory, and it buries the useful half -- what is
         // still missing is what the agent has to write next.
-        crate::hook::Decision::Note(crate::hook::still_needs(&fixing))
+        crate::hook::Decision::Note(crate::hook::still_needs(fixing))
     } else {
         // Decision 1: warnings are visible and do not gate.
-        crate::hook::Decision::Note(crate::hook::explain(&single, &reasons, &invocation))
+        crate::hook::Decision::Note(crate::hook::explain(single, &reasons, &invocation))
     };
 
     let _ = write!(output.out, "{}", crate::hook::respond(&decision));
@@ -1484,6 +1500,85 @@ fn unable(output: &mut Output<'_>, reason: &str) -> Exit {
     Exit::Clean
 }
 
+/// Puts the module map into a starting session's context.
+///
+/// Issue #66. Layer 3 of `AGENT-INTEGRATION.md` depended on the user
+/// referencing `.archwarden/AGENT_RULES.md` from their `CLAUDE.md` by hand;
+/// this puts a pointer there without being asked.
+///
+/// **A pointer, not the guide.** The full digest costs context in every
+/// session, including the ones touching no governed file, and a long block is
+/// the first thing compaction drops — which is the moment this exists for.
+///
+/// It fires on every source, `compact` included, because `install-hooks`
+/// writes the entry with no matcher. Nothing here reads the source: whichever
+/// way the session arrived, it arrived without the rules in it.
+///
+/// A configuration it cannot read is reported to the *user* and never injected.
+/// Silence would be the third answer this project keeps refusing — a session
+/// with no rules in context is indistinguishable from a repository with no
+/// rules, which is the sentence `CONFIG.md` calls the worst failure a linter
+/// has.
+fn session_started(
+    location: Location<'_>,
+    working_directory: &Utf8Path,
+    output: &mut Output<'_>,
+) -> Exit {
+    let prepared = match archwarden_api::prepare(location, working_directory) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let _ = write!(
+                output.out,
+                "{}",
+                crate::hook::session(None, Some(&error.unreadable()))
+            );
+            return Exit::Clean;
+        }
+    };
+
+    let map = archwarden_api::map::map(&prepared.merged.config, &prepared.compiled);
+
+    // A repository whose config governs nothing gets nothing. Announcing a
+    // gate that is not there is worse than saying nothing, and this is the one
+    // case where silence is the honest answer rather than the ambiguous one.
+    if map.is_empty() {
+        let _ = write!(output.out, "{}", crate::hook::session(None, None));
+        return Exit::Clean;
+    }
+
+    let invocation = crate::hooks::invocation(&prepared.merged.root);
+    let _ = write!(
+        output.out,
+        "{}",
+        crate::hook::session(Some(&archwarden_api::map::render(&map, &invocation)), None)
+    );
+    Exit::Clean
+}
+
+/// Serves MCP until the client closes the pipe.
+///
+/// Everything this does is in `archwarden-mcp`, which cannot see this crate.
+/// What is left here is the wiring a binary owns: buffering stdin, and turning
+/// a client that went away into an exit code rather than a panic.
+///
+/// It exits clean when the pipe closes, because that is how a stdio server is
+/// stopped — the client kills it at the end of the session, and reporting that
+/// as a failure would put an error in the user's log every time they quit.
+fn mcp(working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
+    let mut input = std::io::BufReader::new(&mut *output.input);
+
+    match archwarden_mcp::serve(&mut input, output.out, working_directory) {
+        Ok(()) => Exit::Clean,
+        // A broken pipe is the client going away mid-write, which is the same
+        // ending by another route.
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Exit::Clean,
+        Err(error) => {
+            let _ = writeln!(output.err, "archwarden mcp: {error}");
+            Exit::ConfigProblem
+        }
+    }
+}
+
 /// Wires archwarden into a harness, or takes it back out.
 fn install_hooks(
     claude_code: bool,
@@ -1500,52 +1595,117 @@ fn install_hooks(
     }
 
     let settings = working_directory.join(crate::hooks::CLAUDE_SETTINGS);
-    let current = std::fs::read_to_string(&settings).ok();
-
     let command = crate::hooks::hook_command(working_directory);
-    let edited = if remove {
-        crate::hooks::remove(current.as_deref())
-    } else {
-        crate::hooks::install(current.as_deref(), &command)
+
+    let hooks = {
+        let current = std::fs::read_to_string(&settings).ok();
+        let edited = if remove {
+            crate::hooks::remove(current.as_deref())
+        } else {
+            crate::hooks::install(current.as_deref(), &command)
+        };
+        match apply(&settings, edited, output) {
+            Ok(outcome) => outcome,
+            Err(exit) => return exit,
+        }
     };
 
+    // The second file, decided on its own. Sharing a flag would let a
+    // half-installed project report "already installed" and never gain the
+    // server -- the same defect `install` avoids by deciding each event
+    // separately.
+    let mcp_config = working_directory.join(crate::hooks::MCP_CONFIG);
+    let invocation = crate::hooks::invocation(working_directory);
+    let mcp = {
+        let current = std::fs::read_to_string(&mcp_config).ok();
+        let edited = if remove {
+            crate::hooks::remove_mcp(current.as_deref())
+        } else {
+            crate::hooks::install_mcp(current.as_deref(), &invocation)
+        };
+        match apply(&mcp_config, edited, output) {
+            Ok(outcome) => outcome,
+            Err(exit) => return exit,
+        }
+    };
+
+    let _ = writeln!(output.out, "{}", describe_outcome(hooks, &settings));
+    // Naming the command is the point: a hook that resolves to nothing fails
+    // silently, at someone else's next write rather than here. Only on the
+    // way in — after a removal there is no command to name.
+    if hooks == crate::hooks::Outcome::Installed {
+        let _ = writeln!(output.out, "  {command}");
+    }
+
+    let _ = writeln!(output.out, "{}", describe_mcp_outcome(mcp, &mcp_config));
+    if mcp == crate::hooks::Outcome::Installed {
+        let _ = writeln!(output.out, "  {invocation} mcp");
+    }
+
+    // Hooks are read when a session starts, so a project that just gained one
+    // has not gained it for the session that ran this. Said out loud because
+    // the alternative is a user testing it, seeing nothing, and concluding the
+    // installer lied.
+    if !remove
+        && (hooks == crate::hooks::Outcome::Installed || mcp == crate::hooks::Outcome::Installed)
+    {
+        let _ = writeln!(
+            output.out,
+            "\nBoth take effect in the next session: hooks and MCP servers are read at startup."
+        );
+    }
+
+    Exit::Clean
+}
+
+/// Writes one edited file, or reports why it could not.
+///
+/// Nothing changed means nothing written: rewriting a file to the same bytes
+/// still shows up as a modification in an editor and in `git status`.
+fn apply(
+    path: &Utf8Path,
+    edited: Result<(String, crate::hooks::Outcome), String>,
+    output: &mut Output<'_>,
+) -> Result<crate::hooks::Outcome, Exit> {
     let (contents, outcome) = match edited {
         Ok(edited) => edited,
         Err(message) => {
             let _ = writeln!(output.err, "{message}");
-            return Exit::ConfigProblem;
+            return Err(Exit::ConfigProblem);
         }
     };
 
-    // Nothing changed, nothing is written: rewriting a file to the same bytes
-    // still shows up as a modification in an editor and in `git status`.
     if matches!(
         outcome,
         crate::hooks::Outcome::AlreadyInstalled | crate::hooks::Outcome::NotInstalled
     ) {
-        let _ = writeln!(output.out, "{}", describe_outcome(outcome, &settings));
-        return Exit::Clean;
+        return Ok(outcome);
     }
 
-    if let Some(parent) = settings.parent()
+    if let Some(parent) = path.parent()
+        && !parent.as_str().is_empty()
         && let Err(error) = std::fs::create_dir_all(parent)
     {
         let _ = writeln!(output.err, "cannot create `{parent}`: {error}");
-        return Exit::ConfigProblem;
+        return Err(Exit::ConfigProblem);
     }
-    if let Err(error) = std::fs::write(&settings, contents) {
-        let _ = writeln!(output.err, "cannot write `{settings}`: {error}");
-        return Exit::ConfigProblem;
+    if let Err(error) = std::fs::write(path, contents) {
+        let _ = writeln!(output.err, "cannot write `{path}`: {error}");
+        return Err(Exit::ConfigProblem);
     }
 
-    let _ = writeln!(output.out, "{}", describe_outcome(outcome, &settings));
-    // Naming the command is the point: a hook that resolves to nothing fails
-    // silently, at someone else's next write rather than here. Only on the
-    // way in — after a removal there is no command to name.
-    if outcome == crate::hooks::Outcome::Installed {
-        let _ = writeln!(output.out, "  {command}");
+    Ok(outcome)
+}
+
+fn describe_mcp_outcome(outcome: crate::hooks::Outcome, config: &Utf8Path) -> String {
+    match outcome {
+        crate::hooks::Outcome::Installed => format!("installed the MCP server in {config}"),
+        crate::hooks::Outcome::AlreadyInstalled => {
+            format!("the MCP server is already in {config}")
+        }
+        crate::hooks::Outcome::Removed => format!("removed the MCP server from {config}"),
+        crate::hooks::Outcome::NotInstalled => format!("no archwarden server was in {config}"),
     }
-    Exit::Clean
 }
 
 fn describe_outcome(outcome: crate::hooks::Outcome, settings: &Utf8Path) -> String {
@@ -1581,13 +1741,14 @@ fn check_one(
         Err(exit) => return exit,
     };
 
-    let path = match crate::describe::repo_relative(&merged.root, working_directory, argument) {
-        Ok(path) => path,
-        Err(message) => {
-            let _ = writeln!(output.err, "{message}");
-            return Exit::ConfigProblem;
-        }
-    };
+    let path =
+        match archwarden_api::describe::repo_relative(&merged.root, working_directory, argument) {
+            Ok(path) => path,
+            Err(message) => {
+                let _ = writeln!(output.err, "{message}");
+                return Exit::ConfigProblem;
+            }
+        };
 
     let mut single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
     // A pre-write hook that blocked an agent on debt the project already
@@ -1655,7 +1816,7 @@ fn describe_many(
     let answers: Vec<_> = matched
         .into_iter()
         .map(|path| {
-            let applies = crate::describe::describe(compiled, &path);
+            let applies = archwarden_api::describe::describe(compiled, &path);
             (path, applies)
         })
         .collect();
@@ -1680,15 +1841,16 @@ fn scaffold(
         Err(exit) => return exit,
     };
 
-    let path = match crate::describe::repo_relative(&merged.root, working_directory, argument) {
-        Ok(path) => path,
-        Err(message) => {
-            let _ = writeln!(output.err, "{message}");
-            return Exit::ConfigProblem;
-        }
-    };
+    let path =
+        match archwarden_api::describe::repo_relative(&merged.root, working_directory, argument) {
+            Ok(path) => path,
+            Err(message) => {
+                let _ = writeln!(output.err, "{message}");
+                return Exit::ConfigProblem;
+            }
+        };
 
-    let shape = crate::scaffold::scaffold(&compiled, &path);
+    let shape = archwarden_api::scaffold::scaffold(&compiled, &path);
     crate::scaffold::render(&path, &shape, format, output.out);
     Exit::Clean
 }
@@ -1708,7 +1870,7 @@ fn agent_guide(
     kinds: &[String],
     output: &mut Output<'_>,
 ) -> Exit {
-    if let Err(message) = crate::guide::guide_kinds(kinds) {
+    if let Err(message) = archwarden_api::guide::guide_kinds(kinds) {
         let _ = writeln!(output.err, "{message}");
         return Exit::ConfigProblem;
     }
@@ -1719,7 +1881,9 @@ fn agent_guide(
     };
 
     let scope = match scope
-        .map(|scope| crate::describe::repo_relative(&merged.root, working_directory, scope))
+        .map(|scope| {
+            archwarden_api::describe::repo_relative(&merged.root, working_directory, scope)
+        })
         .transpose()
     {
         Ok(scope) => scope,
@@ -1729,7 +1893,7 @@ fn agent_guide(
         }
     };
 
-    let guide = crate::guide::guide(&compiled, scope.as_ref(), kinds);
+    let guide = archwarden_api::guide::guide(&compiled, scope.as_ref(), kinds);
     // The flag wins over the config; the config over English. A repository
     // decides this once, and one run may want the other.
     let language = language.unwrap_or_else(|| crate::phrases::Language::of(merged.config.language));
@@ -4242,6 +4406,226 @@ mod tests {
             result.out.contains("packages/"),
             "expected areas, got: {}",
             result.out
+        );
+    }
+
+    /// Hooks are read when a session starts, so a project that has just gained
+    /// one has not gained it for the session that ran this. Said out loud,
+    /// because the alternative is a user testing it, seeing nothing, and
+    /// concluding the installer lied.
+    #[test]
+    fn installing_says_when_what_it_installed_takes_effect() {
+        let (_guard, result) = run_in(
+            &[("arch.config.json", r#"{"version":0}"#)],
+            &["install-hooks", "--claude-code"],
+        );
+
+        assert!(result.out.contains("next session"), "{}", result.out);
+    }
+
+    /// And a second run says nothing about it. Nothing was installed, so
+    /// there is nothing waiting for the next session.
+    #[test]
+    fn installing_twice_stops_promising_a_next_session() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+        std::fs::write(root.join("arch.config.json"), r#"{"version":0}"#).expect("write");
+
+        let first = run_at(&root, &["install-hooks", "--claude-code"]);
+        assert!(first.out.contains("next session"), "{}", first.out);
+
+        let again = run_at(&root, &["install-hooks", "--claude-code"]);
+        assert!(
+            !again.out.contains("next session"),
+            "nothing was installed, so nothing is waiting: {}",
+            again.out
+        );
+        assert!(again.out.contains("already"), "{}", again.out);
+    }
+
+    /// Removing never promises a next session either. There is nothing to
+    /// start.
+    #[test]
+    fn removing_promises_nothing_about_the_next_session() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+        std::fs::write(root.join("arch.config.json"), r#"{"version":0}"#).expect("write");
+
+        run_at(&root, &["install-hooks", "--claude-code"]);
+        let removed = run_at(&root, &["install-hooks", "--claude-code", "--remove"]);
+
+        assert!(!removed.out.contains("next session"), "{}", removed.out);
+        assert!(removed.out.contains("removed"), "{}", removed.out);
+    }
+
+    /// A project that has the hooks and not the server still gets the server,
+    /// and is told the next session is when it matters. The two files are
+    /// decided separately for exactly this: a shared flag would report
+    /// "already installed" and leave the project without half of it.
+    #[test]
+    fn half_an_installation_is_completed_rather_than_reported_as_done() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+        std::fs::write(root.join("arch.config.json"), r#"{"version":0}"#).expect("write");
+
+        run_at(&root, &["install-hooks", "--claude-code"]);
+        std::fs::remove_file(root.join(crate::hooks::MCP_CONFIG)).expect("take the server out");
+
+        let again = run_at(&root, &["install-hooks", "--claude-code"]);
+
+        assert!(
+            root.join(crate::hooks::MCP_CONFIG).is_file(),
+            "the server came back"
+        );
+        assert!(
+            again.out.contains("installed the MCP server"),
+            "{}",
+            again.out
+        );
+        assert!(
+            again.out.contains("already"),
+            "and the hooks were left alone: {}",
+            again.out
+        );
+        assert!(again.out.contains("next session"), "{}", again.out);
+    }
+
+    /// Each of the four outcomes reads as itself. A message that said
+    /// "installed" after a removal would be the uninstall equivalent of a gate
+    /// reporting it is on when it is not.
+    #[test]
+    fn the_server_outcomes_each_read_as_themselves() {
+        let config = Utf8Path::new(".mcp.json");
+
+        assert_eq!(
+            describe_mcp_outcome(crate::hooks::Outcome::Installed, config),
+            "installed the MCP server in .mcp.json"
+        );
+        assert_eq!(
+            describe_mcp_outcome(crate::hooks::Outcome::AlreadyInstalled, config),
+            "the MCP server is already in .mcp.json"
+        );
+        assert_eq!(
+            describe_mcp_outcome(crate::hooks::Outcome::Removed, config),
+            "removed the MCP server from .mcp.json"
+        );
+        assert_eq!(
+            describe_mcp_outcome(crate::hooks::Outcome::NotInstalled, config),
+            "no archwarden server was in .mcp.json"
+        );
+    }
+
+    /// A client that closed the pipe is how a stdio server is stopped, and it
+    /// exits clean. Reporting that as a failure would put an error in the
+    /// user's log every time they quit their editor.
+    #[test]
+    fn a_client_that_went_away_is_not_a_failed_run() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+        std::fs::write(root.join("arch.config.json"), r#"{"version":0}"#).expect("write");
+
+        let cli = Cli::try_parse_from(["archwarden", "mcp"]).expect("arguments should parse");
+        let mut stderr = Vec::new();
+        let mut input = br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#.as_slice();
+
+        let exit = run(
+            &cli,
+            &root,
+            &mut Output {
+                out: &mut Pipe {
+                    kind: std::io::ErrorKind::BrokenPipe,
+                },
+                err: &mut stderr,
+                input: &mut input,
+            },
+        );
+
+        assert_eq!(exit, Exit::Clean);
+        assert!(stderr.is_empty(), "and it says nothing about it");
+    }
+
+    /// Any other write failure is a real one, and is reported.
+    #[test]
+    fn a_write_that_failed_for_another_reason_is_reported() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+        std::fs::write(root.join("arch.config.json"), r#"{"version":0}"#).expect("write");
+
+        let cli = Cli::try_parse_from(["archwarden", "mcp"]).expect("arguments should parse");
+        let mut stderr = Vec::new();
+        let mut input = br#"{"jsonrpc":"2.0","id":1,"method":"initialize"}"#.as_slice();
+
+        let exit = run(
+            &cli,
+            &root,
+            &mut Output {
+                out: &mut Pipe {
+                    kind: std::io::ErrorKind::PermissionDenied,
+                },
+                err: &mut stderr,
+                input: &mut input,
+            },
+        );
+
+        assert_eq!(exit, Exit::ConfigProblem);
+        assert!(
+            String::from_utf8_lossy(&stderr).contains("archwarden mcp"),
+            "{}",
+            String::from_utf8_lossy(&stderr)
+        );
+    }
+
+    /// A sink that fails every write, for the two arms above.
+    struct Pipe {
+        kind: std::io::ErrorKind,
+    }
+
+    impl std::io::Write for Pipe {
+        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(self.kind, "the client is gone"))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::new(self.kind, "the client is gone"))
+        }
+    }
+
+    /// Naming the command is the point, for the server as much as for the
+    /// hooks: one that resolves to nothing fails silently, at somebody's next
+    /// write rather than here. Only on the way in — a second run installed
+    /// nothing and has no command to name, and a run that removed it has
+    /// nothing to point at at all.
+    #[test]
+    fn the_server_command_is_named_when_it_is_installed_and_not_otherwise() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+        std::fs::write(root.join("arch.config.json"), r#"{"version":0}"#).expect("write");
+
+        let installed = run_at(&root, &["install-hooks", "--claude-code"]);
+        assert!(
+            installed.out.contains("archwarden mcp"),
+            "the command a harness will run: {}",
+            installed.out
+        );
+
+        let again = run_at(&root, &["install-hooks", "--claude-code"]);
+        assert!(
+            !again.out.contains("archwarden mcp"),
+            "nothing was installed, so there is no command to name: {}",
+            again.out
+        );
+
+        let removed = run_at(&root, &["install-hooks", "--claude-code", "--remove"]);
+        assert!(
+            !removed.out.contains("archwarden mcp"),
+            "and nothing to point at after a removal: {}",
+            removed.out
         );
     }
 }

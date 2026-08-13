@@ -71,3 +71,199 @@ pub enum Error {
         root: Utf8PathBuf,
     },
 }
+
+impl Error {
+    /// One line saying why nothing could be judged, for a surface with one
+    /// line to spend.
+    ///
+    /// Not the `Display` above, which is the CLI's: that one carries a path
+    /// and reads under a caret. This one is written for a reader who is about
+    /// to be told *and so this was not checked* — a coding agent through the
+    /// pre-write hook, or through MCP — and it names what to go and do.
+    ///
+    /// It lives here because both of those surfaces need it and neither may
+    /// have the other's copy. The pre-write hook wrote its own once, and the
+    /// four sentences in it had drifted into repeating the caller's clause; an
+    /// MCP server writing a fifth would be the same defect with a new name.
+    ///
+    /// Every arm ends without punctuation and without saying what follows from
+    /// it. The caller says that, and says it once.
+    #[must_use]
+    pub fn unreadable(&self) -> String {
+        match self {
+            Self::Load(LoadError::NotFound { .. }) => {
+                "no archwarden config was found from here".to_owned()
+            }
+
+            // Found, and unusable. Distinct from the arm above because the two
+            // send a user to different places: one to `archwarden init`, the
+            // other to the file they just edited.
+            Self::Load(_) => {
+                "the config could not be read — `archwarden config validate` names the problem"
+                    .to_owned()
+            }
+
+            Self::UnsupportedVersion {
+                declared,
+                understood,
+                ..
+            } => format!(
+                "the config declares version {declared}, which this build does not understand \
+                 (it reads version {understood})"
+            ),
+
+            Self::Extends(_) => {
+                "the config could not be assembled (a preset it extends is missing, invalid, \
+                 or loops)"
+                    .to_owned()
+            }
+
+            Self::Compile(_) => {
+                "the config did not compile — `archwarden config validate` names the problem"
+                    .to_owned()
+            }
+
+            // `Error` is `non_exhaustive`. A stage added later lands here and
+            // the surface still reports that it judged nothing, which is the
+            // answer that matters.
+            _ => "the config could not be prepared".to_owned(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sentence a surface with one line to spend says, arm by arm.
+    ///
+    /// These lived beside a re-implementation of the loading path in the
+    /// pre-write hook until 0.18, which is how issue #55 happened: the copy
+    /// was missing the version guard, and four separately-written messages had
+    /// drifted into repeating the caller's own clause. They are asserted here,
+    /// where the sentences are, so a second surface cannot describe one broken
+    /// config differently.
+    #[test]
+    fn a_config_that_is_there_and_broken_is_not_a_config_that_is_missing() {
+        let broken = Error::Load(
+            archwarden_config::discovery::parse(
+                camino::Utf8Path::new("/repo/arch.config.json"),
+                r#"{"version": 0,,}"#,
+            )
+            .expect_err("should not parse"),
+        );
+
+        assert_eq!(
+            broken.unreadable(),
+            "the config could not be read — `archwarden config validate` names the problem"
+        );
+    }
+
+    /// A different place to send the reader: `archwarden init`, not the file
+    /// they just edited.
+    #[test]
+    fn a_config_that_really_is_missing_says_so() {
+        let absent = Error::Load(LoadError::NotFound {
+            started_at: Utf8PathBuf::from("/repo/packages/app"),
+        });
+
+        assert_eq!(
+            absent.unreadable(),
+            "no archwarden config was found from here"
+        );
+    }
+
+    /// Issue #55's sentence, and the one this whole guard exists for. Both
+    /// numbers, because "unsupported version" without them tells a reader
+    /// nothing about which half to change.
+    #[test]
+    fn a_future_version_names_both_numbers() {
+        let future = Error::UnsupportedVersion {
+            path: Utf8PathBuf::from("/repo/arch.config.json"),
+            declared: 99,
+            understood: 0,
+        };
+
+        assert_eq!(
+            future.unreadable(),
+            "the config declares version 99, which this build does not understand \
+             (it reads version 0)"
+        );
+    }
+
+    #[test]
+    fn a_preset_problem_says_which_half_of_the_config_failed() {
+        let unresolvable = Error::Extends(ExtendsError::Cycle {
+            chain: vec![Utf8PathBuf::from("/repo/arch.config.json")],
+        });
+
+        assert_eq!(
+            unresolvable.unreadable(),
+            "the config could not be assembled (a preset it extends is missing, invalid, \
+             or loops)"
+        );
+    }
+
+    /// A config that parsed and will not compile sends the reader to the
+    /// command that names the offending rule: the error itself is about a glob
+    /// or a pattern, and this has one line to spend.
+    #[test]
+    fn a_config_that_did_not_compile_names_the_command_that_explains_it() {
+        let uncompilable = Error::Compile(CompileError::Pattern {
+            rule: archwarden_core::ids::RuleId::new("lookahead").expect("valid id"),
+            field: "file_pattern",
+            source: Box::new(
+                archwarden_core::pattern::Pattern::compile("^(?!test).*$")
+                    .expect_err("a lookahead is not linear-time"),
+            ),
+        });
+
+        assert_eq!(
+            uncompilable.unreadable(),
+            "the config did not compile — `archwarden config validate` names the problem"
+        );
+    }
+
+    /// A stage added later lands in the final arm and the surface still reports
+    /// that it judged nothing, which is the answer that matters. `Error` is
+    /// `non_exhaustive` precisely so this cannot become a compile error that
+    /// somebody fixes by guessing.
+    #[test]
+    fn a_variant_with_no_sentence_of_its_own_still_says_something() {
+        let walked = Error::RootHoldsNoSource {
+            root: Utf8PathBuf::from("/repo"),
+        };
+
+        assert_eq!(walked.unreadable(), "the config could not be prepared");
+    }
+
+    /// No sentence ends in "so this was not checked". The caller says that,
+    /// and saying it twice in one line is what the four hand-written copies
+    /// had drifted into.
+    #[test]
+    fn no_sentence_repeats_what_the_caller_already_says() {
+        let every = [
+            Error::Load(LoadError::NotFound {
+                started_at: Utf8PathBuf::from("/repo"),
+            }),
+            Error::UnsupportedVersion {
+                path: Utf8PathBuf::from("/repo/arch.config.json"),
+                declared: 99,
+                understood: 0,
+            },
+            Error::RootHoldsNoSource {
+                root: Utf8PathBuf::from("/repo"),
+            },
+        ];
+
+        for error in &every {
+            let said = error.unreadable();
+            assert!(!said.is_empty(), "every variant has a sentence");
+            assert!(!said.ends_with('.'), "the caller punctuates it: {said}");
+            assert!(
+                !said.contains("not checked"),
+                "the caller already says that: {said}"
+            );
+        }
+    }
+}

@@ -17,6 +17,143 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 23 — The session hook has no matcher, and what that is worth was measured
+Status: accepted.
+Context: issue #66. A `SessionStart` hook can put the module map into an
+agent's context without the user referencing a file from their `CLAUDE.md` by
+hand. The issue was explicit that the matcher decides whether the feature works
+at all, and that the names had to be **read from the current Claude Code
+documentation rather than assumed** — a missed matcher means half the sessions
+silently have no rules in context and nothing reports it.
+
+That instruction was followed and it was not enough. An agent asked for the
+documented answer returned two mutually incompatible ones and asserted the
+payload field is `session_start_reason`, citing the official reference. It is
+not. The string does not appear anywhere in the shipped binary.
+
+What is true was read from the schema Claude Code validates its own payloads
+with, and then measured by running it:
+
+```
+hook_event_name: "SessionStart"
+source: enum(["startup","resume","clear","compact","fork"])
+```
+
+| action | events, in the order they fired |
+| --- | --- |
+| new session | `SessionStart source=startup` |
+| `--continue` | `SessionStart source=resume` |
+| `/compact` | `PreCompact` → **`SessionStart source=compact`** → `PostCompact` |
+
+And end to end: a hook returning
+`hookSpecificOutput.additionalContext` was given a marker no other channel could
+have carried, and the model quoted it back. Re-checked against 2.1.231 after
+Claude Code updated mid-milestone; unchanged.
+
+Decision: **install the entry with no `matcher` at all.** The matcher is
+compared against `source`, so an entry naming three of the five covers three of
+them — and covers none of the ones added after it was written. A matcher that
+is not there cannot miss one. Nothing in the hook reads the source either:
+whichever way a session arrived, it arrived without the rules in it.
+
+What goes in is **a pointer, not the guide** — the module names, the sentence
+each author wrote about theirs, and the two commands that answer the rest.
+`the_map_stays_short_enough_to_be_carried` pins the length, because the whole
+argument for a pointer over the digest is that a long block is the first thing
+compaction drops, and that is a property to assert rather than hope for.
+
+Alternatives:
+- **Enumerating `startup|resume|compact`.** Rejected: it is the failure the
+  issue describes, written out. The cost of omitting the matcher is firing on
+  `clear` too — a session that has just had its context wiped, which wants the
+  map more than any other.
+- **Hooking `PostCompact` as well.** Rejected on the measurement above: both
+  fire on a manual compaction, so the map would be injected twice.
+- **Injecting the full `agent-guide` digest.** Rejected on the issue's own
+  argument: it costs context in every session including the ones touching no
+  governed file, and it is the first thing compaction drops.
+- **Reporting a broken config through `additionalContext`.** Rejected: the
+  user is who can fix a config, and the model would carry an unactionable
+  sentence in every session until they did. It goes to `systemMessage`, which
+  the schema describes as *shown to the user*.
+Consequences: one entry covers five sources and any sixth. **Auto-compaction
+was not measured** — it could not be provoked in `-p`, across five `--continue`
+turns at `CLAUDE_CODE_MAX_CONTEXT_TOKENS=25000`, or through a long
+`--input-format stream-json` session — and the decision rests on three
+structural facts instead: the three compaction events are interleaved and so
+share a routine, that routine is parameterised by `trigger: manual|auto`, and
+`source` carries one `compact` with no auto/manual split for a conditional to
+key on. Written down so the next person knows which half is measured. The
+matcher-free entry is also what makes the gap harmless: whatever
+auto-compaction emits, if it is `SessionStart` at all, this catches it.
+
+### 22 — The operations are the ones every surface asks, not the ones `check` needs
+Status: accepted. Supersedes the boundary drawn in decision 20, which it
+narrows rather than reverses.
+Context: issue #65 said MCP would be the proof: *"if it needs anything not in
+`archwarden-api`, it is not."* Building it produced the proof and it came back
+negative. Every tool MCP exposes was outside the crate — `describe`,
+`scaffold` and the `agent-guide` digest were in `archwarden-cli`, and what a
+pre-write check *means* (the baseline applied, and the split between what a
+write breaks and what it is fixing) was written out inside the hook.
+
+Decision 20 was not wrong about the principle; it drew the boundary around the
+pipeline it was extracted from. `Resolve → Load → Walk → Evaluate → Present` is
+what `check` does, and `check` was the only surface that existed when it was
+written.
+
+Decision: the agent-facing operations moved into `archwarden-api` —
+`describe`, `scaffold`, `guide`, `map` (#66's module map), and `single::check`,
+which is the whole judgement of a write rather than the engine call inside it.
+The test for what belongs is the one decision 20 already used and did not apply
+widely enough: **a shape a program consumes is a contract, and a contract lives
+where every surface can reach it.** `scaffold`'s JSON carries a version of its
+own; so does `describe`'s; so does the report's.
+
+What stayed behind is what a surface genuinely owns. Rendering splits at the
+seam `crate::render` already draws: machine-readable shapes here, terminal
+prose and the HTML page there. `GuideFormat` stayed because it carries
+`clap::ValueEnum`, on the same argument decision 20 made about `LevelFilter` —
+a command-line vocabulary is not an operation. Replaying an `Edit` into the
+text it would leave stayed in the hook, because that is a harness's protocol.
+
+And **MCP is a crate of its own** that depends on `archwarden-api` and cannot
+see `archwarden-cli`. That is the enforcement. Decision 20 already observed
+that the workspace denied `print_stderr` for years and never caught
+`prepare()`; a rule that holds because nobody has broken it yet is not holding.
+The binary stays one — `archwarden-cli` depends on `archwarden-mcp` and
+dispatches `archwarden mcp` into it — because issue #65 requires no new
+installation.
+
+Alternatives:
+- **Leave the operations in `archwarden-cli` and have MCP call them.** MCP
+  lives in the same binary, so nothing would have failed to compile. Rejected:
+  it is exactly the arrangement that produced this, and it would have left
+  decision 20 asserting something the code contradicts.
+- **Move only what MCP needs.** Cheaper by about half. Rejected: it answers
+  "what does this surface want" rather than "what is an operation", which is
+  the question the first answer got wrong.
+- **A separate `archwarden-mcp` binary.** Rejected: issue #65 is explicit that
+  the `.mcp.json` names the binary the hook already resolves.
+Consequences: the cost was measured before it was accepted and it was
+**coverage, not code**. `archwarden-api` is held at 99 lines / 99 functions
+against the workspace's 95, so 2 900 lines changing crates raised the bar on
+them: `guide.rs` was at 95.0 and `scaffold.rs` at 95.2, both of which had been
+passing for a year. Twelve tests were written for the arms nobody had covered —
+`no-passthrough`, `import-cycle`, allowlists, `frontmatter`, folder names — and
+the crate now reads 99.67/99.58. That debt was real and invisible while the bar
+was 95; moving the code is what exposed it.
+
+The drift this milestone was exposed to is now asserted rather than argued. A
+config from a version this build cannot read is fed to **every** surface from
+outside the process, and each is tested in a pair: the version-0 half proves
+the surface does the thing, the version-99 half proves it stops. Issue #55's
+defect was caught by unit tests on a *message* that a surface with its own
+loading path would never have called — every one of them would have stayed
+green while the gate evaporated. `check_write` through MCP and through the hook
+are asserted to agree, and `describe` through MCP is asserted byte-identical to
+`describe --format json`.
+
 ### 21 — A graph rule reads the whole repository, and says what that costs
 Status: accepted.
 Context: issues #70 and #71. `run::check` walked the tree parsing and

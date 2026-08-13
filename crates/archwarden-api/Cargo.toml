@@ -15,6 +15,11 @@ archwarden-config = { workspace = true }
 archwarden-core = { workspace = true }
 archwarden-engine = { workspace = true }
 archwarden-resolver = { workspace = true }
+# `describe` asks every rule what it requires of a path, which means building
+# the engines a config compiles to. It moved here with the operation: a surface
+# that asked the question through its own engine list would be answering it a
+# second way, and the two would drift.
+archwarden-rules = { workspace = true }
 camino = { workspace = true }
 # The baseline is a committed file with a schema of its own, so the crate that
 # owns the operation owns its format too.

@@ -41,6 +41,33 @@ The agent's prompt or system message instructs it to call these before any
   each is expected to be under 20 ms.
 - **Limits**: depends on the agent actually calling them.
 
+### Layer 2½ — Askable, over MCP
+
+The same operations, reachable as tools rather than as commands.
+`install-hooks --claude-code` writes a committable `.mcp.json` naming
+`archwarden mcp`, and the harness starts it when the session opens.
+
+- `check_write(path, content)` — **the one that earns it.** It existed before
+  MCP did and was reachable only through the pre-write hook, which means only
+  *reactively*: the agent writes, and is denied. Through MCP it can ask
+  *would this content pass?* before writing anything.
+- `describe(path)`, `scaffold(path)` — Layer 2, without a shell.
+
+Mechanically: **stdio, not HTTP.** The client spawns the binary and speaks
+JSON-RPC over its pipes. No port, no daemon, nothing listening, and no new
+installation requirement — it is the same `./node_modules/.bin/archwarden` the
+hook resolves.
+
+The server **re-reads the configuration on every call.** It is a long-lived
+process, and one that prepared its rules at startup would answer from a config
+the user has since edited and be confidently wrong for the rest of the session.
+
+- **When it applies**: harnesses that speak MCP. Complements Layer 2 rather
+  than replacing it — a shell is still the widest interface there is.
+- **Cost**: tool definitions ride in every request, and one config load per
+  call against a process that is otherwise idle.
+- **Limits**: still depends on the agent choosing to ask.
+
 ### Layer 3 — Proactive
 
 archwarden emits a markdown digest of active rules that agent harnesses
@@ -54,6 +81,26 @@ already know how to read: `CLAUDE.md`, `AGENTS.md`, and equivalents.
   ```
 - A file-watch hook (installed by `install-hooks`) regenerates
   `AGENT_RULES.md` whenever `arch.config.json` changes.
+
+**And a `SessionStart` hook puts a pointer there without being asked.**
+`install-hooks --claude-code` installs it. What it injects is the module map —
+the names, one line each on what they govern, and the two commands that answer
+the rest — not the digest. The digest costs context in every session including
+the ones touching no governed file, and a long block is the first thing
+compaction drops.
+
+> A short thing that is read beats a complete thing that is compacted away.
+
+**It is installed with no matcher, and that is the feature.** `SessionStart`
+fires with a `source` — `startup`, `resume`, `clear`, `compact`, `fork` — and a
+matcher is compared against it. An entry naming three of them covers three, and
+covers none added later. The one that matters is `compact`: a `CLAUDE.md`
+reference survives compaction because the file is re-read, and content already
+injected does not. See decision 23 for what was measured and what was not.
+
+Changing `settings.json` does not affect a session already running — hooks are
+read at startup — so installing this mid-session does nothing until the next
+one. `install-hooks` says so.
 
 - **When it applies**: any harness that respects CLAUDE.md/AGENTS.md.
   Complements Layer 2 — the guide teaches the rules, `describe` answers
@@ -184,12 +231,64 @@ Generates a rules digest optimised for agent context.
 The output is deterministic: same config, same output. Safe to commit if
 you prefer to version it, or gitignore and regenerate on demand.
 
+### `archwarden mcp`
+
+Serves the operations as MCP tools over stdin and stdout. Not usually run by
+hand: `install-hooks --claude-code` writes the `.mcp.json` that names it, and
+the harness spawns it.
+
+An unknown method, an unparsable line, or a call missing an argument is an
+error **in the protocol** and never an exit. A server that died would take the
+client's session with it, and the user would learn about it as tools silently
+disappearing. A question it could not answer — a missing config, one from a
+version it cannot read — comes back as an `isError` result rather than a
+JSON-RPC error, because a client shows the first to the model and the model is
+what has to know that nothing was checked.
+
+### `archwarden` as a module
+
+```ts
+import { check } from "archwarden";
+
+test("nothing reaches into infrastructure", async () => {
+  const { findings } = await check({ rules: ["no-infra"] });
+  expect(findings).toEqual([]);
+});
+```
+
+An architecture claim beside the code it is about, in the suite the team
+already runs, failing in the same output as everything else — for a team that
+runs tests and does not run linters.
+
+It returns findings and lets the test framework assert. A fluent DSL
+(`archwarden.noModule("domain").dependsOn("infra")`) would be a second way to
+express a rule, and a second thing that can drift from the first. And it reads
+the repository's own `arch.config.json`, filtered: one source of truth, and the
+test asserts a subset of it.
+
+`ROADMAP.md` refuses rules written in JS/TS config files — *"Config is data.
+Executable configs are a bug source and a security concern."* This does not
+cross that line, and it is worth saying because from a distance it looks like
+the same thing: the rules stay declarative, and the test decides which of them
+to assert and when.
+
+Options: `cwd`, `rules`, `paths`, `level`, `config`. Every rule still runs
+whatever the filters say — they decide what is *reported*, so narrowing an
+assertion does not narrow what was checked.
+
+**Findings are never a rejection; not being able to answer always is.** A
+missing config, one from a version the binding does not read, or a rule id no
+rule has each reject with an `ArchwardenError`. That last one matters most: a
+typo that came back as an empty findings list would be a test that passes for
+the wrong reason, and goes on passing after the rule is deleted.
+
 ### `archwarden install-hooks <harness-flag>`
 
 One-shot installer that writes the appropriate harness hook file.
 
-- `--claude-code` — writes a `PreToolUse` entry matching `Write|Edit|MultiEdit`
-  in `.claude/settings.json`, running `archwarden hook claude-code`.
+- `--claude-code` — writes three entries in `.claude/settings.json`, all
+  running `archwarden hook claude-code`, plus an `.mcp.json` at the repository
+  root naming `archwarden mcp`.
 - Future flags for other harnesses as their hook APIs stabilise.
 
 How archwarden is invoked is detected, not configured — a flag is a thing to get
@@ -235,13 +334,19 @@ caused by the write rather than pre-existing it.
 
 ### The turn, as well as the write
 
-`install-hooks` writes two entries, both running the same command, which
+`install-hooks` writes three entries, all running the same command, which
 dispatches on the event it is sent:
 
 | event | matcher | answers |
 |---|---|---|
 | `PreToolUse` | `Write\|Edit\|MultiEdit` | would this write be legal? |
 | `Stop` | none | what landed this turn? |
+| `SessionStart` | none | what governs this repository? |
+
+The two with no matcher have different reasons for it. `Stop` fires once per
+turn and has nothing to match on; `SessionStart` has five sources and an
+omitted matcher is the only way to cover all of them and whatever is added
+next.
 
 **The pre-write hook sees one write at a time, and some rules cannot be judged
 from one.** A `presence` rule requiring three files makes every one of the

@@ -2484,3 +2484,716 @@ fn an_aliased_directory_index_import_is_rewritten() {
             .is_file()
     );
 }
+
+// ---------------------------------------------------------------------------
+// The drift guard
+// ---------------------------------------------------------------------------
+//
+// Issue #55 was not a bug in the version guard. The guard was correct and the
+// pre-write hook never reached it, because that surface had grown a copy of the
+// loading path — it had to, since the shared `prepare()` answered by writing a
+// miette report to stderr and a hook must answer in JSON and exit clean. A
+// config from a future version parsed into one with no rules, compiled, matched
+// nothing, and permitted every write. The gate did not fail; it evaporated.
+//
+// Decision 20 removed the reason to copy the path. Nothing yet checks that no
+// surface copies it anyway, and milestone 0.18 adds three more surfaces.
+//
+// The unit tests on `unexamined()` cannot close this: a surface with its own
+// loading path would never call it, and every one of those tests would stay
+// green while the gate evaporated. Only driving each surface end to end, from
+// the outside, against a repository whose config this build cannot read, can
+// tell the difference.
+//
+// Each surface is tested in a pair. The version-0 half proves the surface does
+// the thing at all; the version-99 half proves it stops. Without the first, the
+// second passes for a surface that never worked.
+
+/// One rule, in one module, at whatever version the caller names.
+///
+/// A `presence` rule because it fires on a directory rather than on a file's
+/// contents, so the same config is answerable by every surface here: the
+/// pre-write hook judges a write into the directory, the stop hook judges what
+/// landed, and the session hook only ever reads the module's own declaration.
+fn governed_at(version: u32) -> String {
+    format!(
+        r#"{{"version":{version},
+            "modules":[{{"id":"projetos",
+              "why":"one exercise per folder, and all three files in it",
+              "scope":["projetos/*"],
+              "rules":[{{"type":"presence","id":"tem-os-tres","level":"error",
+                "roots":["projetos/*"],
+                "require":["projeto.md","exercicios.md","diagram.json"]}}]}}]}}"#
+    )
+}
+
+/// The pre-write hook, both halves.
+///
+/// This is issue #55's exact shape, asserted from outside the process for the
+/// first time. The write below supplies none of the three required files, so
+/// under a config this build understands it is refused.
+#[test]
+fn the_pre_write_hook_stops_at_a_config_from_a_future_version() {
+    let readable = repo(&[("arch.config.json", &governed_at(0))]);
+    let target = readable.path().join("projetos/01-blink/notas.md");
+    let payload = format!(
+        r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}","content":"notas\n"}}}}"#,
+        target.to_str().expect("utf-8")
+    );
+
+    archwarden()
+        .current_dir(readable.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(payload.clone())
+        .assert()
+        .success()
+        .stdout(contains("permissionDecision"));
+
+    // The same write, the same rule, one digit different in the config.
+    let future = repo(&[("arch.config.json", &governed_at(99))]);
+    let target = future.path().join("projetos/01-blink/notas.md");
+    let payload = format!(
+        r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}","content":"notas\n"}}}}"#,
+        target.to_str().expect("utf-8")
+    );
+
+    archwarden()
+        .current_dir(future.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(payload)
+        .assert()
+        .success()
+        .stdout(contains("archwarden did not check this write"))
+        .stdout(contains("version 99"))
+        // The half that matters: it must not have formed an opinion either way.
+        .stdout(contains("permissionDecision").not());
+}
+
+/// The stop hook, both halves.
+///
+/// Silence is this surface's correct answer to a config it cannot read, which
+/// makes it the surface where a missing guard is hardest to see: a build with
+/// no guard is silent too, having compiled a config it did not understand into
+/// rules that found nothing. The version-0 half is what makes the silence mean
+/// something — it fixes that this repository, this config and this turn do
+/// produce a report.
+#[test]
+fn the_stop_hook_stops_at_a_config_from_a_future_version() {
+    let readable = git_repo(&[
+        ("arch.config.json", &governed_at(0)),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+    std::fs::write(
+        readable.path().join("projetos/01-blink/outro.md"),
+        "# outro\n",
+    )
+    .expect("write");
+
+    archwarden()
+        .current_dir(readable.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"Stop","session_id":"abc"}"#)
+        .assert()
+        .success()
+        .stdout(contains("exercicios.md"));
+
+    let future = git_repo(&[
+        ("arch.config.json", &governed_at(99)),
+        ("projetos/01-blink/projeto.md", "# blink\n"),
+    ]);
+    std::fs::write(
+        future.path().join("projetos/01-blink/outro.md"),
+        "# outro\n",
+    )
+    .expect("write");
+
+    archwarden()
+        .current_dir(future.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"Stop","session_id":"abc"}"#)
+        .assert()
+        .success()
+        .stdout(contains("exercicios.md").not());
+}
+
+/// The session hook, both halves. Issue #66.
+///
+/// The module map is a pointer rather than the guide, so what proves it ran is
+/// the module's own id and the sentence its author wrote about it.
+#[test]
+fn the_session_start_hook_stops_at_a_config_from_a_future_version() {
+    let readable = repo(&[("arch.config.json", &governed_at(0))]);
+
+    archwarden()
+        .current_dir(readable.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"SessionStart","source":"compact"}"#)
+        .assert()
+        .success()
+        .stdout(contains("additionalContext"))
+        .stdout(contains("projetos"))
+        .stdout(contains("one exercise per folder"));
+
+    let future = repo(&[("arch.config.json", &governed_at(99))]);
+
+    archwarden()
+        .current_dir(future.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"SessionStart","source":"compact"}"#)
+        .assert()
+        .success()
+        // No map, and not in silence either: a session told nothing is a
+        // session that cannot tell "no rules here" from "archwarden is broken".
+        .stdout(contains("one exercise per folder").not())
+        .stdout(contains("version 99"));
+}
+
+// ---------------------------------------------------------------------------
+// MCP, over stdio
+// ---------------------------------------------------------------------------
+//
+// Issue #65. Not HTTP: the client spawns the binary and speaks JSON-RPC over
+// its pipes. No port, no daemon, nothing listening.
+//
+// The tools are the operations that already exist, and the server owns none of
+// them — which is what `archwarden-mcp` depending on `archwarden-api` and never
+// on `archwarden-cli` is there to make structural rather than reviewed.
+
+/// One JSON-RPC request per line, which is what the stdio transport is.
+///
+/// Each request is re-serialised compactly on the way in. The transport is
+/// line-delimited and the requests below are written across several lines to
+/// stay readable, which are two things that cannot both be true of the same
+/// bytes.
+fn rpc(dir: &std::path::Path, requests: &[&str]) -> Vec<serde_json::Value> {
+    let line_delimited: Vec<String> = requests
+        .iter()
+        .map(|request| {
+            serde_json::from_str::<serde_json::Value>(request)
+                .expect("each request is valid JSON")
+                .to_string()
+        })
+        .collect();
+
+    let output = archwarden()
+        .current_dir(dir)
+        .args(["mcp"])
+        .write_stdin(format!("{}\n", line_delimited.join("\n")))
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    String::from_utf8(output)
+        .expect("utf-8")
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| serde_json::from_str(line).expect("each line is one JSON-RPC message"))
+        .collect()
+}
+
+const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#;
+
+/// The handshake, and that the server names itself and its version.
+#[test]
+fn the_mcp_server_initialises_over_stdio() {
+    let dir = repo(&[("arch.config.json", &governed_at(0))]);
+
+    let replies = rpc(dir.path(), &[INITIALIZE]);
+
+    assert_eq!(replies[0]["jsonrpc"], "2.0");
+    assert_eq!(replies[0]["id"], 1);
+    assert_eq!(replies[0]["result"]["serverInfo"]["name"], "archwarden");
+    assert!(
+        replies[0]["result"]["capabilities"]["tools"].is_object(),
+        "it offers tools: {}",
+        replies[0]
+    );
+}
+
+/// The tools are the operations, and `check_write` is the one that earns the
+/// server: it exists today and is reachable only through the hook, which means
+/// only reactively — the agent writes, and is denied.
+#[test]
+fn the_tools_are_the_operations_that_already_exist() {
+    let dir = repo(&[("arch.config.json", &governed_at(0))]);
+
+    let replies = rpc(
+        dir.path(),
+        &[
+            INITIALIZE,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        ],
+    );
+
+    let names: Vec<&str> = replies[1]["result"]["tools"]
+        .as_array()
+        .expect("a list of tools")
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+
+    assert!(names.contains(&"check_write"), "{names:?}");
+    assert!(names.contains(&"describe"), "{names:?}");
+    assert!(names.contains(&"scaffold"), "{names:?}");
+
+    for tool in replies[1]["result"]["tools"].as_array().expect("a list") {
+        assert!(
+            tool["inputSchema"]["type"] == "object",
+            "every tool declares its arguments: {tool}"
+        );
+    }
+}
+
+/// The question the server exists to answer: *would this content pass?*, asked
+/// before the write rather than after it.
+#[test]
+fn check_write_answers_before_the_write_rather_than_after() {
+    let dir = repo(&[("arch.config.json", &governed_at(0))]);
+
+    let replies = rpc(
+        dir.path(),
+        &[
+            INITIALIZE,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"check_write",
+               "arguments":{"path":"projetos/01-blink/notas.md","content":"notas\n"}}}"#,
+        ],
+    );
+
+    let text = replies[1]["result"]["content"][0]["text"]
+        .as_str()
+        .expect("the answer is text");
+    let answer: serde_json::Value = serde_json::from_str(text).expect("carrying JSON");
+
+    assert_eq!(
+        answer["refused"], true,
+        "this write supplies none of the three required files: {answer}"
+    );
+    assert!(
+        answer["findings"].as_array().is_some_and(|f| !f.is_empty()),
+        "and says which rule: {answer}"
+    );
+    // Nothing was written. The whole point is that the agent can ask first.
+    assert!(!dir.path().join("projetos/01-blink/notas.md").exists());
+}
+
+/// And the same tool permits a write that is fixing the directory rather than
+/// breaking it — because it goes through the same operation the hook does.
+/// Two surfaces answering one question differently is this milestone's risk.
+#[test]
+fn check_write_and_the_pre_write_hook_agree() {
+    let dir = repo(&[("arch.config.json", &governed_at(0))]);
+    let target = dir.path().join("projetos/01-blink/projeto.md");
+
+    let replies = rpc(
+        dir.path(),
+        &[
+            INITIALIZE,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"check_write",
+               "arguments":{"path":"projetos/01-blink/projeto.md","content":"blink\n"}}}"#,
+        ],
+    );
+    let text = replies[1]["result"]["content"][0]["text"]
+        .as_str()
+        .expect("the answer is text");
+    let answer: serde_json::Value = serde_json::from_str(text).expect("carrying JSON");
+
+    assert_eq!(
+        answer["refused"], false,
+        "a write supplying a required file is progress: {answer}"
+    );
+
+    // The hook, asked the same question about the same write, permits it too.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}","content":"blink\n"}}}}"#,
+            target.to_str().expect("utf-8")
+        ))
+        .assert()
+        .success()
+        .stdout(contains("permissionDecision").not());
+}
+
+/// `describe` through MCP is the same envelope `describe --format json` emits.
+/// Asserted against each other rather than against a copy of the shape, which
+/// is the only way the assertion cannot drift with them.
+#[test]
+fn describe_through_mcp_is_the_envelope_the_command_prints() {
+    let dir = repo(&[("arch.config.json", &governed_at(0))]);
+
+    let replies = rpc(
+        dir.path(),
+        &[
+            INITIALIZE,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"describe",
+               "arguments":{"path":"projetos/01-blink"}}}"#,
+        ],
+    );
+    let through_mcp: serde_json::Value = serde_json::from_str(
+        replies[1]["result"]["content"][0]["text"]
+            .as_str()
+            .expect("the answer is text"),
+    )
+    .expect("carrying JSON");
+
+    let printed = archwarden()
+        .current_dir(dir.path())
+        .args(["describe", "projetos/01-blink", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let through_cli: serde_json::Value =
+        serde_json::from_slice(&printed).expect("the command prints JSON");
+
+    assert_eq!(through_mcp, through_cli);
+}
+
+/// The server is long-lived, so it must re-read the configuration on each call
+/// rather than cache it at startup — or it answers from a config the user has
+/// since edited. That is issue #55 again, in a new place.
+#[test]
+fn the_server_re_reads_the_config_on_every_call() {
+    let dir = repo(&[("arch.config.json", &governed_at(0))]);
+    let loosened = dir.path().join("arch.config.json");
+
+    // Two calls in one session, with the config rewritten between them. The
+    // second must be answered against what is on disk *now*.
+    let output = archwarden()
+        .current_dir(dir.path())
+        .args(["mcp"])
+        .write_stdin(format!(
+            "{INITIALIZE}\n{}\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"describe","arguments":{"path":"projetos/01-blink"}}}"#
+        ))
+        .assert()
+        .success();
+    let first = String::from_utf8(output.get_output().stdout.clone()).expect("utf-8");
+    assert!(first.contains("tem-os-tres"), "{first}");
+
+    std::fs::write(&loosened, r#"{"version":0,"rules":[]}"#).expect("rewrite the config");
+
+    let output = archwarden()
+        .current_dir(dir.path())
+        .args(["mcp"])
+        .write_stdin(format!(
+            "{INITIALIZE}\n{}\n",
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"describe","arguments":{"path":"projetos/01-blink"}}}"#
+        ))
+        .assert()
+        .success();
+    let second = String::from_utf8(output.get_output().stdout.clone()).expect("utf-8");
+    assert!(
+        !second.contains("tem-os-tres"),
+        "answered from a config the user has since edited: {second}"
+    );
+}
+
+/// The drift guard's fifth surface. A config this build cannot read must not
+/// be answered from — an MCP server that compiled a future config into no
+/// rules would tell an agent every write is fine.
+#[test]
+fn every_mcp_tool_stops_at_a_config_from_a_future_version() {
+    let dir = repo(&[("arch.config.json", &governed_at(99))]);
+
+    let replies = rpc(
+        dir.path(),
+        &[
+            INITIALIZE,
+            r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"check_write",
+               "arguments":{"path":"projetos/01-blink/notas.md","content":"notas\n"}}}"#,
+        ],
+    );
+
+    assert_eq!(
+        replies[1]["result"]["isError"], true,
+        "a question it cannot answer is an error, not an answer: {}",
+        replies[1]
+    );
+    let text = replies[1]["result"]["content"][0]["text"]
+        .as_str()
+        .expect("the answer is text");
+    assert!(text.contains("version 99"), "{text}");
+}
+
+/// A method this build has never heard of is refused in the protocol's own
+/// terms rather than by dying, which would take the client's session with it.
+#[test]
+fn an_unknown_method_is_a_json_rpc_error_and_not_a_crash() {
+    let dir = repo(&[("arch.config.json", &governed_at(0))]);
+
+    let replies = rpc(
+        dir.path(),
+        &[
+            INITIALIZE,
+            r#"{"jsonrpc":"2.0","id":2,"method":"nothing/here"}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#,
+        ],
+    );
+
+    assert_eq!(replies[1]["error"]["code"], -32601, "method not found");
+    assert!(
+        replies[2]["result"]["tools"].is_array(),
+        "and the server is still answering afterwards"
+    );
+}
+
+/// A notification carries no `id` and takes no reply. Answering one is a
+/// protocol violation that some clients treat as fatal.
+#[test]
+fn a_notification_is_not_answered() {
+    let dir = repo(&[("arch.config.json", &governed_at(0))]);
+
+    let replies = rpc(
+        dir.path(),
+        &[
+            INITIALIZE,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#,
+        ],
+    );
+
+    assert_eq!(replies.len(), 2, "one reply each for the two requests");
+    assert_eq!(replies[1]["id"], 3);
+}
+
+/// The MCP server needs a `.mcp.json` naming the command, and the installer is
+/// where a user already goes to wire archwarden into Claude Code.
+///
+/// Committable, so it travels with the project — and it names the same
+/// `./node_modules/.bin/archwarden` the pre-write hook resolves, because MCP
+/// adds no new installation requirement.
+#[test]
+fn install_hooks_writes_a_committable_mcp_json() {
+    let dir = repo(&[("arch.config.json", MINIMAL)]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["install-hooks", "--claude-code"])
+        .assert()
+        .success();
+
+    let written = std::fs::read_to_string(dir.path().join(".mcp.json")).expect(".mcp.json exists");
+    let parsed: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+
+    assert_eq!(parsed["mcpServers"]["archwarden"]["command"], "archwarden");
+    assert_eq!(parsed["mcpServers"]["archwarden"]["args"][0], "mcp");
+}
+
+/// A second run changes nothing, so it does not appear in `git status` for
+/// nothing — the same promise the settings half already makes.
+#[test]
+fn installing_the_mcp_server_twice_changes_nothing() {
+    let dir = repo(&[("arch.config.json", MINIMAL)]);
+    let mcp_json = dir.path().join(".mcp.json");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["install-hooks", "--claude-code"])
+        .assert()
+        .success();
+    let first = std::fs::read_to_string(&mcp_json).expect("written");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["install-hooks", "--claude-code"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        first,
+        std::fs::read_to_string(&mcp_json).expect("still there")
+    );
+}
+
+/// And it is the user's file: another server declared beside ours survives
+/// both installing and removing.
+#[test]
+fn another_mcp_server_in_the_file_is_left_alone() {
+    let dir = repo(&[
+        ("arch.config.json", MINIMAL),
+        (
+            ".mcp.json",
+            r#"{"mcpServers":{"theirs":{"command":"their-server","args":[]}}}"#,
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["install-hooks", "--claude-code"])
+        .assert()
+        .success();
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).expect("read"))
+            .expect("valid JSON");
+    assert_eq!(parsed["mcpServers"]["theirs"]["command"], "their-server");
+    assert!(parsed["mcpServers"]["archwarden"].is_object());
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["install-hooks", "--claude-code", "--remove"])
+        .assert()
+        .success();
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).expect("read"))
+            .expect("valid JSON");
+    assert_eq!(parsed["mcpServers"]["theirs"]["command"], "their-server");
+    assert!(
+        parsed["mcpServers"].get("archwarden").is_none(),
+        "ours is gone and theirs is not: {parsed}"
+    );
+}
+
+/// The session hook is installed with **no matcher**, and that is the whole
+/// decision.
+///
+/// `SessionStart` fires with a `source`, and a matcher is compared against it:
+/// this build's Claude Code takes `startup`, `resume`, `clear`, `compact` and
+/// `fork`. An entry naming three of them installs cleanly and silently covers
+/// half the sessions — which is this project's recurring shape of failure, and
+/// exactly what issue #66 warns about.
+///
+/// An omitted matcher cannot miss one, including a source added after this was
+/// written.
+#[test]
+fn the_session_hook_is_installed_without_a_matcher() {
+    let dir = repo(&[("arch.config.json", MINIMAL)]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["install-hooks", "--claude-code"])
+        .assert()
+        .success();
+
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".claude/settings.json")).expect("read"),
+    )
+    .expect("valid JSON");
+
+    let entries = settings["hooks"]["SessionStart"]
+        .as_array()
+        .expect("a SessionStart entry was installed");
+    assert_eq!(entries.len(), 1);
+    assert!(
+        entries[0].get("matcher").is_none(),
+        "a matcher is a way to miss a source: {}",
+        entries[0]
+    );
+    assert!(
+        entries[0]["hooks"][0]["command"]
+            .as_str()
+            .is_some_and(|command| command.ends_with("hook claude-code")),
+        "the same command, dispatching on the event it is sent: {}",
+        entries[0]
+    );
+}
+
+/// And it comes back out with the rest.
+#[test]
+fn removing_takes_the_session_hook_out_too() {
+    let dir = repo(&[("arch.config.json", MINIMAL)]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["install-hooks", "--claude-code"])
+        .assert()
+        .success();
+    archwarden()
+        .current_dir(dir.path())
+        .args(["install-hooks", "--claude-code", "--remove"])
+        .assert()
+        .success();
+
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".claude/settings.json")).expect("read"),
+    )
+    .expect("valid JSON");
+
+    assert!(
+        settings.get("hooks").is_none(),
+        "reporting `removed` while a hook of ours keeps running is the uninstall \
+         equivalent of a gate that says it is on and is not: {settings}"
+    );
+}
+
+/// Hooks are read when a session starts, so installing one mid-session does
+/// nothing until the next. Said out loud, because the alternative is a user
+/// testing it, seeing nothing, and concluding the installer lied.
+#[test]
+fn the_installer_says_when_what_it_installed_takes_effect() {
+    let dir = repo(&[("arch.config.json", MINIMAL)]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["install-hooks", "--claude-code"])
+        .assert()
+        .success()
+        .stdout(contains("next session"));
+}
+
+/// End to end, in the shape a real session receives it: the module map arrives
+/// in `additionalContext`, naming the modules and the sentence their author
+/// wrote, and pointing at the commands that answer the rest.
+#[test]
+fn a_session_is_handed_the_module_map_and_the_commands() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"modules":[
+            {"id":"domain","scope":["packages/domain/**"],
+             "why":"published, so it may not reach into the app",
+             "rules":[{"type":"structure","id":"domain-shape","level":"error",
+                       "roots":["packages/domain/src/*"],"allowed_subfolders":["types"]}]}]}"#,
+    )]);
+
+    let output = archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"SessionStart","source":"startup"}"#)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let reply: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
+    assert_eq!(
+        reply["hookSpecificOutput"]["hookEventName"], "SessionStart",
+        "{reply}"
+    );
+
+    let context = reply["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .expect("the map reaches the model");
+    assert!(context.contains("domain"), "{context}");
+    assert!(
+        context.contains("published, so it may not reach into the app"),
+        "{context}"
+    );
+    assert!(context.contains("describe <path>"), "{context}");
+    assert!(
+        !context.contains("allowed_subfolders"),
+        "a pointer, not the guide: {context}"
+    );
+}
+
+/// A repository whose config governs nothing gets nothing. Announcing a gate
+/// that is not there is worse than saying nothing, and it is the one case
+/// where silence is the honest answer rather than the ambiguous one.
+#[test]
+fn a_session_in_an_ungoverned_repository_is_told_nothing() {
+    let dir = repo(&[("arch.config.json", MINIMAL)]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(r#"{"hook_event_name":"SessionStart","source":"startup"}"#)
+        .assert()
+        .success()
+        .stdout("{}\n");
+}
