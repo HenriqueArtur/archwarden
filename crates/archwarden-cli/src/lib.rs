@@ -815,14 +815,18 @@ fn describe(
         );
     }
 
-    let path =
-        match archwarden_api::describe::repo_relative(&merged.root, working_directory, argument) {
-            Ok(path) => path,
-            Err(message) => {
-                let _ = writeln!(output.err, "{message}");
-                return Exit::ConfigProblem;
-            }
-        };
+    let path = match archwarden_api::describe::repo_relative(
+        &merged.root,
+        working_directory,
+        None,
+        argument,
+    ) {
+        Ok(path) => path,
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
+    };
 
     let applies = archwarden_api::describe::describe(&compiled, &path);
     crate::describe::render(&path, &applies, format, output.out);
@@ -1331,15 +1335,24 @@ fn hook(
             Err(error) => return unable(output, &crate::hook::unexamined(&error)),
         };
 
-    let path =
-        match archwarden_api::describe::repo_relative(&merged.root, working_directory, &argument) {
-            Ok(path) => path,
-            // `repo_relative` resolves a second route to the same directory, so
-            // reaching here means the path really is somewhere else. Which is a
-            // fine thing for a write to be — and the hook still has to say that it
-            // formed no opinion, rather than nodding.
-            Err(reason) => return unable(output, &reason),
-        };
+    // The harness's own root, from the payload it sent. When it differs from
+    // ours the two are one repository through two mounts, and until 0.19 this
+    // answered "outside the repository" about a file plainly inside it —
+    // which is every write in a container-only project. Issue #93.
+    let seen_as = crate::hook::seen_as(&payload);
+    let path = match archwarden_api::describe::repo_relative(
+        &merged.root,
+        working_directory,
+        seen_as.as_deref(),
+        &argument,
+    ) {
+        Ok(path) => path,
+        // `repo_relative` resolves a second route to the same directory, so
+        // reaching here means the path really is somewhere else. Which is a
+        // fine thing for a write to be — and the hook still has to say that it
+        // formed no opinion, rather than nodding.
+        Err(reason) => return unable(output, &reason),
+    };
 
     // The write, not the file. A `PreToolUse` hook is asked whether something
     // that has not happened would be legal, and answering from disk answers
@@ -1783,14 +1796,18 @@ fn check_one(
         Err(exit) => return exit,
     };
 
-    let path =
-        match archwarden_api::describe::repo_relative(&merged.root, working_directory, argument) {
-            Ok(path) => path,
-            Err(message) => {
-                let _ = writeln!(output.err, "{message}");
-                return Exit::ConfigProblem;
-            }
-        };
+    let path = match archwarden_api::describe::repo_relative(
+        &merged.root,
+        working_directory,
+        None,
+        argument,
+    ) {
+        Ok(path) => path,
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
+    };
 
     let mut single = archwarden_engine::single::check_file(&merged.root, &compiled, &path);
     // A pre-write hook that blocked an agent on debt the project already
@@ -1883,14 +1900,18 @@ fn scaffold(
         Err(exit) => return exit,
     };
 
-    let path =
-        match archwarden_api::describe::repo_relative(&merged.root, working_directory, argument) {
-            Ok(path) => path,
-            Err(message) => {
-                let _ = writeln!(output.err, "{message}");
-                return Exit::ConfigProblem;
-            }
-        };
+    let path = match archwarden_api::describe::repo_relative(
+        &merged.root,
+        working_directory,
+        None,
+        argument,
+    ) {
+        Ok(path) => path,
+        Err(message) => {
+            let _ = writeln!(output.err, "{message}");
+            return Exit::ConfigProblem;
+        }
+    };
 
     let shape = archwarden_api::scaffold::scaffold(&compiled, &path);
     crate::scaffold::render(&path, &shape, format, output.out);
@@ -1924,7 +1945,7 @@ fn agent_guide(
 
     let scope = match scope
         .map(|scope| {
-            archwarden_api::describe::repo_relative(&merged.root, working_directory, scope)
+            archwarden_api::describe::repo_relative(&merged.root, working_directory, None, scope)
         })
         .transpose()
     {

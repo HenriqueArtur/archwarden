@@ -305,11 +305,19 @@ recognise: installed from inside a container, with a command that names a path
 inside it. The fix is a wrapper that runs archwarden where the dependencies
 are.
 
-A wrapper is not the whole answer either, and the gap is the payload's paths: a
-harness on the host sends absolute host paths, and archwarden inside a
-container has a different root, so it answers *outside the repository* about a
-file plainly inside it. Making those two roots reconcilable is its own piece of
-work, tracked separately.
+**The paths reconcile themselves.** A harness on the host sends absolute host
+paths and archwarden inside a container has a different root, and until 0.19
+that answered *outside the repository* about a file plainly inside it. It no
+longer does: every hook payload carries the harness's own `cwd`, and an MCP
+client answers `roots/list`, so both surfaces know where the caller thinks the
+repository is and translate. Nothing is configured — the caller was already
+saying it, and nothing was reading it. Decision 24.
+
+A translation has to earn itself: a path is only re-rooted when something on
+this side stands under the result, so a wrapper pointed at a container holding a
+*different* project is refused rather than judged against the wrong rules. When
+it refuses it names **both** roots, because *"outside the repository"* about a
+path the caller believes is inside it sends a reader nowhere.
 
 How archwarden is invoked is detected, not configured — a flag is a thing to get
 wrong and the filesystem already knows. `./node_modules/.bin/archwarden` when it

@@ -17,6 +17,85 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 24 — The caller says where the repository is, and a translation has to earn it
+Status: accepted.
+Context: issue #93, then #95. A harness on the host sends
+`/home/dev/proj/src/x.ts`; an archwarden inside a container has `/app` as its
+root; `repo_relative` answers *outside the repository* — correctly, and
+uselessly. Every hook is dead in that setup and the only symptom is a message
+saying the write was not checked, which is not approval and reads like one.
+
+0.18.1 made that failure audible. This is the other half.
+
+The report asked for a `--command-prefix`, and measurement said no: with
+`docker exec` and no path rewriting the payload still carries host paths, so a
+prefix alone is a flag that looks like a fix. What the reporter's workaround
+actually does is map one root onto another, written in `sed` because the tool
+had nowhere to put it.
+
+Decision: **derive the mapping; never configure it.** Both surfaces are already
+told where the caller thinks the repository is, and neither was reading it:
+
+| surface | where it comes from |
+| --- | --- |
+| every hook | `cwd`, in the shared base of every event's payload |
+| MCP | `roots/list`, which the client answers and advertises with `listChanged` |
+
+Measured against Claude Code 2.1.231 by running it, not by reading a schema.
+That makes this the same rule `install-hooks` already follows — *how archwarden
+is invoked is detected, not configured; a flag is a thing to get wrong and the
+filesystem already knows* — and it means a team shares no configuration for
+this and gets it anyway.
+
+It lives in `repo_relative`, in `archwarden-api`, because both surfaces go
+through that one function. Applying it in the hook alone would leave MCP wrong
+in the same repository, which is decision 22's lesson arriving a third time.
+
+**And a translation has to earn itself.** This is the part that took the
+thinking. Deriving means a wrapper pointed at a container holding a *different*
+project would have its paths rewritten into ours and judged against our rules —
+turning a loud, useless failure into a quiet, wrong success, which is the
+failure this project refuses everywhere else, arrived at from a new direction.
+
+So a path is only re-rooted when **some ancestor of the result exists on our
+side**. That is the same evidence `disambiguate` already uses one function
+along, and it is available precisely when the two roots really are one
+repository through two mounts: the code is there, so the directories are there.
+Where nothing exists to go by, this refuses rather than guesses — unlike
+`disambiguate`, which guesses because both of its candidates are already inside
+one repository and this one is deciding whether that is even true.
+
+When it refuses, it names **both** roots. *"Outside the repository"* about a
+path the caller believes is inside it is a sentence that sends a reader nowhere.
+
+Alternatives:
+- **A field in `arch.config.json`.** Committable and it travels — and it cannot
+  work: the host root is `/home/dev/proj` for one developer and
+  `/Users/ana/proj` for the next, so the one thing a shared file cannot carry
+  is this. It would have to be per-machine configuration of something the
+  machine is already reporting.
+- **`--command-prefix` on `install-hooks`.** What the report asked for.
+  Rejected on measurement: it does not fix the reported case, because the paths
+  are the problem and a prefix does not touch them.
+- **Translating unconditionally.** Simpler, and it is the quiet-wrong-answer
+  failure above. The guard is the whole reason this is a decision rather than a
+  patch.
+- **Requiring the whole translated path to exist.** Too strict by exactly the
+  case that matters: `describe`, `scaffold` and the pre-write hook are all
+  asked about files that do not exist yet. An ancestor is the strongest
+  evidence available that does not refuse the question the tool exists to
+  answer.
+Consequences: the reported `docker-compose.yml` works with no wrappers, which
+is the bar #95 set for itself. Nothing changes for a caller whose root is ours —
+the translation is not reached, and the common path does not grow a branch it
+pays for.
+
+The guard is the part to break first if this is ever wrong. It trades a
+detectable misconfiguration for a slightly larger surface of paths that are
+refused with a clear sentence, and if a real repository is found where an
+ancestor never exists, the answer is to say so louder rather than to translate
+blind.
+
 ### 23 — The session hook has no matcher, and what that is worth was measured
 Status: accepted.
 Context: issue #66. A `SessionStart` hook can put the module map into an
