@@ -308,6 +308,7 @@ pub fn describe<'a>(
 pub fn repo_relative(
     root: &camino::Utf8Path,
     working_directory: &camino::Utf8Path,
+    seen_as: Option<&camino::Utf8Path>,
     argument: &str,
 ) -> Result<archwarden_core::path::RepoRelPath, String> {
     let raw = camino::Utf8Path::new(argument);
@@ -317,7 +318,8 @@ pub fn repo_relative(
             .map(camino::Utf8Path::to_string)
             .or_else(|_| {
                 same_directory_by_another_name(root, raw)
-                    .ok_or_else(|| format!("`{argument}` is outside the repository at `{root}`"))
+                    .or_else(|| re_rooted(root, seen_as, raw))
+                    .ok_or_else(|| outside(argument, root, seen_as))
             })?
     } else {
         let inside = working_directory.strip_prefix(root).map_err(|_| {
@@ -373,6 +375,74 @@ fn same_directory_by_another_name(
 
     let relative = camino::Utf8Path::from_path(inside)?.join(name);
     Some(relative.to_string())
+}
+
+/// The same file, named from where the caller stands.
+///
+/// A harness on the host says `/home/dev/proj/src/x.ts`; an archwarden inside a
+/// container has `/app` as its root. Both mean one file, and until 0.19 the
+/// second answered *outside the repository* about it — correctly, and
+/// uselessly. Issue #93.
+///
+/// `seen_as` is where the caller thinks the repository is, and it is *derived*
+/// rather than configured: every hook payload carries `cwd`, and an MCP client
+/// answers `roots/list`. The one thing a shared config file could not carry is
+/// this, because the host root differs per developer.
+///
+/// # Why an ancestor has to exist
+///
+/// Because otherwise this turns a loud, useless failure into a quiet, wrong
+/// one. A wrapper pointed at a container holding a *different* project would
+/// have its paths rewritten into ours and judged against our rules, and the
+/// answer would be an approval nobody could question.
+///
+/// Existence is the evidence available exactly when the two roots really are
+/// one repository through two mounts: the code is mounted, so the directories
+/// are there. Requiring the *whole* path to exist would be too strict by the
+/// case that matters — `describe`, `scaffold` and the pre-write hook are all
+/// asked about files that do not exist yet — so the test is that some ancestor
+/// of the result does.
+///
+/// Decision 24.
+fn re_rooted(
+    root: &camino::Utf8Path,
+    seen_as: Option<&camino::Utf8Path>,
+    raw: &camino::Utf8Path,
+) -> Option<String> {
+    let inside = raw.strip_prefix(seen_as?).ok()?;
+    let here = root.join(inside);
+
+    // `RepoRelPath` refuses anything that escapes, and this refuses anything
+    // with nothing under it. Together they are what keeps a translation from
+    // being a guess.
+    has_an_existing_ancestor(root, &here).then(|| inside.to_string())
+}
+
+/// Whether any directory on the way to `candidate` is really there.
+///
+/// Stops at `root`: the root itself existing says only that archwarden is
+/// somewhere, which is true in every case including the wrong one.
+fn has_an_existing_ancestor(root: &camino::Utf8Path, candidate: &camino::Utf8Path) -> bool {
+    candidate
+        .ancestors()
+        .skip(1)
+        .take_while(|ancestor| ancestor.as_str().len() > root.as_str().len())
+        .any(camino::Utf8Path::exists)
+}
+
+/// The sentence for a path that is inside nothing this can reach.
+///
+/// Names **both** roots when there are two. "Outside the repository" about a
+/// path the caller believes is inside it is a sentence that sends a reader
+/// nowhere, and the two roots side by side are the whole diagnosis.
+fn outside(argument: &str, root: &camino::Utf8Path, seen_as: Option<&camino::Utf8Path>) -> String {
+    match seen_as {
+        Some(seen_as) if seen_as != root => format!(
+            "`{argument}` is outside the repository at `{root}`, and outside \
+             `{seen_as}`, which is where the caller says the repository is"
+        ),
+        _ => format!("`{argument}` is outside the repository at `{root}`"),
+    }
 }
 
 /// Picks between the two readings. See [`repo_relative`].
@@ -1145,7 +1215,7 @@ mod tests {
     #[test]
     fn a_relative_path_resolves_against_the_working_directory() {
         assert_eq!(
-            repo_relative(&a_root(), &a_root(), "src/user/a.ts").expect("resolves"),
+            repo_relative(&a_root(), &a_root(), None, "src/user/a.ts").expect("resolves"),
             a_path("src/user/a.ts")
         );
     }
@@ -1155,12 +1225,17 @@ mod tests {
     #[test]
     fn a_relative_path_from_a_subdirectory_is_still_repo_relative() {
         assert_eq!(
-            repo_relative(&a_root(), &a_root().join("src/user"), "a.ts").expect("resolves"),
+            repo_relative(&a_root(), &a_root().join("src/user"), None, "a.ts").expect("resolves"),
             a_path("src/user/a.ts")
         );
         assert_eq!(
-            repo_relative(&a_root(), &a_root().join("src/user"), "../shared/b.ts")
-                .expect("resolves"),
+            repo_relative(
+                &a_root(),
+                &a_root().join("src/user"),
+                None,
+                "../shared/b.ts"
+            )
+            .expect("resolves"),
             a_path("src/shared/b.ts")
         );
     }
@@ -1170,7 +1245,7 @@ mod tests {
     #[test]
     fn an_absolute_path_inside_the_repository_resolves() {
         assert_eq!(
-            repo_relative(&a_root(), &a_root(), "/repo/src/user/a.ts").expect("resolves"),
+            repo_relative(&a_root(), &a_root(), None, "/repo/src/user/a.ts").expect("resolves"),
             a_path("src/user/a.ts")
         );
     }
@@ -1180,11 +1255,11 @@ mod tests {
     #[test]
     fn a_path_outside_the_repository_is_refused() {
         assert_eq!(
-            repo_relative(&a_root(), &a_root(), "/elsewhere/a.ts").expect_err("outside"),
+            repo_relative(&a_root(), &a_root(), None, "/elsewhere/a.ts").expect_err("outside"),
             "`/elsewhere/a.ts` is outside the repository at `/repo`"
         );
         assert_eq!(
-            repo_relative(&a_root(), &a_root(), "../a.ts").expect_err("escapes"),
+            repo_relative(&a_root(), &a_root(), None, "../a.ts").expect_err("escapes"),
             "`../a.ts` is not a path inside the repository: `../a.ts` escapes the repository root"
         );
     }
@@ -1195,7 +1270,7 @@ mod tests {
     #[test]
     fn a_working_directory_outside_the_repository_is_named_as_such() {
         assert_eq!(
-            repo_relative(&a_root(), camino::Utf8Path::new("/elsewhere"), "a.ts")
+            repo_relative(&a_root(), camino::Utf8Path::new("/elsewhere"), None, "a.ts")
                 .expect_err("outside"),
             "the working directory `/elsewhere` is outside `/repo`"
         );
@@ -1228,7 +1303,7 @@ mod tests {
             .join("src/a.ts");
 
         assert_eq!(
-            repo_relative(&root, &root, through_link.as_str()).expect("resolves"),
+            repo_relative(&root, &root, None, through_link.as_str()).expect("resolves"),
             a_path("src/a.ts")
         );
     }
@@ -1252,7 +1327,7 @@ mod tests {
             .join("src/not-written-yet.ts");
 
         assert_eq!(
-            repo_relative(&root, &root, through_link.as_str()).expect("resolves"),
+            repo_relative(&root, &root, None, through_link.as_str()).expect("resolves"),
             a_path("src/not-written-yet.ts")
         );
     }
@@ -1275,7 +1350,7 @@ mod tests {
             .join("a.ts");
 
         assert!(
-            repo_relative(&root, &root, outside.as_str()).is_err(),
+            repo_relative(&root, &root, None, outside.as_str()).is_err(),
             "a path in another directory was accepted"
         );
     }
@@ -1285,7 +1360,7 @@ mod tests {
     #[test]
     fn the_root_is_addressable() {
         assert_eq!(
-            repo_relative(&a_root(), &a_root(), ".").expect("resolves"),
+            repo_relative(&a_root(), &a_root(), None, ".").expect("resolves"),
             a_path("")
         );
     }
@@ -1319,7 +1394,7 @@ mod tests {
         let inside = root.join("packages/domain");
 
         assert_eq!(
-            repo_relative(&root, &inside, "packages/domain/src/order/calcs/x.ts")
+            repo_relative(&root, &inside, None, "packages/domain/src/order/calcs/x.ts")
                 .expect("resolves"),
             a_path("packages/domain/src/order/calcs/x.ts")
         );
@@ -1339,7 +1414,7 @@ mod tests {
         let inside = root.join("packages/domain");
 
         assert_eq!(
-            repo_relative(&root, &inside, "src/order/calcs/x.ts").expect("resolves"),
+            repo_relative(&root, &inside, None, "src/order/calcs/x.ts").expect("resolves"),
             a_path("packages/domain/src/order/calcs/x.ts")
         );
     }
@@ -1353,7 +1428,7 @@ mod tests {
         std::fs::create_dir_all(&inside).expect("create dirs");
 
         assert_eq!(
-            repo_relative(&root, &inside, "src/shared/b.ts").expect("resolves"),
+            repo_relative(&root, &inside, None, "src/shared/b.ts").expect("resolves"),
             a_path("src/shared/b.ts")
         );
     }
@@ -1369,13 +1444,14 @@ mod tests {
         std::fs::create_dir_all(&inside).expect("create dirs");
 
         assert_eq!(
-            repo_relative(&root, &inside, "packages/domain/src/new/thing.ts").expect("resolves"),
+            repo_relative(&root, &inside, None, "packages/domain/src/new/thing.ts")
+                .expect("resolves"),
             a_path("packages/domain/src/new/thing.ts")
         );
         // And one that does not carry the prefix is where the user is standing,
         // which is the older behaviour and the common case.
         assert_eq!(
-            repo_relative(&root, &inside, "src/new/thing.ts").expect("resolves"),
+            repo_relative(&root, &inside, None, "src/new/thing.ts").expect("resolves"),
             a_path("packages/domain/src/new/thing.ts")
         );
     }
@@ -1387,11 +1463,11 @@ mod tests {
         let (_guard, root) = tree(&["src/user/a.ts"]);
 
         assert_eq!(
-            repo_relative(&root, &root, "src/user/a.ts").expect("resolves"),
+            repo_relative(&root, &root, None, "src/user/a.ts").expect("resolves"),
             a_path("src/user/a.ts")
         );
         assert_eq!(
-            repo_relative(&root, &root, "src/nothing/here.ts").expect("resolves"),
+            repo_relative(&root, &root, None, "src/nothing/here.ts").expect("resolves"),
             a_path("src/nothing/here.ts")
         );
     }
@@ -1405,8 +1481,149 @@ mod tests {
         let inside = root.join("packages/domain");
 
         assert_eq!(
-            repo_relative(&root, &inside, "packages/domain/src/order").expect("resolves"),
+            repo_relative(&root, &inside, None, "packages/domain/src/order").expect("resolves"),
             a_path("packages/domain/src/order")
+        );
+    }
+
+    // --- one repository, two roots --------------------------------------
+    //
+    // Issue #93, decided in 24. A harness on the host and an archwarden inside
+    // a container disagree about the repository's absolute path and agree
+    // about everything inside it.
+
+    /// The reported case, end to end: the harness's path, our root, one file.
+    #[test]
+    fn a_path_named_from_the_callers_root_is_found_under_ours() {
+        let (_guard, root) = tree(&["src/order/x.ts"]);
+        let theirs = camino::Utf8Path::new("/home/dev/projeto");
+
+        assert_eq!(
+            repo_relative(
+                &root,
+                &root,
+                Some(theirs),
+                "/home/dev/projeto/src/order/x.ts"
+            )
+            .expect("resolves"),
+            a_path("src/order/x.ts")
+        );
+    }
+
+    /// And for a file that does not exist yet, which is what the pre-write hook
+    /// is always asking about. Its directory is what carries the evidence.
+    #[test]
+    fn a_file_that_does_not_exist_yet_is_translated_by_its_directory() {
+        let (_guard, root) = tree(&["src/order/x.ts"]);
+        let theirs = camino::Utf8Path::new("/home/dev/projeto");
+
+        assert_eq!(
+            repo_relative(
+                &root,
+                &root,
+                Some(theirs),
+                "/home/dev/projeto/src/order/not-written-yet.ts"
+            )
+            .expect("resolves"),
+            a_path("src/order/not-written-yet.ts")
+        );
+    }
+
+    /// The guard, and the reason this is a decision rather than a patch.
+    ///
+    /// A wrapper pointed at a container holding a *different* project would
+    /// have its paths rewritten into ours and judged against our rules — a
+    /// quiet, wrong approval in place of a loud, useless refusal. Nothing on
+    /// our side stands under the translated path, so it is refused.
+    #[test]
+    fn a_path_from_another_project_entirely_is_refused_rather_than_translated() {
+        let (_guard, root) = tree(&["src/order/x.ts"]);
+        let theirs = camino::Utf8Path::new("/home/dev/outro");
+
+        let refusal = repo_relative(
+            &root,
+            &root,
+            Some(theirs),
+            "/home/dev/outro/servico/interno/y.ts",
+        )
+        .expect_err("nothing here stands under that");
+
+        assert!(refusal.contains("outside the repository"), "{refusal}");
+    }
+
+    /// When it refuses, it names **both** roots. "Outside the repository" about
+    /// a path the caller believes is inside it sends a reader nowhere.
+    #[test]
+    fn a_refusal_names_the_callers_root_as_well_as_ours() {
+        let (_guard, root) = tree(&[]);
+        let theirs = camino::Utf8Path::new("/home/dev/projeto");
+
+        let refusal = repo_relative(&root, &root, Some(theirs), "/somewhere/else/x.ts")
+            .expect_err("outside both");
+
+        assert!(refusal.contains(root.as_str()), "ours: {refusal}");
+        assert!(refusal.contains("/home/dev/projeto"), "theirs: {refusal}");
+        assert!(
+            refusal.contains("where the caller says the repository is"),
+            "{refusal}"
+        );
+    }
+
+    /// A caller whose root is ours changes nothing. The translation is not
+    /// reached, and the ordinary case does not pay for a branch it never takes.
+    #[test]
+    fn a_caller_standing_where_we_stand_is_the_ordinary_case() {
+        let (_guard, root) = tree(&["src/user/a.ts"]);
+
+        assert_eq!(
+            repo_relative(
+                &root,
+                &root,
+                Some(&root),
+                root.join("src/user/a.ts").as_str()
+            )
+            .expect("resolves"),
+            a_path("src/user/a.ts")
+        );
+        // And the refusal for a path outside it says one root, not the same
+        // one twice.
+        let refusal =
+            repo_relative(&root, &root, Some(&root), "/elsewhere/a.ts").expect_err("outside");
+        assert!(!refusal.contains("the caller says"), "{refusal}");
+    }
+
+    /// A translation that would escape our root is refused by `RepoRelPath`,
+    /// which is the second half of what keeps this from being a guess.
+    #[test]
+    fn a_translation_that_would_escape_the_repository_is_still_refused() {
+        let (_guard, root) = tree(&["src/x.ts"]);
+        let theirs = camino::Utf8Path::new("/home/dev/projeto");
+
+        assert!(
+            repo_relative(
+                &root,
+                &root,
+                Some(theirs),
+                "/home/dev/projeto/../outro/x.ts"
+            )
+            .is_err()
+        );
+    }
+
+    /// No caller root is how every other surface calls this, and it behaves
+    /// exactly as it did before 0.19.
+    #[test]
+    fn no_callers_root_leaves_the_old_answer_untouched() {
+        let (_guard, root) = tree(&["src/x.ts"]);
+
+        assert_eq!(
+            repo_relative(&root, &root, None, "src/x.ts").expect("resolves"),
+            a_path("src/x.ts")
+        );
+        let refusal = repo_relative(&root, &root, None, "/elsewhere/x.ts").expect_err("outside");
+        assert_eq!(
+            refusal,
+            format!("`/elsewhere/x.ts` is outside the repository at `{root}`")
         );
     }
 }

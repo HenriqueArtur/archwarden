@@ -53,6 +53,76 @@ const INVALID_REQUEST: i64 = -32600;
 /// JSON-RPC's own code for a message that is not valid JSON.
 const PARSE_ERROR: i64 = -32700;
 
+/// The id this server uses for the one request it makes of its own.
+///
+/// A server that asks the client something has to recognise the answer coming
+/// back, and JSON-RPC correlates by id. One fixed id is enough because there
+/// is one question and it is never in flight twice — a second `roots/list`
+/// replaces the first answer, which is what the client's `listChanged`
+/// notification is asking for anyway.
+///
+/// Far from anything a client would pick for its own requests: ids are its
+/// namespace and ours, and collisions there are silent.
+const ROOTS_REQUEST_ID: i64 = -1;
+
+/// What the client says about where the repository is.
+///
+/// A client on the host and this server inside a container disagree about the
+/// repository's absolute path and agree about everything inside it. Every hook
+/// payload carries `cwd` for the same reason; MCP has no such field, and has
+/// something better — the client *declares* its roots and answers `roots/list`.
+/// Measured against Claude Code 2.1.231, which advertises
+/// `roots: { listChanged: true }`. Decision 24.
+#[derive(Debug, Default)]
+pub struct Session {
+    /// Where the client says the repository is, once it has said.
+    seen_as: Option<camino::Utf8PathBuf>,
+}
+
+impl Session {
+    /// A session that has not asked yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Where the client says the repository is.
+    #[must_use]
+    pub fn seen_as(&self) -> Option<&Utf8Path> {
+        self.seen_as.as_deref()
+    }
+}
+
+/// The path a `file://` URI names.
+///
+/// Roots arrive as URIs, and a path is what everything downstream takes.
+/// Percent escapes are decoded because a repository under a directory with a
+/// space in it is an ordinary thing and an undecoded `%20` would name nothing.
+#[must_use]
+fn path_of(uri: &str) -> Option<camino::Utf8PathBuf> {
+    let encoded = uri.strip_prefix("file://")?;
+    let mut decoded = String::with_capacity(encoded.len());
+    let mut bytes = encoded.bytes();
+
+    while let Some(byte) = bytes.next() {
+        if byte != b'%' {
+            decoded.push(byte as char);
+            continue;
+        }
+        let hex: String = bytes.by_ref().take(2).map(|b| b as char).collect();
+        if let Ok(value) = u8::from_str_radix(&hex, 16) {
+            decoded.push(value as char);
+        } else {
+            // A stray `%` is not an escape. Keeping it is closer to what the
+            // client meant than dropping the rest of the path.
+            decoded.push('%');
+            decoded.push_str(&hex);
+        }
+    }
+
+    (!decoded.is_empty()).then(|| camino::Utf8PathBuf::from(decoded))
+}
+
 /// Serves one client, reading requests until its input ends.
 ///
 /// Returns when stdin closes, which is how a stdio server is stopped: the
@@ -65,6 +135,7 @@ pub fn serve(
     output: &mut dyn std::io::Write,
     working_directory: &Utf8Path,
 ) -> std::io::Result<()> {
+    let mut session = Session::new();
     let mut line = String::new();
     loop {
         line.clear();
@@ -75,11 +146,92 @@ pub fn serve(
             continue;
         }
 
-        if let Some(reply) = handle(&line, working_directory) {
-            writeln!(output, "{reply}")?;
+        // Zero, one or two lines out. A notification takes no reply and may
+        // still make this server ask something of its own, which is why this
+        // is a list rather than an `Option`.
+        for written in exchange(&mut session, &line, working_directory) {
+            writeln!(output, "{written}")?;
             output.flush()?;
         }
     }
+}
+
+/// One message in, everything it produces out.
+///
+/// Separate from [`handle`] because a server that only ever answers cannot ask
+/// the client where the repository is — and that question is the whole of
+/// decision 24 on this surface.
+#[must_use]
+pub fn exchange(session: &mut Session, message: &str, working_directory: &Utf8Path) -> Vec<String> {
+    // Our own answer coming back. Absorbed before anything else looks at it:
+    // it carries an id and no method, which every other path would read as a
+    // malformed request.
+    if took_roots(session, message) {
+        return Vec::new();
+    }
+
+    let mut written = Vec::new();
+    if let Some(reply) = handle_in(session, message, working_directory) {
+        written.push(reply);
+    }
+
+    // Asked once the client is ready, and again whenever it says its roots
+    // moved. `listChanged` is the protocol's own way of keeping this current,
+    // which is why nothing here caches a config the same way.
+    if asks_for_roots(message) {
+        written.push(rendered(&json!({
+            "jsonrpc": "2.0",
+            "id": ROOTS_REQUEST_ID,
+            "method": "roots/list",
+        })));
+    }
+
+    written
+}
+
+/// Whether this message means the client is ready to be asked.
+fn asks_for_roots(message: &str) -> bool {
+    let Ok(parsed) = serde_json::from_str::<Value>(message) else {
+        return false;
+    };
+
+    matches!(
+        parsed.get("method").and_then(Value::as_str),
+        Some("notifications/initialized" | "notifications/roots/list_changed")
+    )
+}
+
+/// Takes in the client's answer, and says whether this message was it.
+///
+/// A client that answers with **no** roots is still answering, and what was
+/// known stops being known: keeping a stale root would translate against a
+/// topology the client has left, which is worse than having none.
+fn took_roots(session: &mut Session, message: &str) -> bool {
+    let Some(listed) = ours(message) else {
+        return false;
+    };
+
+    // The first root. A client may declare several — a multi-root workspace —
+    // and only one of them can be the repository this server was started in.
+    // Choosing the first is what the protocol's ordering offers; a wrong one
+    // fails the ancestor test in `repo_relative` and refuses, rather than
+    // translating into the wrong project.
+    session.seen_as = listed
+        .iter()
+        .filter_map(|root| root.get("uri")?.as_str())
+        .find_map(path_of);
+    true
+}
+
+/// The roots in this message, when it is the answer to the one question this
+/// server asks.
+fn ours(message: &str) -> Option<Vec<Value>> {
+    let parsed: Value = serde_json::from_str(message).ok()?;
+    if parsed.get("id")?.as_i64()? != ROOTS_REQUEST_ID {
+        return None;
+    }
+
+    parsed.get("result")?.get("roots")?.as_array().cloned()
 }
 
 /// Answers one message, or nothing when it was a notification.
@@ -88,6 +240,12 @@ pub fn serve(
 /// protocol violation that some clients treat as fatal.
 #[must_use]
 pub fn handle(message: &str, working_directory: &Utf8Path) -> Option<String> {
+    handle_in(&Session::new(), message, working_directory)
+}
+
+/// The same, against a session that may know where the client stands.
+#[must_use]
+fn handle_in(session: &Session, message: &str, working_directory: &Utf8Path) -> Option<String> {
     let parsed: Value = match serde_json::from_str(message) {
         Ok(parsed) => parsed,
         // No id to answer with, so the error goes out against a null one,
@@ -111,7 +269,7 @@ pub fn handle(message: &str, working_directory: &Utf8Path) -> Option<String> {
     let reply = match method {
         "initialize" => success(&id, &initialize()),
         "tools/list" => success(&id, &json!({ "tools": tools() })),
-        "tools/call" => call(&id, parsed.get("params"), working_directory),
+        "tools/call" => call(session, &id, parsed.get("params"), working_directory),
         "ping" => success(&id, &json!({})),
         "" => failure(&id, INVALID_REQUEST, "the message names no method"),
         other => failure(
@@ -211,7 +369,12 @@ fn tools() -> Vec<Value> {
 /// Every arm loads the configuration first and separately, which is the
 /// re-reading rule: one call's answer must not depend on what a previous call
 /// happened to find on disk.
-fn call(id: &Value, params: Option<&Value>, working_directory: &Utf8Path) -> Value {
+fn call(
+    session: &Session,
+    id: &Value,
+    params: Option<&Value>,
+    working_directory: &Utf8Path,
+) -> Value {
     let Some(name) = params.and_then(|p| p.get("name")).and_then(Value::as_str) else {
         return failure(id, INVALID_REQUEST, "the call names no tool");
     };
@@ -236,11 +399,19 @@ fn call(id: &Value, params: Option<&Value>, working_directory: &Utf8Path) -> Val
         Err(error) => return tool_error(id, &error.unreadable()),
     };
 
-    let repo_relative =
-        match describe::repo_relative(&prepared.merged.root, working_directory, path) {
-            Ok(path) => path,
-            Err(reason) => return tool_error(id, &reason),
-        };
+    // Where the client says the repository is, when it has said. A client on
+    // the host and this server inside a container name one file two ways, and
+    // until 0.19 the second answered "outside the repository" about it.
+    // Decision 24.
+    let repo_relative = match describe::repo_relative(
+        &prepared.merged.root,
+        working_directory,
+        session.seen_as(),
+        path,
+    ) {
+        Ok(path) => path,
+        Err(reason) => return tool_error(id, &reason),
+    };
 
     let answer = match name {
         "describe" => serde_json::to_value(describe::envelope(
@@ -600,13 +771,32 @@ mod tests {
             .map(|line| serde_json::from_str(line).expect("one message per line"))
             .collect();
 
-        assert_eq!(
-            replies.len(),
-            2,
-            "the blank line and the notification are silent"
-        );
+        // Three: the two requests, and the one question this server asks of
+        // its own once the client says it is ready. The blank line is silent,
+        // and so is the notification itself — what follows it is not a reply
+        // to it.
+        assert_eq!(replies.len(), 3, "{replies:?}");
         assert_eq!(replies[0]["result"]["protocolVersion"], PROTOCOL_VERSION);
-        assert!(replies[1]["result"]["tools"].is_array());
+        assert_eq!(
+            replies[1]["method"], "roots/list",
+            "it asks where the client thinks the repository is"
+        );
+        assert!(replies[2]["result"]["tools"].is_array());
+    }
+
+    /// The id this server asks with is negative, and that is the property
+    /// rather than the number.
+    ///
+    /// Ids are a shared namespace: the client numbers its requests from zero
+    /// upward, and a server asking with `1` would eventually be handed the
+    /// client's own reply to its own request `1` and take it for an answer.
+    /// A collision there is silent, which is why this is asserted against the
+    /// literal rather than against the constant beside it.
+    #[test]
+    fn the_id_this_server_asks_with_cannot_collide_with_the_clients() {
+        // Negative, and asserted as the literal: a client numbers its own
+        // requests upward from zero, so nothing it sends can wear this.
+        assert_eq!(ROOTS_REQUEST_ID, -1);
     }
 
     /// The codes are JSON-RPC's own, and a client branches on the number.
@@ -677,5 +867,175 @@ mod tests {
         // denies, generated from the same `Observed` value the JSON carries —
         // so the two can never describe one finding differently.
         assert_eq!(finding["said"], "`projeto.md` is not here");
+    }
+
+    // --- one repository, two roots --------------------------------------
+
+    /// A `file://` URI is what a root arrives as, and a path is what
+    /// everything downstream takes.
+    #[test]
+    fn a_root_uri_becomes_the_path_it_names() {
+        assert_eq!(
+            path_of("file:///home/dev/projeto").as_deref(),
+            Some(camino::Utf8Path::new("/home/dev/projeto"))
+        );
+        // A repository under a directory with a space in it is an ordinary
+        // thing, and an undecoded `%20` names nothing.
+        assert_eq!(
+            path_of("file:///home/dev/meus%20projetos/app").as_deref(),
+            Some(camino::Utf8Path::new("/home/dev/meus projetos/app"))
+        );
+        // A stray `%` is not an escape. Keeping it beats dropping the rest.
+        assert_eq!(
+            path_of("file:///home/50%25/app").as_deref(),
+            Some(camino::Utf8Path::new("/home/50%/app"))
+        );
+        assert_eq!(path_of("https://example.com/x"), None);
+        assert_eq!(path_of("file://"), None);
+    }
+
+    /// The client is asked once it says it is ready, and again whenever it
+    /// says its roots moved — which is what it advertises `listChanged` for.
+    #[test]
+    fn the_client_is_asked_where_the_repository_is() {
+        let (_guard, root) = repository();
+        let mut session = Session::new();
+
+        for notification in [
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            r#"{"jsonrpc":"2.0","method":"notifications/roots/list_changed"}"#,
+        ] {
+            let written = exchange(&mut session, notification, &root);
+
+            assert_eq!(written.len(), 1, "a notification takes no reply of its own");
+            let asked: Value = serde_json::from_str(&written[0]).expect("JSON");
+            assert_eq!(asked["method"], "roots/list");
+            assert_eq!(asked["id"], ROOTS_REQUEST_ID);
+        }
+    }
+
+    /// And the answer is absorbed rather than answered. It carries an id and
+    /// no method, which every other path would read as a malformed request.
+    #[test]
+    fn the_answer_is_taken_in_and_not_replied_to() {
+        let (_guard, root) = repository();
+        let mut session = Session::new();
+
+        let written = exchange(
+            &mut session,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":{ROOTS_REQUEST_ID},"result":{{"roots":[{{"uri":"file:///home/dev/projeto"}}]}}}}"#
+            ),
+            &root,
+        );
+
+        assert!(written.is_empty(), "{written:?}");
+        assert_eq!(
+            session.seen_as(),
+            Some(camino::Utf8Path::new("/home/dev/projeto"))
+        );
+    }
+
+    /// A client that answers with no roots is answering, and what was known
+    /// stops being known. Keeping a stale root would be worse than having
+    /// none: it would translate against a topology the client has left.
+    #[test]
+    fn an_answer_with_no_roots_clears_what_was_known() {
+        let (_guard, root) = repository();
+        let mut session = Session::new();
+
+        let _ = exchange(
+            &mut session,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":{ROOTS_REQUEST_ID},"result":{{"roots":[{{"uri":"file:///home/dev/projeto"}}]}}}}"#
+            ),
+            &root,
+        );
+        assert!(session.seen_as().is_some());
+
+        let _ = exchange(
+            &mut session,
+            &format!(r#"{{"jsonrpc":"2.0","id":{ROOTS_REQUEST_ID},"result":{{"roots":[]}}}}"#),
+            &root,
+        );
+
+        assert_eq!(session.seen_as(), None);
+    }
+
+    /// A reply of the client's own, carrying an id that is not ours, is not
+    /// mistaken for the answer to our question.
+    #[test]
+    fn somebody_elses_reply_is_not_our_answer() {
+        let (_guard, root) = repository();
+        let mut session = Session::new();
+
+        let _ = exchange(
+            &mut session,
+            r#"{"jsonrpc":"2.0","id":7,"result":{"roots":[{"uri":"file:///nao/e/nosso"}]}}"#,
+            &root,
+        );
+
+        assert_eq!(session.seen_as(), None);
+    }
+
+    /// The whole point, end to end: the client's path, our root, one file, and
+    /// a verdict instead of a shrug. This is issue #93 through MCP.
+    #[test]
+    fn a_tool_called_with_the_clients_path_is_answered_about_our_file() {
+        let (_guard, root) = repository();
+        std::fs::create_dir_all(root.join("projetos/01-blink")).expect("create");
+        let mut session = Session::new();
+
+        let _ = exchange(
+            &mut session,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":{ROOTS_REQUEST_ID},"result":{{"roots":[{{"uri":"file:///home/dev/projeto"}}]}}}}"#
+            ),
+            &root,
+        );
+
+        let written = exchange(
+            &mut session,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_write","arguments":{"path":"/home/dev/projeto/projetos/01-blink/qualquer.md","content":"nada"}}}"#,
+            &root,
+        );
+
+        let reply: Value = serde_json::from_str(&written[0]).expect("JSON");
+        assert_ne!(
+            reply["result"]["isError"], true,
+            "it answered instead of shrugging: {reply}"
+        );
+        let judged: Value = serde_json::from_str(tool_text(&reply)).expect("carrying JSON");
+        assert_eq!(judged["path"], "projetos/01-blink/qualquer.md");
+        assert_eq!(judged["refused"], true);
+    }
+
+    /// And a client whose root is somewhere else entirely is refused, naming
+    /// both roots. The guard is decision 24's, and it is what keeps a
+    /// translation from being a guess.
+    #[test]
+    fn a_path_from_another_project_is_refused_and_names_both_roots() {
+        let (_guard, root) = repository();
+        let mut session = Session::new();
+
+        let _ = exchange(
+            &mut session,
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":{ROOTS_REQUEST_ID},"result":{{"roots":[{{"uri":"file:///home/dev/outro"}}]}}}}"#
+            ),
+            &root,
+        );
+
+        let written = exchange(
+            &mut session,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"describe","arguments":{"path":"/home/dev/outro/servico/interno/y.ts"}}}"#,
+            &root,
+        );
+
+        let reply: Value = serde_json::from_str(&written[0]).expect("JSON");
+        assert_eq!(reply["result"]["isError"], true);
+        let said = tool_text(&reply);
+        assert!(said.contains("/home/dev/outro"), "{said}");
+        assert!(said.contains("where the caller says"), "{said}");
     }
 }

@@ -2944,6 +2944,10 @@ fn an_unknown_method_is_a_json_rpc_error_and_not_a_crash() {
 
 /// A notification carries no `id` and takes no reply. Answering one is a
 /// protocol violation that some clients treat as fatal.
+///
+/// What follows `notifications/initialized` is not a reply to it: it is this
+/// server asking the client where the repository is, which is a request of its
+/// own with an id of its own. Issue #93, decision 24.
 #[test]
 fn a_notification_is_not_answered() {
     let dir = repo(&[("arch.config.json", &governed_at(0))]);
@@ -2957,8 +2961,48 @@ fn a_notification_is_not_answered() {
         ],
     );
 
-    assert_eq!(replies.len(), 2, "one reply each for the two requests");
-    assert_eq!(replies[1]["id"], 3);
+    assert_eq!(replies.len(), 3, "{replies:?}");
+    assert_eq!(replies[0]["id"], 1, "the handshake");
+    assert!(
+        replies[1].get("id").is_some() && replies[1]["method"] == "roots/list",
+        "a question, not a reply: {}",
+        replies[1]
+    );
+    assert_eq!(replies[2]["id"], 3, "and the request after it");
+}
+
+/// The whole of issue #93 through MCP, from outside the process: the client's
+/// path, our root, one file, and a verdict instead of a shrug.
+#[test]
+fn a_client_that_names_the_repository_differently_is_still_answered() {
+    let dir = repo(&[("arch.config.json", &governed_at(0))]);
+    std::fs::create_dir_all(dir.path().join("projetos/01-blink")).expect("create");
+
+    let replies = rpc(
+        dir.path(),
+        &[
+            INITIALIZE,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            r#"{"jsonrpc":"2.0","id":-1,"result":{"roots":[{"uri":"file:///home/dev/projeto"}]}}"#,
+            r#"{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"check_write",
+               "arguments":{"path":"/home/dev/projeto/projetos/01-blink/notas.md","content":"notas"}}}"#,
+        ],
+    );
+
+    let answered = replies.last().expect("an answer");
+    assert_ne!(
+        answered["result"]["isError"], true,
+        "it answered instead of shrugging: {answered}"
+    );
+    let judged: serde_json::Value = serde_json::from_str(
+        answered["result"]["content"][0]["text"]
+            .as_str()
+            .expect("text"),
+    )
+    .expect("carrying JSON");
+
+    assert_eq!(judged["path"], "projetos/01-blink/notas.md");
+    assert_eq!(judged["refused"], true, "{judged}");
 }
 
 /// The MCP server needs a `.mcp.json` naming the command, and the installer is

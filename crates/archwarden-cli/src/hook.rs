@@ -88,6 +88,26 @@ pub fn event(payload: &str) -> Event {
 /// installs cleanly and fires never.
 pub const SESSION_EVENT: &str = "SessionStart";
 
+/// Where the harness thinks the repository is.
+///
+/// Every hook payload carries `cwd`, in the shared base of every event — which
+/// nothing read until 0.19. It is the harness's own view of the project root,
+/// and when it differs from ours the two are one repository seen through two
+/// mounts: a host and a container. Issue #93, decided in 24.
+///
+/// `None` when the payload does not carry one, which is every payload written
+/// by hand and every harness that stops sending it. The answer then is the one
+/// from before this existed.
+#[must_use]
+pub fn seen_as(payload: &str) -> Option<camino::Utf8PathBuf> {
+    let parsed: Value = serde_json::from_str(payload).ok()?;
+    let cwd = parsed.get("cwd")?.as_str()?;
+
+    // An empty `cwd` is not a root, and joining onto one would make every
+    // relative path look absolute.
+    (!cwd.is_empty()).then(|| camino::Utf8PathBuf::from(cwd))
+}
+
 /// What the payload had to say about a file.
 ///
 /// Three answers rather than two, because [`NoFile`](Target::NoFile) and
@@ -913,5 +933,31 @@ mod tests {
         let message = still_needs(&[same(), same()]);
 
         assert_eq!(message.matches("exercicios.md").count(), 1, "{message}");
+    }
+
+    /// Every payload carries it, and it is the harness's own root. Measured
+    /// against Claude Code 2.1.231 with a real `Write` rather than read from a
+    /// schema; this is that payload's shape.
+    #[test]
+    fn the_root_the_harness_stands_in_is_read_from_the_payload() {
+        let payload = r#"{"session_id":"abc","transcript_path":"/t.jsonl",
+            "cwd":"/home/dev/projeto","hook_event_name":"PreToolUse",
+            "tool_name":"Write","tool_input":{"file_path":"/home/dev/projeto/src/x.ts",
+            "content":"export const a = 1;"}}"#;
+
+        assert_eq!(
+            seen_as(payload).as_deref(),
+            Some(camino::Utf8Path::new("/home/dev/projeto"))
+        );
+    }
+
+    /// A payload without one answers as it did before this existed. Every
+    /// hand-written payload is that, and so is a harness that stops sending it.
+    #[test]
+    fn a_payload_with_no_root_says_nothing_rather_than_guessing() {
+        assert_eq!(seen_as(r#"{"tool_name":"Write"}"#), None);
+        assert_eq!(seen_as(r#"{"cwd":""}"#), None, "empty is not a root");
+        assert_eq!(seen_as("not json"), None);
+        assert_eq!(seen_as(r#"{"cwd":42}"#), None, "and neither is a number");
     }
 }
