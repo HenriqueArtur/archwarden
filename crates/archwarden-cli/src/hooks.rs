@@ -1229,3 +1229,114 @@ mod tests {
         );
     }
 }
+
+/// Whether the filesystem these two paths are on is a container's.
+///
+/// # Why the installer cares
+///
+/// `install-hooks` writes the command that works **where it ran**, and the
+/// harness runs it somewhere else. Usually those are the same machine and the
+/// question never comes up. In a project whose dependencies live only inside a
+/// container — an anonymous volume over `node_modules`, which is how "Docker is
+/// the only local dependency" is spelled — they are not: the installer sees
+/// `./node_modules/.bin/archwarden` and the harness, on the host, does not.
+///
+/// The result was a hook that is dead and says nothing, reported as issue #93.
+/// Nothing can *fix* that from in here — the installer cannot know what the
+/// host can run — but it can stop being silent about the one case it can
+/// recognise.
+///
+/// # What is checked, and what that is worth
+///
+/// `/.dockerenv` is Docker's own marker. `/proc/1/cgroup` naming a runtime
+/// covers podman, containerd and the rest, and is what every other tool reads.
+/// Neither is a guarantee: a container can have neither, and this is a
+/// **warning** for exactly that reason. It never changes what is installed.
+///
+/// # Why the paths are arguments
+///
+/// Because the alternative is a function whose whole body is ambient state,
+/// and the only test that could pin it would assert what kind of machine the
+/// test is running on — failing for anyone developing in a devcontainer, who
+/// is precisely the person this exists for. The caller names the two real
+/// paths; everything that decides anything is here, and tested.
+#[must_use]
+pub fn in_container(marker: &std::path::Path, cgroup: &std::path::Path) -> bool {
+    if marker.exists() {
+        return true;
+    }
+
+    std::fs::read_to_string(cgroup).is_ok_and(|contents| {
+        contents.lines().any(|line| {
+            line.contains("docker") || line.contains("containerd") || line.contains("lxc")
+        })
+    })
+}
+
+/// Docker's own marker file, which the caller passes to [`in_container`].
+pub const CONTAINER_MARKER: &str = "/.dockerenv";
+
+/// Where a runtime names itself, for the ones that write no marker.
+pub const CONTAINER_CGROUP: &str = "/proc/1/cgroup";
+
+#[cfg(test)]
+mod container_tests {
+    use super::in_container;
+    use std::path::Path;
+
+    fn scratch() -> tempfile::TempDir {
+        tempfile::tempdir().expect("temp dir")
+    }
+
+    /// Docker's own marker, which is the cheapest and most common signal.
+    #[test]
+    fn dockers_marker_file_is_enough_on_its_own() {
+        let dir = scratch();
+        let marker = dir.path().join(".dockerenv");
+        std::fs::write(&marker, "").expect("write");
+
+        assert!(in_container(&marker, Path::new("/nowhere")));
+    }
+
+    /// And the runtimes that do not write one are recognised by the cgroup
+    /// line every other tool reads.
+    #[test]
+    fn a_cgroup_naming_a_runtime_is_enough_too() {
+        for runtime in ["docker", "containerd", "lxc"] {
+            let dir = scratch();
+            let cgroup = dir.path().join("cgroup");
+            std::fs::write(
+                &cgroup,
+                format!("0::/system.slice/{runtime}-abc123.scope\n"),
+            )
+            .expect("write");
+
+            assert!(
+                in_container(Path::new("/nowhere"), &cgroup),
+                "{runtime} was not recognised"
+            );
+        }
+    }
+
+    /// A machine that is not a container says so. This decides whether a
+    /// warning is printed, and one that fired on every host would be a warning
+    /// nobody reads.
+    #[test]
+    fn a_host_is_not_mistaken_for_a_container() {
+        let dir = scratch();
+        let cgroup = dir.path().join("cgroup");
+        std::fs::write(&cgroup, "0::/user.slice/user-1000.slice/session-3.scope\n").expect("write");
+
+        assert!(!in_container(Path::new("/nowhere"), &cgroup));
+    }
+
+    /// Neither signal readable is not a container either. A `/proc` this
+    /// cannot read is every non-Linux machine there is.
+    #[test]
+    fn nothing_to_read_is_not_a_container() {
+        assert!(!in_container(
+            Path::new("/nowhere"),
+            Path::new("/nowhere/either")
+        ));
+    }
+}

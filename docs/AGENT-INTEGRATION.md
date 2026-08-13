@@ -291,6 +291,26 @@ One-shot installer that writes the appropriate harness hook file.
   root naming `archwarden mcp`.
 - Future flags for other harnesses as their hook APIs stabilise.
 
+**The harness has to be able to run it, and that is not something this can
+check.** The command written is the one that works *where the installer ran*,
+and the harness runs it as its own process, somewhere else — which is the same
+machine until it is not. A project whose dependencies live only inside a
+container installs `./node_modules/.bin/archwarden`, hands it to a harness on
+the host, and the hook is dead: every write comes back *"archwarden did not
+check this write"*, which is not approval and is easy to read as one. Issue #93.
+
+Nothing here can fix that — the installer cannot know what the other machine
+can run. It says so on the way in, and says it sharply in the one case it can
+recognise: installed from inside a container, with a command that names a path
+inside it. The fix is a wrapper that runs archwarden where the dependencies
+are.
+
+A wrapper is not the whole answer either, and the gap is the payload's paths: a
+harness on the host sends absolute host paths, and archwarden inside a
+container has a different root, so it answers *outside the repository* about a
+file plainly inside it. Making those two roots reconcilable is its own piece of
+work, tracked separately.
+
 How archwarden is invoked is detected, not configured — a flag is a thing to get
 wrong and the filesystem already knows. `./node_modules/.bin/archwarden` when it
 is installed; `npx archwarden` for a `package.json` with nothing installed yet;
