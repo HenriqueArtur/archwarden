@@ -1653,9 +1653,51 @@ fn install_hooks(
             output.out,
             "\nBoth take effect in the next session: hooks and MCP servers are read at startup."
         );
+        caveat(
+            &invocation,
+            crate::hooks::in_container(
+                std::path::Path::new(crate::hooks::CONTAINER_MARKER),
+                std::path::Path::new(crate::hooks::CONTAINER_CGROUP),
+            ),
+            output,
+        );
     }
 
     Exit::Clean
+}
+
+/// Says where the installed command has to be runnable from, and when that is
+/// unlikely to be here.
+///
+/// Issue #93. The command written is the one that works **where this ran**, and
+/// the harness runs it somewhere else — which is the same machine until it is
+/// not. A project whose dependencies live only inside a container installs
+/// `./node_modules/.bin/archwarden` and hands it to a harness on the host,
+/// where that path does not exist. The hook then fails on every write, and the
+/// only symptom is a message that says archwarden did not check it.
+///
+/// Nothing here can fix that: the installer cannot know what the harness's
+/// machine can run. It can stop being silent, which is the half the report
+/// asked for — *"nothing in the output hints that the command may not be
+/// executable from where the harness will call it"*.
+fn caveat(invocation: &str, in_container: bool, output: &mut Output<'_>) {
+    let _ = writeln!(
+        output.out,
+        "\nThe harness must be able to run that command itself, from the repository \
+         root. It runs hooks and MCP servers as its own process, not through npm."
+    );
+
+    // The one case that can be recognised, said sharply rather than left in
+    // the general sentence above. A relative path is the only invocation whose
+    // meaning depends on which filesystem is reading it.
+    if in_container && invocation.starts_with("./") {
+        let _ = writeln!(
+            output.out,
+            "\nThis looks like a container, and `{invocation}` names a path inside it. \
+             If your harness runs on the host, it cannot reach that — point it at a \
+             wrapper that runs archwarden where the dependencies are."
+        );
+    }
 }
 
 /// Writes one edited file, or reports why it could not.
@@ -4627,5 +4669,120 @@ mod tests {
             "and nothing to point at after a removal: {}",
             removed.out
         );
+    }
+
+    /// Issue #93. The installer writes the command that works *where it ran*,
+    /// and the harness runs it somewhere else — which is the same machine
+    /// until it is not. Saying where the command has to be runnable from is
+    /// the difference between a hook that fails loudly and one that is dead
+    /// and says nothing.
+    #[test]
+    fn installing_says_where_the_command_has_to_be_runnable_from() {
+        let (_guard, result) = run_in(
+            &[
+                ("arch.config.json", r#"{"version":0}"#),
+                ("package.json", r#"{"name":"x"}"#),
+            ],
+            &["install-hooks", "--claude-code"],
+        );
+
+        assert!(
+            result.out.contains("must be able to run"),
+            "the caveat is the whole fix for #93: {}",
+            result.out
+        );
+    }
+
+    /// And it is said once, on the way in. A removal has no command to name
+    /// and nothing to caveat.
+    #[test]
+    fn removing_says_nothing_about_where_a_command_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+        std::fs::write(root.join("arch.config.json"), r#"{"version":0}"#).expect("write");
+
+        run_at(&root, &["install-hooks", "--claude-code"]);
+        let removed = run_at(&root, &["install-hooks", "--claude-code", "--remove"]);
+
+        assert!(
+            !removed.out.contains("must be able to run"),
+            "{}",
+            removed.out
+        );
+    }
+
+    /// The one case that can be recognised: a container, and a command that
+    /// names a path inside it. Issue #93's setup exactly.
+    #[test]
+    fn a_relative_command_installed_from_inside_a_container_is_called_out() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut input = "".as_bytes();
+        caveat(
+            "./node_modules/.bin/archwarden",
+            true,
+            &mut Output {
+                out: &mut out,
+                err: &mut err,
+                input: &mut input,
+            },
+        );
+
+        let said = String::from_utf8(out).expect("utf-8");
+        assert!(said.contains("must be able to run"), "{said}");
+        assert!(said.contains("looks like a container"), "{said}");
+        assert!(said.contains("./node_modules/.bin/archwarden"), "{said}");
+    }
+
+    /// The same command on a host is not called out. A warning that fired
+    /// everywhere is a warning nobody reads, and the general sentence above
+    /// already covers the case nothing can be known about.
+    #[test]
+    fn the_same_command_on_a_host_gets_only_the_general_sentence() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut input = "".as_bytes();
+        caveat(
+            "./node_modules/.bin/archwarden",
+            false,
+            &mut Output {
+                out: &mut out,
+                err: &mut err,
+                input: &mut input,
+            },
+        );
+
+        let said = String::from_utf8(out).expect("utf-8");
+        assert!(said.contains("must be able to run"), "{said}");
+        assert!(!said.contains("looks like a container"), "{said}");
+    }
+
+    /// And a command that is not a path is not called out either, container or
+    /// not: `npx archwarden` and the bare command mean the same thing on both
+    /// filesystems, so there is nothing to warn about. A relative path is the
+    /// only invocation whose meaning depends on which one is reading it.
+    #[test]
+    fn a_command_that_is_not_a_path_means_the_same_on_both_sides() {
+        for command in ["npx archwarden", "archwarden"] {
+            let mut out = Vec::new();
+            let mut err = Vec::new();
+            let mut input = "".as_bytes();
+            caveat(
+                command,
+                true,
+                &mut Output {
+                    out: &mut out,
+                    err: &mut err,
+                    input: &mut input,
+                },
+            );
+
+            let said = String::from_utf8(out).expect("utf-8");
+            assert!(
+                !said.contains("looks like a container"),
+                "{command}: {said}"
+            );
+        }
     }
 }
