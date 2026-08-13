@@ -17,6 +17,29 @@ saying so.
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-08-13
+
+### Fixed
+
+- **`install-hooks` no longer installs a command in silence that the harness
+  may not be able to run** (#93). The command written is the one that works
+  *where the installer ran*, and a harness runs it as its own process
+  somewhere else — the same machine, until it is not. A project whose
+  dependencies live only inside a container installs
+  `./node_modules/.bin/archwarden`, hands it to a harness on the host, and the
+  hook is dead: every write comes back *"archwarden did not check this
+  write"*, which is not approval and reads like one.
+
+  The installer now says the harness has to be able to run that command, and
+  says it sharply in the one case it can recognise — running inside a container
+  while installing a command that names a path inside it.
+
+  It does not make the container case work on its own. A wrapper still has to
+  reconcile the two roots, because a harness on the host sends absolute host
+  paths and archwarden inside the container has a different one. That half is
+  its own piece of work and is tracked separately; this release stops the
+  failure being silent.
+
 ## [0.18.0] — 2026-08-13
 
 Three surfaces onto the same operations, and the boundary corrected so they
@@ -1662,7 +1685,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.18.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.18.1...HEAD
+[0.18.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.15.0...v0.16.0
