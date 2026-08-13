@@ -85,10 +85,25 @@ Alternatives:
   asked about files that do not exist yet. An ancestor is the strongest
   evidence available that does not refuse the question the tool exists to
   answer.
-Consequences: the reported `docker-compose.yml` works with no wrappers, which
-is the bar #95 set for itself. Nothing changes for a caller whose root is ours —
-the translation is not reached, and the common path does not grow a branch it
-pays for.
+Consequences: **the wrapper stays and the `sed` goes.** #95 set its bar at "no
+wrappers" and that bar was wrong: a harness runs a process on the host, so
+something has to reach into the container whatever archwarden does. That half is
+inherent and 0.18.1 is what makes it audible. This is the half that was ours.
+
+Nothing changes for a caller whose root is ours — the translation is not
+reached, and the common path does not grow a branch it pays for.
+
+**And the guard costs something, measured rather than assumed.** A path in a
+directory that does not exist on this side yet has no ancestor to stand on, so
+it is refused: the first file of a brand-new module in a container setup comes
+back *"did not check this write"* rather than judged. Measured, not reasoned —
+`src/order/nota.md` under an existing directory is judged and denied, and
+`packages/novo/x.ts` under one that is not there is refused.
+
+That fails to the safe side: the message is never approval, and this project
+made those two distinguishable in 0.11.0 precisely so it could be leaned on
+here. It is still a legitimate question going unanswered, and it is the first
+thing to revisit if the guard is ever loosened.
 
 The guard is the part to break first if this is ever wrong. It trades a
 detectable misconfiguration for a slightly larger surface of paths that are

@@ -37,14 +37,28 @@ and nothing is configured for this at all.
   only thing that could work, since the host root differs per developer and a
   committed config file cannot carry it.
 
-  The reported `docker-compose.yml` works with no wrappers. 0.18.1 made that
-  failure audible; this makes it go away.
+  **The wrapper stays; the `sed` inside it goes.** A harness runs a process on
+  the host, so something still has to reach into the container — that half is
+  inherent, and 0.18.1 is what tells you so. What archwarden owed was the other
+  half:
+
+  ```diff
+  - sed -e "s#$CLAUDE_PROJECT_DIR/#/app/#g" \
+  -   | docker exec -i -w /app "$CONTAINER" ./node_modules/.bin/archwarden hook claude-code
+  + docker exec -i -w /app "$CONTAINER" ./node_modules/.bin/archwarden hook claude-code
+  ```
 
   **A translation has to earn itself.** A path is re-rooted only when something
   on this side stands under the result, so a wrapper pointed at a container
   holding a different project is refused rather than judged against the wrong
   rules — a quiet wrong answer in place of a loud useless one is the trade this
   refuses. When it refuses, it names both roots. Decision 24.
+
+  The cost of that guard is stated rather than discovered: a path in a
+  directory that does not exist on this side yet is refused too, so the first
+  file of a brand-new module in a container setup comes back *"did not check
+  this write"* rather than judged. It fails to the safe side — that message is
+  never approval — and it is the trade the guard makes.
 
 ## [0.18.1] — 2026-08-13
 
