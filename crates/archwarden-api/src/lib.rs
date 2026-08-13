@@ -39,9 +39,13 @@ pub mod describe;
 pub mod error;
 pub mod evaluate;
 pub mod filter;
+pub mod guide;
+pub mod map;
 pub mod present;
 pub mod render;
 pub mod resolve;
+pub mod scaffold;
+pub mod single;
 pub mod walk;
 
 pub use error::Error;

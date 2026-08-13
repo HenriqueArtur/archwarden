@@ -131,6 +131,20 @@ const EVENT: &str = "PreToolUse";
 /// This is where that class is caught. Issue #61.
 const STOP_EVENT: &str = "Stop";
 
+/// The event archwarden hooks into when a session begins.
+///
+/// Installed **with no matcher**, and that is the decision rather than an
+/// omission. `SessionStart` fires with a `source` and a matcher is compared
+/// against it — this build's Claude Code takes `startup`, `resume`, `clear`,
+/// `compact` and `fork`. An entry naming three of them installs cleanly and
+/// covers half the sessions in silence, which is issue #66's stated fear and
+/// this project's recurring shape of failure.
+///
+/// A matcher that is not there cannot miss a source, including one added after
+/// this was written. The cost is firing on `clear` too, which is a session that
+/// has just had its context wiped and wants the map more than any other.
+const SESSION_EVENT: &str = "SessionStart";
+
 /// What an install or removal did, for a message the user can trust.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
@@ -166,8 +180,9 @@ pub fn install(settings: Option<&str>, command: &str) -> Result<(String, Outcome
     // wrong question in silence.
     let added_write = add_entry(&mut root, EVENT, Some(MATCHER), command)?;
     let added_stop = add_entry(&mut root, STOP_EVENT, None, command)?;
+    let added_session = add_entry(&mut root, SESSION_EVENT, None, command)?;
 
-    if !added_write && !added_stop {
+    if !added_write && !added_stop && !added_session {
         // Unchanged means unchanged: hand back the bytes that came in rather
         // than a re-rendering of them.
         return Ok((
@@ -176,7 +191,77 @@ pub fn install(settings: Option<&str>, command: &str) -> Result<(String, Outcome
         ));
     }
 
-    Ok((written(settings, &root), Outcome::Installed))
+    Ok((written(settings, &root, "hooks"), Outcome::Installed))
+}
+
+/// Where Claude Code reads a project's MCP servers from.
+///
+/// Committable, and meant to be committed: it names a relative command, so the
+/// server travels with the repository rather than with one machine.
+pub const MCP_CONFIG: &str = ".mcp.json";
+
+/// The name archwarden's server goes under, and what we recognise ours by.
+pub const MCP_SERVER: &str = "archwarden";
+
+/// Adds archwarden's MCP server to `config`, or reports it was already there.
+///
+/// Same promise as [`install`] one file over: the `mcpServers` key is replaced
+/// inside the user's own bytes and every other byte is left alone. Somebody
+/// else's server declared beside ours survives both installing and removing,
+/// which is the whole reason this is not a `serde_json` round-trip.
+///
+/// # Errors
+/// A message naming the problem, when the file is not a JSON object.
+pub fn install_mcp(config: Option<&str>, command: &str) -> Result<(String, Outcome), String> {
+    let mut root = parse_as(config, MCP_CONFIG)?;
+    let servers = object_at_in(&mut root, "mcpServers", MCP_CONFIG)?;
+
+    // Recognised by name rather than by contents, so a user who added an `env`
+    // block or changed the command keeps their edit through an upgrade. The
+    // alternative -- overwriting whatever is there -- is a tool editing a file
+    // it does not own.
+    if servers.contains_key(MCP_SERVER) {
+        return Ok((
+            config.map_or_else(|| render(&root), str::to_owned),
+            Outcome::AlreadyInstalled,
+        ));
+    }
+
+    servers.insert(
+        MCP_SERVER.to_owned(),
+        json!({ "command": command, "args": ["mcp"] }),
+    );
+
+    Ok((written(config, &root, "mcpServers"), Outcome::Installed))
+}
+
+/// Takes archwarden's MCP server back out, leaving everything else alone.
+///
+/// # Errors
+/// A message naming the problem, when the file is not a JSON object.
+pub fn remove_mcp(config: Option<&str>) -> Result<(String, Outcome), String> {
+    let mut root = parse_as(config, MCP_CONFIG)?;
+
+    let Some(servers) = root.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return Ok((
+            config.map_or_else(|| render(&root), str::to_owned),
+            Outcome::NotInstalled,
+        ));
+    };
+
+    if servers.remove(MCP_SERVER).is_none() {
+        return Ok((
+            config.map_or_else(|| render(&root), str::to_owned),
+            Outcome::NotInstalled,
+        ));
+    }
+
+    // `"mcpServers": {}` left behind is litter in someone else's file.
+    if servers.is_empty() {
+        root.remove("mcpServers");
+    }
+
+    Ok((written(config, &root, "mcpServers"), Outcome::Removed))
 }
 
 /// Takes archwarden's hook back out, leaving everything else alone.
@@ -196,7 +281,7 @@ pub fn remove(settings: Option<&str>) -> Result<(String, Outcome), String> {
     // Both events, because install writes both. Taking one and leaving the
     // other would report "removed" while a hook of ours kept running -- the
     // uninstall equivalent of a gate that says it is on and is not.
-    let removed = [EVENT, STOP_EVENT]
+    let removed = [EVENT, STOP_EVENT, SESSION_EVENT]
         .into_iter()
         .filter(|event| take_ours_from(hooks, event))
         .count();
@@ -213,7 +298,7 @@ pub fn remove(settings: Option<&str>) -> Result<(String, Outcome), String> {
         root.remove("hooks");
     }
 
-    Ok((written(settings, &root), Outcome::Removed))
+    Ok((written(settings, &root, "hooks"), Outcome::Removed))
 }
 
 /// Takes our entry out of one event's list, and says whether there was one.
@@ -282,6 +367,14 @@ fn has_our_command(entry: &Value) -> bool {
 }
 
 fn parse(settings: Option<&str>) -> Result<Map<String, Value>, String> {
+    parse_as(settings, CLAUDE_SETTINGS)
+}
+
+/// The same, for a file that is not `.claude/settings.json`.
+///
+/// The name is in the message because a user told "it is not a JSON object"
+/// about an unnamed file has two candidates to go and look at.
+fn parse_as(settings: Option<&str>, file: &str) -> Result<Map<String, Value>, String> {
     let Some(settings) = settings else {
         return Ok(Map::new());
     };
@@ -293,8 +386,8 @@ fn parse(settings: Option<&str>) -> Result<Map<String, Value>, String> {
 
     match serde_json::from_str::<Value>(settings) {
         Ok(Value::Object(map)) => Ok(map),
-        Ok(_) => Err(format!("`{CLAUDE_SETTINGS}` is not a JSON object")),
-        Err(error) => Err(format!("`{CLAUDE_SETTINGS}` is not valid JSON: {error}")),
+        Ok(_) => Err(format!("`{file}` is not a JSON object")),
+        Err(error) => Err(format!("`{file}` is not valid JSON: {error}")),
     }
 }
 
@@ -302,9 +395,17 @@ fn object_at<'a>(
     root: &'a mut Map<String, Value>,
     key: &str,
 ) -> Result<&'a mut Map<String, Value>, String> {
+    object_at_in(root, key, CLAUDE_SETTINGS)
+}
+
+fn object_at_in<'a>(
+    root: &'a mut Map<String, Value>,
+    key: &str,
+    file: &str,
+) -> Result<&'a mut Map<String, Value>, String> {
     let slot = root.entry(key.to_owned()).or_insert_with(|| json!({}));
     slot.as_object_mut()
-        .ok_or_else(|| format!("`{key}` in `{CLAUDE_SETTINGS}` is not an object"))
+        .ok_or_else(|| format!("`{key}` in `{file}` is not an object"))
 }
 
 fn array_at<'a>(
@@ -323,12 +424,12 @@ fn array_at<'a>(
 /// file that does gets [`weave`], and falls back to rendering only if the text
 /// turns out to be a shape that cannot be edited in place — which loses the
 /// user's layout and is still better than refusing to install.
-fn written(settings: Option<&str>, root: &Map<String, Value>) -> String {
+fn written(settings: Option<&str>, root: &Map<String, Value>, key: &str) -> String {
     let Some(source) = settings.filter(|text| !text.trim().is_empty()) else {
         return render(root);
     };
 
-    weave(source, root.get("hooks")).unwrap_or_else(|| render(root))
+    weave(source, key, root.get(key)).unwrap_or_else(|| render(root))
 }
 
 /// Puts `hooks` back into the user's own text, touching nothing else.
@@ -344,7 +445,7 @@ fn written(settings: Option<&str>, root: &Map<String, Value>) -> String {
 /// Returns `None` when the text is not a shape this can edit safely, and the
 /// caller falls back to rendering the whole document — which is worse and
 /// still correct.
-fn weave(source: &str, hooks: Option<&Value>) -> Option<String> {
+fn weave(source: &str, key: &str, hooks: Option<&Value>) -> Option<String> {
     let parsed = jsonc_parser::parse_to_ast(
         source,
         &jsonc_parser::CollectOptions::default(),
@@ -358,7 +459,7 @@ fn weave(source: &str, hooks: Option<&Value>) -> Option<String> {
     let existing = root
         .properties
         .iter()
-        .find(|property| property.name.as_str() == "hooks");
+        .find(|property| property.name.as_str() == key);
 
     match (existing, hooks) {
         (Some(property), Some(value)) => {
@@ -398,7 +499,9 @@ fn weave(source: &str, hooks: Option<&Value>) -> Option<String> {
             edited.push_str(separator);
             edited.push('\n');
             edited.push_str(&indent);
-            edited.push_str("\"hooks\": ");
+            edited.push('"');
+            edited.push_str(key);
+            edited.push_str("\": ");
             edited.push_str(&reindented(value, &indent));
             edited.push('\n');
             edited.push_str(source.get(close..)?);
@@ -603,6 +706,8 @@ mod tests {
                     "PreToolUse":[{{"matcher":"Write","hooks":[
                         {{"type":"command","command":"{command}"}}]}}],
                     "Stop":[{{"hooks":[
+                        {{"type":"command","command":"{command}"}}]}}],
+                    "SessionStart":[{{"hooks":[
                         {{"type":"command","command":"{command}"}}]}}]}}}}"#
             );
 
@@ -888,6 +993,8 @@ mod tests {
             "PreToolUse":[{"matcher":"Write","hooks":[
                 {"type":"command","command":"archwarden hook claude-code","timeout":5}]}],
             "Stop":[{"hooks":[
+                {"type":"command","command":"archwarden hook claude-code"}]}],
+            "SessionStart":[{"hooks":[
                 {"type":"command","command":"archwarden hook claude-code"}]}]}}"#;
 
         let (written, outcome) = install(Some(edited), HOOK_COMMAND).expect("installs");
@@ -1061,6 +1168,64 @@ mod tests {
         assert!(
             !removed.contains("archwarden"),
             "one of ours survived: {removed}"
+        );
+    }
+
+    /// Each event is decided on its own, and a settings file carrying some of
+    /// them gains the rest.
+    ///
+    /// A shared flag made the pre-write entry get pushed a second time
+    /// whenever only the stop one was missing — an entry duplicated is every
+    /// write checked twice. The inverse is the one this pins: two of three
+    /// present must read as `Installed`, not as `AlreadyInstalled`, or a
+    /// project upgrading from a build with fewer events silently never gains
+    /// the new one.
+    #[test]
+    fn a_settings_file_missing_one_event_gains_it_rather_than_reading_as_done() {
+        for absent in ["PreToolUse", "Stop", "SessionStart"] {
+            let mut hooks = serde_json::Map::new();
+            for event in ["PreToolUse", "Stop", "SessionStart"] {
+                if event == absent {
+                    continue;
+                }
+                hooks.insert(
+                    event.to_owned(),
+                    json!([{"hooks":[{"type":"command","command": HOOK_COMMAND}]}]),
+                );
+            }
+            let settings = Value::Object(hooks);
+            let settings = format!(r#"{{"hooks":{settings}}}"#);
+
+            let (written, outcome) = install(Some(&settings), HOOK_COMMAND).expect("installs");
+
+            assert_eq!(outcome, Outcome::Installed, "{absent} was missing");
+            let parsed: Value = serde_json::from_str(&written).expect("valid JSON");
+            assert!(
+                parsed["hooks"][absent].is_array(),
+                "{absent} was not added back: {written}"
+            );
+        }
+    }
+
+    /// And all three present is the only shape that reads as done.
+    #[test]
+    fn every_event_present_is_the_only_shape_that_changes_nothing() {
+        let settings = format!(
+            r#"{{"hooks":{{
+                "PreToolUse":[{{"matcher":"Write","hooks":[
+                    {{"type":"command","command":"{HOOK_COMMAND}"}}]}}],
+                "Stop":[{{"hooks":[
+                    {{"type":"command","command":"{HOOK_COMMAND}"}}]}}],
+                "SessionStart":[{{"hooks":[
+                    {{"type":"command","command":"{HOOK_COMMAND}"}}]}}]}}}}"#
+        );
+
+        let (written, outcome) = install(Some(&settings), HOOK_COMMAND).expect("installs");
+
+        assert_eq!(outcome, Outcome::AlreadyInstalled);
+        assert_eq!(
+            written, settings,
+            "unchanged means unchanged, byte for byte"
         );
     }
 }

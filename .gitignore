@@ -19,6 +19,16 @@ target/
 # Personal tooling, not required to work on this project
 .ai-jail
 
+# Claude Code's per-machine settings. `.claude/settings.json` IS committed --
+# it carries the session hook that sweeps what a previous session left, and a
+# hook that only exists on one machine is a hook nobody else benefits from.
+# This one is the personal half: permission allowlists that name one person's
+# habits.
+.claude/settings.local.json
+
+# Python bytecode from the scripts' own tests.
+__pycache__/
+
 # Editors
 .idea/
 .vscode/

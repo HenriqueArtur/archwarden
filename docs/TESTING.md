@@ -37,6 +37,46 @@ directories. Live in `crates/archwarden-cli/tests/`.
   part of PR review.
 - **Speed**: full integration suite under 60 seconds.
 
+### The drift guard, across every surface
+
+archwarden has five surfaces now: the CLI, the pre-write hook, the end-of-turn
+hook, the session hook, and MCP — plus a Node binding over the binary. They ask
+the same questions of a repository, and **drift between them is this project's
+recurring failure**, not a hypothetical one. Issue #55 was exactly that: the
+pre-write hook had grown its own copy of the loading path, the copy was missing
+the version guard, and a config from a future version parsed into one with no
+rules, compiled, matched nothing, and permitted every write. The gate did not
+fail; it evaporated.
+
+The tests that existed for it could not have caught it. They asserted the
+*sentence* a broken config produces, and a surface with its own loading path
+never calls the function that produces it — every one of them would have stayed
+green.
+
+So each surface is driven **from outside the process**, against a repository
+whose config this build cannot read, and **in a pair**:
+
+| half | proves |
+|---|---|
+| version 0 | the surface does the thing at all |
+| version 99 | it stops |
+
+Without the first, the second passes for a surface that never worked. The stop
+hook is why the pairing is not optional: silence is its correct answer to a
+broken config, so only a version-0 half that *does* report something makes the
+silence mean anything.
+
+Two more assertions hold surfaces against each other directly, which is
+stronger than holding each against a copy of the expected shape:
+
+- `describe` through MCP is asserted **byte-identical** to
+  `describe --format json`.
+- `check_write` through MCP and the pre-write hook are asserted to reach the
+  same verdict about the same write.
+
+A sixth surface belongs in that table on the day it is added, and the pair is
+the cheapest part of writing one.
+
 ### Tier 3 — Differential tests
 
 Run archwarden and a reference tool (initially `dependency-cruiser`) over

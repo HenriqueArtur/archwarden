@@ -17,6 +17,82 @@ saying so.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-08-13
+
+Three surfaces onto the same operations, and the boundary corrected so they
+really are the same ones. **No existing configuration reports anything new.**
+
+### Added
+
+- **An MCP server, over stdio** (#65). `archwarden mcp` speaks JSON-RPC on its
+  pipes — no port, no daemon, nothing listening — and `install-hooks
+  --claude-code` now writes a committable `.mcp.json` beside the hooks, naming
+  the same binary they do. The tool that earns it is `check_write(path,
+  content)`: it existed already and was reachable only through the pre-write
+  hook, which means only *reactively* — the agent writes, and is denied.
+  Through MCP it can ask **would this pass?** before writing. `describe` and
+  `scaffold` are there too. The server re-reads the configuration on every
+  call, because a long-lived process that prepared its rules at startup would
+  answer from a config the user has since edited.
+
+- **A `SessionStart` hook that injects the module map** (#66). Installed by
+  `install-hooks --claude-code`, with **no matcher** — it fires on a new
+  session, a resume, a clear, a fork, and after compaction, which is the case
+  it exists for and the one where the rules leave the context with nobody
+  noticing. What goes in is a pointer rather than the guide: the module names,
+  the sentence each author wrote about theirs, and the commands that answer the
+  rest. A long block is the first thing compaction drops.
+
+- **A programmatic binding, for architecture claims that live in the test
+  suite** (#73). `import { check } from "archwarden"` runs the binary and hands
+  back findings for the test framework to assert on — no fluent DSL, because
+  that would be a second way to express a rule and a second thing that can
+  drift from the first. It reads the repository's own `arch.config.json`,
+  filtered by `rules`, `paths` or `level`, so the rules stay declarative and in
+  one file and the test asserts a subset of them. Types ship with it.
+
+  A rule id no rule has is an error rather than an empty result: a typo that
+  came back clean would be a test that passes for the wrong reason, and goes on
+  passing after the rule is deleted.
+
+### Changed
+
+- **The agent-facing operations moved into `archwarden-api`** — `describe`,
+  `scaffold`, the `agent-guide` digest, the module map, and the whole judgement
+  of a write rather than the engine call inside it. Decision 20 said the crate
+  held the operations every surface goes through; it held the ones `check`
+  needs, because `check` was the only surface when it was written. Decision 22
+  records the correction and what it cost. Nothing a user runs behaves
+  differently.
+
+- **MCP is its own crate**, depending on `archwarden-api` and unable to see
+  `archwarden-cli`. The binary is still one. A rule that holds because nobody
+  has broken it yet is not holding — the workspace denied `print_stderr` for
+  years and never caught `prepare()`.
+
+- **`cargo xtask clean` is the last step of a release**, and a `SessionStart`
+  hook in this repository's own `.claude/settings.json` sweeps what a previous
+  session left. 0.18 filled the disk of the machine it was built on and froze
+  it; the recovery was deleting `target/` by hand to free enough space to save
+  the session's transcript. `docs/RELEASING.md` says so and says why `--deps`
+  is right there and nowhere else.
+
+### Fixed
+
+- **Every surface is now tested against a config this build cannot read.**
+  Issue #55 — a future config parsing into one with no rules, compiling,
+  matching nothing, and permitting every write — was covered only by unit tests
+  on the *sentence* a broken config produces. A surface that grew its own
+  loading path, which is exactly what #55 was, would never have called them:
+  all of them would have stayed green while the gate evaporated. Each surface
+  is now driven from outside the process against a version-99 repository, in a
+  pair with a version-0 half that proves the surface works at all.
+
+- Twelve rule kinds and shapes that no test reached — `no-passthrough`,
+  `import-cycle`, import allowlists, `frontmatter` keys, `presence` patterns,
+  folder-name constraints — are covered. The gap was invisible under the
+  workspace's 95% floor and surfaced when the code moved to a crate held at 99.
+
 ## [0.17.0] — 2026-08-12
 
 Nothing unwatched. Three answers to one question — *what is nobody
@@ -1586,7 +1662,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.16.0...v0.17.0
 [0.16.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.15.0...v0.16.0
 [0.15.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.14.0...v0.15.0

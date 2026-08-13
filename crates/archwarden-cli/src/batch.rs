@@ -43,7 +43,7 @@ pub fn expand(
         // One file, named exactly: `--to` is the whole destination path, which
         // is what makes a rename during a move expressible at all.
         Sources::One(file) => {
-            let to = crate::describe::repo_relative(root, working_directory, destination)?;
+            let to = archwarden_api::describe::repo_relative(root, working_directory, destination)?;
             return Ok(vec![(file, to)]);
         }
         Sources::Many(matched) => matched,
@@ -108,7 +108,7 @@ fn sources(
         return Ok(Sources::Many(matched));
     }
 
-    let path = crate::describe::repo_relative(root, working_directory, source)?;
+    let path = archwarden_api::describe::repo_relative(root, working_directory, source)?;
     if root.join(path.as_path()).is_dir() {
         let mut matched: Vec<(RepoRelPath, RepoRelPath)> = tree
             .files()

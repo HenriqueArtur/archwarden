@@ -88,7 +88,7 @@ pub fn impact(
     relative_imports: usize,
 ) -> Impact {
     let at = |path: &RepoRelPath| -> Vec<String> {
-        crate::describe::describe(config, path)
+        archwarden_api::describe::describe(config, path)
             .into_iter()
             .map(|applies| applies.rule.id.as_str().to_owned())
             .collect()

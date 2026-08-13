@@ -49,6 +49,13 @@ pub enum Event {
     /// the group illegal until the whole group exists, so no order passes.
     /// This is where that class is caught. Issue #61.
     Stop,
+    /// A session is starting, resuming, or coming back from compaction.
+    ///
+    /// The reason to answer this at all is that last one. Compaction is where
+    /// the rules leave the context with nobody noticing — a `CLAUDE.md`
+    /// reference survives it because the file is re-read, and content already
+    /// injected does not. Issue #66.
+    SessionStart,
     /// Something this build has no answer for.
     Other,
 }
@@ -67,9 +74,19 @@ pub fn event(payload: &str) -> Event {
     match parsed.get("hook_event_name").and_then(Value::as_str) {
         None | Some(EVENT) => Event::PreToolUse,
         Some("Stop") => Event::Stop,
+        Some(SESSION_EVENT) => Event::SessionStart,
         Some(_) => Event::Other,
     }
 }
+
+/// The event a session announces itself with.
+///
+/// Read from the Claude Code build this was written against rather than
+/// assumed, along with the five values its `source` field takes —
+/// `startup`, `resume`, `clear`, `compact` and `fork`. Issue #66 asked for
+/// exactly that, because a matcher naming an event that does not exist
+/// installs cleanly and fires never.
+pub const SESSION_EVENT: &str = "SessionStart";
 
 /// What the payload had to say about a file.
 ///
@@ -213,44 +230,40 @@ pub fn respond(decision: &Decision) -> String {
     format!("{response}\n")
 }
 
-/// Whether this write is fixing the thing the finding is about.
+/// Renders what a session is told, in Claude Code's hook protocol.
 ///
-/// A `presence` rule requiring several files makes every one of them illegal
-/// until all of them exist: writing the first is refused for the absence of the
-/// second, the second for the absence of the third, and no order passes. The
-/// directory cannot be created at all. Issue #57.
+/// `additionalContext` is the field that reaches the model. Measured rather
+/// than assumed: a hook returning it was given a marker no other channel could
+/// have carried, and the model quoted it back.
 ///
-/// The write is not what is wrong there. Writing `projeto.md` violates nothing
-/// — the *directory* is incomplete, and it was incomplete before the write and
-/// is less so after. Refusing it attributes a directory's fault to a file, and
-/// refuses the write that improves the state, which is #55 one layer up.
-///
-/// So a write supplying one of the required files is **progress**, and passes
-/// with a note. A write that supplies none of them leaves the directory exactly
-/// as broken as it found it, and is refused as before — which is what keeps
-/// this from being a way to switch `presence` off.
-///
-/// Only findings about a missing *required file* qualify. `spec-pair` has an
-/// order that works — the spec first, which is what a TDD gate is for — and a
-/// `structure` violation is caused by the write rather than pre-existing it.
+/// A configuration this build cannot read goes to `systemMessage` instead,
+/// which the documentation describes as *shown to the user*. That is the right
+/// reader for it — the user is who can fix a broken config, and the model would
+/// carry the sentence in every session until they did, unable to act on it.
 #[must_use]
-pub fn is_progress(finding: &archwarden_core::finding::Finding, written: &str) -> bool {
-    use archwarden_core::finding::Expectation;
+pub fn session(context: Option<&str>, problem: Option<&str>) -> String {
+    let mut response = json!({});
 
-    let Expectation::RequiredFiles { names, patterns } = &finding.expected else {
-        return false;
-    };
-
-    if names.iter().any(|name| name == written) {
-        return true;
+    if let (Some(context), Some(object)) = (context, response.as_object_mut()) {
+        object.insert(
+            "hookSpecificOutput".to_owned(),
+            json!({
+                "hookEventName": SESSION_EVENT,
+                "additionalContext": context,
+            }),
+        );
     }
 
-    // Compiled with the engine that compiled the rule, so this cannot disagree
-    // with `check` about whether a name satisfies the pattern.
-    patterns.iter().any(|pattern| {
-        archwarden_core::pattern::Pattern::compile(pattern)
-            .is_ok_and(|compiled| compiled.is_match(written))
-    })
+    if let (Some(problem), Some(object)) = (problem, response.as_object_mut()) {
+        object.insert(
+            "systemMessage".to_owned(),
+            Value::String(format!(
+                "archwarden did not put its rules in this session: {problem}."
+            )),
+        );
+    }
+
+    format!("{response}\n")
 }
 
 /// What a write is still short of, when the write itself is fine.
@@ -389,56 +402,23 @@ pub fn explain(
 
 /// Why the hook formed no opinion about a write, in the words it says it in.
 ///
-/// The hook cannot report a config problem the way `check` does — it must
-/// answer in JSON and exit clean, where `check` writes a miette report to
-/// stderr and exits 2. That difference used to be enough to make this surface
-/// re-implement the whole of `prepare()` rather than reuse it, and the missing
-/// version guard of issue #55 was in the copy.
+/// One call, into [`archwarden_api::Error::unreadable`]. It was five arms
+/// written out here, beside a re-implementation of the whole loading path,
+/// because the shared `prepare()` reported failure by writing a miette report
+/// to stderr and a hook must answer in JSON and exit clean. The copy was
+/// missing the version guard, and that shipped as issue #55: a config from a
+/// future version parsed into one with no rules, compiled, matched nothing,
+/// and permitted every write.
 ///
-/// This is what the difference costs now: one function, matching on the value
-/// the shared operation returned. A stage added later cannot go unhandled here
-/// — [`archwarden_api::Error`] is `non_exhaustive`, so it lands in the final
-/// arm and the write is still reported as unchecked.
+/// The sentences moved to the crate both this and MCP depend on in 0.18, so
+/// two surfaces cannot describe one broken config differently.
 ///
-/// No sentence here ends in "so this write was not checked against any rule".
+/// No sentence there ends in "so this write was not checked against any rule".
 /// The caller already says that, and saying it twice in one line was what four
 /// separately-written messages had drifted into.
 #[must_use]
 pub fn unexamined(error: &archwarden_api::Error) -> String {
-    match error {
-        archwarden_api::Error::Load(archwarden_config::discovery::LoadError::NotFound {
-            ..
-        }) => "no archwarden config was found from here".to_owned(),
-
-        // Found, and unusable. Distinct from the arm above because the two
-        // send a user to different places: one to `archwarden init`, the other
-        // to the file they just edited.
-        archwarden_api::Error::Load(_) => {
-            "the config could not be read — `archwarden config validate` names the problem"
-                .to_owned()
-        }
-
-        archwarden_api::Error::UnsupportedVersion {
-            declared,
-            understood,
-            ..
-        } => format!(
-            "the config declares version {declared}, which this build does not understand \
-             (it reads version {understood})"
-        ),
-
-        archwarden_api::Error::Extends(_) => {
-            "the config could not be assembled (a preset it extends is missing, invalid, \
-             or loops)"
-                .to_owned()
-        }
-
-        archwarden_api::Error::Compile(_) => {
-            "the config did not compile — `archwarden config validate` names the problem".to_owned()
-        }
-
-        _ => "the config could not be prepared".to_owned(),
-    }
+    error.unreadable()
 }
 
 #[cfg(test)]
@@ -859,121 +839,24 @@ mod tests {
     /// An event this build does not know is not guessed at. A harness that
     /// grows a new event would otherwise have it answered as though it were a
     /// write.
+    ///
+    /// It named `SessionStart` until 0.18, which is the point: an event moves
+    /// from unknown to answered by being implemented, and the arm that catches
+    /// the rest has to keep being exercised by one that genuinely is unknown.
     #[test]
     fn an_event_this_build_does_not_know_is_named_as_such() {
-        assert_eq!(event(r#"{"hook_event_name":"SessionStart"}"#), Event::Other);
+        assert_eq!(event(r#"{"hook_event_name":"PostCompact"}"#), Event::Other);
     }
-    /// Issue #57. A `presence` rule requiring several files makes every one of
-    /// them illegal until all of them exist, so no write order passes and the
-    /// directory cannot be created at all.
-    ///
-    /// The rigorous reading, and the one implemented: **a write passes while it
-    /// is fixing the problem.** Judged by what the write does, not by the state
-    /// it lands in — the same correction as #55, one layer up.
-    #[test]
-    fn a_write_that_supplies_a_required_file_is_progress() {
-        let missing = |name: &str| Finding {
-            rule_id: RuleId::new("tem-os-tres").expect("valid"),
-            module_id: None,
-            level: Level::Error,
-            path: RepoRelPath::new("projetos/02-novo").expect("valid"),
-            span: None,
-            observed: Observed::RequiredFileMissing {
-                name: name.to_owned(),
-            },
-            expected: Expectation::RequiredFiles {
-                names: vec![
-                    "projeto.md".to_owned(),
-                    "exercicios.md".to_owned(),
-                    "diagram.json".to_owned(),
-                ],
-                patterns: Vec::new(),
-            },
-        };
 
-        assert!(
-            is_progress(&missing("exercicios.md"), "projeto.md"),
-            "writing one of the required files is fixing the directory"
-        );
-        assert!(
-            is_progress(&missing("diagram.json"), "exercicios.md"),
-            "and so is the second one"
+    /// And `SessionStart` is now one it does know. Issue #66.
+    #[test]
+    fn a_session_starting_is_its_own_event() {
+        assert_eq!(
+            event(r#"{"hook_event_name":"SessionStart","source":"compact"}"#),
+            Event::SessionStart
         );
     }
 
-    /// A write that ignores the problem is still refused. This is the half that
-    /// keeps the relaxation from being a way to switch `presence` off.
-    #[test]
-    fn a_write_that_ignores_the_missing_files_is_not_progress() {
-        let finding = Finding {
-            rule_id: RuleId::new("tem-os-tres").expect("valid"),
-            module_id: None,
-            level: Level::Error,
-            path: RepoRelPath::new("projetos/01-blink").expect("valid"),
-            span: None,
-            observed: Observed::RequiredFileMissing {
-                name: "diagram.json".to_owned(),
-            },
-            expected: Expectation::RequiredFiles {
-                names: vec!["projeto.md".to_owned(), "diagram.json".to_owned()],
-                patterns: Vec::new(),
-            },
-        };
-
-        assert!(
-            !is_progress(&finding, "rascunho.md"),
-            "a file the rule never asked for leaves the directory as broken as it was"
-        );
-    }
-
-    /// A `require_any` entry is a regex, and a file matching one is progress
-    /// the same way a named file is.
-    #[test]
-    fn a_write_matching_a_required_pattern_is_progress() {
-        let finding = Finding {
-            rule_id: RuleId::new("tem-um-ino").expect("valid"),
-            module_id: None,
-            level: Level::Error,
-            path: RepoRelPath::new("projetos/02-novo/sketch").expect("valid"),
-            span: None,
-            observed: Observed::NoFileMatching {
-                pattern: r"\.ino$".to_owned(),
-            },
-            expected: Expectation::RequiredFiles {
-                names: Vec::new(),
-                patterns: vec![r"\.ino$".to_owned()],
-            },
-        };
-
-        assert!(is_progress(&finding, "sketch.ino"));
-        assert!(!is_progress(&finding, "leiame.md"));
-    }
-
-    /// Every other rule keeps denying. `spec-pair` has an order that works —
-    /// the spec first, which is the whole point of a TDD gate — and a
-    /// `structure` violation is caused by the write rather than pre-existing
-    /// it.
-    #[test]
-    fn a_finding_that_is_not_about_a_missing_file_is_never_progress() {
-        let finding = Finding {
-            rule_id: RuleId::new("usecase-name").expect("valid"),
-            module_id: None,
-            level: Level::Error,
-            path: RepoRelPath::new("src/user/create.use-case.ts").expect("valid"),
-            span: None,
-            observed: Observed::ExportMissing {
-                name: "Create".to_owned(),
-            },
-            expected: Expectation::RequiredExport {
-                kind: KindFilter::Any,
-                name: "Create".to_owned(),
-                annotation: Vec::new(),
-                signature_hint: None,
-            },
-        };
-
-        assert!(!is_progress(&finding, "create.use-case.ts"));
-    }
     /// The note a progress write carries says what is still missing, which is
     /// what the agent has to write next. "would break these rules" is false
     /// about a write that is fixing the directory. Issue #57.

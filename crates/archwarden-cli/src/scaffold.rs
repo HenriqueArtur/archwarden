@@ -1,285 +1,12 @@
-//! `archwarden scaffold <path>` — the smallest shape that would satisfy the rules.
+//! `archwarden scaffold <path>` — writing out the shape.
 //!
-//! `describe` answers rule by rule. An agent about to write a file does not
-//! think rule by rule: it wants one list of exports, one list of siblings, one
-//! list of import constraints. This is the same expectations, transposed.
-//!
-//! Not a code generator. It emits structural requirements, and the signature
-//! it shows comes from `signature_hint`, which the config author writes and
-//! archwarden never verifies (`RULES.md`).
+//! The operation moved to [`archwarden_api::scaffold`] in 0.18, and what is
+//! left here is this surface's half: the terminal prose, and the call that
+//! turns the shared JSON envelope into bytes. Same split as
+//! [`crate::describe`], for the same reason.
 
-use archwarden_core::{
-    compiled::CompiledConfig,
-    facts::{ExportKind, KindFilter},
-    finding::Expectation,
-    path::RepoRelPath,
-};
-use serde::Serialize;
-
-/// The version of the `scaffold` JSON shape.
-pub const SCAFFOLD_VERSION: u32 = 0;
-
-/// Everything the rules require of one path, grouped by what it is about.
-#[derive(Debug, Default, Serialize)]
-pub struct Scaffold {
-    /// Exports the file must carry.
-    pub required_exports: Vec<RequiredExport>,
-    /// Files that must exist beside it.
-    pub required_siblings: Vec<RequiredSibling>,
-    /// Import globs it may not reach, one entry per glob.
-    pub forbidden_imports: Vec<ImportConstraint>,
-    /// Import globs at least one of its imports must match.
-    pub required_imports: Vec<ImportConstraint>,
-    /// Symbols it must call.
-    pub call_obligations: Vec<CallObligation>,
-    /// Patterns its filename must match.
-    ///
-    /// Not in the shape `AGENT-INTEGRATION.md` sketched. Left out, an agent
-    /// scaffolding a path whose *name* is already wrong would be told
-    /// everything except the thing it has to fix first. Correction C11.
-    pub filename_patterns: Vec<String>,
-    /// When asked about a directory: what *this* directory may be called.
-    ///
-    /// The same argument as [`filename_patterns`](Self::filename_patterns),
-    /// which was correction C11: an agent scaffolding a path whose name is
-    /// already wrong would be told everything except the thing it has to fix
-    /// first. That argument was made for files and not carried to folders, so
-    /// `scaffold` handed back a shape to build at a path `check` refuses —
-    /// and following the answer produced a directory that failed on the next
-    /// run.
-    pub folder_name: Option<AllowedSubfolders>,
-    /// When asked about a directory: what may live inside it.
-    pub allowed_subfolders: Option<AllowedSubfolders>,
-    /// When asked about a directory: what must live inside it.
-    ///
-    /// Always present, even when empty, unlike `allowed_subfolders`. That one
-    /// distinguishes "nothing constrains this directory" from "these folders
-    /// are allowed"; here an empty list already says what there is to say, and
-    /// a consumer reading two lists should not have to unwrap one of them.
-    #[serde(default)]
-    pub required_files: RequiredFiles,
-}
-
-/// What a directory must contain.
-#[derive(Debug, Default, Serialize)]
-pub struct RequiredFiles {
-    /// Filenames that must be there.
-    pub names: Vec<String>,
-    /// Regexes at least one file must match, one file per entry.
-    pub patterns: Vec<String>,
-}
-
-/// One export the file must carry.
-#[derive(Debug, Serialize)]
-pub struct RequiredExport {
-    /// The name, already rendered from the filename.
-    pub name: String,
-    /// The declaration forms that satisfy the rule, best first. Empty means
-    /// any form will do.
-    pub kinds: Vec<&'static str>,
-    /// The type annotations that satisfy the rule, any one of them. Absent
-    /// when the rule asks for none.
-    ///
-    /// Beside `signature_hint` rather than instead of it: this one is checked
-    /// and that one is not, and collapsing them would make the weaker promise
-    /// look like the stronger one.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub annotation: Vec<String>,
-    /// The signature the config author wrote. Never verified.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub signature_hint: Option<String>,
-}
-
-/// One file that must exist beside this one.
-#[derive(Debug, Serialize)]
-pub struct RequiredSibling {
-    /// Where it goes.
-    pub path: RepoRelPath,
-    /// Extra conditions on its contents, as stable slugs.
-    pub constraints: Vec<&'static str>,
-}
-
-/// One import glob, and the exceptions carved out of it.
-#[derive(Debug, Serialize)]
-pub struct ImportConstraint {
-    /// The glob, matched against the resolved import path.
-    pub pattern: String,
-    /// Exceptions to it.
-    pub except: Vec<String>,
-    /// Whether `import type` counts against it.
-    pub include_type_only: bool,
-}
-
-/// One symbol the file must call.
-#[derive(Debug, Serialize)]
-pub struct CallObligation {
-    /// The callee as it appears at a call site.
-    pub symbol: String,
-    /// The module it must be imported from.
-    pub imported_from: String,
-}
-
-/// What may live inside a directory.
-#[derive(Debug, Serialize)]
-pub struct AllowedSubfolders {
-    /// Names that are permitted.
-    pub allowed: Vec<String>,
-    /// Names permitted but reported as warnings.
-    pub warn: Vec<String>,
-    /// Regexes a name may match instead of being listed. Absent when the rule
-    /// constrains names by enumeration only.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub patterns: Vec<String>,
-}
-
-/// Transposes every expectation that applies to `path` into one shape.
-///
-/// Built on `describe`, not beside it: two walks of the same rules could
-/// disagree, and then an agent following `scaffold` would fail `check`.
-#[must_use]
-pub fn scaffold(config: &CompiledConfig, path: &RepoRelPath) -> Scaffold {
-    let mut shape = Scaffold::default();
-
-    for applies in crate::describe::describe(config, path) {
-        for expectation in applies.expectations {
-            absorb(&mut shape, expectation);
-        }
-    }
-
-    shape
-}
-
-fn absorb(shape: &mut Scaffold, expectation: Expectation) {
-    match expectation {
-        Expectation::RequiredExport {
-            kind,
-            name,
-            annotation,
-            signature_hint,
-        } => shape.required_exports.push(RequiredExport {
-            name,
-            kinds: kinds_of(&kind),
-            annotation,
-            signature_hint,
-        }),
-        Expectation::RequiredSibling {
-            path,
-            non_empty_spec,
-        } => shape.required_siblings.push(RequiredSibling {
-            path,
-            constraints: if non_empty_spec {
-                vec!["non-empty-spec"]
-            } else {
-                Vec::new()
-            },
-        }),
-        // One entry per glob rather than per rule: an agent asks "may I import
-        // this?" about one path at a time, and a list it has to unpack first
-        // is a list it can get wrong.
-        Expectation::ForbiddenImport {
-            patterns,
-            except,
-            include_type_only,
-        } => shape
-            .forbidden_imports
-            .extend(patterns.into_iter().map(|pattern| ImportConstraint {
-                pattern,
-                except: except.clone(),
-                include_type_only,
-            })),
-        // A forbidden package belongs in the same list as a forbidden path: for
-        // someone about to write the file the two are one instruction, "do not
-        // import this". The pattern slot carries the package name, which is
-        // what the rule matches on and what the writer needs to see.
-        Expectation::ForbiddenPackages {
-            packages,
-            except_from,
-            include_type_only,
-        } => shape
-            .forbidden_imports
-            .extend(packages.into_iter().map(|package| ImportConstraint {
-                pattern: package,
-                except: except_from.clone(),
-                include_type_only,
-            })),
-        Expectation::RequiredImport { patterns } => {
-            shape
-                .required_imports
-                .extend(patterns.into_iter().map(|pattern| ImportConstraint {
-                    pattern,
-                    except: Vec::new(),
-                    include_type_only: true,
-                }));
-        }
-        Expectation::RequiredCall {
-            symbol,
-            imported_from,
-        } => shape.call_obligations.push(CallObligation {
-            symbol,
-            imported_from,
-        }),
-        Expectation::FilenamePattern { patterns } => shape.filename_patterns.extend(patterns),
-        // Into the same list as a spec sibling: for someone about to write the
-        // file the two are one instruction, "create this too", and the reason
-        // one of them is derived and the other literal is not their problem.
-        Expectation::RequiredCompanion { path } => shape.required_siblings.push(RequiredSibling {
-            path,
-            constraints: Vec::new(),
-        }),
-        Expectation::RequiredFiles { names, patterns } => {
-            shape.required_files.names.extend(names);
-            shape.required_files.patterns.extend(patterns);
-        }
-        Expectation::AllowedSubfolders {
-            allowed,
-            warn,
-            patterns,
-        } => {
-            shape.allowed_subfolders = Some(AllowedSubfolders {
-                allowed,
-                warn,
-                patterns,
-            });
-        }
-        Expectation::FolderName {
-            allowed,
-            warn,
-            patterns,
-        } => {
-            shape.folder_name = Some(AllowedSubfolders {
-                allowed,
-                warn,
-                patterns,
-            });
-        }
-        // `Expectation` is non_exhaustive. A variant added later is not
-        // something this shape can place, and guessing would be worse than the
-        // omission -- `describe` still reports it in full.
-        _ => {}
-    }
-}
-
-/// The declaration forms a filter accepts, best first.
-///
-/// Empty for `Any`, which is how the renderer knows not to claim a form the
-/// rule never asked for.
-fn kinds_of(kind: &KindFilter) -> Vec<&'static str> {
-    match kind {
-        KindFilter::OneOf(tags) => tags.iter().map(ExportKind::as_str).collect(),
-        // `Any`, and any filter added later: claiming a declaration form the
-        // rule never asked for would have an agent write the wrong one.
-        _ => Vec::new(),
-    }
-}
-
-/// The JSON envelope.
-#[derive(Debug, Serialize)]
-struct JsonScaffold<'a> {
-    version: u32,
-    path: &'a RepoRelPath,
-    #[serde(flatten)]
-    shape: &'a Scaffold,
-}
+use archwarden_api::scaffold::{ImportConstraint, RequiredExport, Scaffold};
+use archwarden_core::path::RepoRelPath;
 
 /// Writes the shape in the requested format.
 pub fn render(
@@ -295,11 +22,7 @@ pub fn render(
 }
 
 fn render_json(path: &RepoRelPath, shape: &Scaffold, out: &mut dyn std::io::Write) {
-    match serde_json::to_string_pretty(&JsonScaffold {
-        version: SCAFFOLD_VERSION,
-        path,
-        shape,
-    }) {
+    match serde_json::to_string_pretty(&archwarden_api::scaffold::envelope(path, shape)) {
         Ok(json) => {
             let _ = writeln!(out, "{json}");
         }
@@ -524,9 +247,10 @@ fn describe_constraint(constraint: &ImportConstraint) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use archwarden_api::scaffold::{AllowedSubfolders, scaffold};
     use archwarden_core::{
-        compiled::{CompiledRule, CompiledRuleKind, SkipDirs},
-        facts::ExportTags,
+        compiled::{CompiledConfig, CompiledRule, CompiledRuleKind, SkipDirs},
+        facts::{ExportKind, ExportTags, KindFilter},
         glob::PathSet,
         hash::ContentHash,
         ids::RuleId,
@@ -534,6 +258,12 @@ mod tests {
         pattern::Pattern,
         scope::Scope,
     };
+
+    const TARGET: &str = "src/user/create-client.use-case.ts";
+
+    fn shape_of(rules: Vec<CompiledRule>) -> Scaffold {
+        scaffold(&config(rules), &path(TARGET))
+    }
 
     fn path(p: &str) -> RepoRelPath {
         RepoRelPath::new(p).expect("valid path")
@@ -606,10 +336,18 @@ mod tests {
         KindFilter::OneOf(ExportTags::only(ExportKind::Function))
     }
 
-    const TARGET: &str = "src/user/create-client.use-case.ts";
-
-    fn shape_of(rules: Vec<CompiledRule>) -> Scaffold {
-        scaffold(&config(rules), &path(TARGET))
+    /// A naming rule that fixes both the name and the annotation, which is the
+    /// shape a discovery-based registry needs (issue #39).
+    fn annotated_naming(annotation: &[&str], kind: KindFilter) -> CompiledRuleKind {
+        CompiledRuleKind::Naming {
+            file_pattern: Pattern::compile(r"^(?<name>[a-z0-9-]+)\.use-case\.ts$")
+                .expect("valid pattern"),
+            dir_pattern: None,
+            name_template: "{{pascal(name)}}".to_owned(),
+            kind,
+            annotation: annotation.iter().map(|a| (*a).to_owned()).collect(),
+            signature_hint: None,
+        }
     }
 
     fn rendered(rules: Vec<CompiledRule>, format: crate::report::Format) -> String {
@@ -618,133 +356,6 @@ mod tests {
         let mut out = Vec::new();
         render(&target, &shape, format, &mut out);
         String::from_utf8(out).expect("output is UTF-8")
-    }
-
-    /// The transposition, which is the whole job: three rules become one list
-    /// of exports, one of siblings, one of import constraints.
-    #[test]
-    fn expectations_from_several_rules_land_in_one_shape() {
-        let shape = shape_of(vec![
-            rule("name", &["src/*"], naming(None, function_kind())),
-            rule("spec", &["src/*"], spec_pair()),
-            rule(
-                "boundary",
-                &["src/**"],
-                boundary(
-                    &["src/infra/**"],
-                    &["src/telemetry/**"],
-                    &["src/infra/types/**"],
-                ),
-            ),
-        ]);
-
-        assert_eq!(shape.required_exports.len(), 1);
-        assert_eq!(
-            shape.required_exports.first().map(|e| e.name.as_str()),
-            Some("CreateClient")
-        );
-        assert_eq!(
-            shape.required_siblings.first().map(|s| s.path.as_str()),
-            Some("src/user/create-client.use-case.spec.ts")
-        );
-        assert_eq!(
-            shape
-                .required_siblings
-                .first()
-                .map(|s| s.constraints.as_slice()),
-            Some(["non-empty-spec"].as_slice())
-        );
-        assert_eq!(
-            shape.forbidden_imports.first().map(|c| c.pattern.as_str()),
-            Some("src/infra/**")
-        );
-        assert_eq!(
-            shape.forbidden_imports.first().map(|c| c.except.as_slice()),
-            Some(["src/infra/types/**".to_owned()].as_slice())
-        );
-        assert_eq!(
-            shape.required_imports.first().map(|c| c.pattern.as_str()),
-            Some("src/telemetry/**")
-        );
-    }
-
-    /// A forbidden package sits in the same list as a forbidden path. For
-    /// someone about to write the file the two are one instruction — "do not
-    /// import this" — and splitting them would make an agent consult two lists
-    /// to answer one question.
-    #[test]
-    fn a_forbidden_package_lands_beside_the_forbidden_paths() {
-        let shape = shape_of(vec![rule(
-            "three-is-quarantined",
-            &["src/**"],
-            CompiledRuleKind::ImportBoundary {
-                forbid: set(&["src/infra/**"]),
-                groups: Vec::new(),
-                allow: None,
-                allow_packages: None,
-                require: PathSet::default(),
-                forbid_packages: vec!["three".to_owned()],
-                forbid_reaching: PathSet::default(),
-                except: PathSet::default(),
-                except_from: set(&["src/scripts/three/**"]),
-                include_type_only: true,
-            },
-        )]);
-
-        let patterns: Vec<_> = shape
-            .forbidden_imports
-            .iter()
-            .map(|c| c.pattern.as_str())
-            .collect();
-        assert_eq!(
-            patterns,
-            ["src/infra/**", "three"],
-            "the package name is what the rule matches on, so it is what is shown"
-        );
-        assert_eq!(
-            shape.forbidden_imports.last().map(|c| c.except.as_slice()),
-            Some(["src/scripts/three/**".to_owned()].as_slice()),
-            "and the one directory allowed travels with it"
-        );
-    }
-
-    /// One entry per glob, not per rule. An agent asks "may I import this?"
-    /// about one path at a time, and a list it has to unpack first is a list
-    /// it can get wrong.
-    #[test]
-    fn a_rule_with_several_globs_becomes_several_entries() {
-        let shape = shape_of(vec![rule(
-            "boundary",
-            &["src/**"],
-            boundary(&["src/infra/**", "src/db/**"], &[], &["src/infra/types/**"]),
-        )]);
-
-        let patterns: Vec<_> = shape
-            .forbidden_imports
-            .iter()
-            .map(|c| c.pattern.as_str())
-            .collect();
-        assert_eq!(patterns, ["src/infra/**", "src/db/**"]);
-        assert!(
-            shape.forbidden_imports.iter().all(|c| !c.except.is_empty()),
-            "the exception travels with every glob it applies to"
-        );
-    }
-
-    /// `scaffold` is built on `describe`, so `ignore` wins here too. An agent
-    /// told to satisfy a rule that will never fire is worse off than one told
-    /// nothing.
-    #[test]
-    fn an_ignored_path_is_unconstrained() {
-        let config = CompiledConfig::new(
-            vec![rule("name", &["src/*"], naming(None, function_kind()))],
-            set(&["src/legacy/**"]),
-            SkipDirs::default(),
-            ContentHash::of(b"scaffold"),
-        );
-
-        let shape = scaffold(&config, &path("src/legacy/old.use-case.ts"));
-        assert!(shape.required_exports.is_empty());
     }
 
     /// The line an agent can paste, with the author's hint used as the
@@ -764,72 +375,6 @@ mod tests {
             text.contains("export function CreateClient(deps: Deps): UseCase<In, Out>"),
             "{text}"
         );
-    }
-
-    /// Issue #45. `scaffold projetos/17-nova/projeto.md` naming `notas.md` is
-    /// what stops the pair being half-written in the first place -- the whole
-    /// failure is that nobody notices the missing half.
-    #[test]
-    fn a_pair_rule_lists_the_companion_to_create() {
-        let shape = scaffold(
-            &config(vec![rule(
-                "licao-tem-notas",
-                &["projetos/*"],
-                CompiledRuleKind::Pair {
-                    file_pattern: Pattern::compile(r"^projeto\.md$").expect("valid"),
-                    must_exist: "notas.md".to_owned(),
-                },
-            )]),
-            &path("projetos/17-nova/projeto.md"),
-        );
-
-        assert_eq!(
-            shape
-                .required_siblings
-                .iter()
-                .map(|sibling| sibling.path.as_str())
-                .collect::<Vec<_>>(),
-            ["projetos/17-nova/notas.md"]
-        );
-    }
-
-    /// Issue #42 names this as the command that makes the rule worth having:
-    /// `scaffold projetos/17-nova` printing the filenames is how a unit of
-    /// work gets started, which puts archwarden before the writing rather than
-    /// after it.
-    #[test]
-    fn a_presence_rule_lists_the_files_to_create() {
-        let shape = scaffold(
-            &config(vec![rule(
-                "licao-completa",
-                &["projetos/*"],
-                CompiledRuleKind::Presence {
-                    require: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
-                    require_any: vec![Pattern::compile(r"\.ino$").expect("valid")],
-                },
-            )]),
-            &path("projetos/17-nova"),
-        );
-
-        assert_eq!(
-            shape.required_files.names,
-            ["projeto.md".to_owned(), "notas.md".to_owned()]
-        );
-        assert_eq!(shape.required_files.patterns, [r"\.ino$".to_owned()]);
-    }
-
-    /// A naming rule that fixes both the name and the annotation, which is the
-    /// shape a discovery-based registry needs (issue #39).
-    fn annotated_naming(annotation: &[&str], kind: KindFilter) -> CompiledRuleKind {
-        CompiledRuleKind::Naming {
-            file_pattern: Pattern::compile(r"^(?<name>[a-z0-9-]+)\.use-case\.ts$")
-                .expect("valid pattern"),
-            dir_pattern: None,
-            name_template: "{{pascal(name)}}".to_owned(),
-            kind,
-            annotation: annotation.iter().map(|a| (*a).to_owned()).collect(),
-            signature_hint: None,
-        }
     }
 
     /// The payoff of `annotation` being *checked* rather than suggested: the
@@ -876,43 +421,6 @@ mod tests {
             text.contains("export class CreateClient implements UseCaseModule { ... }"),
             "{text}"
         );
-    }
-
-    /// An agent reads the JSON, so the requirement has to be in it -- and
-    /// beside `signature_hint`, not instead of it, because the two make
-    /// different promises.
-    #[test]
-    fn the_required_annotation_reaches_the_json() {
-        let text = rendered(
-            vec![rule(
-                "contract",
-                &["src/*"],
-                annotated_naming(
-                    &["UseCaseModule", "LegacyUseCase"],
-                    KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
-                ),
-            )],
-            crate::report::Format::Json,
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-
-        assert_eq!(
-            parsed["required_exports"][0]["annotation"],
-            serde_json::json!(["UseCaseModule", "LegacyUseCase"])
-        );
-    }
-
-    /// A rule that asks for no annotation must not grow an empty field in the
-    /// output an agent parses.
-    #[test]
-    fn a_rule_without_an_annotation_says_nothing_about_one() {
-        let text = rendered(
-            vec![rule("name", &["src/*"], naming(None, function_kind()))],
-            crate::report::Format::Json,
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-
-        assert!(parsed["required_exports"][0].get("annotation").is_none());
     }
 
     /// Without a hint there is still something to write, and it says which
@@ -1052,77 +560,6 @@ mod tests {
         );
     }
 
-    /// The JSON is the contract an agent should consume.
-    #[test]
-    fn the_json_shape_is_versioned_and_flat() {
-        let json = rendered(
-            vec![
-                rule(
-                    "name",
-                    &["src/*"],
-                    naming(Some("(deps: Deps): UseCase"), function_kind()),
-                ),
-                rule("spec", &["src/*"], spec_pair()),
-                rule(
-                    "boundary",
-                    &["src/**"],
-                    boundary(&["src/infra/**"], &["src/telemetry/**"], &[]),
-                ),
-            ],
-            crate::report::Format::Json,
-        );
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-
-        assert_eq!(parsed["version"], 0);
-        assert_eq!(parsed["path"], TARGET);
-        assert_eq!(parsed["required_exports"][0]["name"], "CreateClient");
-        assert_eq!(parsed["required_exports"][0]["kinds"][0], "function");
-        assert_eq!(
-            parsed["required_exports"][0]["signature_hint"],
-            "(deps: Deps): UseCase"
-        );
-        assert_eq!(
-            parsed["required_siblings"][0]["constraints"][0],
-            "non-empty-spec"
-        );
-        assert_eq!(parsed["forbidden_imports"][0]["pattern"], "src/infra/**");
-        assert_eq!(parsed["required_imports"][0]["pattern"], "src/telemetry/**");
-        assert!(
-            parsed["call_obligations"]
-                .as_array()
-                .is_some_and(Vec::is_empty),
-            "empty rather than absent: an agent needs to know the list is empty"
-        );
-    }
-
-    /// A `call-obligation` reaches the shape, and says where the symbol has to
-    /// come from -- half the requirement is the import.
-    #[test]
-    fn a_call_obligation_names_its_module() {
-        let shape = shape_of(vec![rule(
-            "audit",
-            &["src/*"],
-            CompiledRuleKind::CallObligation {
-                file_pattern: Pattern::compile(r"^create-client\.use-case\.ts$")
-                    .expect("valid pattern"),
-                symbol: "Event.save".to_owned(),
-                imported_from: "@org/domain/event".to_owned(),
-            },
-        )]);
-
-        assert_eq!(
-            shape.call_obligations.first().map(|c| c.symbol.as_str()),
-            Some("Event.save")
-        );
-        assert_eq!(
-            shape
-                .call_obligations
-                .first()
-                .map(|c| c.imported_from.as_str()),
-            Some("@org/domain/event")
-        );
-    }
-
     /// Correction C11: a filename constraint reaches the shape. Without it, an
     /// agent scaffolding a path whose name is already wrong would be told
     /// everything except the thing it has to fix first.
@@ -1220,6 +657,7 @@ mod tests {
         let text = String::from_utf8(out).expect("UTF-8");
         assert!(text.contains("type-only imports are exempt"), "{text}");
     }
+
     /// The literal lists, which the pattern tests never reached.
     ///
     /// A rule may permit folders by name, by regex, or by both, and the three
@@ -1296,6 +734,7 @@ mod tests {
             None
         );
     }
+
     /// The rendered line for a parent that permits no subfolder.
     ///
     /// Without it the section prints its heading and then nothing, which reads

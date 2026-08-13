@@ -17,6 +17,9 @@ archwarden-core = { workspace = true }
 # whether one is worth opening, or knows where it lives. archwarden-api does
 # all three and hands back a note when it could not. Issue #63.
 archwarden-engine = { workspace = true }
+# The MCP surface. It depends on `archwarden-api` and cannot see this crate,
+# which is what keeps a server from answering a question from the wrong place.
+archwarden-mcp = { workspace = true }
 archwarden-rules = { workspace = true }
 archwarden-resolver = { workspace = true }
 camino = { workspace = true }

@@ -285,6 +285,35 @@ Both should read the new version. Then install it somewhere real and run it —
 the release checked that the binary starts on an old libc, not that it still
 lints anything.
 
+### Last: sweep what the release cost
+
+```bash
+cargo xtask clean --deps
+```
+
+**Do this before you close the session, not the next time you think of it.**
+
+A release is the most expensive thing this repository does to a disk. `cargo
+xtask ci` builds the workspace three more times under `cargo llvm-cov`, `cargo
+xtask mutants` builds one tree per mutant, and a dry run adds a `--release`
+build with fat LTO. Measured once: `target` at **59 GB**, of which
+`debug/incremental` was 27 and `debug/deps` was 28.
+
+That is not a slow accumulation. 0.18 filled the disk of the machine it was
+released from, froze it, and the recovery was deleting `target/` by hand to
+free enough space to save the session's own transcript — which is a worse
+outcome than any it was protecting against.
+
+`--deps` rather than the default tier, and only here: the default keeps the
+compiled dependencies so the next build is warm, which is right between two
+pieces of work and wrong at the end of a release, when the next build is days
+away and the 28 GB is not buying anything.
+
+A session that starts in this repository sweeps what a previous one left, via a
+`SessionStart` hook in `.claude/settings.json` running `scripts/sweep.py`. That
+is a net, not a substitute: it runs *between* sessions, and the disk fills
+*during* one.
+
 ## If it goes wrong
 
 **Caught before publish** (version guard, container check, a build failure).

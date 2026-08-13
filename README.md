@@ -97,6 +97,32 @@ Point your agent at it, or paste it into `CLAUDE.md` / your own `AGENTS.md`.
 For the design behind the integration, see
 [`docs/AGENT-INTEGRATION.md`](docs/AGENT-INTEGRATION.md).
 
+`install-hooks --claude-code` wires up three things at once: a hook that judges
+a write before it lands, one that reports what a turn left behind, and one that
+puts the module map into a starting session — including after compaction, which
+is where the rules leave an agent's context without anyone noticing. It also
+writes a committable `.mcp.json`, so an agent can ask **would this content
+pass?** *before* writing rather than being denied after.
+
+## In your test suite
+
+```ts
+import { check } from "archwarden";
+
+test("nothing reaches into infrastructure", async () => {
+  const { findings } = await check({ rules: ["no-infra"] });
+  expect(findings).toEqual([]);
+});
+```
+
+An architecture claim beside the code it is about, failing in the same output
+as every other test — for a team that runs tests and does not run linters.
+
+It reads your `arch.config.json` and returns findings for your framework to
+assert on. The rules stay declarative and in one file; the test picks which of
+them to assert. A rule id no rule has throws, because a typo that came back
+clean would be a test that passes for the wrong reason.
+
 ## What it does not do
 
 - **Formatting and code style.** Use Biome.
@@ -135,8 +161,11 @@ npx archwarden check --file packages/application/src/use-cases/foo/foo.use-case.
 # generate a rules digest for CLAUDE.md / AGENTS.md
 npx archwarden agent-guide > .archwarden/AGENT_RULES.md
 
-# install pre-write hooks for supported harnesses
+# install the hooks and the MCP server for supported harnesses
 npx archwarden install-hooks --claude-code
+
+# serve the same operations as MCP tools (the harness starts this itself)
+npx archwarden mcp
 
 # ---- adopting it in an existing repo ----
 

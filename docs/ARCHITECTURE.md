@@ -66,18 +66,24 @@ crates/
   archwarden-cache/      # on-disk cache (redb, content-hash keyed)
   archwarden-engine/     # pipeline orchestration: walk → parse → resolve → rules
   archwarden-api/        # the operations every surface goes through
+  archwarden-mcp/        # MCP surface: JSON-RPC over stdio, and nothing of its own
   archwarden-cli/        # binary crate, arg parsing, terminal and HTML output
-                         # archwarden-mcp/ and archwarden-lsp/ arrive later
-                         # and depend on api, not on cli
+                         # archwarden-lsp/ arrives later, on the same terms:
+                         # a surface depends on api, never on another surface
 ```
 
 Dependency direction:
 
 ```
-core   ← config ← engine ← api ← cli
+core   ← config ← engine ← api ← mcp ← cli
   ↑        ↑        ↑        ↑
   └── parser, resolver, rules, cache
 ```
+
+`cli` depends on `mcp` only to dispatch `archwarden mcp` into it: MCP adds no
+new installation requirement, so it is a subcommand of the one binary rather
+than a second one. The arrow that matters is the other one — **`mcp` cannot see
+`cli`**, so an answer taken from the wrong place does not compile.
 
 `archwarden-core` has no internal dependencies. Everything else depends on it.
 
@@ -109,6 +115,14 @@ binaries, and that lint never caught `prepare()`, which wrote through a
 crate does not depend on `archwarden-cli`, and no signature in it mentions an
 output sink. The one exception is `render`, where a `Renderer` writes only
 where the caller pointed it and reports no failure by writing.
+
+**What belongs in it was drawn too narrowly the first time.** Those stages are
+what `check` does, and `check` was the only surface when they were named.
+Building MCP found `describe`, `scaffold`, the `agent-guide` digest and the
+whole meaning of a pre-write check still in `archwarden-cli` — every tool MCP
+exposes. They moved in 0.18, and decision 22 records the test that decides:
+*a shape a program consumes is a contract, and a contract lives where every
+surface can reach it.*
 
 Its stages are named — `Resolve → Load → Walk → Evaluate → Present` — even
 where there is only one implementation of each, because that is what lets a

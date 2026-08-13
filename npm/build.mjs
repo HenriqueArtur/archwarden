@@ -80,7 +80,11 @@ export async function build(dist, out, version) {
     join(mainOut, "package.json"),
     `${JSON.stringify(main, null, 2)}\n`,
   );
-  for (const file of ["resolve.mjs", "bin/archwarden.mjs"]) {
+  // `index.mjs` and its types are the programmatic binding (issue #73): the
+  // package is imported by a test suite as well as run as a command, and a
+  // name in `files` without a copy here publishes a manifest pointing at
+  // nothing.
+  for (const file of ["resolve.mjs", "index.mjs", "index.d.ts", "bin/archwarden.mjs"]) {
     await copyFile(join(here, "archwarden", file), join(mainOut, file));
   }
   for (const file of FROM_ROOT) {
