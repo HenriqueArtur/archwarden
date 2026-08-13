@@ -1,6 +1,6 @@
 {
   "name": "archwarden",
-  "version": "0.17.0",
+  "version": "0.18.0",
   "description": "A fast, declarative architecture linter for TypeScript and JavaScript.",
   "license": "MIT OR Apache-2.0",
   "repository": {
@@ -8,9 +8,27 @@
     "url": "git+https://github.com/HenriqueArtur/archwarden.git"
   },
   "homepage": "https://github.com/HenriqueArtur/archwarden",
-  "bin": { "archwarden": "bin/archwarden.mjs" },
-  "files": ["bin", "resolve.mjs", "schema", "README.md", "AGENTS.md"],
-  "engines": { "node": ">=18" },
+  "bin": {
+    "archwarden": "bin/archwarden.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.mjs"
+    }
+  },
+  "files": [
+    "bin",
+    "index.mjs",
+    "index.d.ts",
+    "resolve.mjs",
+    "schema",
+    "README.md",
+    "AGENTS.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "optionalDependencies": {
     "@archwarden/cli-darwin-arm64": "0.1.1",
     "@archwarden/cli-darwin-x64": "0.1.1",
