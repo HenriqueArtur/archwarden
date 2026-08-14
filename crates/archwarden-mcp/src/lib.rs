@@ -457,12 +457,15 @@ fn call(
             else {
                 return tool_error(id, "`check_write` needs a `content`");
             };
-            Ok(judged(&archwarden_api::single::check(
-                &prepared.merged.root,
-                &prepared.compiled,
-                &repo_relative,
-                Some(content),
-            )))
+            Ok(judged(
+                &archwarden_api::single::check(
+                    &prepared.merged.root,
+                    &prepared.compiled,
+                    &repo_relative,
+                    Some(content),
+                ),
+                &archwarden_api::render::Reasons::of(&prepared.compiled),
+            ))
         }
         other => {
             return failure(
@@ -525,17 +528,21 @@ fn configurable(id: &Value, arguments: Option<&Value>) -> Value {
 /// pass?* wants a yes or a no, and the findings are why. Progress is reported
 /// separately and never refuses, exactly as the hook reports it — a write
 /// supplying one of a directory's required files is fixing it, not breaking it.
-fn judged(checked: &single::Checked) -> Value {
-    json!({
+fn judged(checked: &single::Checked, reasons: &archwarden_api::render::Reasons) -> Value {
+    let mut value = json!({
         "refused": checked.refuses(),
         "path": checked.single.path,
         "findings": checked
             .single
             .findings
             .iter()
-            .map(finding)
+            .map(|found| finding(found, reasons))
             .collect::<Vec<_>>(),
-        "fixing": checked.fixing.iter().map(finding).collect::<Vec<_>>(),
+        "fixing": checked
+            .fixing
+            .iter()
+            .map(|found| finding(found, reasons))
+            .collect::<Vec<_>>(),
         // Present even when empty, for the reason `check --file` gives: a
         // caller has to see the list is empty rather than infer it from
         // absence, and a rule that could not run is not a rule that passed.
@@ -549,16 +556,54 @@ fn judged(checked: &single::Checked) -> Value {
             }))
             .collect::<Vec<_>>(),
         "unresolved_imports": checked.single.unresolved_imports,
-    })
+    });
+
+    // The prose behind the ids above, once each, and **only when there is
+    // any** — a repository that has adopted no decisions gets the object it
+    // always got, key for key. Resolved from both lists: an id named under
+    // `fixing` with nothing to resolve it against would be the bare rule id
+    // this replaces, in the one place the answer is good news. Issue #100.
+    let named: Vec<archwarden_core::finding::Finding> = checked
+        .single
+        .findings
+        .iter()
+        .chain(checked.fixing.iter())
+        .cloned()
+        .collect();
+    let decisions = archwarden_api::render::json::referenced_by(&named, reasons);
+    if !decisions.is_empty()
+        && let Some(map) = value.as_object_mut()
+    {
+        map.insert("decisions".to_owned(), json!(decisions));
+    }
+    value
 }
 
-fn finding(finding: &archwarden_core::finding::Finding) -> Value {
-    json!({
+fn finding(
+    finding: &archwarden_core::finding::Finding,
+    reasons: &archwarden_api::render::Reasons,
+) -> Value {
+    let mut value = json!({
         "rule_id": finding.rule_id.as_str(),
         "level": finding.level.as_str(),
         "path": finding.path,
         "said": describe::describe_observed(&finding.observed),
-    })
+    });
+
+    // Both omitted when the config said nothing, so a repository that has
+    // adopted neither field gets the object it always got. `why` arrives here
+    // with `decision` rather than before it: this tool was written before
+    // either existed, and an agent judged at the pre-write moment is the
+    // reader issue #46 argued for hardest.
+    if let Some(map) = value.as_object_mut() {
+        if let Some(why) = reasons.of_rule(&finding.rule_id) {
+            map.insert("why".to_owned(), json!(why));
+        }
+        if let Some(decision) = reasons.decision_of_rule(&finding.rule_id) {
+            map.insert("decision".to_owned(), json!(decision.id.as_str()));
+        }
+    }
+    value
 }
 
 fn success(id: &Value, result: &Value) -> Value {
@@ -609,6 +654,107 @@ mod tests {
         )
         .expect("write the config");
         (guard, root)
+    }
+
+    /// The same repository, with the rule serving a declared decision.
+    fn deciding_repository() -> (tempfile::TempDir, Utf8PathBuf) {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("utf-8");
+        std::fs::write(
+            root.join("arch.config.json"),
+            r#"{"version":0,
+                "decisions":[{"id":"ADR-014",
+                              "title":"A lesson is not a lesson without its three files",
+                              "why":"the site builds each page from all three",
+                              "link":"docs/adr/014.md"}],
+                "rules":[
+                {"type":"presence","id":"tem-os-tres","level":"error",
+                 "why":"a half-written lesson is worse than an absent one",
+                 "decision":"ADR-014",
+                 "roots":["projetos/*"],
+                 "require":["projeto.md","exercicios.md","diagram.json"]},
+                {"type":"naming","id":"o-nome-e-o-simbolo","level":"error",
+                 "why":"a half-written lesson is worse than an absent one",
+                 "decision":"ADR-014",
+                 "roots":["src"],
+                 "file_pattern":"^(?<n>[a-z-]+)\\.ts$",
+                 "must_export":{"kind":"any","name":"{{pascal(n)}}"}}]}"#,
+        )
+        .expect("write the config");
+        (guard, root)
+    }
+
+    /// Issue #100 through MCP. An agent told only *"no, `tem-os-tres`"* has a
+    /// thing to satisfy; told which decision that breaks, why, and where it is
+    /// written down, it has a thing to understand or to argue with — and this
+    /// is the surface where an agent meets a refusal most often.
+    #[test]
+    fn check_write_names_the_decision_a_refusal_breaks() {
+        let (guard, root) = deciding_repository();
+        std::fs::create_dir_all(root.join("src")).expect("create dirs");
+
+        let reply = answer(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_write",
+                "arguments":{"path":"src/create-client.ts","content":"export const wrong = 1;"}}}"#,
+            &root,
+        );
+        let judged: Value = serde_json::from_str(tool_text(&reply)).expect("the answer is JSON");
+        drop(guard);
+
+        assert_eq!(judged["refused"], true, "{judged}");
+        assert_eq!(judged["findings"][0]["decision"], "ADR-014");
+        assert_eq!(
+            judged["findings"][0]["why"],
+            "a half-written lesson is worse than an absent one"
+        );
+
+        let decisions = judged["decisions"].as_array().expect("a list");
+        assert_eq!(decisions.len(), 1, "the prose once: {judged}");
+        assert_eq!(
+            decisions[0]["title"],
+            "A lesson is not a lesson without its three files"
+        );
+        assert_eq!(decisions[0]["link"], "docs/adr/014.md");
+        assert_eq!(decisions[0]["status"], "accepted");
+    }
+
+    /// A repository that declares none gets the object it always got. Every
+    /// configuration in the world is this one on the day 0.21 ships.
+    #[test]
+    fn check_write_omits_the_keys_when_the_config_declares_nothing() {
+        let (guard, root) = repository();
+        std::fs::create_dir_all(root.join("projetos/01-led")).expect("create dirs");
+
+        let reply = answer(
+            r##"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"check_write",
+                "arguments":{"path":"projetos/01-led/projeto.md","content":"# LED"}}}"##,
+            &root,
+        );
+        let text = tool_text(&reply).to_owned();
+        drop(guard);
+
+        assert!(!text.contains("decision"), "{text}");
+        assert!(!text.contains("\"why\""), "{text}");
+    }
+
+    /// `describe` through MCP carries it too, and it does so by being the same
+    /// envelope `describe --format json` writes — which decision 22 requires
+    /// and a separate test pins byte for byte.
+    #[test]
+    fn describe_carries_the_decision_through_mcp() {
+        let (guard, root) = deciding_repository();
+        std::fs::create_dir_all(root.join("projetos/01-led")).expect("create dirs");
+
+        let reply = answer(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"describe",
+                "arguments":{"path":"projetos/01-led"}}}"#,
+            &root,
+        );
+        let described: Value = serde_json::from_str(tool_text(&reply)).expect("JSON");
+        drop(guard);
+
+        assert_eq!(described["rules"][0]["decision"]["id"], "ADR-014");
+        assert_eq!(described["rules"][0]["decision"]["link"], "docs/adr/014.md");
     }
 
     fn answer(message: &str, root: &Utf8Path) -> Value {

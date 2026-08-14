@@ -12,7 +12,6 @@
 use archwarden_core::{
     compiled::{CompiledConfig, CompiledRule},
     finding::Finding,
-    ids::RuleId,
     path::RepoRelPath,
 };
 use archwarden_engine::walk::RepoTree;
@@ -40,35 +39,84 @@ pub struct Explanation<'a> {
     pub flags: Vec<Finding>,
 }
 
-/// Explains one rule, or says which ids exist.
+/// What one decision was, and what is keeping it.
+///
+/// The other question `config explain` answers, and issue #100 argues it is
+/// the one people actually ask: not *what does this rule do* but *why is this
+/// like this*. A document answers the first half of that and cannot answer the
+/// second — whether the decision is still being kept — because only a run
+/// knows.
+pub struct DecisionExplanation<'a> {
+    /// The decision itself, with its prose.
+    pub decision: &'a archwarden_core::compiled::CompiledDecision,
+    /// The rules implementing it, in configuration order, with what each is
+    /// currently flagging. Empty is a real answer and is said out loud.
+    pub rules: Vec<RuleUnderDecision<'a>>,
+}
+
+/// One rule serving a decision, and how it is doing.
+pub struct RuleUnderDecision<'a> {
+    /// The rule.
+    pub rule: &'a CompiledRule,
+    /// How many findings it is currently producing.
+    ///
+    /// A count rather than the findings: the question here is whether the
+    /// decision is holding, and `config explain <rule-id>` is one command away
+    /// for the detail.
+    pub flags: usize,
+}
+
+/// Either answer the command can give.
+///
+/// One argument, two namespaces, and they are kept apart at compile time — an
+/// id may not be both a rule and a decision — so this never has to guess which
+/// was meant. Issue #100.
+pub enum Explained<'a> {
+    /// The argument named a rule.
+    Rule(Explanation<'a>),
+    /// The argument named a decision.
+    Decision(DecisionExplanation<'a>),
+}
+
+#[cfg(test)]
+impl<'a> Explained<'a> {
+    /// The rule answer, for a test that asked about a rule id.
+    ///
+    /// Test-only: production code matches both arms, because the argument can
+    /// be either and a surface that assumed one would panic on the other.
+    fn into_rule(self) -> Explanation<'a> {
+        match self {
+            Self::Rule(rule) => rule,
+            Self::Decision(decision) => {
+                panic!("expected a rule, got decision `{}`", decision.decision.id)
+            }
+        }
+    }
+}
+
+/// Explains one rule or one decision, or says which ids exist.
 ///
 /// # Errors
-/// A message listing the configured ids, when `wanted` is not one of them. A
-/// typo in a rule id is the likeliest way to reach this, and the list is the
-/// answer to it.
+/// A message listing the configured rule ids *and* decision ids, when `wanted`
+/// is neither. A typo is the likeliest way to reach this, and a user who
+/// mistyped does not know which of the two lists they meant.
 pub fn explain<'a>(
     root: &Utf8Path,
     config: &'a CompiledConfig,
     tree: &RepoTree,
-    wanted: &RuleId,
-) -> Result<Explanation<'a>, String> {
+    wanted: &str,
+) -> Result<Explained<'a>, String> {
     let Some((rule, engine)) = config
         .rules()
         .zip(archwarden_rules::engines_for(config))
-        .find(|(rule, _)| &rule.id == wanted)
+        .find(|(rule, _)| rule.id.as_str() == wanted)
     else {
-        let ids: Vec<String> = config
-            .rules()
-            .map(|rule| format!("`{}`", rule.id))
-            .collect();
-        return Err(if ids.is_empty() {
-            format!("no rule is called `{wanted}`; this configuration has no rules")
-        } else {
-            format!(
-                "no rule is called `{wanted}`; the configured rules are {}",
-                ids.join(", ")
-            )
-        });
+        if let Some(decision) = config.decisions().find(|d| d.id.as_str() == wanted) {
+            return Ok(Explained::Decision(explain_decision(
+                root, config, tree, decision,
+            )));
+        }
+        return Err(nothing_is_called(config, wanted));
     };
 
     // "Covers" means "has a requirement about", which is the same definition
@@ -104,21 +152,98 @@ pub fn explain<'a>(
     let flags = report
         .findings
         .into_iter()
-        .filter(|finding| &finding.rule_id == wanted)
+        .filter(|finding| finding.rule_id.as_str() == wanted)
         .collect();
 
-    Ok(Explanation {
+    Ok(Explained::Rule(Explanation {
         rule,
         covers,
         scope_reaches,
         flags,
-    })
+    }))
+}
+
+/// The message for an id that is neither a rule nor a decision.
+///
+/// Both lists, always. A user who mistyped `ADR-041` does not know whether
+/// they got a rule id or a decision id wrong, and a message naming only one of
+/// the two teaches them the other does not exist.
+fn nothing_is_called(config: &CompiledConfig, wanted: &str) -> String {
+    let rules: Vec<String> = config
+        .rules()
+        .map(|rule| format!("`{}`", rule.id))
+        .collect();
+    let decisions: Vec<String> = config
+        .decisions()
+        .map(|decision| format!("`{}`", decision.id))
+        .collect();
+
+    match (rules.is_empty(), decisions.is_empty()) {
+        (true, true) => format!(
+            "nothing is called `{wanted}`; this configuration has no rules and no decisions"
+        ),
+        (false, true) => format!(
+            "nothing is called `{wanted}`; the configured rules are {}",
+            rules.join(", ")
+        ),
+        (true, false) => format!(
+            "nothing is called `{wanted}`; the declared decisions are {}",
+            decisions.join(", ")
+        ),
+        (false, false) => format!(
+            "nothing is called `{wanted}`; the configured rules are {}, and the \
+             declared decisions are {}",
+            rules.join(", "),
+            decisions.join(", ")
+        ),
+    }
+}
+
+/// What a decision is, and what is keeping it.
+///
+/// The counts come from one real run, the same way the rule answer's do, so
+/// what this says is what `check` reports rather than a second evaluation that
+/// could disagree with it.
+fn explain_decision<'a>(
+    root: &Utf8Path,
+    config: &'a CompiledConfig,
+    tree: &RepoTree,
+    decision: &'a archwarden_core::compiled::CompiledDecision,
+) -> DecisionExplanation<'a> {
+    let report = archwarden_engine::run::check(archwarden_engine::run::Run {
+        root,
+        config,
+        tree,
+        cache: None,
+    });
+
+    let rules = config
+        .rules()
+        .filter(|rule| rule.decision.as_ref() == Some(&decision.id))
+        .map(|rule| RuleUnderDecision {
+            rule,
+            flags: report
+                .findings
+                .iter()
+                .filter(|finding| finding.rule_id == rule.id)
+                .count(),
+        })
+        .collect();
+
+    DecisionExplanation { decision, rules }
 }
 
 /// The JSON envelope.
 #[derive(Debug, Serialize)]
 struct JsonExplain<'a> {
     version: u32,
+    /// Which of the two questions this answers.
+    ///
+    /// Said out loud rather than left for a consumer to infer from which keys
+    /// are present: one argument can return either shape, and a program that
+    /// had to tell them apart by probing would get it wrong on the day a field
+    /// is added. Issue #100.
+    explains: &'static str,
     id: &'a str,
     kind: &'static str,
     level: &'a str,
@@ -129,22 +254,155 @@ struct JsonExplain<'a> {
     flags: &'a [Finding],
 }
 
+/// The JSON envelope for a decision.
+#[derive(Debug, Serialize)]
+struct JsonDecision<'a> {
+    version: u32,
+    explains: &'static str,
+    id: &'a str,
+    title: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    why: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    link: Option<&'a str>,
+    status: &'a str,
+    rules: Vec<JsonRuleUnder<'a>>,
+}
+
+/// One rule under a decision, as JSON.
+#[derive(Debug, Serialize)]
+struct JsonRuleUnder<'a> {
+    id: &'a str,
+    kind: &'static str,
+    level: &'a str,
+    flags: usize,
+}
+
 /// Writes the explanation.
 pub fn render(
-    explanation: &Explanation<'_>,
+    explained: &Explained<'_>,
     format: crate::report::Format,
     out: &mut dyn std::io::Write,
 ) {
-    match format {
-        crate::report::Format::Text => render_text(explanation, out),
-        crate::report::Format::Json => render_json(explanation, out),
+    match (explained, format) {
+        (Explained::Rule(rule), crate::report::Format::Text) => render_text(rule, out),
+        (Explained::Rule(rule), crate::report::Format::Json) => render_json(rule, out),
+        (Explained::Decision(decision), crate::report::Format::Text) => {
+            render_decision_text(decision, out);
+        }
+        (Explained::Decision(decision), crate::report::Format::Json) => {
+            render_decision_json(decision, out);
+        }
     }
+}
+
+/// Serialises an envelope, or says why not.
+///
+/// One function for both shapes, because the failure sentence is the same and
+/// two copies of it are two copies that drift.
+fn write_json(envelope: &impl Serialize, out: &mut dyn std::io::Write) {
+    match serde_json::to_string_pretty(envelope) {
+        Ok(json) => {
+            let _ = writeln!(out, "{json}");
+        }
+        Err(error) => {
+            let _ = writeln!(out, r#"{{"error":"cannot serialise: {error}"}}"#);
+        }
+    }
+}
+
+fn render_decision_json(explanation: &DecisionExplanation<'_>, out: &mut dyn std::io::Write) {
+    let decision = explanation.decision;
+    write_json(
+        &JsonDecision {
+            version: EXPLAIN_VERSION,
+            explains: "decision",
+            id: decision.id.as_str(),
+            title: decision.title.as_str(),
+            why: decision.why.as_deref(),
+            link: decision.link.as_deref(),
+            status: decision.status.as_str(),
+            rules: explanation
+                .rules
+                .iter()
+                .map(|under| JsonRuleUnder {
+                    id: under.rule.id.as_str(),
+                    kind: under.rule.kind.type_name(),
+                    level: under.rule.level.as_str(),
+                    flags: under.flags,
+                })
+                .collect(),
+        },
+        out,
+    );
+}
+
+fn render_decision_text(explanation: &DecisionExplanation<'_>, out: &mut dyn std::io::Write) {
+    let decision = explanation.decision;
+
+    // The status is on the header rather than tucked below, because the one
+    // reading it needs most — a decision that was replaced, with rules still
+    // enforcing it — is the one `config doctor` calls an error, and this must
+    // not be quieter than that.
+    let status = if decision.status.is_accepted() {
+        String::new()
+    } else {
+        format!(" ({})", decision.status)
+    };
+    let _ = writeln!(out, "{}{status} — {}", decision.id, decision.title);
+    if let Some(why) = &decision.why {
+        let _ = writeln!(out, "  {why}");
+    }
+    if let Some(link) = &decision.link {
+        let _ = writeln!(out, "  written down in {link}");
+    }
+
+    // Said out loud. A decision nobody enforces is exactly what somebody runs
+    // this command to find out, and an empty list does not tell them.
+    if explanation.rules.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n  No rule implements it. This decision is written down and not \
+             enforced.\n  `archwarden config doctor` reports it."
+        );
+        return;
+    }
+
+    let _ = writeln!(
+        out,
+        "\n  Implemented by {}:",
+        count(explanation.rules.len(), "rule")
+    );
+    for under in &explanation.rules {
+        let flags = if under.flags == 0 {
+            "flags nothing".to_owned()
+        } else {
+            format!("flags {}", count(under.flags, "path"))
+        };
+        let _ = writeln!(
+            out,
+            "    [{}] {} ({}) — {flags}",
+            under.rule.level,
+            under.rule.id,
+            under.rule.kind.type_name(),
+        );
+    }
+
+    // The half a document cannot answer: not what was decided, but whether it
+    // is still being kept.
+    let total: usize = explanation.rules.iter().map(|under| under.flags).sum();
+    let _ = if total == 0 {
+        writeln!(out, "\n  Nothing in this repository breaks it.")
+    } else {
+        writeln!(out, "\n  {} currently breaks it.", count(total, "path"))
+    };
 }
 
 fn render_json(explanation: &Explanation<'_>, out: &mut dyn std::io::Write) {
     let rule = explanation.rule;
     let envelope = JsonExplain {
         version: EXPLAIN_VERSION,
+        explains: "rule",
         id: rule.id.as_str(),
         kind: rule.kind.type_name(),
         level: rule.level.as_str(),
@@ -157,14 +415,7 @@ fn render_json(explanation: &Explanation<'_>, out: &mut dyn std::io::Write) {
         flags: &explanation.flags,
     };
 
-    match serde_json::to_string_pretty(&envelope) {
-        Ok(json) => {
-            let _ = writeln!(out, "{json}");
-        }
-        Err(error) => {
-            let _ = writeln!(out, r#"{{"error":"cannot serialise: {error}"}}"#);
-        }
-    }
+    write_json(&envelope, out);
 }
 
 fn render_text(explanation: &Explanation<'_>, out: &mut dyn std::io::Write) {
@@ -257,10 +508,12 @@ fn count(n: usize, noun: &str) -> String {
 mod tests {
     use super::*;
     use archwarden_core::{
-        compiled::{CompiledRuleKind, SkipDirs},
+        compiled::{CompiledDecision, CompiledRuleKind, DecisionStatus, SkipDirs},
         facts::{ExportKind, ExportTags, KindFilter},
         glob::PathSet,
         hash::ContentHash,
+        ids::DecisionId,
+        ids::RuleId,
         level::Level,
         pattern::Pattern,
         scope::Scope,
@@ -277,6 +530,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            decision: None,
             imports: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
@@ -305,6 +559,16 @@ mod tests {
         }
     }
 
+    fn structure() -> CompiledRuleKind {
+        CompiledRuleKind::Structure {
+            allowed_subfolders: Some(Vec::new()),
+            warn_subfolders: Vec::new(),
+            recurse_into: Vec::new(),
+            subfolder_patterns: Vec::new(),
+            filename_patterns: Vec::new(),
+        }
+    }
+
     fn tree_at(entries: &[(&str, &str)]) -> (tempfile::TempDir, Utf8PathBuf) {
         let dir = tempfile::tempdir().expect("temp dir");
         let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
@@ -329,7 +593,7 @@ mod tests {
     ) -> Result<String, String> {
         let (guard, root) = tree_at(entries);
         let tree = archwarden_engine::walk::walk(&root, config).expect("walks");
-        let result = explain(&root, config, &tree, &id(wanted)).map(|explanation| {
+        let result = explain(&root, config, &tree, wanted).map(|explanation| {
             let mut out = Vec::new();
             render(&explanation, format, &mut out);
             String::from_utf8(out).expect("output is UTF-8")
@@ -350,6 +614,251 @@ mod tests {
         ("src/user/helper.ts", "export const helper = 1;"),
     ];
 
+    /// A configuration where one decision is served by two rules, one of them
+    /// currently firing.
+    fn decided() -> CompiledConfig {
+        let mut named = rule("usecase-name", &["src/*"], naming());
+        named.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+        let mut shape = rule("usecase-shape", &["src/*"], structure());
+        shape.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+
+        config(vec![named, shape]).with_decisions(vec![CompiledDecision {
+            id: DecisionId::new("ADR-014").expect("valid"),
+            title: "The registry resolves use cases by name".to_owned(),
+            why: Some("the loader reads the directory and imports by filename".to_owned()),
+            link: Some("docs/adr/014.md".to_owned()),
+            status: DecisionStatus::Accepted,
+        }])
+    }
+
+    /// Issue #100. `config explain` was the command for "what does this rule
+    /// do"; the question people actually ask is "why is this like this", and
+    /// that one is answered by a decision. So the argument takes either, and
+    /// the two namespaces are kept apart at compile time so it never has to
+    /// guess which was meant.
+    #[test]
+    fn a_decision_id_explains_the_decision_and_what_serves_it() {
+        let text =
+            rendered(&FILES, &decided(), "ADR-014", crate::report::Format::Text).expect("explains");
+
+        assert!(
+            text.contains("ADR-014 — The registry resolves use cases by name"),
+            "{text}"
+        );
+        assert!(
+            text.contains("the loader reads the directory and imports by filename"),
+            "{text}"
+        );
+        assert!(text.contains("docs/adr/014.md"), "{text}");
+        assert!(
+            text.contains("usecase-name") && text.contains("usecase-shape"),
+            "both rules that serve it are named: {text}"
+        );
+    }
+
+    /// And it says whether the decision is currently holding, which is the
+    /// half a document cannot answer. A decision whose rules all pass is being
+    /// kept; one with findings against it is being broken right now.
+    #[test]
+    fn explaining_a_decision_says_whether_it_is_holding() {
+        let text =
+            rendered(&FILES, &decided(), "ADR-014", crate::report::Format::Text).expect("explains");
+
+        assert!(
+            text.contains("flags"),
+            "the rules under it report what they are flagging: {text}"
+        );
+    }
+
+    /// The JSON half, versioned like the rule shape and distinguishable from
+    /// it: a consumer that asked about an id and got back an answer of the
+    /// other kind must be able to tell.
+    #[test]
+    fn the_decision_json_says_what_kind_of_answer_it_is() {
+        let json =
+            rendered(&FILES, &decided(), "ADR-014", crate::report::Format::Json).expect("explains");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        assert_eq!(parsed["version"], 0);
+        assert_eq!(parsed["explains"], "decision");
+        assert_eq!(parsed["id"], "ADR-014");
+        assert_eq!(parsed["status"], "accepted");
+        assert_eq!(parsed["link"], "docs/adr/014.md");
+        assert_eq!(parsed["rules"][0]["id"], "usecase-name");
+        assert!(parsed["rules"][0]["flags"].is_number(), "{json}");
+    }
+
+    /// And the rule answer says so too, rather than leaving a consumer to
+    /// tell the two apart by which keys are present.
+    #[test]
+    fn the_rule_json_says_what_kind_of_answer_it_is() {
+        let json = rendered(
+            &FILES,
+            &config(vec![rule("usecase-name", &["src/*"], naming())]),
+            "usecase-name",
+            crate::report::Format::Json,
+        )
+        .expect("explains");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        assert_eq!(parsed["explains"], "rule");
+        assert_eq!(parsed["id"], "usecase-name");
+    }
+
+    /// An id that is neither is refused with both lists, because a user who
+    /// mistyped one does not know which of the two they got wrong.
+    #[test]
+    fn an_unknown_id_lists_the_rules_and_the_decisions() {
+        let error = rendered(&FILES, &decided(), "ADR-041", crate::report::Format::Text)
+            .expect_err("refuses");
+
+        assert!(error.contains("ADR-041"), "{error}");
+        assert!(error.contains("usecase-name"), "{error}");
+        assert!(error.contains("ADR-014"), "{error}");
+    }
+
+    /// Explaining one decision lists the rules serving *that* decision and no
+    /// others, which is the foreign key read backwards and the thing most
+    /// worth getting wrong quietly.
+    #[test]
+    fn explaining_a_decision_lists_only_the_rules_that_serve_it() {
+        let mut mine = rule("usecase-name", &["src/*"], naming());
+        mine.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+        let mut theirs = rule("usecase-shape", &["src/*"], structure());
+        theirs.decision = Some(DecisionId::new("ADR-020").expect("valid"));
+        let loose = rule("unattached", &["src/*"], structure());
+
+        let config = config(vec![mine, theirs, loose]).with_decisions(vec![
+            CompiledDecision {
+                id: DecisionId::new("ADR-014").expect("valid"),
+                title: "mine".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Accepted,
+            },
+            CompiledDecision {
+                id: DecisionId::new("ADR-020").expect("valid"),
+                title: "theirs".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Accepted,
+            },
+        ]);
+
+        let text =
+            rendered(&FILES, &config, "ADR-014", crate::report::Format::Text).expect("explains");
+
+        assert!(text.contains("usecase-name"), "{text}");
+        assert!(
+            !text.contains("usecase-shape"),
+            "the other decision's: {text}"
+        );
+        assert!(!text.contains("unattached"), "and one serving none: {text}");
+        assert!(
+            text.contains("Implemented by 1 rule:"),
+            "singular, and counted: {text}"
+        );
+    }
+
+    /// A decision whose rules all pass says so, and one being broken says how
+    /// many paths. The difference is the half a document cannot answer.
+    #[test]
+    fn explaining_a_decision_distinguishes_holding_from_broken() {
+        let broken =
+            rendered(&FILES, &decided(), "ADR-014", crate::report::Format::Text).expect("explains");
+        // The count is asserted *on its rule's line*, not merely present
+        // somewhere in the output: `decided()` puts two rules under one
+        // decision, and a count attributed to the wrong one reads perfectly
+        // and sends a reader to edit the rule that is passing.
+        assert!(
+            broken.contains("usecase-name (naming) — flags 1 path"),
+            "{broken}"
+        );
+        assert!(
+            broken.contains("usecase-shape (structure) — flags nothing"),
+            "{broken}"
+        );
+        assert!(broken.contains("1 path currently breaks it."), "{broken}");
+        assert!(
+            !broken.contains("Nothing in this repository breaks it"),
+            "{broken}"
+        );
+
+        let mut clean_rule = rule("nothing-to-say", &["docs/*"], structure());
+        clean_rule.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+        let clean = config(vec![clean_rule]).with_decisions(vec![CompiledDecision {
+            id: DecisionId::new("ADR-014").expect("valid"),
+            title: "kept".to_owned(),
+            why: None,
+            link: None,
+            status: DecisionStatus::Accepted,
+        }]);
+
+        let held =
+            rendered(&FILES, &clean, "ADR-014", crate::report::Format::Text).expect("explains");
+        assert!(held.contains("flags nothing"), "{held}");
+        assert!(
+            held.contains("Nothing in this repository breaks it."),
+            "{held}"
+        );
+    }
+
+    /// An accepted decision does not announce that it is accepted. Every
+    /// explanation in a healthy repository would carry the word, which is how
+    /// a line stops being read.
+    #[test]
+    fn explaining_an_accepted_decision_does_not_say_accepted() {
+        let text =
+            rendered(&FILES, &decided(), "ADR-014", crate::report::Format::Text).expect("explains");
+
+        assert!(!text.contains("accepted"), "{text}");
+    }
+
+    /// A decision nobody enforces explains itself and says so. It is a
+    /// legitimate question to ask about one — that is how you find out.
+    #[test]
+    fn explaining_a_decision_nothing_serves_says_nothing_serves_it() {
+        let config = config(vec![rule("usecase-name", &["src/*"], naming())]).with_decisions(vec![
+            CompiledDecision {
+                id: DecisionId::new("ADR-020").expect("valid"),
+                title: "Nobody enforces this".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Accepted,
+            },
+        ]);
+
+        let text =
+            rendered(&FILES, &config, "ADR-020", crate::report::Format::Text).expect("explains");
+
+        assert!(text.contains("ADR-020"), "{text}");
+        assert!(
+            text.contains("No rule implements it"),
+            "the debt is said out loud: {text}"
+        );
+    }
+
+    /// A superseded decision whose rules still fire is the state `config
+    /// doctor` calls an error, and explaining it must not be quieter than
+    /// that: the status is on the header where it cannot be missed.
+    #[test]
+    fn explaining_a_superseded_decision_leads_with_the_status() {
+        let mut named = rule("usecase-name", &["src/*"], naming());
+        named.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+        let config = config(vec![named]).with_decisions(vec![CompiledDecision {
+            id: DecisionId::new("ADR-014").expect("valid"),
+            title: "Replaced".to_owned(),
+            why: None,
+            link: None,
+            status: DecisionStatus::Superseded,
+        }]);
+
+        let text =
+            rendered(&FILES, &config, "ADR-014", crate::report::Format::Text).expect("explains");
+
+        assert!(text.contains("superseded"), "{text}");
+    }
+
     /// The two questions the command answers: what does this rule reach, and
     /// what is it reporting?
     #[test]
@@ -357,7 +866,9 @@ mod tests {
         let (guard, root) = tree_at(&FILES);
         let config = config(vec![rule("usecase-name", &["src/*"], naming())]);
         let tree = archwarden_engine::walk::walk(&root, &config).expect("walks");
-        let explanation = explain(&root, &config, &tree, &id("usecase-name")).expect("explains");
+        let explanation = explain(&root, &config, &tree, "usecase-name")
+            .expect("explains")
+            .into_rule();
         drop(guard);
 
         let covered: Vec<_> = explanation.covers.iter().map(RepoRelPath::as_str).collect();
@@ -415,7 +926,9 @@ mod tests {
             ),
         ]);
         let tree = archwarden_engine::walk::walk(&root, &config).expect("walks");
-        let explanation = explain(&root, &config, &tree, &id("usecase-name")).expect("explains");
+        let explanation = explain(&root, &config, &tree, "usecase-name")
+            .expect("explains")
+            .into_rule();
         drop(guard);
 
         assert!(
@@ -452,7 +965,9 @@ mod tests {
             },
         )]);
         let tree = archwarden_engine::walk::walk(&root, &config).expect("walks");
-        let explanation = explain(&root, &config, &tree, &id("shape")).expect("explains");
+        let explanation = explain(&root, &config, &tree, "shape")
+            .expect("explains")
+            .into_rule();
         drop(guard);
 
         let covered: Vec<_> = explanation.covers.iter().map(RepoRelPath::as_str).collect();
@@ -570,6 +1085,12 @@ mod tests {
     /// Naming a rule that is not there -- a typo, or the rule's *kind*
     /// mistaken for its id -- is the likeliest way to reach this error, and
     /// the list of real ids is the answer to it.
+    ///
+    /// "Nothing is called" rather than "no rule is called", since 0.21: the
+    /// argument takes a decision id too, and a message that named only rules
+    /// would teach a user the other namespace does not exist. A config with no
+    /// decisions still lists only its rules, because there is nothing else to
+    /// list. Issue #100.
     #[test]
     fn an_unknown_id_lists_the_real_ones() {
         let error = rendered(
@@ -585,12 +1106,12 @@ mod tests {
 
         assert_eq!(
             error,
-            "no rule is called `usecase-naming`; the configured rules are \
+            "nothing is called `usecase-naming`; the configured rules are \
              `usecase-name`, `other`"
         );
     }
 
-    /// And a configuration with no rules says that instead of listing nothing.
+    /// And a configuration with neither says that instead of listing nothing.
     #[test]
     fn an_empty_configuration_says_it_has_no_rules() {
         let error = rendered(
@@ -603,7 +1124,33 @@ mod tests {
 
         assert_eq!(
             error,
-            "no rule is called `anything`; this configuration has no rules"
+            "nothing is called `anything`; this configuration has no rules and \
+             no decisions"
+        );
+    }
+
+    /// A config with decisions and no rules is a real state — a team writing
+    /// its decisions down before enforcing any of them — and the message lists
+    /// what there is.
+    #[test]
+    fn a_configuration_with_only_decisions_lists_those() {
+        let error = rendered(
+            &FILES,
+            &config(Vec::new()).with_decisions(vec![CompiledDecision {
+                id: DecisionId::new("ADR-1").expect("valid"),
+                title: "t".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Accepted,
+            }]),
+            "ADR-2",
+            crate::report::Format::Text,
+        )
+        .expect_err("no such id");
+
+        assert_eq!(
+            error,
+            "nothing is called `ADR-2`; the declared decisions are `ADR-1`"
         );
     }
 

@@ -38,6 +38,10 @@ impl Renderer for Json {
                     .map(|finding| JsonFinding::new(finding, reasons))
                     .collect()
             }),
+            decisions: reasons
+                .decisions()
+                .map(crate::describe::JsonDecision::of)
+                .collect(),
             unreadable_files: report
                 .unreadable_files
                 .iter()
@@ -71,6 +75,7 @@ impl Renderer for Json {
                 .iter()
                 .map(|finding| JsonFinding::new(finding, reasons))
                 .collect(),
+            decisions: referenced_by(&single.findings, reasons),
             skipped: single
                 .skipped
                 .iter()
@@ -96,6 +101,14 @@ struct JsonReport<'a> {
     /// flag sees the field it always saw.
     #[serde(skip_serializing_if = "Option::is_none")]
     findings: Option<Vec<JsonFinding<'a>>>,
+    /// The decisions the configuration declares, with their prose, once.
+    ///
+    /// Every decision, not only the ones with findings against them: a
+    /// consumer charting a report wants to say "eleven decisions, two being
+    /// broken", and it cannot say that from the ones that failed. Absent when
+    /// the config declares none. Issue #100.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    decisions: Vec<crate::describe::JsonDecision<'a>>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     unreadable_files: Vec<UnreadableFile<'a>>,
 }
@@ -112,14 +125,48 @@ struct JsonFinding<'a> {
     finding: &'a Finding,
     #[serde(skip_serializing_if = "Option::is_none")]
     why: Option<&'a str>,
+    /// The decision this finding's rule implements, by id.
+    ///
+    /// The id, where `why` above is the whole string, and the asymmetry is
+    /// deliberate. A reason belongs to one rule, so repeating it per finding
+    /// costs one copy per finding *of that rule*. A decision belongs to many
+    /// rules by construction — that is the argument for the prose living on
+    /// the config at all — so repeating the block would put the same paragraph
+    /// on every finding of every rule serving it. The prose is in the report's
+    /// `decisions`, once. Issue #100.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    decision: Option<&'a str>,
 }
 impl<'a> JsonFinding<'a> {
     fn new(finding: &'a Finding, reasons: &'a Reasons) -> Self {
         Self {
             finding,
             why: reasons.of_rule(&finding.rule_id),
+            decision: reasons
+                .decision_of_rule(&finding.rule_id)
+                .map(|decision| decision.id.as_str()),
         }
     }
+}
+
+/// The decisions a set of findings names, each once, in the order met.
+///
+/// Deduplicated because that is the whole shape of the thing: many rules serve
+/// one decision, so two findings from two rules routinely name the same one.
+#[must_use]
+pub fn referenced_by<'a>(
+    findings: &[Finding],
+    reasons: &'a Reasons,
+) -> Vec<crate::describe::JsonDecision<'a>> {
+    let mut seen: Vec<crate::describe::JsonDecision<'a>> = Vec::new();
+    for finding in findings {
+        if let Some(decision) = reasons.decision_of_rule(&finding.rule_id)
+            && !seen.iter().any(|kept| kept.id == decision.id.as_str())
+        {
+            seen.push(crate::describe::JsonDecision::of(decision));
+        }
+    }
+    seen
 }
 
 #[derive(Debug, Serialize)]
@@ -134,6 +181,16 @@ struct JsonSingle<'a> {
     version: u32,
     path: &'a archwarden_core::path::RepoRelPath,
     findings: Vec<JsonFinding<'a>>,
+    /// The decisions the findings above reference, with their prose.
+    ///
+    /// Only those, where the whole-repository report carries every declared
+    /// decision — because the questions differ. A consumer charting a run
+    /// wants to say "eleven decisions, two being broken"; a caller asking
+    /// about one file wants to know what *this* write breaks, and eleven
+    /// paragraphs about decisions it does not touch is the noise a pre-write
+    /// answer cannot afford. Issue #100.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    decisions: Vec<crate::describe::JsonDecision<'a>>,
     /// Always present, even when empty. A caller needs to see that the list is
     /// empty rather than infer it from absence -- that is the whole point of
     /// reporting skips (correction C6).
@@ -455,6 +512,132 @@ mod tests {
         assert_eq!(parsed["findings"][0]["why"], "it is published");
         assert_eq!(parsed["findings"][1]["why"], "it is published");
     }
+    /// The decision is **normalised**, and that is the one place this shape
+    /// deliberately differs from `why` beside it.
+    ///
+    /// A reason belongs to one rule, so repeating it per finding costs one
+    /// copy per finding of that rule. A decision belongs to many rules by
+    /// construction — that is the whole argument for the prose living on the
+    /// config — so repeating the block would put the same paragraph on every
+    /// finding of eight rules. The findings name it by id and the report
+    /// carries the prose once. Issue #100.
+    #[test]
+    fn a_finding_names_its_decision_and_the_report_carries_the_prose_once() {
+        let report = report(vec![
+            finding(Level::Error, None),
+            finding(Level::Error, None),
+        ]);
+        let reasons = Reasons::from([("domain-entity-shape", "it is published")]).deciding([(
+            "domain-entity-shape",
+            archwarden_core::compiled::CompiledDecision {
+                id: archwarden_core::ids::DecisionId::new("ADR-014").expect("valid"),
+                title: "The domain does not know about transport".to_owned(),
+                why: Some("it is published".to_owned()),
+                link: Some("docs/adr/014.md".to_owned()),
+                status: archwarden_core::compiled::DecisionStatus::Accepted,
+            },
+        )]);
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&rendered_with(&report, &reasons)).expect("valid JSON");
+
+        assert_eq!(parsed["findings"][0]["decision"], "ADR-014");
+        assert_eq!(parsed["findings"][1]["decision"], "ADR-014");
+
+        let decisions = parsed["decisions"].as_array().expect("a list");
+        assert_eq!(decisions.len(), 1, "the prose appears once: {parsed}");
+        assert_eq!(decisions[0]["id"], "ADR-014");
+        assert_eq!(
+            decisions[0]["title"],
+            "The domain does not know about transport"
+        );
+        assert_eq!(decisions[0]["link"], "docs/adr/014.md");
+        assert_eq!(decisions[0]["status"], "accepted");
+    }
+
+    /// The single-file shape carries only the decisions its findings name —
+    /// a caller asking about one file wants to know what *this* write breaks,
+    /// and a paragraph about every decision in the repository is noise a
+    /// pre-write answer cannot afford. Each named one appears once, however
+    /// many findings reach it.
+    #[test]
+    fn a_single_file_check_carries_the_decisions_its_findings_name() {
+        let other = Finding {
+            rule_id: archwarden_core::ids::RuleId::new("domain-forbids-http").expect("valid"),
+            ..finding(Level::Error, None)
+        };
+        let single = archwarden_engine::single::Single {
+            path: path("src/user/create.use-case.ts"),
+            findings: vec![finding(Level::Error, None), other],
+            skipped: Vec::new(),
+            unresolved_imports: Vec::new(),
+        };
+
+        let adr = archwarden_core::compiled::CompiledDecision {
+            id: archwarden_core::ids::DecisionId::new("ADR-014").expect("valid"),
+            title: "The domain does not know about transport".to_owned(),
+            why: None,
+            link: Some("docs/adr/014.md".to_owned()),
+            status: archwarden_core::compiled::DecisionStatus::Accepted,
+        };
+        // Two rules, one decision, plus a third decision nothing here names.
+        let reasons = Reasons::default().deciding([
+            ("domain-entity-shape", adr.clone()),
+            ("domain-forbids-http", adr),
+            (
+                "untouched",
+                archwarden_core::compiled::CompiledDecision {
+                    id: archwarden_core::ids::DecisionId::new("ADR-020").expect("valid"),
+                    title: "Not about this file".to_owned(),
+                    why: None,
+                    link: None,
+                    status: archwarden_core::compiled::DecisionStatus::Accepted,
+                },
+            ),
+        ]);
+
+        let mut out = Vec::new();
+        Json.render_single(&single, &reasons, &mut out);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&String::from_utf8(out).expect("UTF-8")).expect("valid JSON");
+
+        let decisions = parsed["decisions"].as_array().expect("a list");
+        assert_eq!(decisions.len(), 1, "once, and only the named one: {parsed}");
+        assert_eq!(decisions[0]["id"], "ADR-014");
+        assert_eq!(decisions[0]["link"], "docs/adr/014.md");
+        assert_eq!(parsed["findings"][1]["decision"], "ADR-014");
+    }
+
+    /// And a single-file check over a config with no decisions omits the key,
+    /// which is what a pre-write hook has always received.
+    #[test]
+    fn a_single_file_check_with_no_decisions_omits_the_key() {
+        let single = archwarden_engine::single::Single {
+            path: path("src/user/create.use-case.ts"),
+            findings: vec![finding(Level::Error, None)],
+            skipped: Vec::new(),
+            unresolved_imports: Vec::new(),
+        };
+
+        let mut out = Vec::new();
+        Json.render_single(&single, &Reasons::default(), &mut out);
+        let json = String::from_utf8(out).expect("UTF-8");
+
+        assert!(!json.contains("decision"), "{json}");
+    }
+
+    /// A run over a config with no decisions produces the report it produced
+    /// before 0.21, key for key.
+    #[test]
+    fn a_report_with_no_decisions_grows_no_key() {
+        let json = rendered_with(
+            &report(vec![finding(Level::Error, None)]),
+            &Reasons::from([("domain-entity-shape", "it is published")]),
+        );
+
+        assert!(!json.contains("decision"), "{json}");
+    }
+
     /// The counts reach JSON too, where a tool can chart them.
     #[test]
     fn the_json_summary_carries_the_cache_split() {

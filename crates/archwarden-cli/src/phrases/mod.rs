@@ -101,6 +101,22 @@ pub trait Phrases: Send + Sync {
     fn tally_cross_module(&self) -> &'static str;
     /// The label for rules that record no reason.
     fn tally_no_reason(&self) -> &'static str;
+    /// The label under the decision count.
+    fn tally_decisions(&self) -> &'static str;
+    /// The eyebrow above the decision list.
+    fn decisions_eyebrow(&self) -> &'static str;
+    /// The heading above the decision list.
+    fn decisions_heading(&self) -> &'static str;
+    /// What the decision list is for.
+    fn decisions_lede(&self) -> &'static str;
+    /// The line naming the rules that enforce a decision.
+    fn enforced_by(&self, rules: &str) -> String;
+    /// Said in place of that line when nothing enforces it.
+    fn enforced_by_nothing(&self) -> &'static str;
+    /// Where a decision is written down, before the link itself.
+    fn written_down_in(&self) -> &'static str;
+    /// A decision's status, when it is not `accepted`.
+    fn decision_status(&self, status: &str) -> String;
     /// The eyebrow above the rule list.
     fn rules_eyebrow(&self) -> &'static str;
     /// The heading above the rule list.

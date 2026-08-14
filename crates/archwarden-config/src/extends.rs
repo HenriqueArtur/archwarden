@@ -2,7 +2,8 @@
 //!
 //! Merge rules, from `docs/CONFIG.md`:
 //!
-//! - arrays (`modules`, `rules`, `ignore`) are concatenated, presets first;
+//! - arrays (`modules`, `rules`, `decisions`, `ignore`) are concatenated,
+//!   presets first;
 //! - scalars (`root`, `version`) come from the local config;
 //! - a preset declaring `root` is an error, because it cannot know the layout
 //!   of the repository including it;
@@ -10,7 +11,7 @@
 
 #[cfg(test)]
 use archwarden_core::ids::ModuleId;
-use archwarden_core::ids::RuleId;
+use archwarden_core::ids::{DecisionId, RuleId};
 use archwarden_resolver::preset::{PresetError, PresetResolver};
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -57,6 +58,41 @@ pub enum ExtendsError {
         first: Utf8PathBuf,
         /// Where it was seen again.
         second: Utf8PathBuf,
+    },
+
+    /// Two decisions share an id.
+    ///
+    /// Refused for the reason two rules with one id are refused: an id that
+    /// names two things names neither, and a rule pointing at it would be
+    /// pointing at whichever the merge happened to keep. Issue #100.
+    #[error("decision id `{id}` is declared twice, in `{first}` and in `{second}`")]
+    DuplicateDecisionId {
+        /// The repeated id.
+        id: DecisionId,
+        /// Where it was first seen.
+        first: Utf8PathBuf,
+        /// Where it was seen again.
+        second: Utf8PathBuf,
+    },
+
+    /// One id is a rule in one place and a decision in another.
+    ///
+    /// The two are one namespace because `config explain` takes either. An
+    /// argument that could mean a rule or a decision, and does mean both, is a
+    /// command that has to pick one and be wrong half the time — so the
+    /// collision is refused here, where both files can be named, rather than
+    /// resolved by a precedence rule nobody would remember. Issue #100.
+    #[error(
+        "`{id}` is a rule in `{rule_at}` and a decision in `{decision_at}`; \
+         `config explain` takes either, so one id may not be both"
+    )]
+    IdIsBothRuleAndDecision {
+        /// The id that names two things.
+        id: String,
+        /// Where the rule is declared.
+        rule_at: Utf8PathBuf,
+        /// Where the decision is declared.
+        decision_at: Utf8PathBuf,
     },
 
     /// `disable` names a rule that does not exist.
@@ -106,6 +142,7 @@ pub fn merge(entry: LoadedConfig, resolver: &PresetResolver) -> Result<MergedCon
         mut merged,
         sources,
         origins,
+        decision_origins,
     } = accumulator;
 
     // Scalars come from the entry config; only its lists were merged.
@@ -139,6 +176,11 @@ pub fn merge(entry: LoadedConfig, resolver: &PresetResolver) -> Result<MergedCon
         modules: _,
         rules: _,
         disable: _,
+        // A list like the rules, and for the same reason: a preset that ships
+        // decisions is shipping opinions with names, which is what makes one
+        // worth adopting rather than copying. Two with one id is refused in
+        // `absorb`, where both files can be named. Issue #100.
+        decisions: _,
     } = config;
 
     merged.version = version;
@@ -149,6 +191,7 @@ pub fn merge(entry: LoadedConfig, resolver: &PresetResolver) -> Result<MergedCon
     merged.language = language;
     merged.governance = governance;
 
+    check_namespaces_do_not_collide(&origins, &decision_origins)?;
     check_disable_targets(&merged, &origins)?;
 
     Ok(MergedConfig {
@@ -166,6 +209,9 @@ struct Accumulator {
     sources: Vec<Utf8PathBuf>,
     /// Which file each rule id came from, for the duplicate-id message.
     origins: Vec<(RuleId, Utf8PathBuf)>,
+    /// The same for decision ids, kept apart from the rule ids so a collision
+    /// between the two lists can say which side each came from.
+    decision_origins: Vec<(DecisionId, Utf8PathBuf)>,
 }
 
 impl Accumulator {
@@ -219,9 +265,15 @@ impl Accumulator {
         for rule in &loaded.config.rules {
             self.remember(rule.id(), &loaded.path)?;
         }
+        for decision in &loaded.config.decisions {
+            self.remember_decision(&decision.id, &loaded.path)?;
+        }
 
         self.merged.modules.extend(loaded.config.modules.clone());
         self.merged.rules.extend(loaded.config.rules.clone());
+        self.merged
+            .decisions
+            .extend(loaded.config.decisions.clone());
         self.merged.disable.extend(loaded.config.disable.clone());
 
         let mut ignore = std::mem::take(&mut self.merged.ignore).into_vec();
@@ -242,6 +294,43 @@ impl Accumulator {
         self.origins.push((id.clone(), path.to_owned()));
         Ok(())
     }
+
+    fn remember_decision(&mut self, id: &DecisionId, path: &Utf8Path) -> Result<(), ExtendsError> {
+        if let Some((_, first)) = self.decision_origins.iter().find(|(seen, _)| seen == id) {
+            return Err(ExtendsError::DuplicateDecisionId {
+                id: id.clone(),
+                first: first.clone(),
+                second: path.to_owned(),
+            });
+        }
+        self.decision_origins.push((id.clone(), path.to_owned()));
+        Ok(())
+    }
+}
+
+/// Rejects an id that is a rule in one place and a decision in another.
+///
+/// Checked after the whole chain is absorbed rather than as each file lands,
+/// because the two lists fill in file order and a rule may be declared before
+/// the decision it collides with, or after it. One pass over both at the end
+/// sees every pair whichever way round they arrived.
+fn check_namespaces_do_not_collide(
+    rules: &[(RuleId, Utf8PathBuf)],
+    decisions: &[(DecisionId, Utf8PathBuf)],
+) -> Result<(), ExtendsError> {
+    for (rule, rule_at) in rules {
+        if let Some((decision, decision_at)) = decisions
+            .iter()
+            .find(|(decision, _)| decision.as_str() == rule.as_str())
+        {
+            return Err(ExtendsError::IdIsBothRuleAndDecision {
+                id: decision.as_str().to_owned(),
+                rule_at: rule_at.clone(),
+                decision_at: decision_at.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Rejects `disable` entries that match nothing.
@@ -528,6 +617,132 @@ mod tests {
         assert_eq!(id.as_str(), "shared");
         assert_eq!(first, &root.join("presets/base.json"));
         assert_eq!(second, &root.join("arch.config.json"));
+    }
+
+    /// A preset that ships decisions is shipping opinions with names, which is
+    /// what makes one worth adopting rather than copying. They fold the way
+    /// rules fold: concatenated, presets first.
+    #[test]
+    fn a_preset_may_ship_decisions_and_they_merge() {
+        let (_guard, root) = tree(&[
+            (
+                "presets/base.json",
+                r#"{"version":0,"decisions":[
+                     {"id":"PRESET-1","title":"the preset's opinion","link":"docs/a.md"}],
+                   "rules":[]}"#,
+            ),
+            (
+                "arch.config.json",
+                r#"{"version":0,"extends":"./presets/base.json",
+                    "decisions":[{"id":"LOCAL-1","title":"ours"}],"rules":[]}"#,
+            ),
+        ]);
+
+        let merged = merge_at(&root).expect("merges");
+        let ids: Vec<&str> = merged
+            .config
+            .decisions
+            .iter()
+            .map(|d| d.id.as_str())
+            .collect();
+
+        assert_eq!(ids, ["PRESET-1", "LOCAL-1"], "presets first, like rules");
+        assert_eq!(
+            merged.config.decisions[0].link.as_deref(),
+            Some("docs/a.md"),
+            "the prose travelled with it"
+        );
+    }
+
+    /// Two decisions with one id is refused for the same reason two rules
+    /// with one id already are: an id that names two things names neither.
+    /// Both files are named, because the fix is in one of them.
+    #[test]
+    fn a_decision_id_declared_twice_names_both_files() {
+        let (_guard, root) = tree(&[
+            (
+                "presets/base.json",
+                r#"{"version":0,"decisions":[{"id":"ADR-014","title":"theirs"}],"rules":[]}"#,
+            ),
+            (
+                "arch.config.json",
+                r#"{"version":0,"extends":"./presets/base.json",
+                    "decisions":[{"id":"ADR-014","title":"ours"}],"rules":[]}"#,
+            ),
+        ]);
+
+        let err = merge_at(&root).expect_err("should refuse");
+        let ExtendsError::DuplicateDecisionId { id, first, second } = &err else {
+            panic!("expected DuplicateDecisionId, got {err:?}");
+        };
+        assert_eq!(id.as_str(), "ADR-014");
+        assert_eq!(first, &root.join("presets/base.json"));
+        assert_eq!(second, &root.join("arch.config.json"));
+    }
+
+    /// Within one file too, where it is a plain copy-paste.
+    #[test]
+    fn a_decision_id_repeated_within_one_file_is_refused() {
+        let (_guard, root) = tree(&[(
+            "arch.config.json",
+            r#"{"version":0,"decisions":[
+                 {"id":"same","title":"a"},{"id":"same","title":"b"}],"rules":[]}"#,
+        )]);
+
+        assert!(matches!(
+            merge_at(&root),
+            Err(ExtendsError::DuplicateDecisionId { .. })
+        ));
+    }
+
+    /// The namespaces are one namespace, because `config explain` takes
+    /// either. An argument that could mean a rule or a decision, and does
+    /// mean both, is a command that has to choose one and be wrong half the
+    /// time — so the collision is refused where both can be named.
+    #[test]
+    fn an_id_cannot_be_a_rule_and_a_decision_at_once() {
+        let (_guard, root) = tree(&[(
+            "arch.config.json",
+            &format!(
+                r#"{{"version":0,"decisions":[{{"id":"sealed","title":"a"}}],"rules":[{}]}}"#,
+                rule("sealed", "a/*")
+            ),
+        )]);
+
+        let err = merge_at(&root).expect_err("should refuse");
+        assert!(
+            matches!(err, ExtendsError::IdIsBothRuleAndDecision { .. }),
+            "got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("sealed"),
+            "the message names the id: {err}"
+        );
+    }
+
+    /// And the collision is caught across files as well as within one, which
+    /// is the case a preset creates: a project defining a rule called
+    /// `ADR-014` after adopting a preset that decided `ADR-014`.
+    #[test]
+    fn the_two_namespaces_collide_across_a_preset_too() {
+        let (_guard, root) = tree(&[
+            (
+                "presets/base.json",
+                r#"{"version":0,"decisions":[{"id":"ADR-014","title":"theirs"}],"rules":[]}"#,
+            ),
+            (
+                "arch.config.json",
+                &format!(
+                    r#"{{"version":0,"extends":"./presets/base.json","rules":[{}]}}"#,
+                    rule("ADR-014", "a/*")
+                ),
+            ),
+        ]);
+
+        assert!(matches!(
+            merge_at(&root),
+            Err(ExtendsError::IdIsBothRuleAndDecision { .. })
+        ));
     }
 
     /// Collisions inside one file count too, not only across presets.

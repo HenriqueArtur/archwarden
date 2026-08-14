@@ -17,6 +17,86 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 26 — A rule names the decision it implements, and the key points one way
+Status: accepted.
+Context: issue #100. Every rule could say *why* it exists (#46) and nothing said
+*what decision it implements*. That is the gap between a config that enforces an
+architecture and one that describes it: archwarden's premise is that conventions
+should be checkable rather than described, and it got halfway — the reasoning
+was there, the decision as a **thing** was not. A name, its rationale, where it
+is written down, whether it still holds.
+
+The argument is #46's, one level up: *an agent that knows the rule and not the
+reason can comply and nothing else, which is how a config gets edited to make a
+check pass.* A rule id in a denial is a thing to satisfy; a decision with a link
+is a thing to understand or to argue with.
+
+Decision: a top-level `decisions` block carrying prose — `id`, `title`, `why`,
+`link`, `status` — and a `decision` field on every rule kind naming one.
+
+**The rule points at the decision.** A plain foreign key, written where the
+author already is. There is no second list to keep in step, a deleted rule
+leaves nothing dangling, and a new rule that forgets its decision is visible in
+the one place it exists rather than absent from a list nobody re-reads. The
+reverse — the rules serving a decision — is computed, which is what
+`config explain <decision-id>` and the doctor's superseded check both read.
+
+**The prose lives on the config and the rules carry the reference**, unlike
+`why`, which is copied onto each `CompiledRule`. Many rules serve one decision
+by construction, so copying would give one paragraph eight places to disagree
+with itself. That difference propagates: the report's JSON normalises it —
+findings name a decision by id and the envelope carries the prose once — where
+`why` is repeated per finding.
+
+**Every kind has the field, and that is why this shipped first of its
+milestone.** `export-shape`, `mirror`, `frozen` and `annotation` each land
+carrying `decision` from birth. Shipping this last would have been four
+retrofits of a field that should have been there.
+
+**It changes what every surface says and nothing about what fires.** The hook's
+denial, `describe`, `agent-guide`, `config explain`, the page and MCP all change
+shape in one release, reviewable as one diff — which is what makes a version of
+its own worth spending.
+
+Alternatives:
+- **The decision lists its rules.** The shape the issue was reported in.
+  Rejected: it is a second list, and the failure mode is a rule added without
+  being added to it, which nothing can see. The foreign key makes the omission
+  visible where the rule is.
+- **A decision declared inside a module too.** Rejected: a decision that spans
+  modules is the common case — the reported one, `ADR-014`, is about a boundary
+  between two of them — and allowing both would create two places to look for
+  one thing.
+- **`check` reporting a rule with no decision.** Rejected on the issue's own
+  argument: a repository's build must not fail because its config is
+  under-documented, and a gate that failed for that is one people turn off. It
+  is `doctor`'s, at `warning`, and only once some rule names one — every
+  configuration in the world has zero decisions on the day this ships.
+- **A dangling reference reported by `doctor`.** Rejected for the opposite
+  reason: a rule naming a decision nobody declared is a typo, and it is refused
+  at compile where `from_module` naming an undeclared module already is.
+Consequences: **`config explain` takes either namespace**, which is what makes
+the command answer the question people actually ask — not *what does this rule
+do* but *why is this like this*. That costs one rule enforced at merge time: an
+id may not be a rule and a decision at once, refused where both files can be
+named, because a command that had to pick would be wrong half the time. It also
+answers the half a document cannot: whether the decision is still being kept.
+
+**`config doctor` grew a level, and only because this needed one.** It had
+sixteen checks in a flat list with no notion of severity, and #100 needs two of
+its three to be advice and one to be a contradiction. The sixteen stay
+`warning` — some arguably deserve `error`, and promoting them is a review that
+belongs to whichever release is about them. The level does not reach the exit
+code: `doctor` is advice and `check` is the gate, which is the same line this
+decision draws when it keeps `check` silent.
+
+**`status` is the part to watch.** A `superseded` decision whose rules still
+fire is the most valuable check here and the reason the field is not
+decoration. `proposed` is deliberately silent — a decision under trial with
+rules already running is how one is trialled — and that is the choice to revisit
+first if a repository turns up where enforcing an unaccepted decision at `error`
+is a real problem.
+
 ### 25 — A rule can choose its files by what they import, and pays only if it asks
 Status: accepted.
 Context: issue #98. A rule's population was where a file sits and what it is

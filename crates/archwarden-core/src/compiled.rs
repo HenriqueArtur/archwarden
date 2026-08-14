@@ -12,7 +12,7 @@ use crate::{
     facts::KindFilter,
     glob::PathSet,
     hash::ContentHash,
-    ids::{ModuleId, RuleId},
+    ids::{DecisionId, ModuleId, RuleId},
     level::Level,
     path::RepoRelPath,
     pattern::Pattern,
@@ -415,6 +415,18 @@ pub struct CompiledRule {
     /// eight rules at once and is not an answer to "why this one". Both are
     /// shown; neither stands in for the other.
     pub module_why: Option<String>,
+    /// The decision this rule implements, when it names one.
+    ///
+    /// The *reference*, not the prose — unlike [`why`](Self::why), which is
+    /// copied onto every rule that carries it. One decision is served by many
+    /// rules, so the prose lives once on the
+    /// [`CompiledConfig`](CompiledConfig::decisions) and every surface looks
+    /// it up. Copying it here would put the same paragraph on eight rules and
+    /// give it eight places to be edited.
+    ///
+    /// Guaranteed to name a decision the config declares: a reference to
+    /// nothing is refused at compile. Issue #100.
+    pub decision: Option<DecisionId>,
     /// Which files this rule narrows itself to by what they import.
     ///
     /// A second axis beside [`scope`](Self::scope), and the difference is what
@@ -459,6 +471,7 @@ impl CompiledRule {
 pub struct CompiledConfig {
     rules: Vec<CompiledRule>,
     modules: Vec<CompiledModule>,
+    decisions: Vec<CompiledDecision>,
     ignore: PathSet,
     skip_dirs: SkipDirs,
     rules_hash: ContentHash,
@@ -487,6 +500,73 @@ pub struct CompiledModule {
     /// — which is the omission problem the quantifier exists to remove,
     /// reappearing one level up. `config doctor` names them.
     pub kind: Option<String>,
+}
+
+/// A decision the architecture rests on, as the rest of the run sees it.
+///
+/// Prose, carried and never interpreted, exactly like a rule's `why` — with
+/// one difference that decides where it lives: many rules serve one decision.
+/// So the rules carry the *reference* and this carries the words, once.
+///
+/// Issue #100: a rule id in a denial is a thing to satisfy; a decision with a
+/// link is a thing to understand or to argue with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledDecision {
+    /// The reference, such as `ADR-014`.
+    pub id: DecisionId,
+    /// What was decided, in one line. Always present.
+    pub title: String,
+    /// Why, when the author wrote it here rather than only behind `link`.
+    pub why: Option<String>,
+    /// Where it is written down. Carried verbatim, never resolved — archwarden
+    /// does not check that a wiki page exists, and a linter that refused the
+    /// reference would push people to omit it.
+    pub link: Option<String>,
+    /// Whether it still holds.
+    pub status: DecisionStatus,
+}
+
+/// Whether a decision still holds.
+///
+/// Mirrors the wire enum in `archwarden-config`, the way [`SkipScope`] does:
+/// this crate owns the compiled result and cannot see the format it was
+/// written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub enum DecisionStatus {
+    /// It holds. The default, and what a decision that says nothing means.
+    #[default]
+    Accepted,
+    /// Written down, not yet settled. Reported by nothing — a decision under
+    /// trial with rules already running is how one is trialled.
+    Proposed,
+    /// Replaced. Rules still enforcing it are a config saying two things at
+    /// once, which `config doctor` reports as an error.
+    Superseded,
+}
+
+impl DecisionStatus {
+    /// The word a surface prints, which is the word the config wrote.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accepted => "accepted",
+            Self::Proposed => "proposed",
+            Self::Superseded => "superseded",
+        }
+    }
+
+    /// Whether this is the default.
+    #[must_use]
+    pub fn is_accepted(self) -> bool {
+        matches!(self, Self::Accepted)
+    }
+}
+
+impl std::fmt::Display for DecisionStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(self.as_str())
+    }
 }
 
 impl CompiledConfig {
@@ -539,12 +619,43 @@ impl CompiledConfig {
         Self {
             rules,
             modules: Vec::new(),
+            decisions: Vec::new(),
             ignore,
             skip_dirs,
             rules_hash,
             languages: Languages::default(),
             governance: None,
         }
+    }
+
+    /// Records the decisions the configuration declared.
+    ///
+    /// A builder step like `with_modules`, so every test of a rule keeps the
+    /// constructor it had.
+    #[must_use]
+    pub fn with_decisions(mut self, decisions: Vec<CompiledDecision>) -> Self {
+        self.decisions = decisions;
+        self
+    }
+
+    /// Every decision, in declaration order.
+    ///
+    /// Carried whether or not any rule points at one: `config doctor` has to
+    /// be able to see a decision nobody enforces, and the guide page lists
+    /// what the architecture *decided*, not only what it checks.
+    pub fn decisions(&self) -> impl Iterator<Item = &CompiledDecision> {
+        self.decisions.iter()
+    }
+
+    /// The decision an id names.
+    ///
+    /// Every `CompiledRule::decision` resolves here, because a reference to a
+    /// decision the config does not declare is refused at compile. A caller
+    /// still gets an `Option` rather than a panic: this is also the lookup
+    /// `config explain` makes with a string a user typed.
+    #[must_use]
+    pub fn decision(&self, id: &DecisionId) -> Option<&CompiledDecision> {
+        self.decisions.iter().find(|decision| &decision.id == id)
     }
 
     /// Records the modules the configuration declared.
@@ -642,6 +753,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            decision: None,
             imports: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
@@ -1009,6 +1121,132 @@ mod tests {
                 Some(level)
             );
         }
+    }
+    fn decision(id: &str, status: DecisionStatus) -> CompiledDecision {
+        CompiledDecision {
+            id: DecisionId::new(id).expect("valid id"),
+            title: "The domain does not know about transport".to_owned(),
+            why: None,
+            link: None,
+            status,
+        }
+    }
+
+    /// A configuration carries its decisions past compilation, whether or not
+    /// any rule points at one: `config doctor` has to be able to see an
+    /// orphan, and the guide page lists what the architecture decided rather
+    /// than only what it checks.
+    #[test]
+    fn a_config_carries_its_decisions_in_declaration_order() {
+        let config = CompiledConfig::new(
+            Vec::new(),
+            PathSet::default(),
+            SkipDirs::default(),
+            crate::hash::ContentHash::of(b""),
+        )
+        .with_decisions(vec![
+            decision("ADR-014", DecisionStatus::Accepted),
+            decision("ADR-007", DecisionStatus::Superseded),
+        ]);
+
+        let ids: Vec<&str> = config.decisions().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["ADR-014", "ADR-007"]);
+    }
+
+    /// The lookup every surface makes. It returns an `Option` rather than
+    /// panicking even though a compiled rule's reference is guaranteed to
+    /// resolve, because this is also how `config explain` looks up a string a
+    /// user typed.
+    #[test]
+    fn a_decision_is_found_by_id_and_a_stranger_is_not() {
+        let config = CompiledConfig::new(
+            Vec::new(),
+            PathSet::default(),
+            SkipDirs::default(),
+            crate::hash::ContentHash::of(b""),
+        )
+        .with_decisions(vec![decision("ADR-014", DecisionStatus::Accepted)]);
+
+        assert_eq!(
+            config
+                .decision(&DecisionId::new("ADR-014").expect("valid"))
+                .map(|d| d.title.as_str()),
+            Some("The domain does not know about transport")
+        );
+        assert_eq!(
+            config.decision(&DecisionId::new("ADR-041").expect("valid")),
+            None
+        );
+    }
+
+    /// A configuration that declares none answers with nothing rather than
+    /// with an error, which is every configuration written before 0.21.
+    #[test]
+    fn a_config_with_no_decisions_answers_none() {
+        let config = CompiledConfig::new(
+            Vec::new(),
+            PathSet::default(),
+            SkipDirs::default(),
+            crate::hash::ContentHash::of(b""),
+        );
+
+        assert_eq!(config.decisions().count(), 0);
+        assert_eq!(
+            config.decision(&DecisionId::new("ADR-014").expect("valid")),
+            None
+        );
+    }
+
+    /// The three words, which are the words the config wrote. They are stable
+    /// identifiers in every JSON shape, so they are asserted rather than
+    /// derived.
+    #[test]
+    fn a_status_prints_the_word_the_config_used() {
+        assert_eq!(DecisionStatus::Accepted.as_str(), "accepted");
+        assert_eq!(DecisionStatus::Proposed.as_str(), "proposed");
+        assert_eq!(DecisionStatus::Superseded.as_str(), "superseded");
+
+        // Through `Display`, which is what the terminal surfaces format with.
+        assert_eq!(DecisionStatus::Superseded.to_string(), "superseded");
+        assert_eq!(format!("{:>11}", DecisionStatus::Proposed), "   proposed");
+    }
+
+    /// Only one of the three is the default, and every surface asks this to
+    /// decide whether to say the word out loud at all.
+    #[test]
+    fn only_accepted_is_the_default() {
+        assert!(DecisionStatus::Accepted.is_accepted());
+        assert!(!DecisionStatus::Proposed.is_accepted());
+        assert!(!DecisionStatus::Superseded.is_accepted());
+        assert_eq!(DecisionStatus::default(), DecisionStatus::Accepted);
+    }
+
+    /// A rule carries the reference, not the prose. The two travel separately
+    /// because many rules serve one decision.
+    #[test]
+    fn a_rule_carries_the_reference_and_the_config_carries_the_words() {
+        let mut governed = rule("shape", &["src/*"], structure());
+        governed.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+
+        let config = CompiledConfig::new(
+            vec![governed],
+            PathSet::default(),
+            SkipDirs::default(),
+            crate::hash::ContentHash::of(b""),
+        )
+        .with_decisions(vec![decision("ADR-014", DecisionStatus::Accepted)]);
+
+        let named = config
+            .rules()
+            .next()
+            .expect("one rule")
+            .decision
+            .as_ref()
+            .expect("it names one");
+        assert_eq!(
+            config.decision(named).map(|d| d.status),
+            Some(DecisionStatus::Accepted)
+        );
     }
 }
 

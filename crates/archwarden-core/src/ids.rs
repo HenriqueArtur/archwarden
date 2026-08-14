@@ -1,13 +1,14 @@
-//! Stable identifiers for rules and modules.
+//! Stable identifiers for rules, modules and decisions.
 //!
 //! These are newtypes rather than `String` because they travel together
 //! through the whole pipeline and are trivially swappable at a call site. The
 //! compiler catching that is cheaper than a test catching it.
 //!
-//! Both are also user-facing: a rule id is typed on the command line
-//! (`archwarden explain <rule-id>`) and inside a config (`disable`). That is
-//! why the character set is restricted — an id with a space in it would need
-//! quoting in every context it appears.
+//! All three are also user-facing: a rule id is typed on the command line
+//! (`archwarden config explain <rule-id>`) and inside a config (`disable`), and
+//! a decision id is typed at the same argument. That is why the character set
+//! is restricted — an id with a space in it would need quoting in every
+//! context it appears.
 
 use serde::{Deserialize, Serialize};
 
@@ -114,6 +115,16 @@ id_newtype!(
     "module",
     "A module's identifier. Modules are labels for grouping output, not scopes."
 );
+id_newtype!(
+    DecisionId,
+    "decision",
+    "A decision's identifier, unique across a config, its presets, and its \
+     rule ids.\n\nWritten as the reference the team already uses for it — \
+     `ADR-014`, `rfc.7` — because the id's job is to be the same string in the \
+     config, in a denial, and in whatever document `link` points at. Unique \
+     against rule ids as well as against other decisions, because `config \
+     explain` takes either and an id naming two things names neither."
+);
 
 /// The rule id that findings about ungoverned files report under.
 ///
@@ -190,14 +201,31 @@ mod tests {
         );
     }
 
-    /// The two kinds report themselves distinctly, so a config error says
+    /// The three kinds report themselves distinctly, so a config error says
     /// which list the bad id came from.
     #[test]
-    fn the_error_distinguishes_rules_from_modules() {
+    fn the_error_distinguishes_rules_from_modules_and_decisions() {
         let rule = RuleId::new("bad id").expect_err("rejects");
         let module = ModuleId::new("bad id").expect_err("rejects");
+        let decision = DecisionId::new("bad id").expect_err("rejects");
         assert!(rule.to_string().starts_with("rule id"), "{rule}");
         assert!(module.to_string().starts_with("module id"), "{module}");
+        assert!(
+            decision.to_string().starts_with("decision id"),
+            "{decision}"
+        );
+    }
+
+    /// The shape an ADR id actually has. `ADR-014` is the reported case, and
+    /// `.` and `/` are already allowed so a preset can namespace the decisions
+    /// it ships the way it namespaces its rules.
+    #[test]
+    fn a_decision_id_looks_like_an_adr_reference() {
+        for id in ["ADR-014", "adr/014", "rfc.7", "decisão-2"] {
+            assert!(DecisionId::new(id).is_ok(), "{id} should be accepted");
+        }
+        assert!(DecisionId::new("ADR 014").is_err());
+        assert!(DecisionId::new("").is_err());
     }
 
     /// Ids are `transparent` on the wire: a config writes a plain string, not

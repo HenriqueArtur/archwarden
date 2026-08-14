@@ -117,7 +117,7 @@ fn render_html(
          <div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n\
          <div class=\"tally\"><span class=\"n\">{unattached}</span><span class=\"k\">{}</span></div>\n\
          <div class=\"tally{}\"><span class=\"n\">{unexplained}</span><span class=\"k\">{}</span></div>\n\
-         </div>\n</header>\n",
+         {}</div>\n</header>\n",
         escape(say.guide_stamp()),
         escape(&say.guide_heading(guide.rules.len(), modules.len())),
         guide.rules.len(),
@@ -131,7 +131,89 @@ fn render_html(
         // which is a bug a reader sees and a test does not.
         if unexplained > 0 { " is-accepted" } else { "" },
         escape(say.tally_no_reason()),
+        // Only when there are any. A fifth tally reading `0 decisions` would
+        // appear in every committed page on upgrade — a diff nobody made, over
+        // a feature they have not adopted. Issue #100.
+        if guide.decisions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<div class=\"tally\"><span class=\"n\">{}</span><span class=\"k\">{}</span></div>\n",
+                guide.decisions.len(),
+                escape(say.tally_decisions()),
+            )
+        },
     );
+
+    // What was decided, before the map and before the walls: those two are
+    // how the decisions are kept, and a page that opened with them would be
+    // the rule table this section exists to replace. Issue #100.
+    if !guide.decisions.is_empty() {
+        let _ = write!(
+            out,
+            "{}",
+            section(
+                say.decisions_eyebrow(),
+                say.decisions_heading(),
+                say.decisions_lede()
+            )
+        );
+
+        let _ = writeln!(out, "<div class=\"decisions\">\n");
+        for decision in &guide.decisions {
+            let status = if decision.status == "accepted" {
+                String::new()
+            } else {
+                format!(
+                    "\n<span class=\"status\">{}</span>",
+                    escape(&say.decision_status(decision.status))
+                )
+            };
+            let _ = write!(
+                out,
+                "<article class=\"decision\">\n\
+                 <span class=\"id\">{}</span>{status}\n\
+                 <h3>{}</h3>",
+                escape(decision.id),
+                escape(decision.title),
+            );
+            if let Some(why) = decision.why {
+                let _ = writeln!(out, "<p class=\"why\">{}</p>", escape(why));
+            }
+            if let Some(link) = decision.link {
+                let _ = writeln!(
+                    out,
+                    "<p class=\"link\">{} {}</p>",
+                    escape(say.written_down_in()),
+                    code(link)
+                );
+            }
+            // The debt, in words. An empty list here is the one thing on this
+            // page worth stopping at, and a blank does not stop anybody.
+            if decision.rules.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "<p class=\"enforced is-absent\">{}</p>",
+                    escape(say.enforced_by_nothing())
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "<p class=\"enforced\">{}</p>",
+                    say.enforced_by(
+                        &decision
+                            .rules
+                            .iter()
+                            .map(|id| code(id))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                );
+            }
+            let _ = writeln!(out, "</article>\n");
+        }
+        let _ = writeln!(out, "</div>\n</section>");
+    }
 
     let _ = write!(
         out,
@@ -261,6 +343,44 @@ fn render_markdown(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
         return;
     }
 
+    // The decisions first, with the rules that serve each under it. A digest
+    // that opens with a flat list of prohibitions is a list an agent works
+    // around; one that opens with what was decided and what enforces it is one
+    // it can argue with. Issue #100.
+    if !guide.decisions.is_empty() {
+        let _ = writeln!(out, "## Decisions\n");
+        for decision in &guide.decisions {
+            let status = if decision.status == "accepted" {
+                String::new()
+            } else {
+                format!(" _({})_", decision.status)
+            };
+            let _ = writeln!(out, "### {}{status} — {}\n", decision.id, decision.title);
+            if let Some(why) = decision.why {
+                let _ = writeln!(out, "{why}\n");
+            }
+            if let Some(link) = decision.link {
+                let _ = writeln!(out, "- **Written down in**: {link}");
+            }
+            // Said out loud when it is empty, because a decision nothing
+            // enforces is the thing worth noticing here.
+            let _ = writeln!(
+                out,
+                "- **Enforced by**: {}\n",
+                if decision.rules.is_empty() {
+                    "nothing".to_owned()
+                } else {
+                    decision
+                        .rules
+                        .iter()
+                        .map(|id| format!("`{id}`"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            );
+        }
+    }
+
     for rule in &guide.rules {
         let _ = writeln!(out, "## `{}` ({})\n", rule.id, rule.kind);
 
@@ -286,6 +406,11 @@ fn render_markdown(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
         if let Some(why) = rule.module_why {
             let _ = writeln!(out, "- **Why this module**: {why}");
         }
+        // The id only: the prose is under `## Decisions` above, and repeating
+        // it under each of eight rules is eight places for it to be edited.
+        if let Some(decision) = rule.decision {
+            let _ = writeln!(out, "- **Decision**: {decision}");
+        }
         let _ = writeln!(out);
     }
 
@@ -301,11 +426,14 @@ mod tests {
     use super::*;
     use archwarden_api::guide::guide;
     use archwarden_core::{
-        compiled::{CompiledConfig, CompiledRule, CompiledRuleKind, SkipDirs},
+        compiled::{
+            CompiledConfig, CompiledDecision, CompiledRule, CompiledRuleKind, DecisionStatus,
+            SkipDirs,
+        },
         facts::{ExportKind, ExportTags, KindFilter},
         glob::PathSet,
         hash::ContentHash,
-        ids::{ModuleId, RuleId},
+        ids::{DecisionId, ModuleId, RuleId},
         level::Level,
         path::RepoRelPath,
         pattern::Pattern,
@@ -323,6 +451,7 @@ mod tests {
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
             why: None,
             module_why: None,
+            decision: None,
             imports: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
@@ -602,6 +731,218 @@ mod tests {
             markdown.contains("**Why**: the loader finds these by readdir"),
             "{markdown}"
         );
+    }
+
+    /// Issue #100's shape for the page: the architecture as decisions, not as
+    /// a rule table. The decisions come before the module map, because they
+    /// are the statement the map and the walls are both serving.
+    #[test]
+    fn the_page_leads_with_the_decisions() {
+        let page = rendered(&decided_config(), None, GuideFormat::Html);
+
+        assert!(
+            page.contains("The decisions, and what enforces them"),
+            "{page}"
+        );
+        assert!(page.contains("ADR-014"), "{page}");
+        assert!(
+            page.contains("The domain does not know about transport"),
+            "{page}"
+        );
+        assert!(page.contains("docs/adr/014.md"), "{page}");
+        assert!(
+            page.contains("domain-forbids-http"),
+            "the rules under it are named: {page}"
+        );
+        assert!(
+            page.contains("<span class=\"k\">decisions</span>"),
+            "and the masthead counts them: {page}"
+        );
+
+        // The rendered eyebrow, not the bare phrase: the stylesheet carries
+        // `/* ---- the map ---- */` as a section comment, so searching for the
+        // words alone finds the CSS rather than the page.
+        let decisions = page
+            .find("<div class=\"eyebrow\">what was decided</div>")
+            .expect("the decisions section");
+        let map = page
+            .find("<div class=\"eyebrow\">the map</div>")
+            .expect("the module map");
+        assert!(decisions < map, "the decisions come first: {page}");
+    }
+
+    /// A decision nothing enforces is the state the page exists to make
+    /// visible, so it is said in words rather than left as an empty list.
+    #[test]
+    fn the_page_says_when_nothing_enforces_a_decision() {
+        let config = config(vec![rule("shape", None, &["src/*"], naming())]).with_decisions(vec![
+            CompiledDecision {
+                id: DecisionId::new("ADR-020").expect("valid"),
+                title: "Nobody enforces this".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Accepted,
+            },
+        ]);
+
+        assert!(
+            rendered(&config, None, GuideFormat::Html).contains("Nothing enforces this."),
+            "the page names the debt rather than showing a blank"
+        );
+    }
+
+    /// A repository with no decisions gets the page it got before 0.21: no
+    /// empty section, and no tally counting zero.
+    #[test]
+    fn a_page_with_no_decisions_grows_no_section() {
+        let page = rendered(
+            &config(vec![rule("shape", None, &["src/*"], naming())]),
+            None,
+            GuideFormat::Html,
+        );
+
+        // The rendered markup, not the words: the stylesheet always carries
+        // `.decisions`, because one sheet serves both pages.
+        assert!(
+            !page.contains("<div class=\"eyebrow\">what was decided</div>"),
+            "{page}"
+        );
+        assert!(!page.contains("<div class=\"decisions\">"), "{page}");
+        assert!(
+            !page.contains("<span class=\"k\">decisions</span>"),
+            "no fifth tally reading zero: {page}"
+        );
+    }
+
+    /// The page is the one surface a decision's status is translated on,
+    /// because the page is prose. The JSON keeps the English slug.
+    #[test]
+    fn the_page_translates_a_status_and_the_digest_does_not() {
+        let config = config(vec![rule("shape", None, &["src/*"], naming())]).with_decisions(vec![
+            CompiledDecision {
+                id: DecisionId::new("ADR-020").expect("valid"),
+                title: "Substituída".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Superseded,
+            },
+        ]);
+
+        let mut page = Vec::new();
+        render(
+            &guide(&config, None, &[]),
+            GuideFormat::Html,
+            crate::phrases::Language::PtBr,
+            &mut page,
+        );
+        let page = String::from_utf8(page).expect("UTF-8");
+        assert!(page.contains("substituída"), "{page}");
+
+        assert!(
+            rendered(&config, None, GuideFormat::Json).contains("\"superseded\""),
+            "the slug is a stable identifier and stays English in the JSON"
+        );
+    }
+
+    /// Issue #100. The digest opens with what was decided, and the rules that
+    /// serve each are named under it — the ids, because the rule is spelled
+    /// out once further down and a digest carrying it twice can disagree with
+    /// itself.
+    #[test]
+    fn the_digest_opens_with_the_decisions_and_what_enforces_them() {
+        let markdown = rendered(&decided_config(), None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains("### ADR-014 — The domain does not know about transport"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("docs/adr/014.md"), "{markdown}");
+        assert!(
+            markdown.contains("**Enforced by**: `domain-forbids-http`"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("**Decision**: ADR-014"),
+            "and the rule points back at it: {markdown}"
+        );
+
+        let decisions = markdown.find("## Decisions").expect("the section");
+        let rules = markdown
+            .find("## `domain-forbids-http`")
+            .expect("and the rules");
+        assert!(decisions < rules, "decisions first: {markdown}");
+    }
+
+    /// A decision nothing enforces says so in the word `nothing`, rather than
+    /// with an empty line a reader skims past. It is the state worth noticing.
+    #[test]
+    fn a_decision_nothing_enforces_says_nothing_out_loud() {
+        let config = config(vec![rule("shape", None, &["src/*"], naming())]).with_decisions(vec![
+            CompiledDecision {
+                id: DecisionId::new("ADR-020").expect("valid"),
+                title: "Nobody enforces this".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Accepted,
+            },
+        ]);
+
+        let markdown = rendered(&config, None, GuideFormat::Markdown);
+
+        assert!(markdown.contains("**Enforced by**: nothing"), "{markdown}");
+    }
+
+    /// A config with no decisions renders exactly the digest it rendered
+    /// before 0.21 — which matters more here than anywhere: these files are
+    /// committed, and a heading appearing in every repository's guide on
+    /// upgrade is a diff nobody made.
+    #[test]
+    fn a_digest_with_no_decisions_grows_no_section() {
+        let markdown = rendered(
+            &config(vec![rule("shape", None, &["src/*"], naming())]),
+            None,
+            GuideFormat::Markdown,
+        );
+
+        assert!(!markdown.contains("Decisions"), "{markdown}");
+        assert!(!markdown.contains("Decision"), "{markdown}");
+    }
+
+    /// A status other than `accepted` is said; `accepted` is not. Every
+    /// decision in a healthy repository would otherwise carry the word.
+    #[test]
+    fn the_digest_says_a_status_only_when_it_is_not_accepted() {
+        let markdown = rendered(&decided_config(), None, GuideFormat::Markdown);
+        assert!(!markdown.contains("accepted"), "{markdown}");
+
+        let superseded =
+            config(vec![rule("shape", None, &["src/*"], naming())]).with_decisions(vec![
+                CompiledDecision {
+                    id: DecisionId::new("ADR-020").expect("valid"),
+                    title: "Replaced".to_owned(),
+                    why: None,
+                    link: None,
+                    status: DecisionStatus::Superseded,
+                },
+            ]);
+        assert!(
+            rendered(&superseded, None, GuideFormat::Markdown).contains("_(superseded)_"),
+            "a decision that no longer holds is said out loud"
+        );
+    }
+
+    /// A configuration with one decision and one rule serving it.
+    fn decided_config() -> CompiledConfig {
+        let mut sealed = rule("domain-forbids-http", None, &["src/*"], naming());
+        sealed.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+
+        config(vec![sealed]).with_decisions(vec![CompiledDecision {
+            id: DecisionId::new("ADR-014").expect("valid"),
+            title: "The domain does not know about transport".to_owned(),
+            why: Some("it is published, and a consumer must not inherit our client".to_owned()),
+            link: Some("docs/adr/014.md".to_owned()),
+            status: DecisionStatus::Accepted,
+        }])
     }
 
     /// The guide describes a rule generically: the *template*, not a name

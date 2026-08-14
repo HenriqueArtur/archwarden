@@ -42,6 +42,49 @@
 
 use archwarden_core::{facts::ExportKind, finding::Observed};
 
+/// The decision block a terminal surface prints under a rule.
+///
+/// Here, beside [`describe_observed`], for the reason that one is here: a
+/// blocked write, a `describe` and a finding must say the same thing in the
+/// same words, and three copies of this block would be three chances to drift.
+/// It shipped as two copies for about ten minutes and that was already one too
+/// many.
+///
+/// `indent` is the caller's, because the surfaces nest differently — the hook
+/// puts a finding at two spaces and `describe` puts a rule at four — and the
+/// continuation lines take two more.
+///
+/// **The status is printed only when it is not `accepted`.** Every block in a
+/// healthy repository would otherwise carry the word, which is how a line
+/// stops being read; a decision that was *replaced* is the one worth
+/// interrupting for. The JSON shapes carry it always, because a consumer
+/// branches on it. Issue #100.
+#[must_use]
+pub fn describe_decision(
+    decision: &archwarden_core::compiled::CompiledDecision,
+    indent: &str,
+) -> String {
+    use std::fmt::Write as _;
+
+    let status = if decision.status.is_accepted() {
+        String::new()
+    } else {
+        format!(" ({})", decision.status)
+    };
+
+    let mut block = format!(
+        "{indent}decision: {}{status} — {}\n",
+        decision.id, decision.title
+    );
+    if let Some(why) = &decision.why {
+        let _ = writeln!(block, "{indent}  {why}");
+    }
+    if let Some(link) = &decision.link {
+        let _ = writeln!(block, "{indent}  written down in {link}");
+    }
+    block
+}
+
 /// One sentence for what was found.
 ///
 /// Shared with the hook and with the baseline file, so a blocked write, a
@@ -243,6 +286,14 @@ pub const DESCRIBE_VERSION: u32 = 0;
 pub struct Applies<'a> {
     /// The rule itself, for its id, kind, level and module.
     pub rule: &'a archwarden_core::compiled::CompiledRule,
+    /// The decision it implements, already resolved.
+    ///
+    /// Resolved by [`describe`] rather than left as the id on the rule,
+    /// because that function is the one holding the config and every caller of
+    /// this shape would otherwise have to be handed one to look the prose up.
+    /// An id an agent has to resolve elsewhere is an id it will not resolve.
+    /// Issue #100.
+    pub decision: Option<&'a archwarden_core::compiled::CompiledDecision>,
     /// What it requires of this path. Never empty -- a rule with nothing to
     /// say is not in the list.
     pub expectations: Vec<archwarden_core::finding::Expectation>,
@@ -266,7 +317,11 @@ pub fn describe<'a>(
         .zip(archwarden_rules::engines_for(config))
         .filter_map(|(rule, engine)| {
             let expectations = engine.describe_expectation(path);
-            (!expectations.is_empty()).then_some(Applies { rule, expectations })
+            (!expectations.is_empty()).then_some(Applies {
+                rule,
+                decision: rule.decision.as_ref().and_then(|id| config.decision(id)),
+                expectations,
+            })
         })
         .collect()
 }
@@ -504,8 +559,48 @@ pub struct JsonRule<'a> {
     /// Why the module it belongs to exists. A separate answer, not a fallback.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module_why: Option<&'a str>,
+    /// The decision this rule implements, with its prose. Issue #100.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision: Option<JsonDecision<'a>>,
     /// What it requires of this path.
     pub expectations: &'a [archwarden_core::finding::Expectation],
+}
+
+/// A decision, as a machine-readable shape.
+///
+/// Its own struct rather than a borrow of `CompiledDecision`, for the reason
+/// every shape in this crate is one: a shape a program consumes is a contract,
+/// and a compiled type is free to change. `status` is always present here,
+/// unlike in the terminal where `accepted` is left unsaid — a consumer
+/// branches on the value and a missing field would make it guess.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct JsonDecision<'a> {
+    /// The reference, such as `ADR-014`.
+    pub id: &'a str,
+    /// What was decided, in one line.
+    pub title: &'a str,
+    /// Why, when the config said it here rather than only behind `link`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<&'a str>,
+    /// Where it is written down.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<&'a str>,
+    /// `accepted`, `proposed` or `superseded`.
+    pub status: &'a str,
+}
+
+impl<'a> JsonDecision<'a> {
+    /// The shape of a compiled decision.
+    #[must_use]
+    pub fn of(decision: &'a archwarden_core::compiled::CompiledDecision) -> Self {
+        Self {
+            id: decision.id.as_str(),
+            title: decision.title.as_str(),
+            why: decision.why.as_deref(),
+            link: decision.link.as_deref(),
+            status: decision.status.as_str(),
+        }
+    }
 }
 
 /// The JSON envelope for many paths at once.
@@ -544,6 +639,7 @@ pub fn envelope<'a>(
                     .map(archwarden_core::ids::ModuleId::as_str),
                 why: entry.rule.why.as_deref(),
                 module_why: entry.rule.module_why.as_deref(),
+                decision: entry.decision.map(JsonDecision::of),
                 expectations: &entry.expectations,
             })
             .collect(),
@@ -569,7 +665,12 @@ pub fn envelope_many<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use archwarden_core::{facts::ExportTags, path::RepoRelPath};
+    use archwarden_core::{
+        compiled::{CompiledDecision, DecisionStatus},
+        facts::ExportTags,
+        ids::DecisionId,
+        path::RepoRelPath,
+    };
 
     fn path(p: &str) -> RepoRelPath {
         RepoRelPath::new(p).expect("valid path")
@@ -965,6 +1066,7 @@ mod tests {
             module: module.map(|m| archwarden_core::ids::ModuleId::new(m).expect("valid module")),
             why: None,
             module_why: None,
+            decision: None,
             imports: None,
             level: archwarden_core::level::Level::Error,
             scope: archwarden_core::scope::Scope::compile(scope.iter().copied())
@@ -1155,6 +1257,125 @@ mod tests {
             parsed["rules"][0]["module_why"],
             "extracted so billing could depend on it"
         );
+    }
+
+    /// The block every terminal surface prints, written once.
+    #[test]
+    fn a_decision_block_carries_its_title_reason_and_link() {
+        let decision = CompiledDecision {
+            id: DecisionId::new("ADR-014").expect("valid"),
+            title: "The domain does not know about transport".to_owned(),
+            why: Some("it is published".to_owned()),
+            link: Some("docs/adr/014.md".to_owned()),
+            status: DecisionStatus::Accepted,
+        };
+
+        assert_eq!(
+            describe_decision(&decision, "  "),
+            "  decision: ADR-014 — The domain does not know about transport\n\
+             \x20   it is published\n\
+             \x20   written down in docs/adr/014.md\n"
+        );
+    }
+
+    /// A decision whose prose is all in the linked document, and one with no
+    /// link at all. Both are legitimate and the block shrinks to fit.
+    #[test]
+    fn a_decision_block_omits_what_the_decision_did_not_say() {
+        let bare = CompiledDecision {
+            id: DecisionId::new("ADR-1").expect("valid"),
+            title: "A wall".to_owned(),
+            why: None,
+            link: None,
+            status: DecisionStatus::Accepted,
+        };
+
+        assert_eq!(describe_decision(&bare, ""), "decision: ADR-1 — A wall\n");
+    }
+
+    /// `accepted` is left unsaid and the other two are not, which is the whole
+    /// argument for `status` not being decoration.
+    #[test]
+    fn a_decision_block_says_a_status_only_when_it_is_not_accepted() {
+        let with = |status| {
+            describe_decision(
+                &CompiledDecision {
+                    id: DecisionId::new("ADR-1").expect("valid"),
+                    title: "A wall".to_owned(),
+                    why: None,
+                    link: None,
+                    status,
+                },
+                "",
+            )
+        };
+
+        assert_eq!(with(DecisionStatus::Accepted), "decision: ADR-1 — A wall\n");
+        assert_eq!(
+            with(DecisionStatus::Superseded),
+            "decision: ADR-1 (superseded) — A wall\n"
+        );
+        assert_eq!(
+            with(DecisionStatus::Proposed),
+            "decision: ADR-1 (proposed) — A wall\n",
+            "`proposed` is reported by no check, and it is still worth saying \
+             out loud where a rule is met"
+        );
+    }
+
+    /// Issue #100. `describe` answers "what applies here", and after this it
+    /// answers it with the decision each rule serves — which is the question
+    /// behind the question. Resolved here rather than left as an id, because
+    /// an id an agent has to look up somewhere else is an id it will not look
+    /// up.
+    #[test]
+    fn the_decision_a_rule_implements_reaches_the_json() {
+        let mut governed = a_rule("domain-forbids-app", None, &["src/*"], a_structure_rule());
+        governed.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+
+        let config = a_config(vec![governed], &[]).with_decisions(vec![CompiledDecision {
+            id: DecisionId::new("ADR-014").expect("valid"),
+            title: "The domain does not know about transport".to_owned(),
+            why: Some("it is published, and a consumer must not inherit our client".to_owned()),
+            link: Some("docs/adr/014.md".to_owned()),
+            status: DecisionStatus::Accepted,
+        }]);
+
+        let decision = &as_json(&config, &a_path("src/user"))["rules"][0]["decision"];
+
+        assert_eq!(decision["id"], "ADR-014");
+        assert_eq!(
+            decision["title"],
+            "The domain does not know about transport"
+        );
+        assert_eq!(
+            decision["why"],
+            "it is published, and a consumer must not inherit our client"
+        );
+        assert_eq!(decision["link"], "docs/adr/014.md");
+        assert_eq!(
+            decision["status"], "accepted",
+            "the status is always in the JSON, unlike the terminal, because a \
+             consumer branches on it rather than reading it"
+        );
+    }
+
+    /// A rule that names no decision omits the key rather than sending
+    /// `null`, which is what every rule written before 0.21 does.
+    #[test]
+    fn a_rule_with_no_decision_omits_the_key() {
+        let config = a_config(
+            vec![a_rule("shape", None, &["src/*"], a_structure_rule())],
+            &[],
+        );
+
+        let json = serde_json::to_string(&envelope(
+            &a_path("src/user"),
+            &describe(&config, &a_path("src/user")),
+        ))
+        .expect("serialises");
+
+        assert!(!json.contains("decision"), "{json}");
     }
 
     /// A rule with no module omits the field rather than sending `null`, so

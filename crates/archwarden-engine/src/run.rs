@@ -884,6 +884,7 @@ mod tests {
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
             why: None,
             module_why: None,
+            decision: None,
             imports: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
@@ -2542,6 +2543,7 @@ mod narrowing_tests {
                 module: None,
                 why: None,
                 module_why: None,
+                decision: None,
                 imports: narrowed.map(|glob| ImportFilter {
                     paths: PathSet::compile([glob.to_owned()]).expect("valid glob"),
                     packages: Vec::new(),
@@ -2568,6 +2570,7 @@ mod narrowing_tests {
                 module: None,
                 why: None,
                 module_why: None,
+                decision: None,
                 imports: narrowed.map(|glob| ImportFilter {
                     paths: PathSet::compile([glob.to_owned()]).expect("valid glob"),
                     packages: Vec::new(),

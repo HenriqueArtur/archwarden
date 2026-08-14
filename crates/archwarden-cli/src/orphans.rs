@@ -518,6 +518,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            decision: None,
             imports: None,
             level: archwarden_core::level::Level::Error,
             scope: Scope::compile(["packages/domain/src/*"]).expect("valid scope"),

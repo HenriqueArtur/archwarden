@@ -18,6 +18,7 @@ use archwarden_core::{
     compiled::{CompiledConfig, CompiledRule, CompiledRuleKind, SkipScope},
     facts::{ExportKind, ExportTags, FileFacts, KindFilter},
     ids::RuleId,
+    level::Level,
     path::RepoRelPath,
 };
 use archwarden_engine::walk::RepoTree;
@@ -32,6 +33,22 @@ pub const DOCTOR_VERSION: u32 = 0;
 pub struct Concern {
     /// A stable slug, so a user can grep for one and a tool can branch on it.
     pub code: &'static str,
+    /// How loud it is.
+    ///
+    /// The `doctor` had no notion of severity until 0.21 — sixteen checks in
+    /// one flat list, every one of them advice. Issue #100 needed two of its
+    /// three to stay advice and one to be a contradiction, so this exists.
+    ///
+    /// **Everything that came before is `warning`**, and stays that way. Some
+    /// of those checks arguably deserve `error`; promoting them is a review of
+    /// sixteen checks that belongs to whichever release is about them, not to
+    /// one that is about decisions. Assigning them all the level they already
+    /// had in practice is the change that adds a field and changes nothing.
+    ///
+    /// It does not reach the exit code. `doctor` is advice and `check` is the
+    /// gate — the same line issue #100 draws when it keeps `check` silent
+    /// about a rule that names no decision.
+    pub level: Level,
     /// The rule it is about, when it is about one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rule_id: Option<RuleId>,
@@ -58,6 +75,12 @@ pub fn examine(config: &CompiledConfig) -> Vec<Concern> {
     module_nobody_references(config, &mut concerns);
 
     module_wearing_no_kind(config, &mut concerns);
+
+    decisions_left_unsaid(config, &mut concerns);
+
+    superseded_but_still_enforced(config, &mut concerns);
+
+    decision_nobody_enforces(config, &mut concerns);
 
     for rule in config.rules() {
         unreachable_scope(config, rule, &mut concerns);
@@ -89,6 +112,7 @@ fn reasons_left_unsaid(config: &CompiledConfig, concerns: &mut Vec<Concern>) {
 
     concerns.push(Concern {
         code: "rules-without-a-reason",
+        level: Level::Warning,
         rule_id: None,
         path: None,
         message: format!(
@@ -102,6 +126,142 @@ fn reasons_left_unsaid(config: &CompiledConfig, concerns: &mut Vec<Concern>) {
               nowhere is one a reader can only obey"
             .to_owned(),
     });
+}
+
+/// Rules that name no decision, counted rather than listed.
+///
+/// The same shape as [`reasons_left_unsaid`] one level up, and for the same
+/// two reasons. One line, because forty rules naming no decision would bury
+/// every other concern this command has. And only once at least one rule
+/// *does* name one: every configuration in the world has zero decisions on the
+/// day 0.21 ships, and a tool that greets them with a complaint about a
+/// feature they have not adopted is one they stop running.
+///
+/// `check` says nothing about this, deliberately. A repository's build must
+/// not fail because its config is under-documented, and a gate that failed for
+/// that is a gate somebody turns off. Issue #100.
+fn decisions_left_unsaid(config: &CompiledConfig, concerns: &mut Vec<Concern>) {
+    let (with, without): (Vec<_>, Vec<_>) =
+        config.rules().partition(|rule| rule.decision.is_some());
+
+    if with.is_empty() || without.is_empty() {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "rule-without-a-decision",
+        level: Level::Warning,
+        rule_id: None,
+        path: None,
+        message: format!(
+            "{} of {} rules name the decision they implement; {} {} not",
+            with.len(),
+            with.len() + without.len(),
+            without.len(),
+            if without.len() == 1 { "does" } else { "do" },
+        ),
+        fix: "add `decision` to them, or accept the gap -- a rule whose \
+              decision is nowhere is one a reader can only obey"
+            .to_owned(),
+    });
+}
+
+/// A decision recorded as replaced, with rules still enforcing it.
+///
+/// The check most worth having here, and the reason `status` is not
+/// decoration: this is a config saying two things at once, which is exactly
+/// the state `verify-rules` and `coverage` exist to refuse in their own
+/// dimensions.
+///
+/// One concern per decision, naming its rules, because the fix is per decision
+/// — either the status is wrong or the rules should go, and both are one
+/// edit. `proposed` is silent: a decision under trial with rules already
+/// running is how one is trialled. Issue #100.
+fn superseded_but_still_enforced(config: &CompiledConfig, concerns: &mut Vec<Concern>) {
+    for decision in config
+        .decisions()
+        .filter(|decision| decision.status == archwarden_core::compiled::DecisionStatus::Superseded)
+    {
+        let serving: Vec<String> = config
+            .rules()
+            .filter(|rule| rule.decision.as_ref() == Some(&decision.id))
+            .map(|rule| rule.id.to_string())
+            .collect();
+
+        if serving.is_empty() {
+            continue;
+        }
+
+        concerns.push(Concern {
+            code: "superseded-decision-still-enforced",
+            level: Level::Error,
+            rule_id: None,
+            path: None,
+            message: format!(
+                "decision `{}` is superseded, and {} still {} it: {}",
+                decision.id,
+                count(serving.len(), "rule"),
+                if serving.len() == 1 {
+                    "enforces"
+                } else {
+                    "enforce"
+                },
+                list(&serving),
+            ),
+            fix: "either the decision still holds, and its status is wrong, or \
+                  it does not, and those rules are enforcing a choice this \
+                  project has replaced"
+                .to_owned(),
+        });
+    }
+}
+
+/// A decision nothing implements.
+///
+/// The mirror of `module-nobody-references`, and it arrives the same way: a
+/// preset ships decisions, `disable` takes their rules away, and what is left
+/// is a config describing an architecture it does not enforce. At `warning`,
+/// because writing a decision down before enforcing it is a legitimate order
+/// to do things in. Issue #100.
+fn decision_nobody_enforces(config: &CompiledConfig, concerns: &mut Vec<Concern>) {
+    let orphaned: Vec<String> = config
+        .decisions()
+        .filter(|decision| {
+            !config
+                .rules()
+                .any(|rule| rule.decision.as_ref() == Some(&decision.id))
+        })
+        .map(|decision| decision.id.to_string())
+        .collect();
+
+    if orphaned.is_empty() {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "decision-nobody-enforces",
+        level: Level::Warning,
+        rule_id: None,
+        path: None,
+        message: format!(
+            "{} {} declared and implemented by no rule: {}",
+            count(orphaned.len(), "decision"),
+            if orphaned.len() == 1 { "is" } else { "are" },
+            list(&orphaned),
+        ),
+        fix: "point a rule at it, or drop it -- a decision nothing enforces is \
+              an architecture this config describes rather than keeps"
+            .to_owned(),
+    });
+}
+
+/// `1 rule` / `3 rules`.
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
 }
 
 /// A rule that has nothing to enforce, whatever its scope reaches.
@@ -139,6 +299,7 @@ fn constrains_nothing(rule: &CompiledRule, concerns: &mut Vec<Concern>) {
 
     concerns.push(Concern {
         code: "rule-constrains-nothing",
+        level: Level::Warning,
         rule_id: Some(rule.id.clone()),
         path: None,
         message: "it names no allowed subfolder, no warned subfolder and no \
@@ -171,6 +332,7 @@ fn walk_scope_with_boundaries(config: &CompiledConfig, concerns: &mut Vec<Concer
 
     concerns.push(Concern {
         code: "walk-skip-hides-imports",
+        level: Level::Warning,
         rule_id: None,
         path: None,
         message: format!(
@@ -214,6 +376,7 @@ fn unreachable_scope(config: &CompiledConfig, rule: &CompiledRule, concerns: &mu
 
     concerns.push(Concern {
         code: "unreachable-scope",
+        level: Level::Warning,
         rule_id: Some(rule.id.clone()),
         path: None,
         message: format!(
@@ -271,6 +434,7 @@ fn spec_subfolder_not_allowed(
 
         concerns.push(Concern {
             code: "spec-folder-not-allowed",
+            level: Level::Warning,
             rule_id: Some(rule.id.clone()),
             path: None,
             message: format!(
@@ -319,6 +483,7 @@ fn hint_disagrees_with_kind(rule: &CompiledRule, concerns: &mut Vec<Concern>) {
 
     concerns.push(Concern {
         code: "hint-disagrees-with-kind",
+        level: Level::Warning,
         rule_id: Some(rule.id.clone()),
         path: None,
         message: format!(
@@ -459,6 +624,7 @@ fn rule_evaluates_nothing(
 
     concerns.push(Concern {
         code: "rule-evaluates-nothing",
+        level: Level::Warning,
         rule_id: Some(rule.id.clone()),
         path: None,
         message: format!(
@@ -496,6 +662,7 @@ fn module_nobody_references(config: &CompiledConfig, concerns: &mut Vec<Concern>
 
         concerns.push(Concern {
             code: "module-nobody-references",
+            level: Level::Warning,
             rule_id: None,
             path: None,
             message: format!("module `{}` holds no rules and none names it", module.id),
@@ -530,6 +697,7 @@ fn module_wearing_no_kind(config: &CompiledConfig, concerns: &mut Vec<Concern>) 
 
         concerns.push(Concern {
             code: "module-wears-no-kind",
+            level: Level::Warning,
             rule_id: None,
             path: None,
             message: format!(
@@ -567,6 +735,7 @@ fn module_scope_matches_nothing(
 
     concerns.push(Concern {
         code: "module-scope-matches-nothing",
+        level: Level::Warning,
         rule_id: None,
         path: None,
         message: format!(
@@ -622,6 +791,7 @@ fn rule_reaches_outside_its_module(
 
     concerns.push(Concern {
         code: "rule-reaches-outside-its-module",
+        level: Level::Warning,
         rule_id: Some(rule.id.clone()),
         path: None,
         message: format!(
@@ -647,6 +817,7 @@ fn scope_matches_nothing(rule: &CompiledRule, tree: &RepoTree, concerns: &mut Ve
 
     concerns.push(Concern {
         code: "scope-matches-nothing",
+        level: Level::Warning,
         rule_id: Some(rule.id.clone()),
         path: None,
         message: format!(
@@ -683,6 +854,7 @@ fn pattern_matches_nothing(
 
         concerns.push(Concern {
             code: "pattern-matches-nothing",
+            level: Level::Warning,
             rule_id: Some(rule.id.clone()),
             path: None,
             message: format!(
@@ -734,6 +906,7 @@ fn dir_pattern_matches_nothing(
 
     concerns.push(Concern {
         code: "dir-pattern-matches-nothing",
+        level: Level::Warning,
         rule_id: Some(rule.id.clone()),
         path: None,
         message: format!(
@@ -792,6 +965,7 @@ fn symbol_never_imported(
 
     concerns.push(Concern {
         code: "symbol-never-imported",
+        level: Level::Warning,
         rule_id: Some(rule.id.clone()),
         path: None,
         message: format!(
@@ -824,6 +998,7 @@ fn only_a_default_export(
 
         concerns.push(Concern {
             code: "only-a-default-export",
+            level: Level::Warning,
             rule_id: Some(rule.id.clone()),
             path: Some(facts.path.clone()),
             message: "it exports only a default, whose name does not bind the \
@@ -915,7 +1090,11 @@ fn render_text(concerns: &[Concern], out: &mut dyn std::io::Write) {
             (Some(rule), None) => rule.to_string(),
             (None, _) => "config".to_owned(),
         };
-        let _ = writeln!(out, "{} [{}]\n  {}", subject, concern.code, concern.message);
+        let _ = writeln!(
+            out,
+            "{:<7} {} [{}]\n  {}",
+            concern.level, subject, concern.code, concern.message
+        );
         let _ = writeln!(out, "  fix: {}\n", concern.fix);
     }
 
@@ -935,7 +1114,12 @@ fn render_text(concerns: &[Concern], out: &mut dyn std::io::Write) {
 mod tests {
     use super::*;
     use archwarden_core::{
-        compiled::SkipDirs, glob::PathSet, hash::ContentHash, level::Level, pattern::Pattern,
+        compiled::{CompiledDecision, DecisionStatus, SkipDirs},
+        glob::PathSet,
+        hash::ContentHash,
+        ids::DecisionId,
+        level::Level,
+        pattern::Pattern,
         scope::Scope,
     };
 
@@ -945,6 +1129,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            decision: None,
             imports: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
@@ -1342,6 +1527,280 @@ mod tests {
                 .all(|c| c.code != "rules-without-a-reason"),
             "{:?}",
             examine(&complete)
+        );
+    }
+
+    /// Every concern carries a level, and one of them is louder than the rest.
+    ///
+    /// The `doctor` had no notion of severity until 0.21: sixteen checks in a
+    /// flat list, all equally advisory. Issue #100 needs two of its three to be
+    /// advice and one to be a contradiction, so the field exists — but the
+    /// sixteen that came before stay `warning`, because that is what every one
+    /// of them has always been, and quietly promoting some of them would
+    /// change what an existing user sees over a release that is about
+    /// something else.
+    #[test]
+    fn a_concern_is_a_warning_unless_it_is_a_contradiction() {
+        let contradictory = config(vec![serving("shape", "ADR-014")])
+            .with_decisions(vec![adr("ADR-014", DecisionStatus::Superseded)]);
+
+        let concerns = examine(&contradictory);
+        let superseded = concerns
+            .iter()
+            .find(|c| c.code == "superseded-decision-still-enforced")
+            .unwrap_or_else(|| panic!("{concerns:?}"));
+        assert_eq!(superseded.level, Level::Error);
+
+        assert!(
+            examine(&with_ignore(
+                vec![rule(
+                    "legacy",
+                    &["src/legacy/*"],
+                    structure(&["types"], &[])
+                )],
+                &["src/legacy/**"],
+            ))
+            .iter()
+            .all(|c| c.level == Level::Warning),
+            "the checks that came before 0.21 are unchanged"
+        );
+    }
+
+    /// It reaches the text, where a reader needs to tell the two apart, and the
+    /// JSON, where a consumer branches on it.
+    #[test]
+    fn the_level_reaches_both_renderings() {
+        let contradictory = config(vec![serving("shape", "ADR-014")])
+            .with_decisions(vec![adr("ADR-014", DecisionStatus::Superseded)]);
+        let concerns = examine(&contradictory);
+
+        let mut text = Vec::new();
+        render(&concerns, crate::report::Format::Text, &mut text);
+        let text = String::from_utf8(text).expect("UTF-8");
+        assert!(text.contains("error"), "{text}");
+
+        let mut json = Vec::new();
+        render(&concerns, crate::report::Format::Json, &mut json);
+        let parsed: serde_json::Value = serde_json::from_slice(&json).expect("valid JSON");
+        assert!(
+            parsed["concerns"]
+                .as_array()
+                .expect("a list")
+                .iter()
+                .any(|c| c["level"] == "error"),
+            "{parsed}"
+        );
+    }
+
+    /// A decision, for the checks below.
+    fn adr(id: &str, status: DecisionStatus) -> CompiledDecision {
+        CompiledDecision {
+            id: DecisionId::new(id).expect("valid id"),
+            title: "A wall".to_owned(),
+            why: None,
+            link: None,
+            status,
+        }
+    }
+
+    /// A rule pointing at a decision.
+    fn serving(name: &str, decision: &str) -> CompiledRule {
+        let mut rule = rule(name, &["src/*"], structure(&["types"], &[]));
+        rule.decision = Some(DecisionId::new(decision).expect("valid id"));
+        rule
+    }
+
+    /// Issue #100. `check` says nothing about an undeclared rule — a
+    /// repository's build must not fail because its config is
+    /// under-documented, and a gate that failed for that is one people turn
+    /// off. `doctor` is where it belongs, counted once, exactly as
+    /// `rules-without-a-reason` is.
+    #[test]
+    fn rules_without_a_decision_are_counted_once() {
+        let mixed = config(vec![
+            serving("shape", "ADR-014"),
+            rule("second", &["src/*"], structure(&["types"], &[])),
+            rule("third", &["src/*"], structure(&["types"], &[])),
+        ])
+        .with_decisions(vec![adr("ADR-014", DecisionStatus::Accepted)]);
+
+        let concerns = examine(&mixed);
+        let counted: Vec<&Concern> = concerns
+            .iter()
+            .filter(|c| c.code == "rule-without-a-decision")
+            .collect();
+
+        assert_eq!(counted.len(), 1, "{concerns:?}");
+        assert!(counted[0].message.contains("1 of 3"), "{:?}", counted[0]);
+        assert!(counted[0].message.contains("2 do not"), "{:?}", counted[0]);
+    }
+
+    /// And only once at least one rule names one. Every existing configuration
+    /// has zero decisions on the day this ships, and a tool that greets them
+    /// with a complaint is one they stop running.
+    #[test]
+    fn a_config_that_names_no_decisions_at_all_is_not_nagged() {
+        let silent = config(vec![
+            rule("shape", &["src/*"], structure(&["types"], &[])),
+            rule("second", &["src/*"], structure(&["types"], &[])),
+        ]);
+
+        assert!(
+            examine(&silent)
+                .iter()
+                .all(|c| c.code != "rule-without-a-decision"),
+            "{:?}",
+            examine(&silent)
+        );
+    }
+
+    /// A config where every rule names one has nothing to be told either.
+    #[test]
+    fn a_config_where_every_rule_decides_is_not_nagged() {
+        let complete = config(vec![
+            serving("shape", "ADR-014"),
+            serving("second", "ADR-014"),
+        ])
+        .with_decisions(vec![adr("ADR-014", DecisionStatus::Accepted)]);
+
+        assert!(
+            examine(&complete)
+                .iter()
+                .all(|c| c.code != "rule-without-a-decision"),
+            "{:?}",
+            examine(&complete)
+        );
+    }
+
+    /// The check most worth having, and the reason `status` is not decoration:
+    /// a decision recorded as replaced, with rules still enforcing it, is a
+    /// config saying two things at once.
+    #[test]
+    fn a_superseded_decision_whose_rules_still_fire_is_an_error() {
+        let contradictory = config(vec![serving("shape", "ADR-014")])
+            .with_decisions(vec![adr("ADR-014", DecisionStatus::Superseded)]);
+
+        let concerns = examine(&contradictory);
+        let found = concerns
+            .iter()
+            .find(|c| c.code == "superseded-decision-still-enforced")
+            .unwrap_or_else(|| panic!("{concerns:?}"));
+
+        assert!(found.message.contains("ADR-014"), "{found:?}");
+        assert!(
+            found.message.contains("shape"),
+            "the rule is named: {found:?}"
+        );
+    }
+
+    /// The plurals, in both sentences that carry a count. A message reading
+    /// "2 rule still enforces it" is the kind of thing a reader stops trusting
+    /// the rest of.
+    #[test]
+    fn the_counts_read_as_english_in_both_numbers() {
+        let two = config(vec![
+            serving("shape", "ADR-014"),
+            serving("sealed", "ADR-014"),
+        ])
+        .with_decisions(vec![
+            adr("ADR-014", DecisionStatus::Superseded),
+            adr("ADR-020", DecisionStatus::Accepted),
+            adr("ADR-021", DecisionStatus::Accepted),
+        ]);
+        let concerns = examine(&two);
+
+        let superseded = concerns
+            .iter()
+            .find(|c| c.code == "superseded-decision-still-enforced")
+            .unwrap_or_else(|| panic!("{concerns:?}"));
+        assert!(
+            superseded.message.contains("2 rules still enforce it"),
+            "{superseded:?}"
+        );
+
+        let orphans = concerns
+            .iter()
+            .find(|c| c.code == "decision-nobody-enforces")
+            .unwrap_or_else(|| panic!("{concerns:?}"));
+        assert!(
+            orphans.message.contains("2 decisions are declared"),
+            "{orphans:?}"
+        );
+
+        // And the singular, which is the branch the plural rule exists for.
+        let one = config(vec![serving("shape", "ADR-014")]).with_decisions(vec![
+            adr("ADR-014", DecisionStatus::Superseded),
+            adr("ADR-020", DecisionStatus::Accepted),
+        ]);
+        let concerns = examine(&one);
+        assert!(
+            concerns
+                .iter()
+                .any(|c| c.message.contains("1 rule still enforces it")),
+            "{concerns:?}"
+        );
+        assert!(
+            concerns
+                .iter()
+                .any(|c| c.message.contains("1 decision is declared")),
+            "{concerns:?}"
+        );
+    }
+
+    /// A superseded decision nothing enforces is a tidy record of history, not
+    /// a contradiction. Reporting it would punish keeping the record.
+    #[test]
+    fn a_superseded_decision_nothing_enforces_is_fine() {
+        let historical = config(vec![rule("shape", &["src/*"], structure(&["types"], &[]))])
+            .with_decisions(vec![adr("ADR-014", DecisionStatus::Superseded)]);
+
+        assert!(
+            examine(&historical)
+                .iter()
+                .all(|c| c.code != "superseded-decision-still-enforced"),
+            "{:?}",
+            examine(&historical)
+        );
+    }
+
+    /// `proposed` is silent, deliberately: a decision under trial with rules
+    /// already running is how one is trialled, and reporting it would nag the
+    /// practice this whole feature is trying to encourage.
+    #[test]
+    fn a_proposed_decision_with_rules_is_not_reported() {
+        let trialled = config(vec![serving("shape", "ADR-014")])
+            .with_decisions(vec![adr("ADR-014", DecisionStatus::Proposed)]);
+
+        assert!(
+            examine(&trialled)
+                .iter()
+                .all(|c| c.code != "superseded-decision-still-enforced"),
+            "{:?}",
+            examine(&trialled)
+        );
+    }
+
+    /// The mirror of `module-nobody-references`: an opinion with a name that
+    /// nothing keeps. A preset ships decisions, `disable` takes their rules
+    /// away, and what is left is a config describing an architecture it does
+    /// not enforce.
+    #[test]
+    fn a_decision_no_rule_implements_is_reported() {
+        let orphaned = config(vec![serving("shape", "ADR-014")]).with_decisions(vec![
+            adr("ADR-014", DecisionStatus::Accepted),
+            adr("ADR-020", DecisionStatus::Accepted),
+        ]);
+
+        let concerns = examine(&orphaned);
+        let found = concerns
+            .iter()
+            .find(|c| c.code == "decision-nobody-enforces")
+            .unwrap_or_else(|| panic!("{concerns:?}"));
+
+        assert!(found.message.contains("ADR-020"), "{found:?}");
+        assert!(
+            !found.message.contains("ADR-014"),
+            "the one that is enforced is not named: {found:?}"
         );
     }
 

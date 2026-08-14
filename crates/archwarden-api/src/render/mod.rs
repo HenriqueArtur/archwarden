@@ -87,14 +87,35 @@ pub const REPORT_VERSION: u32 = 0;
 /// path -- `.archwarden/baseline.json` must not churn because somebody
 /// reworded a sentence -- and would make every rule engine take a field it
 /// never reads. Issue #46.
+/// It also carries the *decision* each rule implements, resolved from the
+/// config's `decisions` block. The two travel together because every surface
+/// that shows one shows the other in the same breath — a denial says why the
+/// rule exists and which decision it serves — and two places resolving that
+/// would be two places to get it wrong. Issue #100.
 #[derive(Debug, Default)]
-pub struct Reasons(std::collections::BTreeMap<String, String>);
+pub struct Reasons {
+    /// Why each rule exists, by rule id.
+    why: std::collections::BTreeMap<String, String>,
+    /// Which decision each rule implements, in configuration order.
+    ///
+    /// A list rather than a map, unlike `why` beside it, and the difference is
+    /// what is asked of each. `why` is only ever looked up by rule id. This is
+    /// also read *backwards* — the rules serving a decision — and that answer
+    /// is shown to a person, so it comes out in the order they wrote their
+    /// rules rather than sorted by id. A few dozen entries scanned at render
+    /// time.
+    implements: Vec<(String, archwarden_core::ids::DecisionId)>,
+    /// Every decision the config declared, in declaration order — including
+    /// the ones no rule points at, which is a state `config doctor` reports
+    /// and the guide page shows.
+    decisions: Vec<archwarden_core::compiled::CompiledDecision>,
+}
 impl Reasons {
-    /// Reads the reasons a compiled configuration carries.
+    /// Reads the reasons and decisions a compiled configuration carries.
     #[must_use]
     pub fn of(config: &archwarden_core::compiled::CompiledConfig) -> Self {
-        Self(
-            config
+        Self {
+            why: config
                 .rules()
                 .filter_map(|rule| {
                     rule.why
@@ -102,13 +123,61 @@ impl Reasons {
                         .map(|why| (rule.id.as_str().to_owned(), why.clone()))
                 })
                 .collect(),
-        )
+            implements: config
+                .rules()
+                .filter_map(|rule| {
+                    rule.decision
+                        .as_ref()
+                        .map(|decision| (rule.id.as_str().to_owned(), decision.clone()))
+                })
+                .collect(),
+            decisions: config.decisions().cloned().collect(),
+        }
     }
 
     /// Why this rule exists, when its author said.
     #[must_use]
     pub fn of_rule(&self, rule: &archwarden_core::ids::RuleId) -> Option<&str> {
-        self.0.get(rule.as_str()).map(String::as_str)
+        self.why.get(rule.as_str()).map(String::as_str)
+    }
+
+    /// The decision this rule implements, when it names one.
+    ///
+    /// Resolved rather than stored per rule: N rules serve one decision, and
+    /// copying the prose onto each would give it N places to disagree with
+    /// itself.
+    #[must_use]
+    pub fn decision_of_rule(
+        &self,
+        rule: &archwarden_core::ids::RuleId,
+    ) -> Option<&archwarden_core::compiled::CompiledDecision> {
+        let named = self
+            .implements
+            .iter()
+            .find(|(id, _)| id == rule.as_str())
+            .map(|(_, named)| named)?;
+        self.decisions.iter().find(|decision| &decision.id == named)
+    }
+
+    /// Every decision the configuration declared, in declaration order.
+    pub fn decisions(&self) -> impl Iterator<Item = &archwarden_core::compiled::CompiledDecision> {
+        self.decisions.iter()
+    }
+
+    /// Every rule that implements a given decision, in configuration order.
+    ///
+    /// The reverse of the foreign key, computed rather than stored — which is
+    /// the point of issue #100's shape. `config explain <decision-id>` asks
+    /// this, and so does the doctor's check for a superseded decision whose
+    /// rules still fire.
+    pub fn rules_implementing(
+        &self,
+        decision: &archwarden_core::ids::DecisionId,
+    ) -> impl Iterator<Item = &str> {
+        self.implements
+            .iter()
+            .filter(move |(_, named)| named == decision)
+            .map(|(rule, _)| rule.as_str())
     }
 }
 
@@ -116,15 +185,39 @@ impl Reasons {
 ///
 /// For tests and for a caller that has reasons from somewhere other than a
 /// compiled config. Here rather than in a surface because `Reasons` holds its
-/// map privately, and the orphan rule puts the impl with the type.
+/// maps privately, and the orphan rule puts the impl with the type.
 impl<const N: usize> From<[(&str, &str); N]> for Reasons {
     fn from(pairs: [(&str, &str); N]) -> Self {
-        Self(
-            pairs
+        Self {
+            why: pairs
                 .into_iter()
                 .map(|(rule, why)| (rule.to_owned(), why.to_owned()))
                 .collect(),
-        )
+            implements: Vec::new(),
+            decisions: Vec::new(),
+        }
+    }
+}
+
+impl Reasons {
+    /// The decisions each rule implements, spelled out.
+    ///
+    /// A builder step rather than a second `From`, because the two are set
+    /// independently: a config may carry reasons, decisions, both or neither,
+    /// and a constructor taking both would make every test that wants one
+    /// write the other as an empty array.
+    #[must_use]
+    pub fn deciding<const N: usize>(
+        mut self,
+        pairs: [(&str, archwarden_core::compiled::CompiledDecision); N],
+    ) -> Self {
+        for (rule, decision) in pairs {
+            self.implements.push((rule.to_owned(), decision.id.clone()));
+            if !self.decisions.iter().any(|seen| seen.id == decision.id) {
+                self.decisions.push(decision);
+            }
+        }
+        self
     }
 }
 
@@ -328,9 +421,12 @@ fn breakdown_as_map(breakdown: &Breakdown) -> serde_json::Map<String, serde_json
 mod tests {
     use super::*;
     use archwarden_core::{
-        compiled::{CompiledConfig, CompiledRule, CompiledRuleKind, SkipDirs},
+        compiled::{
+            CompiledConfig, CompiledDecision, CompiledRule, CompiledRuleKind, DecisionStatus,
+            SkipDirs,
+        },
         hash::ContentHash,
-        ids::RuleId,
+        ids::{DecisionId, RuleId},
         level::Level,
     };
 
@@ -340,6 +436,7 @@ mod tests {
             module: None,
             why: why.map(ToOwned::to_owned),
             module_why: None,
+            decision: None,
             imports: None,
             level: Level::Error,
             scope: archwarden_core::scope::Scope::compile(["src/*"]).expect("valid scope"),
@@ -392,6 +489,178 @@ mod tests {
         assert_eq!(
             reasons.of_rule(&RuleId::new("shape").expect("valid")),
             Some("because")
+        );
+    }
+
+    fn decided(id: &str, decision: &str) -> CompiledRule {
+        let mut rule = rule(id, None);
+        rule.decision = Some(DecisionId::new(decision).expect("valid id"));
+        rule
+    }
+
+    fn adr(id: &str) -> CompiledDecision {
+        CompiledDecision {
+            id: DecisionId::new(id).expect("valid id"),
+            title: "The domain does not know about transport".to_owned(),
+            why: Some("it is published, and a consumer must not inherit our client".to_owned()),
+            link: Some("docs/adr/014.md".to_owned()),
+            status: DecisionStatus::Accepted,
+        }
+    }
+
+    fn config(rules: Vec<CompiledRule>, decisions: Vec<CompiledDecision>) -> CompiledConfig {
+        CompiledConfig::new(
+            rules,
+            archwarden_core::glob::PathSet::default(),
+            SkipDirs::default(),
+            ContentHash::of(b""),
+        )
+        .with_decisions(decisions)
+    }
+
+    /// The other half of the same lookup, and the reason it lives here: every
+    /// surface that shows a rule's reason shows the decision it implements in
+    /// the same breath, and two places resolving that would be two places to
+    /// get it wrong. Issue #100.
+    #[test]
+    fn the_decision_a_rule_implements_is_resolved_from_the_config() {
+        let reasons = Reasons::of(&config(
+            vec![decided("shape", "ADR-014"), rule("spec", None)],
+            vec![adr("ADR-014")],
+        ));
+
+        let found = reasons
+            .decision_of_rule(&RuleId::new("shape").expect("valid"))
+            .expect("the rule names one and the config declares it");
+        assert_eq!(found.id.as_str(), "ADR-014");
+        assert_eq!(found.title, "The domain does not know about transport");
+        assert_eq!(found.link.as_deref(), Some("docs/adr/014.md"));
+
+        assert_eq!(
+            reasons.decision_of_rule(&RuleId::new("spec").expect("valid")),
+            None,
+            "a rule that names no decision has none, and that is not an error"
+        );
+    }
+
+    /// One decision, many rules — which is the whole reason the prose lives on
+    /// the config and the rules carry a reference. Both resolve to the same
+    /// words, and there is one place to edit them.
+    #[test]
+    fn two_rules_serving_one_decision_resolve_to_the_same_prose() {
+        let reasons = Reasons::of(&config(
+            vec![decided("shape", "ADR-014"), decided("sealed", "ADR-014")],
+            vec![adr("ADR-014")],
+        ));
+
+        assert_eq!(
+            reasons.decision_of_rule(&RuleId::new("shape").expect("valid")),
+            reasons.decision_of_rule(&RuleId::new("sealed").expect("valid"))
+        );
+    }
+
+    /// Every decision the config declared, whether or not a rule points at it.
+    /// The guide page lists what the architecture *decided*, and `config
+    /// doctor` has to be able to see an orphan.
+    #[test]
+    fn every_declared_decision_is_reachable_even_unenforced() {
+        let reasons = Reasons::of(&config(
+            vec![decided("shape", "ADR-014")],
+            vec![adr("ADR-014"), adr("ADR-020")],
+        ));
+
+        let ids: Vec<&str> = reasons.decisions().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["ADR-014", "ADR-020"], "declaration order is kept");
+    }
+
+    /// A config with no decisions is every config written before 0.21, and it
+    /// answers the new question with nothing rather than with an error.
+    #[test]
+    fn a_config_with_no_decisions_answers_none() {
+        let reasons = Reasons::of(&config(vec![rule("shape", Some("because"))], Vec::new()));
+
+        assert_eq!(
+            reasons.decision_of_rule(&RuleId::new("shape").expect("valid")),
+            None
+        );
+        assert_eq!(reasons.decisions().count(), 0);
+        assert_eq!(
+            reasons.of_rule(&RuleId::new("shape").expect("valid")),
+            Some("because"),
+            "and the reason it did carry is untouched"
+        );
+    }
+
+    /// Two rules pointing at one decision keep one copy of the prose, which is
+    /// the whole reason the prose lives on the config.
+    #[test]
+    fn one_decision_named_twice_is_stored_once() {
+        let reasons =
+            Reasons::default().deciding([("shape", adr("ADR-014")), ("sealed", adr("ADR-014"))]);
+
+        assert_eq!(reasons.decisions().count(), 1);
+        assert_eq!(
+            reasons
+                .rules_implementing(&DecisionId::new("ADR-014").expect("valid"))
+                .count(),
+            2,
+            "and both rules still resolve to it"
+        );
+
+        let two =
+            Reasons::default().deciding([("shape", adr("ADR-014")), ("other", adr("ADR-020"))]);
+        assert_eq!(two.decisions().count(), 2, "two distinct ones stay two");
+    }
+
+    /// The foreign key read backwards, which is what `config explain
+    /// <decision-id>` and the doctor's superseded check both ask. Computed
+    /// rather than stored: that is what makes the decision block carry no list
+    /// of rules to keep in step.
+    #[test]
+    fn the_rules_serving_a_decision_are_found_by_reading_the_key_backwards() {
+        let reasons = Reasons::of(&config(
+            vec![
+                decided("shape", "ADR-014"),
+                rule("spec", None),
+                decided("sealed", "ADR-014"),
+                decided("other", "ADR-020"),
+            ],
+            vec![adr("ADR-014"), adr("ADR-020")],
+        ));
+
+        let serving: Vec<&str> = reasons
+            .rules_implementing(&DecisionId::new("ADR-014").expect("valid"))
+            .collect();
+        assert_eq!(
+            serving,
+            ["shape", "sealed"],
+            "the order the rules were written in, not their ids sorted"
+        );
+
+        assert_eq!(
+            reasons
+                .rules_implementing(&DecisionId::new("ADR-099").expect("valid"))
+                .count(),
+            0,
+            "a decision nothing serves answers with nothing, not with everything"
+        );
+    }
+
+    /// Spelled out, for the tests of every surface downstream.
+    #[test]
+    fn decisions_can_be_written_out_directly() {
+        let reasons = Reasons::from([("shape", "because")]).deciding([("shape", adr("ADR-014"))]);
+
+        assert_eq!(
+            reasons
+                .decision_of_rule(&RuleId::new("shape").expect("valid"))
+                .map(|d| d.id.as_str()),
+            Some("ADR-014")
+        );
+        assert_eq!(
+            reasons.of_rule(&RuleId::new("shape").expect("valid")),
+            Some("because"),
+            "the two are set independently and neither clears the other"
         );
     }
 }

@@ -2345,20 +2345,23 @@ fn explain(
         return Exit::ConfigProblem;
     };
 
-    let id = match archwarden_core::ids::RuleId::new(rule_id) {
-        Ok(id) => id,
-        Err(error) => {
-            let _ = writeln!(output.err, "`{rule_id}` is not a rule id: {error}");
-            return Exit::ConfigProblem;
-        }
-    };
+    // Validated once, as a rule id, and that covers both namespaces: a
+    // decision id takes the same character set, deliberately, so that one
+    // argument accepting either needs one rule about what may be typed.
+    if let Err(error) = archwarden_core::ids::RuleId::new(rule_id) {
+        let _ = writeln!(
+            output.err,
+            "`{rule_id}` is not a rule or decision id: {error}"
+        );
+        return Exit::ConfigProblem;
+    }
 
     let tree = match walked(&merged.root, working_directory, &compiled, output) {
         Ok(tree) => tree,
         Err(exit) => return exit,
     };
 
-    match crate::explain::explain(&merged.root, &compiled, &tree, &id) {
+    match crate::explain::explain(&merged.root, &compiled, &tree, rule_id) {
         Ok(explanation) => {
             crate::explain::render(&explanation, format, output.out);
             Exit::Clean

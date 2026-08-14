@@ -39,8 +39,48 @@ pub struct Guide<'a> {
     /// two states, one sentence, and one of them false. Issue #97.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub kinds: Vec<&'a str>,
+    /// The decisions the covered rules serve, in declaration order.
+    ///
+    /// Before the rules, and carrying the ids of the rules under each, because
+    /// that is the shape of the answer: a digest that is a flat list of
+    /// prohibitions is a list an agent works around, and one that says what
+    /// was decided and what enforces it is one it can argue with. Issue #100.
+    ///
+    /// Narrowed with the rules. A guide restricted to `packages/domain` lists
+    /// the decisions bearing on that directory — telling an agent asking about
+    /// one folder that eleven decisions apply is the noise the filter exists
+    /// to remove.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<GuideDecision<'a>>,
     /// Every rule it covers, in configuration order.
     pub rules: Vec<GuideRule<'a>>,
+}
+
+/// One decision, as the digest carries it.
+#[derive(Debug, Serialize)]
+pub struct GuideDecision<'a> {
+    /// The reference, such as `ADR-014`.
+    pub id: &'a str,
+    /// What was decided, in one line.
+    pub title: &'a str,
+    /// Why, when the config said it here rather than only behind `link`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<&'a str>,
+    /// Where it is written down.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<&'a str>,
+    /// `accepted`, `proposed` or `superseded`. Always present: a consumer
+    /// branches on it, unlike a terminal reader who only needs to hear about
+    /// the unusual ones.
+    pub status: &'a str,
+    /// The rules serving it, in configuration order.
+    ///
+    /// Ids rather than the rules themselves: the rule is spelled out once, in
+    /// `rules`, and a digest that carried it twice would be a digest that can
+    /// disagree with itself. Empty is a real answer — a decision nobody
+    /// enforces is a thing to know about an architecture, and `config doctor`
+    /// is what calls it debt.
+    pub rules: Vec<&'a str>,
 }
 
 /// One rule, as the digest carries it.
@@ -66,6 +106,13 @@ pub struct GuideRule<'a> {
     /// Why the module it belongs to exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub module_why: Option<&'a str>,
+    /// The decision it implements, by id.
+    ///
+    /// The id alone, because the prose is in `decisions` and a reader who
+    /// starts at a rule needs to know *which* decision, not to have it
+    /// repeated under every rule that serves it. Issue #100.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision: Option<&'a str>,
 }
 
 /// Every rule kind archwarden has, as written in a config and on the command
@@ -123,29 +170,80 @@ pub fn guide<'a>(
     scope: Option<&'a RepoRelPath>,
     kinds: &'a [String],
 ) -> Guide<'a> {
+    let rules: Vec<GuideRule<'a>> = covered(config, scope, kinds).collect();
+
     Guide {
         version: GUIDE_VERSION,
         scope: scope.map(RepoRelPath::as_str),
         kinds: kinds.iter().map(String::as_str).collect(),
-        rules: config
-            .rules()
-            .filter(|rule| kinds.is_empty() || kinds.iter().any(|k| k == rule.kind.type_name()))
-            .filter(|rule| scope.is_none_or(|prefix| reaches(rule, prefix)))
-            .map(|rule| GuideRule {
-                id: rule.id.as_str(),
-                kind: rule.kind.type_name(),
-                level: rule.level.as_str(),
-                module: rule
-                    .module
-                    .as_ref()
-                    .map(archwarden_core::ids::ModuleId::as_str),
-                applies_to: rule.scope.patterns(),
-                requires: requirements(&rule.kind),
-                why: rule.why.as_deref(),
-                module_why: rule.module_why.as_deref(),
-            })
-            .collect(),
+        decisions: decisions_of(config, &rules),
+        rules,
     }
+}
+
+/// The decisions the covered rules serve, with those rules under each.
+///
+/// Read off the *covered* rules rather than off the config, which is what
+/// makes a scoped or kind-filtered guide carry the decisions bearing on what
+/// was asked about and no others. A decision left serving none of them is
+/// dropped; one the whole config declares and nobody enforces is kept, because
+/// an unenforced decision is a fact about the architecture and a decision
+/// whose rules are all out of scope is not.
+fn decisions_of<'a>(
+    config: &'a CompiledConfig,
+    covered: &[GuideRule<'a>],
+) -> Vec<GuideDecision<'a>> {
+    config
+        .decisions()
+        .filter_map(|decision| {
+            let serving: Vec<&'a str> = covered
+                .iter()
+                .filter(|rule| rule.decision == Some(decision.id.as_str()))
+                .map(|rule| rule.id)
+                .collect();
+
+            let enforced_anywhere = config
+                .rules()
+                .any(|rule| rule.decision.as_ref() == Some(&decision.id));
+            (!serving.is_empty() || !enforced_anywhere).then_some(GuideDecision {
+                id: decision.id.as_str(),
+                title: decision.title.as_str(),
+                why: decision.why.as_deref(),
+                link: decision.link.as_deref(),
+                status: decision.status.as_str(),
+                rules: serving,
+            })
+        })
+        .collect()
+}
+
+/// The rules a guide covers, after both filters.
+fn covered<'a>(
+    config: &'a CompiledConfig,
+    scope: Option<&'a RepoRelPath>,
+    kinds: &'a [String],
+) -> impl Iterator<Item = GuideRule<'a>> {
+    config
+        .rules()
+        .filter(move |rule| kinds.is_empty() || kinds.iter().any(|k| k == rule.kind.type_name()))
+        .filter(move |rule| scope.is_none_or(|prefix| reaches(rule, prefix)))
+        .map(|rule| GuideRule {
+            id: rule.id.as_str(),
+            kind: rule.kind.type_name(),
+            level: rule.level.as_str(),
+            module: rule
+                .module
+                .as_ref()
+                .map(archwarden_core::ids::ModuleId::as_str),
+            applies_to: rule.scope.patterns(),
+            requires: requirements(&rule.kind),
+            why: rule.why.as_deref(),
+            module_why: rule.module_why.as_deref(),
+            decision: rule
+                .decision
+                .as_ref()
+                .map(archwarden_core::ids::DecisionId::as_str),
+        })
 }
 
 /// Whether a rule could ever fire under `prefix`.
@@ -498,11 +596,11 @@ pub fn join(items: &[String]) -> String {
 mod tests {
     use super::*;
     use archwarden_core::{
-        compiled::{CompiledRule, SkipDirs},
+        compiled::{CompiledDecision, CompiledRule, DecisionStatus, SkipDirs},
         facts::{ExportTags, KindFilter},
         glob::PathSet,
         hash::ContentHash,
-        ids::{ModuleId, RuleId},
+        ids::{DecisionId, ModuleId, RuleId},
         level::Level,
         pattern::Pattern,
         scope::Scope,
@@ -523,6 +621,7 @@ mod tests {
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
             why: None,
             module_why: None,
+            decision: None,
             imports: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
@@ -1083,6 +1182,136 @@ mod tests {
                 .is_some_and(|line| line.contains("{{pascal(name)}}")),
             "{json}"
         );
+    }
+
+    /// Issue #100. The digest is what an agent has instead of the config, and
+    /// after this it carries the decisions with the rules that serve them
+    /// under each — rather than a flat list of ids, which is a list of
+    /// prohibitions and that is what an agent works around.
+    #[test]
+    fn the_digest_carries_the_decisions_with_their_rules_under_them() {
+        let mut sealed = rule("domain-forbids-http", None, &["src/*"], naming());
+        sealed.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+        let mut helper = rule("writes-go-through-the-helper", None, &["src/*"], naming());
+        helper.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+        let loose = rule("unattached", None, &["src/*"], naming());
+
+        let json = as_json(
+            &config(vec![sealed, helper, loose]).with_decisions(vec![CompiledDecision {
+                id: DecisionId::new("ADR-014").expect("valid"),
+                title: "The domain does not know about transport".to_owned(),
+                why: Some("it is published".to_owned()),
+                link: Some("docs/adr/014.md".to_owned()),
+                status: DecisionStatus::Accepted,
+            }]),
+            None,
+        );
+
+        let decision = &json["decisions"][0];
+        assert_eq!(decision["id"], "ADR-014");
+        assert_eq!(
+            decision["title"],
+            "The domain does not know about transport"
+        );
+        assert_eq!(decision["why"], "it is published");
+        assert_eq!(decision["link"], "docs/adr/014.md");
+        assert_eq!(decision["status"], "accepted");
+        assert_eq!(
+            decision["rules"],
+            serde_json::json!(["domain-forbids-http", "writes-go-through-the-helper"]),
+            "the rules under it, in configuration order: {json}"
+        );
+
+        assert_eq!(
+            json["rules"][0]["decision"], "ADR-014",
+            "and each rule still names its own, so a reader who starts at a \
+             rule is not sent to another section to find out: {json}"
+        );
+        assert!(
+            json["rules"][2].get("decision").is_none(),
+            "a rule that names none omits the key: {json}"
+        );
+    }
+
+    /// A decision nobody enforces is still in the digest. The guide describes
+    /// the architecture, and a decision with no rules is a real thing to know
+    /// about it — `config doctor` is what calls it debt.
+    #[test]
+    fn a_decision_no_rule_serves_is_still_in_the_digest() {
+        let json = as_json(
+            &config(vec![rule("shape", None, &["src/*"], naming())]).with_decisions(vec![
+                CompiledDecision {
+                    id: DecisionId::new("ADR-020").expect("valid"),
+                    title: "Nobody enforces this".to_owned(),
+                    why: None,
+                    link: None,
+                    status: DecisionStatus::Accepted,
+                },
+            ]),
+            None,
+        );
+
+        assert_eq!(json["decisions"][0]["id"], "ADR-020");
+        assert_eq!(
+            json["decisions"][0]["rules"],
+            serde_json::json!([]),
+            "an empty list, said out loud: {json}"
+        );
+    }
+
+    /// A config with no decisions omits the key, which is every config written
+    /// before 0.21 and the shape their committed guides already have.
+    #[test]
+    fn a_guide_with_no_decisions_omits_the_key() {
+        let json = as_json(
+            &config(vec![rule("shape", None, &["src/*"], naming())]),
+            None,
+        );
+
+        assert!(json.get("decisions").is_none(), "{json}");
+    }
+
+    /// Narrowing the guide to a scope narrows the rules under each decision
+    /// too, and drops a decision left serving none of them.
+    ///
+    /// The alternative — listing every decision whatever the scope — would
+    /// tell an agent asking about one directory that eleven decisions bear on
+    /// it, which is the noise the scope filter exists to remove.
+    #[test]
+    fn a_scoped_guide_carries_only_the_decisions_its_rules_serve() {
+        let mut here = rule("here", None, &["src/*"], naming());
+        here.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+        let mut elsewhere = rule("elsewhere", None, &["docs/*"], naming());
+        elsewhere.decision = Some(DecisionId::new("ADR-020").expect("valid"));
+
+        let scope = path("src");
+        let json = as_json(
+            &config(vec![here, elsewhere]).with_decisions(vec![
+                CompiledDecision {
+                    id: DecisionId::new("ADR-014").expect("valid"),
+                    title: "reached".to_owned(),
+                    why: None,
+                    link: None,
+                    status: DecisionStatus::Accepted,
+                },
+                CompiledDecision {
+                    id: DecisionId::new("ADR-020").expect("valid"),
+                    title: "not reached".to_owned(),
+                    why: None,
+                    link: None,
+                    status: DecisionStatus::Accepted,
+                },
+            ]),
+            Some(&scope),
+        );
+
+        let ids: Vec<&str> = json["decisions"]
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|d| d["id"].as_str().expect("an id"))
+            .collect();
+        assert_eq!(ids, ["ADR-014"], "{json}");
     }
 
     /// An unrestricted guide omits the scope rather than sending null.

@@ -145,6 +145,7 @@ mod tests {
                 module: None,
                 why: None,
                 module_why: None,
+                decision: None,
                 imports: None,
                 level: Level::Error,
                 scope: Scope::compile(["projetos/*"]).expect("valid scope"),

@@ -544,6 +544,7 @@ mod present_tests {
             module: None,
             why: None,
             module_why: None,
+            decision: None,
             imports: None,
             level: Level::Error,
             scope: archwarden_core::scope::Scope::compile([scope]).expect("valid scope"),

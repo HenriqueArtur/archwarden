@@ -1,7 +1,7 @@
 //! The top-level shape of `arch.config.json`.
 
 use archwarden_core::{
-    ids::{ModuleId, RuleId},
+    ids::{DecisionId, ModuleId, RuleId},
     level::Level,
 };
 use schemars::JsonSchema;
@@ -85,6 +85,17 @@ pub struct Config {
     #[serde(default)]
     pub skip_dirs: SkipDirs,
 
+    /// The decisions this configuration enforces, as prose.
+    ///
+    /// A rule says *why* it exists; this says *what decision it implements*,
+    /// which is the difference between a config that enforces an architecture
+    /// and one that describes it. The block carries only the prose — the link
+    /// between the two is written on the rule, in [`Rule::decision`], because
+    /// a foreign key pointing the other way is a second list to keep in step.
+    /// Issue #100.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<Decision>,
+
     /// Rules grouped under a label, which is what findings report in brackets.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub modules: Vec<Module>,
@@ -99,6 +110,90 @@ pub struct Config {
     /// Without this, one unwanted rule makes a whole preset unusable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub disable: Vec<RuleId>,
+}
+
+/// A decision the architecture rests on, and the rules enforce.
+///
+/// Prose and nothing else. What it does *not* carry is the list of rules that
+/// serve it: a rule names its decision in [`Rule::decision`], which is where
+/// the author already is when they write the rule, and which leaves nothing
+/// dangling when a rule is deleted. Issue #100 weighed both directions and
+/// this is the one where a new rule that forgets its decision is visible in
+/// the one place it exists, rather than absent from a list nobody re-reads.
+///
+/// Deliberately not a place to restate what the rules enforce. `CONFIG.md`
+/// already argues that a prose restatement of a check is a second source of
+/// truth going stale — this explains the *choice*, and the rules remain the
+/// only statement of what is enforced.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Decision {
+    /// The reference the team already uses for it, such as `ADR-014`.
+    ///
+    /// Unique across the config, its presets, *and* its rule ids: `config
+    /// explain` takes either, and an id that names two things names neither.
+    pub id: DecisionId,
+    /// What was decided, in one line.
+    ///
+    /// Required, unlike everything else here. The id is a reference and this
+    /// is the sentence a denial says out loud — a decision carrying only an id
+    /// would leave the hook's message exactly as opaque as the rule id it was
+    /// meant to replace.
+    pub title: String,
+    /// Why it was decided that way, when the author said it here.
+    ///
+    /// Optional because `link` is often the better answer: a decision whose
+    /// reasoning is three paragraphs belongs in the document, and duplicating
+    /// its first sentence here is the drift this field exists to avoid. One of
+    /// the two is what a reader needs; neither is required, because a team
+    /// adopting this incrementally starts with titles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Where it is written down: a path, a URL, a ticket.
+    ///
+    /// Carried verbatim and never resolved. archwarden does not check that it
+    /// exists — a decision recorded in a wiki this process cannot reach is
+    /// still recorded, and a linter that refused the reference would push
+    /// people to omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    /// Whether it still holds.
+    ///
+    /// Not decoration, and the reason this field exists: a `superseded`
+    /// decision whose rules still fire is a config saying two things at once,
+    /// and `config doctor` reports it as an error. See
+    /// [`DecisionStatus`].
+    #[serde(default, skip_serializing_if = "DecisionStatus::is_accepted")]
+    pub status: DecisionStatus,
+}
+
+/// Whether a decision still holds.
+///
+/// The three `docs/DECISIONS.md` already declares, so the config of this tool
+/// can describe the ADRs of this tool. Only one of them is checked:
+/// `superseded` with rules still enforcing it. `proposed` is deliberately
+/// silent — a decision under trial with rules already running is how one is
+/// trialled, and reporting it would nag the practice this feature is trying to
+/// encourage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum DecisionStatus {
+    /// It holds. The default, and what a decision that says nothing means.
+    #[default]
+    Accepted,
+    /// Written down, not yet settled. Reported by nothing.
+    Proposed,
+    /// Replaced. Rules still enforcing it are an error in `config doctor`.
+    Superseded,
+}
+
+impl DecisionStatus {
+    /// Whether this is the default, for `skip_serializing_if`.
+    #[must_use]
+    pub fn is_accepted(&self) -> bool {
+        matches!(self, Self::Accepted)
+    }
 }
 
 /// A named group of rules.
@@ -556,6 +651,166 @@ mod tests {
         let (module, _, rule) = original.rules().next().expect("one rule");
         assert_eq!(module, None);
         assert_eq!(rule.level(), Level::Warning);
+    }
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::{Config, Decision, DecisionStatus};
+    use archwarden_core::ids::DecisionId;
+
+    fn parse(json: &str) -> Config {
+        serde_json::from_str(json).expect("should deserialise")
+    }
+
+    /// The whole block, verbatim from issue #100.
+    #[test]
+    fn a_decision_carries_its_prose() {
+        let config = parse(
+            r#"{
+              "version": 0,
+              "decisions": [
+                {
+                  "id": "ADR-014",
+                  "title": "The domain does not know about transport",
+                  "why": "It is published, and a consumer must not inherit our HTTP client.",
+                  "link": "docs/adr/014-domain-transport.md",
+                  "status": "accepted"
+                }
+              ]
+            }"#,
+        );
+
+        let decision = &config.decisions[0];
+        assert_eq!(decision.id.as_str(), "ADR-014");
+        assert_eq!(decision.title, "The domain does not know about transport");
+        assert!(decision.why.as_deref().is_some_and(|w| w.contains("HTTP")));
+        assert_eq!(
+            decision.link.as_deref(),
+            Some("docs/adr/014-domain-transport.md")
+        );
+        assert_eq!(decision.status, DecisionStatus::Accepted);
+    }
+
+    /// A decision that says nothing about its status is one that holds. The
+    /// default has to be this way round: a field defaulting to `proposed`
+    /// would make every decision written without it something the doctor is
+    /// entitled to complain about.
+    #[test]
+    fn a_decision_that_says_nothing_is_accepted() {
+        let config = parse(r#"{"version":0,"decisions":[{"id":"ADR-1","title":"A wall"}]}"#);
+
+        assert_eq!(config.decisions[0].status, DecisionStatus::Accepted);
+        assert!(config.decisions[0].status.is_accepted());
+        assert_eq!(config.decisions[0].why, None);
+        assert_eq!(config.decisions[0].link, None);
+    }
+
+    /// The three the repository's own `docs/DECISIONS.md` declares, so the
+    /// config of this tool can describe the ADRs of this tool.
+    #[test]
+    fn the_three_statuses_are_the_ones_the_adr_format_already_has() {
+        for (written, expected) in [
+            ("accepted", DecisionStatus::Accepted),
+            ("proposed", DecisionStatus::Proposed),
+            ("superseded", DecisionStatus::Superseded),
+        ] {
+            let config = parse(&format!(
+                r#"{{"version":0,"decisions":[{{"id":"d","title":"t","status":"{written}"}}]}}"#
+            ));
+            assert_eq!(config.decisions[0].status, expected, "{written}");
+        }
+
+        assert!(
+            serde_json::from_str::<Config>(
+                r#"{"version":0,"decisions":[{"id":"d","title":"t","status":"rejected"}]}"#
+            )
+            .is_err(),
+            "a status nothing means is refused rather than read as accepted"
+        );
+    }
+
+    /// A decision needs a title. The id is a reference and the title is the
+    /// sentence a denial says out loud, so a decision carrying only an id
+    /// would make the hook's message the thing it replaced.
+    #[test]
+    fn a_decision_without_a_title_is_refused() {
+        assert!(
+            serde_json::from_str::<Config>(r#"{"version":0,"decisions":[{"id":"d"}]}"#).is_err()
+        );
+    }
+
+    /// The same protection the rest of the config has: a misspelled key here
+    /// silently drops the prose the whole feature exists to carry.
+    #[test]
+    fn an_unknown_field_in_a_decision_is_refused() {
+        assert!(
+            serde_json::from_str::<Config>(
+                r#"{"version":0,"decisions":[{"id":"d","title":"t","rules":["r"]}]}"#
+            )
+            .is_err(),
+            "`rules` on a decision is the shape issue #100 rejected: the rule points at \
+             the decision, not the other way round"
+        );
+    }
+
+    /// A config that declares none does not gain an empty list, which is what
+    /// a merged-config dump and `config explain` depend on.
+    #[test]
+    fn a_config_with_no_decisions_does_not_grow_the_key() {
+        let config = parse(r#"{"version":0}"#);
+        assert!(config.decisions.is_empty());
+
+        let json = serde_json::to_string(&config).expect("serialises");
+        assert!(!json.contains("decisions"), "{json}");
+    }
+
+    /// And one that declares them round-trips, prose and all.
+    #[test]
+    fn decisions_round_trip() {
+        let original = parse(
+            r#"{"version":0,"decisions":[
+              {"id":"ADR-1","title":"t","why":"w","link":"l","status":"superseded"}]}"#,
+        );
+        let json = serde_json::to_string(&original).expect("serialises");
+
+        assert_eq!(
+            serde_json::from_str::<Config>(&json).expect("parses"),
+            original
+        );
+    }
+
+    /// The lookup every surface downstream makes.
+    #[test]
+    fn a_decision_is_found_by_id() {
+        let config = parse(
+            r#"{"version":0,"decisions":[
+              {"id":"ADR-1","title":"one"},{"id":"ADR-2","title":"two"}]}"#,
+        );
+
+        let wanted = DecisionId::new("ADR-2").expect("valid");
+        assert_eq!(
+            config
+                .decisions
+                .iter()
+                .find(|d| d.id == wanted)
+                .map(|d| d.title.as_str()),
+            Some("two")
+        );
+    }
+
+    /// `Decision` is constructible from the outside, which the tests of every
+    /// surface downstream rely on.
+    #[test]
+    fn a_decision_can_be_built_in_code() {
+        let decision = Decision {
+            id: DecisionId::new("ADR-9").expect("valid"),
+            title: "built".to_owned(),
+            why: None,
+            link: None,
+            status: DecisionStatus::Proposed,
+        };
+        assert!(!decision.status.is_accepted());
     }
 }
 

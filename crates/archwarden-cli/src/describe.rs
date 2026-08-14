@@ -139,8 +139,17 @@ fn render_text(path: &RepoRelPath, applies: &[Applies<'_>], out: &mut dyn std::i
             entry.rule.id,
             entry.rule.kind.type_name(),
         );
-        // Before the expectations, because it is why they are what they are.
-        // Issue #46.
+        // The decision first, then the rule's own reason, then what it
+        // requires — widest answer to narrowest. The decision explains why
+        // there is a rule here at all; the reason explains this one; the
+        // expectations are what to do about it. Issues #46 and #100.
+        if let Some(decision) = entry.decision {
+            let _ = write!(
+                out,
+                "{}",
+                archwarden_api::describe::describe_decision(decision, "    ")
+            );
+        }
         if let Some(why) = &entry.rule.why {
             let _ = writeln!(out, "    why: {why}");
         }
@@ -159,11 +168,14 @@ mod tests {
     use super::*;
     use archwarden_api::describe::describe;
     use archwarden_core::{
-        compiled::{CompiledConfig, CompiledRule, CompiledRuleKind, SkipDirs},
+        compiled::{
+            CompiledConfig, CompiledDecision, CompiledRule, CompiledRuleKind, DecisionStatus,
+            SkipDirs,
+        },
         facts::{ExportKind, ExportTags, KindFilter},
         glob::PathSet,
         hash::ContentHash,
-        ids::{ModuleId, RuleId},
+        ids::{DecisionId, ModuleId, RuleId},
         level::Level,
         pattern::Pattern,
         scope::Scope,
@@ -184,6 +196,7 @@ mod tests {
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
             why: None,
             module_why: None,
+            decision: None,
             imports: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
@@ -297,6 +310,39 @@ mod tests {
         let why = text.find("why:").expect("the reason is printed");
         let expectation = text.find("an export named").expect("and the expectation");
         assert!(why < expectation, "{text}");
+    }
+
+    /// And the decision above the reason, because it is the larger of the two
+    /// answers: the reason explains this rule, the decision explains why there
+    /// is a rule here at all. Issue #100.
+    #[test]
+    fn the_decision_is_printed_above_the_rules_own_reason() {
+        let mut governed = rule("usecase-name", None, &["src/*"], naming());
+        governed.why = Some("the factory name is the public API".to_owned());
+        governed.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+
+        let text = rendered(
+            &config(vec![governed]).with_decisions(vec![CompiledDecision {
+                id: DecisionId::new("ADR-014").expect("valid"),
+                title: "The registry resolves by name".to_owned(),
+                why: None,
+                link: Some("docs/adr/014.md".to_owned()),
+                status: DecisionStatus::Accepted,
+            }]),
+            &path("src/user/create-client.use-case.ts"),
+            crate::report::Format::Text,
+        );
+
+        assert!(
+            text.contains("decision: ADR-014 — The registry resolves by name"),
+            "{text}"
+        );
+        assert!(text.contains("docs/adr/014.md"), "{text}");
+
+        let decision = text.find("decision:").expect("the decision is printed");
+        let why = text.find("why:").expect("and the rule's own reason");
+        let expectation = text.find("an export named").expect("and the expectation");
+        assert!(decision < why && why < expectation, "{text}");
     }
 
     /// The renderer hands back the shared envelope's bytes rather than

@@ -120,6 +120,8 @@ would refuse to complete.
   [modules with a scope](#modules-with-a-scope) for what `scope` adds.
 - `rules` — rules that belong to no particular module, typically import
   boundaries (which are cross-module by nature). They report as `[*]`.
+- `decisions` — the choices the rules keep, as prose. Top level only; a rule
+  names one with `decision`. See [`decisions`](#decisions--what-the-rules-are-for).
 
 ### Allowing instead of forbidding
 
@@ -249,6 +251,8 @@ them disagree.
 Every rule has:
 
 - `type` — discriminator (`structure`, `naming`, `presence`, `pair`, `frontmatter`, `spec-pair`, `import-boundary`, `call-obligation`, `no-passthrough`).
+- `decision` — optional, on every kind: the id of the decision this rule
+  implements. See [`decisions`](#decisions--what-the-rules-are-for).
 - `id` — stable identifier used in output and in `explain`. Required, unique per config.
 - `level` — `error` or `warning`.
 - a **scope**: `roots` on every rule, except `import-boundary` where it is
@@ -301,6 +305,116 @@ A module takes one too, and it is a separate answer rather than a fallback:
 least one rule in the config has a `why` — a project that never used the field
 has not adopted the practice, and being nagged about a convention you did not
 choose is how a command that gives advice becomes one nobody runs.
+
+### `decisions` — what the rules are for
+
+`why` says why a rule exists. This says **what decision it implements**, which
+is the difference between a config that enforces an architecture and one that
+describes it.
+
+```json
+{
+  "decisions": [
+    {
+      "id": "ADR-014",
+      "title": "The domain does not know about transport",
+      "why": "it is published, and a consumer must not inherit our HTTP client",
+      "link": "docs/adr/014-domain-transport.md",
+      "status": "accepted"
+    }
+  ],
+  "rules": [
+    { "type": "import-boundary", "id": "domain-forbids-http", "level": "error",
+      "decision": "ADR-014",
+      "from": ["packages/domain/**"],
+      "forbid_import_from_packages": ["axios"] }
+  ]
+}
+```
+
+**The rule points at the decision, not the other way round.** A plain foreign
+key, written where the author already is. There is no second list to keep in
+step, a deleted rule leaves nothing dangling, and a new rule that forgets its
+decision is visible in the one place it exists rather than absent from a list
+nobody re-reads.
+
+`title` is required and everything else is optional. `why` and `link` are two
+answers to the same question and either is enough: a decision whose reasoning
+runs to paragraphs belongs in the document, and copying its first sentence here
+is the drift this field exists to avoid. The link is carried verbatim and never
+resolved — archwarden does not check that a wiki page exists.
+
+Declared at the **top level only**, never inside a module. A decision that spans
+modules is the common case, and allowing both would create two places to look
+for one thing.
+
+Naming a decision the config does not declare is refused when the config loads,
+like naming a module that does not exist. Naming *no* decision is fine, and is
+what every rule written before 0.21 does.
+
+**What it changes is what every surface says**, not what fires:
+
+- the pre-write hook's denial stops being *"breaks `domain-forbids-http`"* and
+  becomes *"breaks ADR-014, and here is why, and here is where it is written"*;
+- `describe` answers "what applies here" with the decision each rule serves;
+- `agent-guide` opens with the decisions, the rules that keep each one under it;
+- `config explain` takes a decision id as well as a rule id, and answers the
+  question people actually ask — not *what does this rule do* but *why is this
+  like this*, plus the half a document cannot answer: whether it is still being
+  kept;
+- the HTML page leads with the architecture as decisions rather than as a rule
+  table;
+- MCP's `check_write` names the decision a refusal breaks.
+
+Not a place to restate what the rule enforces. A prose restatement of a check is
+a second source of truth going stale — the decision explains the *choice*, and
+the rules remain the only statement of what is enforced.
+
+#### `status`, which is not decoration
+
+`accepted` (the default), `proposed`, or `superseded` — the same three
+`DECISIONS.md` uses, so this config can describe this project's own ADRs.
+
+A **`superseded` decision whose rules still fire** is a config saying two things
+at once, and `config doctor` reports it as an error. It is the most valuable
+check here and the reason the field exists.
+
+`proposed` is reported by nothing. A decision under trial with rules already
+running is how one is trialled.
+
+#### Presets ship decisions
+
+`extends` folds them the way it folds rules: concatenated, presets first. Two
+decisions with one id is refused, for the same reason two rules with one id
+already are. So is one id that is a rule in one place and a decision in
+another — `config explain` takes either, and an id naming two things names
+neither.
+
+This is the interesting consequence: a preset stops being a bag of rules and
+becomes **a set of opinions with names and reasons**, which is what makes one
+worth adopting rather than copying.
+
+#### What `doctor` says, and what `check` does not
+
+`check` stays silent about all of this. A repository's build must not fail
+because its config is under-documented, and a gate that failed for that is one
+people turn off.
+
+| code | level | when |
+| --- | --- | --- |
+| `rule-without-a-decision` | warning | some rules name one and others do not, counted in one line |
+| `superseded-decision-still-enforced` | error | a replaced decision whose rules still fire |
+| `decision-nobody-enforces` | warning | a decision declared and implemented by no rule |
+
+The first appears only once at least one rule names a decision — a project that
+never used the field has not adopted the practice, and being nagged about a
+convention you did not choose is how a command that gives advice becomes one
+nobody runs.
+
+`config doctor` gained a **level** on every concern in 0.21. The sixteen checks
+that came before are all `warning`, which is what they have always been in
+practice; it does not reach the exit code, because `doctor` is advice and
+`check` is the gate.
 
 ### Frontmatter rule
 
@@ -727,12 +841,13 @@ without special handling.
 
 **Merging.**
 
-- Arrays (`modules`, `rules`, `ignore`, `extends`) are concatenated.
+- Arrays (`modules`, `rules`, `decisions`, `ignore`, `extends`) are concatenated.
 - Scalars (`root`, `version`) — the local config wins over any preset.
 - A preset declaring `root` is an error. A preset cannot know your repo
   layout, and silently relocating every glob in the config is not something
   a shared package should be able to do.
-- Rule `id` collisions are an error caught by the doctor.
+- Rule `id` collisions are an error caught by the doctor. So are decision `id`
+  collisions, and an id that is a rule in one file and a decision in another.
 
 **Removing an inherited rule.** A top-level `disable` list drops rules that
 came from a preset:
