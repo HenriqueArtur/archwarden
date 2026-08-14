@@ -41,6 +41,7 @@ pub mod evaluate;
 pub mod filter;
 pub mod guide;
 pub mod map;
+pub mod options;
 pub mod present;
 pub mod render;
 pub mod resolve;

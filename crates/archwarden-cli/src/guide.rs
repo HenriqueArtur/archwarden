@@ -30,6 +30,35 @@ pub enum GuideFormat {
     Html,
 }
 
+/// What to say when the digest has nothing in it.
+///
+/// Three different states, and they were one sentence until 0.20. A repository
+/// with nine rules and none of the kind you asked about was told "No rules are
+/// configured", which is false and reads as *this kind does not exist* — the
+/// reading issue #97 reported getting. Two answers that differ have to differ
+/// out loud; it is the same distinction the pre-write hook draws between "I
+/// have no objection" and "I could not tell".
+fn nothing_to_show(guide: &Guide<'_>) -> String {
+    // Narrowed to a kind, and it is a kind archwarden has -- an unknown one is
+    // refused before a digest is built. So the honest sentence is that you have
+    // none of it, and the next question is what one would take.
+    if let Some(first) = guide.kinds.first() {
+        let named = archwarden_api::describe::join_or(&guide.kinds, "any kind");
+        let under = guide
+            .scope
+            .map_or_else(String::new, |scope| format!(" under `{scope}`"));
+        return format!(
+            "No {named} rules are declared{under}.\n\nRun `archwarden config options \
+             {first}` for what one takes."
+        );
+    }
+
+    match guide.scope {
+        Some(scope) => format!("No rules reach `{scope}`."),
+        None => "No rules are configured.".to_owned(),
+    }
+}
+
 /// Writes the guide.
 pub fn render(
     guide: &Guide<'_>,
@@ -228,7 +257,7 @@ fn render_markdown(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
     );
 
     if guide.rules.is_empty() {
-        let _ = writeln!(out, "No rules are configured.");
+        let _ = writeln!(out, "{}", nothing_to_show(guide));
         return;
     }
 
@@ -294,6 +323,7 @@ mod tests {
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -491,6 +521,51 @@ mod tests {
     fn an_empty_configuration_says_so() {
         let markdown = rendered(&config(Vec::new()), None, GuideFormat::Markdown);
         assert!(markdown.contains("No rules are configured."), "{markdown}");
+    }
+
+    /// Issue #97's smaller half. A repository with rules, asked about a kind it
+    /// has none of, was told it had no rules at all — which is false, and reads
+    /// as "this kind does not exist" rather than "you have none".
+    #[test]
+    fn a_kind_with_none_declared_is_not_an_empty_repository() {
+        let configured = config(vec![rule("usecase-name", None, &["src/*"], naming())]);
+
+        let markdown = rendered_of(
+            &configured,
+            None,
+            &["call-obligation"],
+            GuideFormat::Markdown,
+        );
+
+        assert!(
+            markdown.contains("No `call-obligation` rules are declared."),
+            "{markdown}"
+        );
+        assert!(
+            !markdown.contains("No rules are configured"),
+            "the false half is gone: {markdown}"
+        );
+        // And it says where to learn the shape, which is the question somebody
+        // asking this is about to have.
+        assert!(
+            markdown.contains("config options call-obligation"),
+            "{markdown}"
+        );
+    }
+
+    /// A scope that reaches nothing is its own answer again, and not the same
+    /// one as an empty repository.
+    #[test]
+    fn a_scope_that_reaches_nothing_says_that_rather_than_nothing_exists() {
+        let configured = config(vec![rule("usecase-name", None, &["src/*"], naming())]);
+        let elsewhere = RepoRelPath::new("packages/outro").expect("valid path");
+
+        let markdown = rendered(&configured, Some(&elsewhere), GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains("No rules reach `packages/outro`."),
+            "{markdown}"
+        );
     }
 
     /// The guide points at the commands that answer precisely, because a
