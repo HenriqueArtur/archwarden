@@ -126,7 +126,7 @@ pub struct GuideRule<'a> {
 /// and it is load-bearing: `no-passthrough` was missing from this list from the
 /// day that rule shipped, so `agent-guide --kinds no-passthrough` refused a
 /// kind archwarden has.
-pub const KINDS: [&str; 10] = [
+pub const KINDS: [&str; 11] = [
     "structure",
     "naming",
     "spec-pair",
@@ -137,6 +137,7 @@ pub const KINDS: [&str; 10] = [
     "import-boundary",
     "import-cycle",
     "call-obligation",
+    "export-shape",
 ];
 
 /// Checks the kinds a caller asked for.
@@ -536,6 +537,32 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             }
             lines
         }
+        CompiledRuleKind::ExportShape(shape) => {
+            let mut lines = Vec::new();
+            if shape.forbid_default {
+                lines.push("must not export a default".to_owned());
+            }
+            if let Some(limit) = shape.max_exports {
+                lines.push(format!(
+                    "must export at most {limit} {} (`type` and `interface` do not count)",
+                    if limit == 1 { "symbol" } else { "symbols" }
+                ));
+            }
+            if !shape.must_return.is_empty() {
+                lines.push(format!(
+                    "every exported function must declare a return type matching {}",
+                    join(
+                        &shape
+                            .must_return
+                            .iter()
+                            .map(|pattern| pattern.as_str().to_owned())
+                            .collect::<Vec<_>>()
+                    )
+                ));
+            }
+            lines
+        }
+
         CompiledRuleKind::CallObligation {
             file_pattern,
             symbol,
@@ -991,6 +1018,13 @@ mod tests {
                 symbol: "Event.save".to_owned(),
                 imported_from: "@org/events".to_owned(),
             },
+            CompiledRuleKind::ExportShape(archwarden_core::compiled::ExportShape {
+                forbid_default: true,
+                max_exports: Some(1),
+                must_return: vec![
+                    Pattern::compile(r"^ResponsePattern<.+,.+>$").expect("valid pattern"),
+                ],
+            }),
         ];
 
         for kind in &every {
@@ -1230,6 +1264,57 @@ mod tests {
         assert!(
             json["rules"][2].get("decision").is_none(),
             "a rule that names none omits the key: {json}"
+        );
+    }
+
+    /// The digest states each claim an `export-shape` rule makes, and only
+    /// the ones it makes. A digest is what an agent has instead of the config,
+    /// so a claim it omits is a claim the agent will break. Issue #101.
+    #[test]
+    fn an_export_shape_rule_states_each_claim_it_makes() {
+        let all_three = CompiledRuleKind::ExportShape(archwarden_core::compiled::ExportShape {
+            forbid_default: true,
+            max_exports: Some(1),
+            must_return: vec![
+                Pattern::compile(r"^ResponsePattern<.+,.+>$").expect("valid pattern"),
+                Pattern::compile(r"^Result<.+>$").expect("valid pattern"),
+            ],
+        });
+        let markdown = sentences(
+            &config(vec![rule("shape", None, &["src/*"], all_three)]),
+            None,
+            &[],
+        );
+
+        assert!(markdown.contains("must not export a default"), "{markdown}");
+        assert!(
+            markdown.contains("must export at most 1 symbol (`type` and `interface` do not count)"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("every exported function must declare a return type matching"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("^Result<.+>$"),
+            "every pattern in the list, not only the first: {markdown}"
+        );
+
+        // The plural, which is the other half of the sentence.
+        let two = CompiledRuleKind::ExportShape(archwarden_core::compiled::ExportShape {
+            forbid_default: false,
+            max_exports: Some(2),
+            must_return: Vec::new(),
+        });
+        let plural = sentences(
+            &config(vec![rule("shape", None, &["src/*"], two)]),
+            None,
+            &[],
+        );
+        assert!(plural.contains("must export at most 2 symbols"), "{plural}");
+        assert!(
+            !plural.contains("must not export a default"),
+            "a claim the rule does not make is not stated: {plural}"
         );
     }
 

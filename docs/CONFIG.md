@@ -250,7 +250,7 @@ them disagree.
 
 Every rule has:
 
-- `type` — discriminator (`structure`, `naming`, `presence`, `pair`, `frontmatter`, `spec-pair`, `import-boundary`, `call-obligation`, `no-passthrough`).
+- `type` — discriminator (`structure`, `naming`, `presence`, `pair`, `frontmatter`, `spec-pair`, `import-boundary`, `import-cycle`, `call-obligation`, `no-passthrough`, `export-shape`).
 - `decision` — optional, on every kind: the id of the decision this rule
   implements. See [`decisions`](#decisions--what-the-rules-are-for).
 - `id` — stable identifier used in output and in `explain`. Required, unique per config.

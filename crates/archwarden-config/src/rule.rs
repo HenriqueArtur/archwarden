@@ -60,6 +60,8 @@ pub enum Rule {
     Pair(PairRule),
     /// A document's frontmatter must carry these keys.
     Frontmatter(FrontmatterRule),
+    /// What a file exposes, without saying anything about its name.
+    ExportShape(ExportShapeRule),
 }
 
 impl Rule {
@@ -77,6 +79,7 @@ impl Rule {
             Self::Presence(r) => &r.id,
             Self::Pair(r) => &r.id,
             Self::Frontmatter(r) => &r.id,
+            Self::ExportShape(r) => &r.id,
         }
     }
 
@@ -94,6 +97,7 @@ impl Rule {
             Self::Presence(r) => r.level,
             Self::Pair(r) => r.level,
             Self::Frontmatter(r) => r.level,
+            Self::ExportShape(r) => r.level,
         }
     }
 
@@ -111,6 +115,7 @@ impl Rule {
             Self::Presence(r) => r.why.as_deref(),
             Self::Pair(r) => r.why.as_deref(),
             Self::Frontmatter(r) => r.why.as_deref(),
+            Self::ExportShape(r) => r.why.as_deref(),
         }
     }
 
@@ -132,6 +137,7 @@ impl Rule {
             Self::Presence(r) => r.decision.as_ref(),
             Self::Pair(r) => r.decision.as_ref(),
             Self::Frontmatter(r) => r.decision.as_ref(),
+            Self::ExportShape(r) => r.decision.as_ref(),
         }
     }
 
@@ -153,6 +159,7 @@ impl Rule {
             Self::Presence(r) => &r.roots,
             Self::Pair(r) => &r.roots,
             Self::Frontmatter(r) => &r.roots,
+            Self::ExportShape(r) => &r.roots,
         }
     }
 
@@ -181,6 +188,7 @@ impl Rule {
             Self::Presence(r) => &r.when_importing,
             Self::Pair(r) => &r.when_importing,
             Self::Frontmatter(r) => &r.when_importing,
+            Self::ExportShape(r) => &r.when_importing,
         }
     }
 
@@ -198,6 +206,7 @@ impl Rule {
             Self::Presence(r) => &r.when_importing_packages,
             Self::Pair(r) => &r.when_importing_packages,
             Self::Frontmatter(r) => &r.when_importing_packages,
+            Self::ExportShape(r) => &r.when_importing_packages,
         }
     }
 
@@ -215,6 +224,7 @@ impl Rule {
             Self::Presence(_) => "presence",
             Self::Pair(_) => "pair",
             Self::Frontmatter(_) => "frontmatter",
+            Self::ExportShape(_) => "export-shape",
         }
     }
 }
@@ -1376,6 +1386,8 @@ mod tests {
                 "file_pattern":"^a\\.md$","must_exist":"b.md"}"#,
             r#"{"type":"frontmatter","id":"r","level":"error","roots":"src/*","decision":"ADR-014",
                 "file_pattern":"^a\\.md$","require":["id"]}"#,
+            r#"{"type":"export-shape","id":"r","level":"error","roots":"src","decision":"ADR-014",
+                "forbid_default":true}"#,
         ];
 
         let mut kinds = std::collections::BTreeSet::new();
@@ -1393,9 +1405,71 @@ mod tests {
         // would otherwise let a kind drop off the list unnoticed.
         assert_eq!(
             kinds.len(),
-            10,
+            11,
             "these are meant to be every kind archwarden has, one each: {kinds:?}"
         );
+    }
+
+    /// Issue #101, and the sketch from the issue verbatim. Three claims in one
+    /// kind, none of which mentions a filename — which is the whole point,
+    /// because saying any of them through `naming` meant inventing a naming
+    /// claim you did not mean.
+    #[test]
+    fn the_documented_export_shape_example_parses() {
+        let rule = parse(
+            r#"{
+              "type": "export-shape",
+              "id": "use-cases-return-the-pattern",
+              "level": "error",
+              "roots": ["src/use-cases/*"],
+              "forbid_default": true,
+              "max_exports": 1,
+              "must_return": ["^ResponsePattern<.+,.+>$", "^Result<.+>$"],
+              "why": "a use case returns the pattern, it never throws"
+            }"#,
+        );
+
+        let Rule::ExportShape(shape) = &rule else {
+            panic!("expected an export-shape rule, got {}", rule.type_name());
+        };
+        assert!(shape.forbid_default);
+        assert_eq!(shape.max_exports, Some(1));
+        assert_eq!(
+            shape.must_return.as_slice(),
+            ["^ResponsePattern<.+,.+>$", "^Result<.+>$"]
+        );
+        assert_eq!(rule.type_name(), "export-shape");
+    }
+
+    /// Each claim stands alone. A rule that only forbids defaults says nothing
+    /// about how many exports there are or what they return, and a config that
+    /// asks for one of the three must not be given the other two by default.
+    #[test]
+    fn each_export_shape_claim_is_optional_and_absent_by_default() {
+        let rule =
+            parse(r#"{"type":"export-shape","id":"no-defaults","level":"error","roots":"src"}"#);
+
+        let Rule::ExportShape(shape) = &rule else {
+            panic!("expected an export-shape rule");
+        };
+        assert!(!shape.forbid_default);
+        assert_eq!(shape.max_exports, None);
+        assert!(shape.must_return.is_empty());
+    }
+
+    /// `must_return` takes the one-or-many treatment every glob field takes, so
+    /// a single pattern needs no brackets.
+    #[test]
+    fn must_return_accepts_a_bare_string() {
+        let rule = parse(
+            r#"{"type":"export-shape","id":"r","level":"error","roots":"src",
+                "must_return":"^Result<.+>$"}"#,
+        );
+
+        let Rule::ExportShape(shape) = &rule else {
+            panic!("expected an export-shape rule");
+        };
+        assert_eq!(shape.must_return.as_slice(), ["^Result<.+>$"]);
     }
 
     /// A rule that names none is every rule written before 0.21, and it stays
@@ -1989,6 +2063,92 @@ pub struct NoPassthroughRule {
     ///
     /// Matched against the package a specifier belongs to, so `zod` covers
     /// `zod/v4` as it does everywhere else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
+}
+
+/// What a file exposes, without saying anything about what it is called.
+///
+/// `naming` couples the export to the *filename*. Plenty of architectural
+/// decisions are about the export alone — *"we do not use default exports"*,
+/// *"one export per file"*, *"every use case returns the pattern"* — and none
+/// of them mentions a name. Saying any of them through `naming` meant inventing
+/// a naming claim you did not mean in order to make an export claim you did.
+///
+/// Three claims in one kind, because they are the same question asked three
+/// ways: *what does this file expose?* Splitting them would be three kinds
+/// sharing one scope, one `roots` and one `why`. Issue #101.
+///
+/// # The division of labour, which is the whole design
+///
+/// `must_return` requires that a function **declares** its return type. It
+/// does not check that the body conforms — that is `tsc`'s job, and `tsc` does
+/// it well. What `tsc` cannot do is *require that you annotate at all*: a
+/// function returning `{ ok: true }` with no return type compiles perfectly.
+///
+/// **archwarden guarantees the pattern is declared; `tsc` guarantees the body
+/// conforms.** Neither alone is the guarantee a team wants, and together they
+/// are.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ExportShapeRule {
+    /// Stable identifier, unique across the config and its presets.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// The decision this rule implements. See [`StructureRule::decision`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
+    /// Directory globs this rule applies to.
+    pub roots: Patterns,
+    /// Whether a default export is refused.
+    ///
+    /// `false` by default, so a rule that only wants to say something about
+    /// return types says nothing about defaults.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub forbid_default: bool,
+    /// The most exports a file may have.
+    ///
+    /// **Counts what exists at runtime.** `type` and `interface` exports do
+    /// not count, and the default counts as one. A file exporting a function
+    /// and the interface of its dependencies is idiomatic TypeScript, and a
+    /// `max_exports: 1` that fired on it would be a rule nobody leaves on —
+    /// which is the same argument `spec-pair.skip_type_only` already makes one
+    /// rule over.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_exports: Option<usize>,
+    /// Return types an exported function may declare, as regexes.
+    ///
+    /// A **list**, and that is what settles the alias problem without imposing
+    /// a convention. `type Result<T> = ResponsePattern<T, Error>` is the same
+    /// type and a different string, so a team that has aliases lists them:
+    ///
+    /// ```json
+    /// "must_return": ["^ResponsePattern<.+,.+>$", "^Result<.+>$"]
+    /// ```
+    ///
+    /// A team that decides *"annotate with the canonical name"* writes one
+    /// pattern and gets that convention enforced — which is itself an
+    /// architectural decision, and now one the config states rather than
+    /// implies.
+    ///
+    /// Matched **text against text**, on the same terms as `naming`'s
+    /// annotations: no resolution, no inference, no assignability. Pair it with
+    /// `import-boundary.must_import_from` to close the remaining hole, which is
+    /// somebody declaring a local lookalike under the canonical name.
+    ///
+    /// Applies to the exports that *can* return something — a `function`
+    /// declaration, or a function or arrow assigned to a binding. A callable
+    /// that declares nothing is a finding, which is the point.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub must_return: Patterns,
+    /// Narrow this rule to the files that import something. See decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub when_importing_packages: Vec<String>,
 }

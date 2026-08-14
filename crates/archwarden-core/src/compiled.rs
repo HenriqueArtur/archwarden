@@ -269,6 +269,8 @@ pub enum CompiledRuleKind {
         /// The module the symbol must come from.
         imported_from: String,
     },
+    /// What a file exposes, said without reference to what it is called.
+    ExportShape(ExportShape),
 }
 
 impl CompiledRuleKind {
@@ -286,6 +288,7 @@ impl CompiledRuleKind {
             Self::Pair { .. } => "pair",
             Self::Frontmatter { .. } => "frontmatter",
             Self::CallObligation { .. } => "call-obligation",
+            Self::ExportShape(_) => "export-shape",
         }
     }
 
@@ -314,7 +317,10 @@ impl CompiledRuleKind {
             | Self::ImportBoundary { .. }
             | Self::ImportCycle { .. }
             | Self::CallObligation { .. }
-            | Self::NoPassthrough { .. } => true,
+            | Self::NoPassthrough { .. }
+            // Every one of its three claims is about the exports, which is
+            // the one thing here that cannot be read off a directory listing.
+            | Self::ExportShape(_) => true,
         }
     }
 }
@@ -500,6 +506,27 @@ pub struct CompiledModule {
     /// — which is the omission problem the quantifier exists to remove,
     /// reappearing one level up. `config doctor` names them.
     pub kind: Option<String>,
+}
+
+/// What a file exposes, with nothing said about what it is called.
+///
+/// Three claims in one kind because they are one question — *what does this
+/// file expose?* — and a rule asking any of them wants the same `roots` and
+/// the same `why`. Issue #101.
+#[derive(Debug, Clone)]
+pub struct ExportShape {
+    /// Whether a default export is refused.
+    pub forbid_default: bool,
+    /// The most exports a file may have, counting only what exists at runtime.
+    pub max_exports: Option<usize>,
+    /// Return types an exported callable may declare.
+    ///
+    /// Empty when the rule does not ask. A list rather than one pattern,
+    /// because an alias is the same type under a different string and a team
+    /// that has aliases lists them — which leaves *"annotate with the
+    /// canonical name"* available as a one-pattern rule, said out loud rather
+    /// than implied.
+    pub must_return: Vec<Pattern>,
 }
 
 /// A decision the architecture rests on, as the rest of the run sees it.

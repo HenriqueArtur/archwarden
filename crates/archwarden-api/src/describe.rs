@@ -127,6 +127,31 @@ pub fn describe_observed(observed: &Observed) -> String {
         Observed::OnlyDefaultExport => {
             "the only export is a default, whose name does not bind importers".to_owned()
         }
+        Observed::DefaultExportPresent { name } => match name {
+            Some(name) => format!("`{name}` is exported as the default"),
+            None => "there is a default export".to_owned(),
+        },
+        Observed::TooManyExports { names, limit } => format!(
+            "{} {} exported and at most {limit} {} allowed: {}",
+            names.len(),
+            if names.len() == 1 {
+                "symbol is"
+            } else {
+                "symbols are"
+            },
+            if *limit == 1 { "is" } else { "are" },
+            names
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        Observed::ExportMissingReturnType { name } => {
+            format!("`{name}` declares no return type, so nothing checks what it gives you")
+        }
+        Observed::ExportWrongReturnType { name, found } => {
+            format!("`{name}` declares `{found}`")
+        }
         Observed::ReexportOfUnknownKind { name, from } => {
             format!("`{name}` is re-exported from `{from}`, so its kind is not determinable here")
         }
@@ -1256,6 +1281,54 @@ mod tests {
         assert_eq!(
             parsed["rules"][0]["module_why"],
             "extracted so billing could depend on it"
+        );
+    }
+
+    /// Issue #101's four observations, each a sentence a reader can act on.
+    /// The two about return types are deliberately different sentences: one is
+    /// "write the type down", the other is "you wrote a different one".
+    #[test]
+    fn the_export_shape_observations_read_as_sentences() {
+        assert_eq!(
+            describe_observed(&Observed::DefaultExportPresent {
+                name: Some("CreateClient".to_owned()),
+            }),
+            "`CreateClient` is exported as the default"
+        );
+        assert_eq!(
+            describe_observed(&Observed::DefaultExportPresent { name: None }),
+            "there is a default export",
+            "an anonymous default has no name to print"
+        );
+
+        assert_eq!(
+            describe_observed(&Observed::TooManyExports {
+                names: vec!["A".to_owned(), "B".to_owned()],
+                limit: 1,
+            }),
+            "2 symbols are exported and at most 1 is allowed: `A`, `B`"
+        );
+        assert_eq!(
+            describe_observed(&Observed::TooManyExports {
+                names: vec!["A".to_owned()],
+                limit: 0,
+            }),
+            "1 symbol is exported and at most 0 are allowed: `A`",
+            "both numbers agree with English on their own"
+        );
+
+        assert_eq!(
+            describe_observed(&Observed::ExportMissingReturnType {
+                name: "CreateClient".to_owned(),
+            }),
+            "`CreateClient` declares no return type, so nothing checks what it gives you"
+        );
+        assert_eq!(
+            describe_observed(&Observed::ExportWrongReturnType {
+                name: "CreateClient".to_owned(),
+                found: "Promise<Client>".to_owned(),
+            }),
+            "`CreateClient` declares `Promise<Client>`"
         );
     }
 

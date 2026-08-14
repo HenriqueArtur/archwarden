@@ -350,7 +350,7 @@ fn tools() -> Vec<Value> {
         json!({
             "name": "config_options",
             "description":
-                "What an arch.config.json can carry: the config's own keys, and the ten \
+                "What an arch.config.json can carry: the config's own keys, and the eleven \
                  values a rule's `type` can take, each with its required fields, what they \
                  mean, their defaults, and a rule to paste. Ask this before writing or \
                  changing a rule rather than guessing at the shape.",
@@ -1304,7 +1304,7 @@ mod tests {
                 .as_array()
                 .is_some_and(|keys| keys.len() > 8)
         );
-        assert_eq!(all["kinds"].as_array().map(Vec::len), Some(10));
+        assert_eq!(all["kinds"].as_array().map(Vec::len), Some(11));
     }
 
     /// It answers with no configuration at all, which is the moment it is

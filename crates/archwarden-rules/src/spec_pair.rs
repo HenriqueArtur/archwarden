@@ -558,6 +558,7 @@ mod tests {
                     reexport_from: None,
                     forwards: None,
                     annotations: Vec::new(),
+                    returns: None,
                     span: Span::new(0, 0),
                 })
                 .collect(),

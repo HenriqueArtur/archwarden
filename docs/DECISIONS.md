@@ -17,6 +17,84 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 27 — archwarden requires the annotation; `tsc` checks the body
+Status: accepted.
+Context: issue #101. `naming` couples what a file exports to what the file is
+**called**, and plenty of decisions are about the export alone — *"we do not
+use default exports"*, *"one export per file"*, *"every use case returns the
+pattern"*. None mentions a filename, and the only way to say any of them was
+inside a `naming` rule, which demands a name template. You had to invent a
+naming claim you did not mean in order to make an export claim you did.
+
+The motivating case is the third: a team standardises on a returned result
+shape and cannot verify it is being followed. `tsc` checks what is annotated
+and **cannot require that you annotate** — a function returning `{ ok: true }`
+with no return type compiles perfectly.
+
+Decision: an `export-shape` kind carrying three claims —`forbid_default`,
+`max_exports`, `must_return` — and the division of labour that makes the third
+one worth having: **archwarden guarantees the pattern is declared, `tsc`
+guarantees the body conforms.** It works precisely because `tsc` cannot do the
+first half at all.
+
+**Three claims in one kind**, because they are the same question asked three
+ways. Splitting them would be three kinds sharing one scope, one `roots` and
+one `why`.
+
+**`must_return` takes a list**, which settles the alias problem without
+imposing a convention: `type Result<T> = ResponsePattern<T, Error>` is the same
+type and a different string, and matching is text against text. A team with
+aliases lists them; a team that writes one pattern has chosen *"annotate with
+the canonical name"*, which is itself an architectural decision and now one the
+config states rather than implies.
+
+**`max_exports` counts what exists at runtime.** `type` and `interface` do not
+count. A file exporting a function and the interface of its dependencies is
+idiomatic TypeScript, and a limit that fired on it would be a rule nobody
+leaves on — `spec-pair.skip_type_only` already makes that argument one rule
+over.
+
+**The return type is a field of its own, not another `annotation`.** The issue
+left this open and leaned this way; building it confirmed the lean. An
+annotation says *what this value is*; a return type says *what this call gives
+you*. A single list could not tell them apart, and
+`export const X: ResponsePattern<…> = () => {}` writes the pattern down about
+the wrong thing — it would satisfy a rule asking what the *call* returns while
+declaring nothing about the call. The field choice also made the parser change
+a *sibling* of `record_annotations` rather than the third arm inside it the
+issue predicted: merging them there would mean unpicking them again at the call
+site.
+
+Alternatives:
+- **Inspecting the returned object literal in the AST.** What would make this a
+  real guarantee rather than half of one. Rejected, and this is the line: early
+  returns, ternaries, delegation to a helper, spreads — a rule right about most
+  files and silently wrong about the rest is worse than no rule, because it is
+  read as a guarantee. `RULES.md` already draws this for `call-obligation`.
+- **Only `must_return`.** The reported case, and a third of the work. Rejected:
+  the other two are the same question and would land later as two more kinds.
+- **The return type joining `annotations`.** One field, less code, and the
+  confusion above.
+Consequences: the three sentences a team writes in an ADR are writable, and the
+one archwarden is uniquely placed to enforce — *it is annotated at all* — is
+enforceable.
+
+**The hole is stated rather than hidden.** A text match is defeated by an alias
+the config did not list, and by a local lookalike declared under the canonical
+name. The second is closed by pairing this with
+`import-boundary.must_import_from`, which already exists; the first is what the
+list is for. `RULES.md` says both beside the field.
+
+**And a defect surfaced on the way**, reported here because it is the part that
+changes what an existing config reports: `export * from './x'` produced no fact
+at all, so `no-passthrough` — the rule against a file that adds nothing of its
+own — was silent about the loudest form of exactly that, while catching
+`export { A } from './x'`. Measured, then fixed. The blast radius was measured
+too and it is smaller than it looks: `allow_package_entrypoints` is on by
+default and the star barrel is overwhelmingly written in a file called
+`index.ts`, which was exempt before and stays exempt. What lands is a star
+barrel under some other name.
+
 ### 26 — A rule names the decision it implements, and the key points one way
 Status: accepted.
 Context: issue #100. Every rule could say *why* it exists (#46) and nothing said

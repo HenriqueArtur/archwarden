@@ -330,6 +330,7 @@ mod tests {
             reexport_from: None,
             forwards: forwards.map(ToOwned::to_owned),
             annotations: Vec::new(),
+            returns: None,
             span: Span::new(0, 0),
         }
     }
@@ -418,6 +419,116 @@ mod tests {
             wrapper: false,
         };
         assert!(check(&engine(reexports_only, true), &facts).is_empty());
+    }
+
+    /// `export * from './x'` is the barrel this rule exists for, and it was
+    /// invisible until 0.22: the parser produced no fact at all, so the rule
+    /// against a file that adds nothing of its own said nothing about the
+    /// loudest form of exactly that. Issue #101.
+    ///
+    /// **This changes what an existing, unchanged config reports.** A
+    /// repository with `no-passthrough` and star barrels gets findings on its
+    /// first 0.22 run that 0.21 never produced. That is the defect being
+    /// fixed, and `baseline` is the answer for anyone not paying the debt
+    /// today.
+    #[test]
+    fn a_star_reexport_is_a_passthrough() {
+        let facts = facts(
+            "packages/domain/src/plan/barrel.ts",
+            &[],
+            vec![ExportFact {
+                name: Some("*".to_owned()),
+                tags: ExportTags::only(ExportKind::Reexport),
+                is_default: false,
+                reexport_from: Some("./other".to_owned()),
+                forwards: Some("*".to_owned()),
+                annotations: Vec::new(),
+                returns: None,
+                span: Span::new(0, 0),
+            }],
+        );
+
+        let all_forms = PassthroughForms {
+            reexport: true,
+            alias: true,
+            wrapper: true,
+        };
+        let findings = check(&engine(all_forms, true), &facts);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        let Observed::Passthrough {
+            exports,
+            whole_file,
+        } = &findings[0].observed
+        else {
+            panic!("expected a passthrough, got {:?}", findings[0].observed);
+        };
+        assert_eq!(exports, &["*".to_owned()]);
+        assert!(
+            whole_file,
+            "a file that is only a star barrel is the whole-file case"
+        );
+    }
+
+    /// And the exemption that decides how much this costs an existing
+    /// repository: `allow_package_entrypoints` is on by default, and the star
+    /// barrel is overwhelmingly written in a file called `index.ts`. Those were
+    /// exempt before 0.22 and stay exempt — so the reporting change lands on
+    /// star barrels under some *other* name, which is the narrower and more
+    /// deliberate case.
+    #[test]
+    fn a_star_barrel_at_an_entry_point_stays_exempt() {
+        let facts = facts(
+            "packages/domain/src/plan/index.ts",
+            &[],
+            vec![ExportFact {
+                name: Some("*".to_owned()),
+                tags: ExportTags::only(ExportKind::Reexport),
+                is_default: false,
+                reexport_from: Some("./other".to_owned()),
+                forwards: Some("*".to_owned()),
+                annotations: Vec::new(),
+                returns: None,
+                span: Span::new(0, 0),
+            }],
+        );
+
+        let all_forms = PassthroughForms {
+            reexport: true,
+            alias: true,
+            wrapper: true,
+        };
+        assert!(
+            check(&engine(all_forms, true), &facts).is_empty(),
+            "a package entry point is a public API, and forwarding is what one is for"
+        );
+    }
+
+    /// And it is a *re-export*, so a config that asked only for the other two
+    /// forms is not suddenly given it. The form list is what a repository
+    /// opted into, and this must not widen it.
+    #[test]
+    fn a_star_reexport_is_not_reported_when_reexports_were_not_asked_for() {
+        let facts = facts(
+            "packages/domain/src/plan/barrel.ts",
+            &[],
+            vec![ExportFact {
+                name: Some("*".to_owned()),
+                tags: ExportTags::only(ExportKind::Reexport),
+                is_default: false,
+                reexport_from: Some("./other".to_owned()),
+                forwards: Some("*".to_owned()),
+                annotations: Vec::new(),
+                returns: None,
+                span: Span::new(0, 0),
+            }],
+        );
+
+        let others_only = PassthroughForms {
+            reexport: false,
+            alias: true,
+            wrapper: true,
+        };
+        assert!(check(&engine(others_only, true), &facts).is_empty());
     }
 
     /// The partial case, and why it is opt-in.

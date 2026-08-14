@@ -1166,6 +1166,23 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
             }
             sentence
         }
+        Expectation::NoDefaultExport => {
+            "no default export -- an importer names a default itself, so the \
+             name it is reached by is not the one it was given"
+                .to_owned()
+        }
+        Expectation::AtMostExports { limit } => format!(
+            "at most {limit} {} exported, not counting `type` and `interface`",
+            if *limit == 1 { "symbol" } else { "symbols" }
+        ),
+        Expectation::RequiredReturnType { patterns } => format!(
+            "every exported function to declare a return type matching {}",
+            patterns
+                .iter()
+                .map(|pattern| format!("`{pattern}`"))
+                .collect::<Vec<_>>()
+                .join(" or ")
+        ),
         Expectation::NoPassthrough { forms } => {
             format!(
                 "a file must add something of its own, not only {}",

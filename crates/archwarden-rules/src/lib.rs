@@ -14,6 +14,7 @@
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
 pub mod call_obligation;
+pub mod export_shape;
 pub mod frontmatter;
 pub mod import_boundary;
 pub mod import_cycle;
@@ -162,6 +163,9 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     require_any,
                     config.skip_dirs().clone(),
                 )),
+                CompiledRuleKind::ExportShape(shape) => {
+                    Box::new(export_shape::ExportShapeEngine::build(rule, shape))
+                }
                 CompiledRuleKind::CallObligation {
                     file_pattern,
                     symbol,

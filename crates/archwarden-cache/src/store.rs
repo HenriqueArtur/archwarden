@@ -25,6 +25,11 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 /// cache is a rebuildable artefact, and migration code for one is a liability
 /// nobody is paid back for. See decision 3.
 ///
+/// 6 → 7: `ExportFact::returns`. The same dangerous shape as 3 → 4 and for the
+/// same reason — an entry written by the previous build deserialises cleanly
+/// and claims every export declared no return type, which is a finding against
+/// a file whose return type is right there in the source. Issue #101.
+///
 /// 4 → 5: a `docs` table, and `FileClass` gained two answers — an entry
 /// written by the previous build was classified by a function that had never
 /// heard of `Document` or `UnreadableSource`.
@@ -33,7 +38,7 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 /// dangerous kind of shape change — an entry written by the previous build
 /// deserialises cleanly and claims every export annotates nothing, which is a
 /// finding against a file whose annotation is right there in the source.
-pub const FORMAT_VERSION: u32 = 6;
+pub const FORMAT_VERSION: u32 = 7;
 
 const META: TableDefinition<'_, &str, u32> = TableDefinition::new("meta");
 const FACTS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("facts");
@@ -332,6 +337,7 @@ mod tests {
             reexport_from: None,
             forwards: None,
             annotations: vec!["Entity".to_owned()],
+            returns: None,
             span: Span::new(0, 20),
         });
         facts.calls.push(CallFact {

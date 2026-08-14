@@ -46,6 +46,31 @@ pub enum Expectation {
     /// [`Observed::ImportCycle`] beside it.
     NoImportCycle,
 
+    /// The file must not export a default.
+    ///
+    /// A rule about the default itself, unlike [`Expectation::RequiredExport`],
+    /// which is `naming` asking for a *named* one. Issue #101.
+    NoDefaultExport,
+
+    /// The file may export at most this many runtime symbols.
+    ///
+    /// `type` and `interface` do not count: they exist only for `tsc`, and a
+    /// limit that counted them would fire on idiomatic TypeScript.
+    AtMostExports {
+        /// The limit.
+        limit: usize,
+    },
+
+    /// An exported callable must declare one of these return types.
+    ///
+    /// Matched as text. archwarden requires that the pattern is *declared*;
+    /// whether the body conforms stays `tsc`'s question — and requiring the
+    /// declaration is the half `tsc` cannot do at all.
+    RequiredReturnType {
+        /// The patterns, as written in the config.
+        patterns: Vec<String>,
+    },
+
     /// Exports that are nothing but a forward of another module.
     NoPassthrough {
         /// The shapes the rule refuses.
@@ -288,6 +313,48 @@ pub enum Observed {
     },
     /// The only export is a default, whose name does not bind importers.
     OnlyDefaultExport,
+    /// A file exports a default where the rule forbids one.
+    ///
+    /// Separate from [`Observed::OnlyDefaultExport`], which is `naming`
+    /// reporting that it could not find the *named* export it wanted. This one
+    /// is a rule about the default itself. Issue #101.
+    DefaultExportPresent {
+        /// The name the default was declared under, when it had one.
+        name: Option<String>,
+    },
+    /// A file exports more than the rule permits.
+    TooManyExports {
+        /// The runtime exports found, in declaration order. `type` and
+        /// `interface` are not counted and are not listed: they exist only for
+        /// `tsc`, and a limit that counted them would fire on idiomatic
+        /// TypeScript.
+        names: Vec<String>,
+        /// The most the rule allows.
+        limit: usize,
+    },
+    /// An exported callable that declares no return type at all.
+    ///
+    /// The state issue #101 exists for. `tsc` checks what is annotated and
+    /// cannot require that you annotate — a function returning `{ ok: true }`
+    /// with no return type compiles perfectly — so this absence is what
+    /// archwarden is placed to see.
+    ExportMissingReturnType {
+        /// The export that declared nothing.
+        name: String,
+    },
+    /// An exported callable that declares a return type the rule does not
+    /// accept.
+    ///
+    /// Separate from [`Observed::ExportMissingReturnType`] for the reason
+    /// [`Observed::ExportWrongAnnotation`] is separate from
+    /// [`Observed::ExportMissingAnnotation`]: two different sentences and two
+    /// different fixes.
+    ExportWrongReturnType {
+        /// The export.
+        name: String,
+        /// What it does declare, as written.
+        found: String,
+    },
     /// A re-export, whose kind cannot be determined without cross-file work.
     ReexportOfUnknownKind {
         /// The name that was found.
