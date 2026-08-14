@@ -17,6 +17,67 @@ saying so.
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-08-14
+
+Two rules the config could not write: a directory that has stopped growing, and
+a counterpart in a parallel tree. **No existing configuration reports anything
+new.**
+
+### Added
+
+- **`frozen`, a directory closed for extension** (#102). `import-boundary`
+  could forbid *importing* something; nothing could forbid *adding* to it —
+  which is half of every migration ADR.
+
+  ```json
+  { "type": "frozen", "id": "legacy-is-closed-for-extension", "level": "error",
+    "roots": ["packages/legacy/**"],
+    "why": "ADR-021: closed for extension; new work goes in packages/core" }
+  ```
+
+  The engine is the smallest in the workspace, and that is the design rather
+  than a shortcut: every file under the scope is a finding, and `baseline`
+  already decides which are accepted, by rule and path. The rule points that
+  machinery forward instead of back — and turns `baseline` from a record of
+  debt into a statement of intent.
+
+  **Turning one on is two steps.** `archwarden baseline` accepts what is there
+  today; skip it and the first `check` reports every file that was already
+  there. `config doctor` names that as `frozen-with-nothing-accepted` and gives
+  you the command.
+
+  A move *within* the freeze is reported and a move *out* is silent, which is
+  the point of the freeze. Nothing reads `git`: a freeze that consulted history
+  would answer differently in CI than on a laptop.
+
+- **`mirror`, a counterpart in a parallel tree** (#103). `pair` and `spec-pair`
+  both look in the same directory, and `pair` takes a sibling *name* — so
+  *"tests live in `test/`, mirroring `src/`"* was inexpressible.
+
+  ```json
+  { "type": "mirror", "id": "entities-have-migrations", "level": "error",
+    "roots": ["src/entities"], "file_pattern": "^(?<name>[a-z-]+)\\.ts$",
+    "must_exist": "migrations/{{raw(name)}}.sql" }
+  ```
+
+  One direction per rule, so *"every entity has a migration"* and *"every
+  migration belongs to an entity"* each carry their own `why`. Only that the
+  counterpart **exists** is checked — whether it has anything in it is
+  `spec-pair`'s question.
+
+- **`{{raw(subpath)}}`**, the directory path from a rule's root down to the
+  file. `test/{{raw(subpath)}}/{{raw(name)}}.test.ts` turns `src/a/b/x.ts` into
+  `test/a/b/x.test.ts`, which `dirname` could not carry. Empty for a file
+  directly in a root, with the separator it would leave collapsed.
+
+- **`frozen-with-nothing-accepted`** in `config doctor`, at `warning`.
+
+### Reasoning
+
+Decisions 28 and 29 in [`DECISIONS.md`](docs/DECISIONS.md), including why a
+move within a freeze is reported, why nothing reads `git`, and why `pair` and
+`spec-pair` stay rather than collapsing into `mirror`.
+
 ## [0.22.0] — 2026-08-14
 
 What a file exports, without tying it to what the file is called.
@@ -1926,7 +1987,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.22.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.23.0...HEAD
+[0.23.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.19.0...v0.20.0
