@@ -62,6 +62,10 @@ pub enum Rule {
     Frontmatter(FrontmatterRule),
     /// What a file exposes, without saying anything about its name.
     ExportShape(ExportShapeRule),
+    /// A directory that has stopped growing.
+    Frozen(FrozenRule),
+    /// A counterpart in a parallel tree.
+    Mirror(MirrorRule),
 }
 
 impl Rule {
@@ -80,6 +84,8 @@ impl Rule {
             Self::Pair(r) => &r.id,
             Self::Frontmatter(r) => &r.id,
             Self::ExportShape(r) => &r.id,
+            Self::Frozen(r) => &r.id,
+            Self::Mirror(r) => &r.id,
         }
     }
 
@@ -98,6 +104,8 @@ impl Rule {
             Self::Pair(r) => r.level,
             Self::Frontmatter(r) => r.level,
             Self::ExportShape(r) => r.level,
+            Self::Frozen(r) => r.level,
+            Self::Mirror(r) => r.level,
         }
     }
 
@@ -116,6 +124,8 @@ impl Rule {
             Self::Pair(r) => r.why.as_deref(),
             Self::Frontmatter(r) => r.why.as_deref(),
             Self::ExportShape(r) => r.why.as_deref(),
+            Self::Frozen(r) => r.why.as_deref(),
+            Self::Mirror(r) => r.why.as_deref(),
         }
     }
 
@@ -138,6 +148,8 @@ impl Rule {
             Self::Pair(r) => r.decision.as_ref(),
             Self::Frontmatter(r) => r.decision.as_ref(),
             Self::ExportShape(r) => r.decision.as_ref(),
+            Self::Frozen(r) => r.decision.as_ref(),
+            Self::Mirror(r) => r.decision.as_ref(),
         }
     }
 
@@ -160,6 +172,8 @@ impl Rule {
             Self::Pair(r) => &r.roots,
             Self::Frontmatter(r) => &r.roots,
             Self::ExportShape(r) => &r.roots,
+            Self::Frozen(r) => &r.roots,
+            Self::Mirror(r) => &r.roots,
         }
     }
 
@@ -189,6 +203,8 @@ impl Rule {
             Self::Pair(r) => &r.when_importing,
             Self::Frontmatter(r) => &r.when_importing,
             Self::ExportShape(r) => &r.when_importing,
+            Self::Frozen(r) => &r.when_importing,
+            Self::Mirror(r) => &r.when_importing,
         }
     }
 
@@ -207,6 +223,8 @@ impl Rule {
             Self::Pair(r) => &r.when_importing_packages,
             Self::Frontmatter(r) => &r.when_importing_packages,
             Self::ExportShape(r) => &r.when_importing_packages,
+            Self::Frozen(r) => &r.when_importing_packages,
+            Self::Mirror(r) => &r.when_importing_packages,
         }
     }
 
@@ -225,6 +243,8 @@ impl Rule {
             Self::Pair(_) => "pair",
             Self::Frontmatter(_) => "frontmatter",
             Self::ExportShape(_) => "export-shape",
+            Self::Frozen(_) => "frozen",
+            Self::Mirror(_) => "mirror",
         }
     }
 }
@@ -2145,6 +2165,131 @@ pub struct ExportShapeRule {
     /// that declares nothing is a finding, which is the point.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub must_return: Patterns,
+    /// Narrow this rule to the files that import something. See decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
+}
+
+/// A directory that has stopped growing.
+///
+/// `import-boundary` can forbid **importing** something. Nothing could forbid
+/// **adding** to it — and that is half of every migration ADR: *"the legacy
+/// module is closed for extension; new work goes in `packages/core`"*.
+///
+/// # It is `baseline` pointed forward
+///
+/// Every file under `roots` is a finding. `baseline` accepts today's, by rule
+/// and path, and reports tomorrow's. Nothing here remembers a date and nothing
+/// reads `git`: archwarden answers from a working tree and a committed
+/// baseline, which is what keeps it deterministic and keeps a shallow clone
+/// working — a freeze that consulted history would answer differently in CI
+/// than on a laptop.
+///
+/// It also turns `baseline` from a record of debt into a statement of intent,
+/// which is a better thing for it to be. Issue #102.
+///
+/// # Two things it deliberately does not do
+///
+/// **It does not exempt a move.** `legacy/a.ts → legacy/sub/a.ts` is reported.
+/// A module closed for extension is one that has stopped, and reshuffling it is
+/// not stopping. When the move is deliberate, `archwarden baseline` accepts it
+/// and leaves the change in a diff somebody reviews — which reads as one move
+/// rather than a removal and an addition, because `baseline` already pairs
+/// them. A move *out* is silent, which is the point of the freeze.
+///
+/// **It is about files, not exports.** *"No new exports in this file"* is a
+/// real second claim and a much harder one: it needs the frozen set to be
+/// per-symbol, and `baseline` accepts paths.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FrozenRule {
+    /// Stable identifier, unique across the config and its presets.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// The decision this rule implements. See [`StructureRule::decision`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
+    /// The directories that have stopped growing.
+    pub roots: Patterns,
+    /// Narrow this rule to the files that import something. See decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
+}
+
+/// A counterpart in a parallel tree, rather than a sibling.
+///
+/// `pair` and `spec-pair` both look in the *same directory*. Plenty of
+/// conventions pair across parallel trees — *"every entity has a migration"*,
+/// *"every route has a page in the docs"*, *"tests live in `test/`, mirroring
+/// `src/`"* — and `pair` takes a sibling **name**, so there was no way to say
+/// "the same path, elsewhere, transformed". Issue #103.
+///
+/// Two pieces that already existed, put together: `presence` proves a file is
+/// on disk without parsing anything, and `naming` renders a path from capture
+/// groups with transforms. A mirror is the second producing a path for the
+/// first to check.
+///
+/// # One direction per rule
+///
+/// *"Every entity has a migration"* and *"every migration belongs to an
+/// entity"* are two claims, and each deserves its own `why` — the first is
+/// about completeness, the second about orphans. A flag would put two reasons
+/// on one rule and make a reader work out which half fired.
+///
+/// # Why `pair` and `spec-pair` stay
+///
+/// They are the ergonomic forms: a bare sibling name, and a sibling with a
+/// marker. Collapsing them into a template would make the common case wordier
+/// to buy a generality most configs never use. The test is whether the
+/// specialised forms are *shorter to write*, not whether they are expressible
+/// — three kinds that are one kind wearing three names is how a format gets
+/// heavy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MirrorRule {
+    /// Stable identifier, unique across the config and its presets.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// The decision this rule implements. See [`StructureRule::decision`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
+    /// Directory globs whose files this rule is about.
+    pub roots: Patterns,
+    /// Regex over the filename, with the capture groups the template uses.
+    ///
+    /// A file the pattern does not match is outside the population, the same
+    /// way it is for `pair`.
+    pub file_pattern: String,
+    /// The counterpart's path, as a template rendered from repository root.
+    ///
+    /// The groups are `file_pattern`'s, plus two the path itself provides:
+    ///
+    /// - `dirname` — the immediate parent directory's name, which
+    ///   `frontmatter.equals` already defines the same way;
+    /// - `subpath` — the directory path from the rule's root down to the file,
+    ///   which is what a mirror across a *nested* tree needs.
+    ///   `src/a/b/x.ts` under `roots: ["src/**"]` gives `a/b`, so
+    ///   `test/{{raw(subpath)}}/{{raw(name)}}.test.ts` is writable. Empty when
+    ///   the file sits directly in the root, and the renderer collapses the
+    ///   `//` that would leave.
+    ///
+    /// Only that the counterpart **exists** is checked. *"And it must contain a
+    /// test case"* is `spec-pair`'s question and has an answer there already.
+    pub must_exist: String,
     /// Narrow this rule to the files that import something. See decision 25.
     #[serde(default, skip_serializing_if = "Patterns::is_empty")]
     pub when_importing: Patterns,

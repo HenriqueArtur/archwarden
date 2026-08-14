@@ -127,6 +127,12 @@ pub fn describe_observed(observed: &Observed) -> String {
         Observed::OnlyDefaultExport => {
             "the only export is a default, whose name does not bind importers".to_owned()
         }
+        Observed::FileInFrozenTree => {
+            "this directory has stopped growing, and nothing accepted this file".to_owned()
+        }
+        Observed::CounterpartMissing { expected } => {
+            format!("`{expected}` is not there")
+        }
         Observed::DefaultExportPresent { name } => match name {
             Some(name) => format!("`{name}` is exported as the default"),
             None => "there is a default export".to_owned(),

@@ -264,6 +264,66 @@ fn count(n: usize, noun: &str) -> String {
     }
 }
 
+/// A `frozen` rule whose files nothing in the baseline accepts.
+///
+/// The rule reports **every** file under its scope, which is the design: the
+/// baseline holds the accepted set. Turn one on without running `archwarden
+/// baseline` and the first `check` is a wall of errors, one per file that was
+/// already there — every one of them a finding about the past.
+///
+/// `check` still reports them, which is honest: the rule really does say those
+/// paths are unaccepted. This is where the missing second step is named, with
+/// the command to run. At `warning`, like every check that came before the
+/// level existed. Issue #102.
+fn frozen_with_nothing_accepted(
+    rule: &CompiledRule,
+    engine: &dyn archwarden_core::traits::RuleEngine,
+    tree: &RepoTree,
+    baseline: Option<&archwarden_api::baseline::Baseline>,
+    concerns: &mut Vec<Concern>,
+) {
+    if !matches!(rule.kind, CompiledRuleKind::Frozen) {
+        return;
+    }
+
+    let reached = tree
+        .files()
+        .filter(|file| engine.applies_to(&file.path))
+        .count();
+    if reached == 0 {
+        // A scope that reaches nothing is `scope_matches_nothing`'s sentence,
+        // and saying it twice in two voices is worse than saying it once.
+        return;
+    }
+
+    let accepted = baseline.map_or(0, |baseline| {
+        baseline
+            .entries()
+            .filter(|entry| entry.rule == rule.id.as_str())
+            .count()
+    });
+    if accepted > 0 {
+        return;
+    }
+
+    concerns.push(Concern {
+        code: "frozen-with-nothing-accepted",
+        level: Level::Warning,
+        rule_id: Some(rule.id.clone()),
+        path: None,
+        message: format!(
+            "`{}` freezes {} that the baseline accepts none of, so every one of \
+             them is reported as new",
+            rule.id,
+            count(reached, "file"),
+        ),
+        fix: "run `archwarden baseline` to accept what is there today -- a \
+              freeze is that file plus this rule, and without it the rule \
+              reports the past rather than the future"
+            .to_owned(),
+    });
+}
+
 /// A rule that has nothing to enforce, whatever its scope reaches.
 ///
 /// `unreachable_scope` is about a rule that cannot see anything;
@@ -553,7 +613,18 @@ pub fn examine_repository(
         module_scope_matches_nothing(module, tree, &mut concerns);
     }
 
+    let baseline = archwarden_api::baseline::Baseline::load(root)
+        .ok()
+        .flatten();
+
     for (rule, engine) in config.rules().zip(archwarden_rules::engines_for(config)) {
+        frozen_with_nothing_accepted(
+            rule,
+            engine.as_ref(),
+            tree,
+            baseline.as_ref(),
+            &mut concerns,
+        );
         scope_matches_nothing(rule, tree, &mut concerns);
         rule_reaches_outside_its_module(config, rule, tree, &mut concerns);
         pattern_matches_nothing(config, rule, tree, &mut concerns);
@@ -1590,6 +1661,108 @@ mod tests {
                 .any(|c| c["level"] == "error"),
             "{parsed}"
         );
+    }
+
+    /// Issue #102. A `frozen` rule reports every file under it, which is the
+    /// design — the baseline holds the accepted set. Turn one on without
+    /// running `archwarden baseline` and the first `check` is a wall of errors
+    /// about the past. `check` still reports them, honestly; this is where the
+    /// missing second step is named, with the command to run.
+    #[test]
+    fn a_freeze_the_baseline_accepts_nothing_of_is_reported() {
+        let (concerns, _guard) = repository_concerns(
+            &["packages/legacy/a.ts", "packages/legacy/b.ts"],
+            "legacy-is-closed",
+            None,
+        );
+
+        let found = concerns
+            .iter()
+            .find(|c| c.code == "frozen-with-nothing-accepted")
+            .unwrap_or_else(|| panic!("{concerns:?}"));
+
+        assert_eq!(found.level, Level::Warning);
+        assert!(found.message.contains("2 files"), "{found:?}");
+        assert!(found.fix.contains("archwarden baseline"), "{found:?}");
+    }
+
+    /// And it goes quiet once the baseline carries the rule, which is the
+    /// whole adoption path: two steps, and the second one said out loud until
+    /// it is taken.
+    #[test]
+    fn a_freeze_the_baseline_accepts_is_not_reported() {
+        let (concerns, _guard) = repository_concerns(
+            &["packages/legacy/a.ts"],
+            "legacy-is-closed",
+            Some("legacy-is-closed"),
+        );
+
+        assert!(
+            concerns
+                .iter()
+                .all(|c| c.code != "frozen-with-nothing-accepted"),
+            "{concerns:?}"
+        );
+    }
+
+    /// A freeze whose scope reaches no file is `scope-matches-nothing`'s
+    /// sentence. Saying it twice in two voices is worse than saying it once.
+    #[test]
+    fn a_freeze_over_nothing_is_left_to_the_other_check() {
+        let (concerns, _guard) = repository_concerns(&["src/a.ts"], "legacy-is-closed", None);
+
+        assert!(
+            concerns
+                .iter()
+                .all(|c| c.code != "frozen-with-nothing-accepted"),
+            "{concerns:?}"
+        );
+    }
+
+    /// A repository with the named files, a `frozen` rule over
+    /// `packages/legacy/**`, and optionally a baseline accepting one entry
+    /// under `accepts`.
+    fn repository_concerns(
+        files: &[&str],
+        rule_id: &str,
+        accepts: Option<&str>,
+    ) -> (Vec<Concern>, tempfile::TempDir) {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root = camino::Utf8PathBuf::from_path_buf(guard.path().to_path_buf())
+            .expect("temp path is UTF-8");
+
+        for file in files {
+            let at = root.join(file);
+            std::fs::create_dir_all(at.parent().expect("a file has a parent")).expect("dirs");
+            std::fs::write(&at, "export const x = 1;\n").expect("write");
+        }
+        if let Some(rule) = accepts {
+            std::fs::create_dir_all(root.join(".archwarden")).expect("dirs");
+            std::fs::write(
+                root.join(archwarden_api::baseline::BASELINE_PATH),
+                format!(
+                    r#"{{"version":0,"accepted":[{{"rule":"{rule}","path":"{}","note":"pre-existing"}}]}}"#,
+                    files[0]
+                ),
+            )
+            .expect("write");
+        }
+
+        let frozen = CompiledRule {
+            id: RuleId::new(rule_id).expect("valid id"),
+            module: None,
+            why: None,
+            module_why: None,
+            decision: None,
+            imports: None,
+            level: Level::Error,
+            scope: Scope::compile(["packages/legacy/**"]).expect("valid scope"),
+            kind: CompiledRuleKind::Frozen,
+        };
+        let compiled = config(vec![frozen]);
+        let tree = archwarden_engine::walk::walk(&root, &compiled).expect("walks");
+
+        (examine_repository(&root, &compiled, &tree), guard)
     }
 
     /// A decision, for the checks below.

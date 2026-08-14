@@ -17,6 +17,113 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 29 — A mirror is `presence` fed by `naming`'s renderer
+Status: accepted.
+Context: issue #103. `pair` and `spec-pair` both look in the *same directory*,
+and plenty of conventions pair across parallel trees — *"every entity has a
+migration"*, *"every route has a page in the docs"*, *"tests live in `test/`,
+mirroring `src/`"*. `pair` takes a sibling **name**, so *"the same path,
+elsewhere, transformed"* was inexpressible.
+
+Decision: a `mirror` kind that is two existing pieces put together. `presence`
+proves a file is on disk without parsing anything; `naming` renders a path from
+capture groups with transforms. A mirror is the second producing a path for the
+first to check — no new fact, no parse, path arithmetic and an existence check.
+
+**One direction per rule.** *"Every entity has a migration"* and *"every
+migration belongs to an entity"* are two claims, and each deserves its own
+`why`: the first is about completeness, the second about orphans. A flag would
+put two reasons on one rule and make a reader work out which half fired.
+
+**A `subpath` group, decided here rather than deferred.** The issue left this
+open — whether a mirror wants the whole relative directory path and not just
+the immediate parent — and building settled it: *"tests live in `test/`,
+mirroring `src/`"* is one of the four lines the issue names, and `dirname`
+carries `b` where `a/b` is needed. Shipping a rule that cannot express its own
+headline example is the rule that looks like it works.
+
+It is computed against the **scope** that selected the file rather than a
+configured prefix. The scope already decides which files the rule is about, and
+a second way of saying where the tree starts is a second thing to get wrong.
+The separator an empty `subpath` would leave is collapsed here rather than made
+the config author's problem: one template has to work for a file at the root of
+the mirrored tree and one three directories down, which is the whole reason the
+group exists.
+
+**The counterpart's contents do not matter.** Only that it exists. *"And it
+must contain a test case"* is `spec-pair`'s question and has an answer there.
+
+Alternatives:
+- **One rule with a direction flag.** Fewer rules to write, and two `why`s on
+  one line.
+- **Collapsing `pair` and `spec-pair` into this.** They are one rule wearing
+  three names, on one reading. Rejected, and the test is worth stating because
+  the opposite is tempting: the question is whether the specialised forms are
+  *shorter to write*, not whether they are expressible. A bare sibling name and
+  a sibling with a marker are shorter, and making the common case wordier to
+  buy a generality most configs never use is how a format gets heavy.
+- **Waiting for two real rules before adding `subpath`.** What the issue said.
+  The two real rules are written in the issue.
+Consequences: the four lines the issue names are writable. The sharp edge is
+that `roots` selects **directories**, so a rule about the files directly inside
+`src/entities` takes `"roots": ["src/entities"]` — and the issue's own sketch
+writes `"src/entities/*"`, which selects the directories inside it and reaches
+nothing. `RULES.md` says so in a callout, and `config doctor` reports the empty
+population as `scope-matches-nothing`.
+
+### 28 — `frozen` is `baseline` pointed forward
+Status: accepted.
+Context: issue #102. `import-boundary` can forbid **importing** something and
+nothing could forbid **adding** to it — which is half of every migration ADR:
+*"the legacy module is closed for extension; new code goes in
+`packages/core`"*. It is the shape of decision archwarden expressed least well.
+
+Decision: a `frozen` kind whose engine is the smallest in the workspace —
+**every file under the scope is a finding** — and whose whole substance is what
+that composes with. `baseline` already records what a repository has accepted,
+by rule and path. The rule points it forward instead of back:
+
+> every file under these roots is a finding; today's are accepted; tomorrow's
+> are not.
+
+Nothing remembers a date and nothing reads `git`. archwarden answers from a
+working tree and a committed baseline, which keeps it deterministic and keeps a
+shallow clone working — a freeze that consulted history would answer
+differently in CI than on a laptop. It also turns `baseline` from a record of
+debt into a statement of intent, which is a better thing for it to be.
+
+**A move within is reported; a move out is silent.** The case against — that
+reorganising inside a frozen module is not growth — is real and loses on what a
+freeze means: a module closed for extension has stopped, and reshuffling it is
+not stopping. When the move is deliberate, `archwarden baseline` accepts it and
+leaves the change in a diff somebody reviews. That diff already reads well: the
+move pairing in `baseline` turns a removal and an addition into one sentence,
+and it was written for a different reason before this rule existed.
+
+**Every file, not only code.** A directory that has stopped growing has
+stopped growing. `ignore` says "deliberately outside the architecture" and
+`archwarden-allow` is the door for the one urgent exception — one line, one
+reason, never hidden. A `file_pattern` would be a field decided before anybody
+asked for it, and it can be added later without breaking anything.
+
+**Files, not exports.** *"No new exports in this file"* needs the frozen set to
+be per-symbol, and `baseline` accepts paths.
+
+Alternatives:
+- **Reading `git` to tell a move from an addition.** What would make the move
+  question answerable. Rejected on determinism, above.
+- **Silent until a baseline exists.** No wall of errors on the first run — and
+  a rule that enforces nothing while looking switched on, which this repository
+  calls the worst failure a linter has.
+- **A `file_pattern` to narrow what counts.** A field before the case.
+Consequences: turning a freeze on is **two steps**, and the second is not
+optional — skip `archwarden baseline` and the first `check` reports every file
+that was already there, each one a finding about the past. `check` still
+reports them, which is honest; `config doctor` is where the missing step is
+named, as `frozen-with-nothing-accepted` at `warning`, with the command in the
+fix. A freeze whose scope reaches nothing is left to `scope-matches-nothing`,
+because saying it twice in two voices is worse than saying it once.
+
 ### 27 — archwarden requires the annotation; `tsc` checks the body
 Status: accepted.
 Context: issue #101. `naming` couples what a file exports to what the file is

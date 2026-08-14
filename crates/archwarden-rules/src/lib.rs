@@ -16,8 +16,10 @@
 pub mod call_obligation;
 pub mod export_shape;
 pub mod frontmatter;
+pub mod frozen;
 pub mod import_boundary;
 pub mod import_cycle;
+pub mod mirror;
 pub mod naming;
 pub mod no_passthrough;
 pub mod pair;
@@ -163,6 +165,11 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     require_any,
                     config.skip_dirs().clone(),
                 )),
+                CompiledRuleKind::Frozen => Box::new(frozen::FrozenEngine::build(rule)),
+                CompiledRuleKind::Mirror {
+                    file_pattern,
+                    must_exist,
+                } => Box::new(mirror::MirrorEngine::build(rule, file_pattern, must_exist)),
                 CompiledRuleKind::ExportShape(shape) => {
                     Box::new(export_shape::ExportShapeEngine::build(rule, shape))
                 }

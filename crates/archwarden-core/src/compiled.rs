@@ -271,6 +271,21 @@ pub enum CompiledRuleKind {
     },
     /// What a file exposes, said without reference to what it is called.
     ExportShape(ExportShape),
+    /// A directory that has stopped growing.
+    ///
+    /// It carries no field of its own, and that is the design: every file
+    /// under the scope is a finding, and which of them are *accepted* is
+    /// `baseline`'s to say. The rule points the machinery that already records
+    /// what a repository has accepted forward instead of back. Issue #102.
+    Frozen,
+    /// A counterpart in a parallel tree.
+    Mirror {
+        /// Regex over the filename, carrying the groups the template uses.
+        file_pattern: Pattern,
+        /// The counterpart's path, as a template rendered from repository
+        /// root. See `MirrorRule::must_exist` for the groups it may name.
+        must_exist: String,
+    },
 }
 
 impl CompiledRuleKind {
@@ -289,6 +304,8 @@ impl CompiledRuleKind {
             Self::Frontmatter { .. } => "frontmatter",
             Self::CallObligation { .. } => "call-obligation",
             Self::ExportShape(_) => "export-shape",
+            Self::Frozen => "frozen",
+            Self::Mirror { .. } => "mirror",
         }
     }
 
@@ -304,9 +321,14 @@ impl CompiledRuleKind {
             // front-end, and this method answers only for that one.
             // `RuleEngine::needs_facts` is what says which front-end a rule
             // wants.
+            // `Frozen` and `Mirror` join the first three: one asks whether a
+            // path is in the scope, the other whether a path is on disk, and
+            // neither opens a file.
             Self::Structure { .. }
             | Self::Presence { .. }
             | Self::Pair { .. }
+            | Self::Frozen
+            | Self::Mirror { .. }
             | Self::Frontmatter { .. } => false,
             Self::SpecPair {
                 require_non_empty_spec,
