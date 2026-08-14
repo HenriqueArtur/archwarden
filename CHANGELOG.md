@@ -17,6 +17,75 @@ saying so.
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-08-14
+
+What a file exports, without tying it to what the file is called.
+
+### Changed — this changes what an existing config reports
+
+- **`export * from './x'` is now seen by `no-passthrough`** (#101). It produced
+  no fact at all, so the rule against a file that adds nothing of its own was
+  silent about the loudest form of exactly that — while catching
+  `export { A } from './x'` all along. That was a defect, not a missing
+  feature.
+
+  **A repository with a `no-passthrough` rule and star barrels gets findings on
+  its first 0.22 run that 0.21 never produced.** `baseline` is the answer for
+  anyone not paying that debt today.
+
+  The blast radius was measured rather than assumed, and it is narrower than it
+  sounds: `allow_package_entrypoints` is on by default and a star barrel is
+  overwhelmingly written in a file called `index.ts`, which was exempt before
+  and stays exempt. What lands is a star barrel under some other name.
+
+- **The cache format is 7.** `ExportFact` gained a field, so entries written by
+  0.21 are discarded rather than misread. You lose one warm cache and pay one
+  cold run.
+
+### Added
+
+- **`export-shape`, the eleventh rule kind** (#101). `naming` couples what a
+  file exports to what the file is *called*, and plenty of decisions are about
+  the export alone — *"we do not use default exports"*, *"one export per
+  file"*, *"every use case returns the pattern"*. None mentions a filename, and
+  saying any of them meant inventing a naming claim you did not mean.
+
+  ```json
+  { "type": "export-shape",
+    "id": "use-cases-return-the-pattern",
+    "level": "error",
+    "roots": ["src/use-cases/*"],
+    "forbid_default": true,
+    "max_exports": 1,
+    "must_return": ["^ResponsePattern<.+,.+>$"],
+    "why": "a use case returns the pattern, it never throws" }
+  ```
+
+  `max_exports` counts what exists at **runtime**: `type` and `interface` do
+  not count, and the default counts as one. A file exporting a function and the
+  interface of its dependencies is idiomatic TypeScript.
+
+- **The guarantee `must_return` is, said exactly.** archwarden requires that a
+  function **declares** its return type; whether the body conforms stays
+  `tsc`'s question. It is worth having because `tsc` checks what is annotated
+  and *cannot require that you annotate at all* — a function returning
+  `{ ok: true }` with no return type compiles perfectly.
+
+  It matches text against text, so an alias under a different name is a
+  different string. The field takes a list for that reason, and pairing it with
+  `import-boundary.must_import_from` closes the remaining hole. `RULES.md` says
+  both beside the field.
+
+- **`ExportFact.returns`**, a field of its own beside `annotations`. An
+  annotation says *what this value is*; a return type says *what this call
+  gives you*, and a rule asking for one must not be satisfied by the other.
+
+### Reasoning
+
+Decision 27 in [`DECISIONS.md`](docs/DECISIONS.md), including why the returned
+object literal is deliberately never inspected, and why the star-export fix
+belongs to `no-passthrough` rather than to a fourth claim here.
+
 ## [0.21.0] — 2026-08-14
 
 Decisions. The config can name the choices its rules keep, and every surface
@@ -1857,7 +1926,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.21.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.22.0...HEAD
+[0.22.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.18.1...v0.19.0
