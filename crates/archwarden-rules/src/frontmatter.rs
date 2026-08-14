@@ -272,6 +272,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["projetos/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Frontmatter {
@@ -540,6 +541,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["projetos/*"]).expect("valid"),
             kind: CompiledRuleKind::Presence {

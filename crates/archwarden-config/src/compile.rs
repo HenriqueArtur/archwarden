@@ -869,15 +869,49 @@ fn compile_rule(
         },
     };
 
+    // The second axis, and only when the rule asks for it. `None` rather than an
+    // empty filter: "does not narrow" and "narrows to nothing" are different
+    // statements, and only one of them should cost a resolution pass.
+    let imports = import_filter(&id, rule)?;
+
     Ok(CompiledRule {
         id,
         module,
+        imports,
         why: rule.why().map(ToOwned::to_owned),
         module_why,
         level: rule.level(),
         scope,
         kind,
     })
+}
+
+/// Compiles a rule's import filter, when it has one.
+///
+/// Decision 25. Globs are matched against the resolved path, so they are built
+/// the same way a boundary's are — the alternative would be a second glob
+/// dialect for the same job, and two dialects eventually disagree.
+fn import_filter(
+    id: &RuleId,
+    rule: &Rule,
+) -> Result<Option<archwarden_core::compiled::ImportFilter>, CompileError> {
+    let paths = rule.when_importing();
+    let packages = rule.when_importing_packages();
+
+    if paths.is_empty() && packages.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(archwarden_core::compiled::ImportFilter {
+        paths: archwarden_core::glob::PathSet::compile(paths.as_slice().iter().cloned()).map_err(
+            |source| CompileError::Glob {
+                rule: id.clone(),
+                field: "when_importing",
+                source,
+            },
+        )?,
+        packages: packages.to_vec(),
+    }))
 }
 
 /// The only group a document template may name.
@@ -1188,6 +1222,8 @@ mod tests {
             ignore_files: crate::one_or_many::OneOrMany::Many(Vec::new()),
             require_non_empty_spec: false,
             skip_type_only: false,
+            when_importing: crate::one_or_many::OneOrMany::Many(Vec::new()),
+            when_importing_packages: Vec::new(),
         };
 
         assert_eq!(
@@ -1224,6 +1260,8 @@ mod tests {
             ignore_files: crate::one_or_many::OneOrMany::Many(Vec::new()),
             require_non_empty_spec: false,
             skip_type_only: false,
+            when_importing: crate::one_or_many::OneOrMany::Many(Vec::new()),
+            when_importing_packages: Vec::new(),
         };
 
         for entry in ["__tests__/unit", "a\\b", "", "   "] {
@@ -2476,5 +2514,99 @@ mod tests {
 
         let ids: Vec<_> = compiled.rules().map(|r| r.id.as_str()).collect();
         assert_eq!(ids, ["on"]);
+    }
+}
+
+#[cfg(test)]
+mod import_filter_tests {
+    use super::compile;
+    use crate::extends::MergedConfig;
+
+    fn compiled(rule: &str) -> archwarden_core::compiled::CompiledConfig {
+        let source = format!(r#"{{"version":0,"rules":[{rule}]}}"#);
+        let config =
+            crate::discovery::parse(camino::Utf8Path::new("/repo/arch.config.json"), &source)
+                .expect("parses");
+
+        compile(&MergedConfig {
+            config,
+            path: camino::Utf8PathBuf::from("/repo/arch.config.json"),
+            root: camino::Utf8PathBuf::from("/repo"),
+            sources: Vec::new(),
+        })
+        .expect("compiles")
+    }
+
+    /// The filter survives compilation and matches what it was written to
+    /// match. Decision 25.
+    #[test]
+    fn a_narrowed_rule_arrives_with_its_filter() {
+        let config = compiled(
+            r#"{"type":"presence","id":"p","level":"error","roots":["src/*"],
+                "when_importing":"src/http/**","require":["contract.md"]}"#,
+        );
+        let rule = config.rules().next().expect("one rule");
+
+        let filter = rule.imports.as_ref().expect("the filter is compiled");
+        assert!(
+            filter
+                .paths
+                .is_match(camino::Utf8Path::new("src/http/conn.ts"))
+        );
+        assert!(
+            !filter
+                .paths
+                .is_match(camino::Utf8Path::new("src/db/pool.ts"))
+        );
+    }
+
+    /// Packages alone are enough to narrow. Without this the two halves would
+    /// have to be written together, which is not what either means.
+    #[test]
+    fn packages_alone_narrow_a_rule() {
+        let config = compiled(
+            r#"{"type":"presence","id":"p","level":"error","roots":["src/*"],
+                "when_importing_packages":["zod"],"require":["contract.md"]}"#,
+        );
+        let rule = config.rules().next().expect("one rule");
+
+        let filter = rule.imports.as_ref().expect("packages narrow too");
+        assert_eq!(filter.packages, ["zod"]);
+    }
+
+    /// And a rule that names neither carries no filter at all. `None` rather
+    /// than an empty one: "does not narrow" and "narrows to nothing" are
+    /// different statements, and only one of them should cost a resolution
+    /// pass.
+    #[test]
+    fn a_rule_that_names_neither_carries_no_filter() {
+        let config = compiled(
+            r#"{"type":"presence","id":"p","level":"error","roots":["src/*"],
+                "require":["contract.md"]}"#,
+        );
+
+        assert!(config.rules().next().expect("one rule").imports.is_none());
+    }
+
+    /// A glob the engine refuses fails here, naming the field — rather than at
+    /// the first file the rule is asked about.
+    #[test]
+    fn a_glob_that_will_not_compile_names_the_field() {
+        let source = r#"{"version":0,"rules":[
+            {"type":"presence","id":"p","level":"error","roots":["src/*"],
+             "when_importing":"src/[","require":["contract.md"]}]}"#;
+        let config =
+            crate::discovery::parse(camino::Utf8Path::new("/repo/arch.config.json"), source)
+                .expect("parses");
+
+        let refusal = compile(&MergedConfig {
+            config,
+            path: camino::Utf8PathBuf::from("/repo/arch.config.json"),
+            root: camino::Utf8PathBuf::from("/repo"),
+            sources: Vec::new(),
+        })
+        .expect_err("an unparsable glob is refused");
+
+        assert!(refusal.to_string().contains("when_importing"), "{refusal}");
     }
 }

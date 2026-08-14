@@ -371,6 +371,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -407,6 +408,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["src/Repositories/Entities/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -776,6 +778,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["src/agent-tools/tools"]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -873,6 +876,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["src/agent-tools/tools"]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -992,6 +996,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::Structure {
@@ -1098,6 +1103,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["src/Entities/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -1132,6 +1138,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["."]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {
@@ -1159,6 +1166,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["src/Entities/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Naming {

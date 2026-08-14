@@ -551,6 +551,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["packages/ui/**"]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {
@@ -1333,6 +1334,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["packages/ui/**"]).expect("valid scope"),
             kind: CompiledRuleKind::Structure {
@@ -1355,6 +1357,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {

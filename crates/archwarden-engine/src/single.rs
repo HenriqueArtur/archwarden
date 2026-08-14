@@ -190,18 +190,32 @@ fn check(
 
     findings.extend(directory_findings(root, &engines, path));
 
-    let applicable: Vec<&Box<dyn RuleEngine>> = engines
+    // Paired by position, which is what `engines_for` promises. A rule's import
+    // filter lives on the rule, so the pre-write hook has to know the pairing
+    // for the same reason the full run does — and it has to, or a write would
+    // be judged here against rules `check` would not have applied to it.
+    // Decision 25.
+    let rules: Vec<&archwarden_core::compiled::CompiledRule> = config.rules().collect();
+    let applicable: Vec<(usize, &Box<dyn RuleEngine>)> = engines
         .iter()
-        .filter(|engine| engine.applies_to(path))
+        .enumerate()
+        .filter(|(_, engine)| engine.applies_to(path))
         .collect();
+    let narrowed_by_imports = applicable
+        .iter()
+        .any(|(index, _)| rules.get(*index).is_some_and(|rule| rule.imports.is_some()));
 
     // Asked only of the rules that will actually be evaluated. A rule that
     // reads the graph is refused below whatever this command reads, so parsing
     // for it buys an answer nobody receives -- and `unresolved_imports` means
     // "a rule ran blind", which is not what happened when no rule ran at all.
-    let needs_facts = applicable
-        .iter()
-        .any(|engine| !engine.needs_graph() && engine.needs_facts() == FactsNeeded::Code);
+    let needs_facts = applicable.iter().any(|(index, engine)| {
+        !engine.needs_graph()
+            && (engine.needs_facts() == FactsNeeded::Code
+                    // A rule narrowed by imports has to read the file to find
+                    // out whether it is about it at all.
+                    || rules.get(*index).is_some_and(|rule| rule.imports.is_some()))
+    });
     let class = path.file_name().map_or(FileClass::Other, FileClass::of);
     let is_source = class == FileClass::Source;
 
@@ -223,9 +237,10 @@ fn check(
                 // Resolution is what a boundary rule needs, and it is a
                 // handful of filesystem probes rather than the cross-file
                 // state the docs expected. Paid only when a rule asks.
-                if applicable
-                    .iter()
-                    .any(|engine| !engine.needs_graph() && engine.needs_resolution())
+                if narrowed_by_imports
+                    || applicable
+                        .iter()
+                        .any(|(_, engine)| !engine.needs_graph() && engine.needs_resolution())
                 {
                     let resolver = archwarden_resolver::imports::ImportResolver::new(root);
                     let outcomes = crate::resolve::resolve_imports(&resolver, &mut facts);
@@ -246,7 +261,21 @@ fn check(
     };
 
     let siblings = listing(root, path.parent().as_ref(), path.file_name());
-    for engine in applicable {
+    for (index, engine) in applicable {
+        // The second axis, asked here for the same reason it is asked in a full
+        // run: a write judged against a rule that would not have applied to it
+        // is the hook and `check` disagreeing about one file. Decision 25.
+        if let Some(filter) = rules.get(index).and_then(|rule| rule.imports.as_ref()) {
+            match facts.as_ref() {
+                Some(facts) if filter.matches(facts) => {}
+                // Not in the population, or unreadable. `unresolved_imports`
+                // above already carries the specifiers nobody could place,
+                // which is what makes a narrowing decided on incomplete
+                // information visible rather than silent.
+                _ => continue,
+            }
+        }
+
         // Refused before anything else is asked. A graph is the whole
         // repository's edges and this command has one file, so there is no
         // arrangement of what is on hand that would answer the question --
@@ -499,6 +528,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -1179,5 +1209,119 @@ mod tests {
             "it had the content, so nothing was skipped: {:?}",
             written.skipped
         );
+    }
+}
+
+#[cfg(test)]
+mod narrowing_tests {
+    use archwarden_core::compiled::{
+        CompiledConfig, CompiledRule, CompiledRuleKind, ImportFilter, SkipDirs,
+    };
+    use archwarden_core::glob::PathSet;
+    use archwarden_core::hash::ContentHash;
+    use archwarden_core::ids::RuleId;
+    use archwarden_core::level::Level;
+    use archwarden_core::path::RepoRelPath;
+    use archwarden_core::pattern::Pattern;
+    use archwarden_core::scope::Scope;
+    use camino::Utf8PathBuf;
+
+    /// A rule no file satisfies, so whether it *ran* is visible in the result.
+    fn naming(narrowed: Option<&str>) -> CompiledConfig {
+        CompiledConfig::new(
+            vec![CompiledRule {
+                id: RuleId::new("n").expect("valid id"),
+                module: None,
+                why: None,
+                module_why: None,
+                imports: narrowed.map(|glob| ImportFilter {
+                    paths: PathSet::compile([glob.to_owned()]).expect("valid glob"),
+                    packages: Vec::new(),
+                }),
+                level: Level::Error,
+                scope: Scope::compile(["src/*"]).expect("valid scope"),
+                kind: CompiledRuleKind::Naming {
+                    file_pattern: Pattern::compile(r"^(?<n>[a-z-]+)\.ts$").expect("valid"),
+                    dir_pattern: None,
+                    name_template: "Nothing{{pascal(n)}}".to_owned(),
+                    kind: archwarden_core::facts::KindFilter::Any,
+                    annotation: Vec::new(),
+                    signature_hint: None,
+                },
+            }],
+            PathSet::default(),
+            SkipDirs::default(),
+            ContentHash::of(b"narrowing"),
+        )
+    }
+
+    fn repository() -> (tempfile::TempDir, Utf8PathBuf) {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("utf-8");
+        std::fs::create_dir_all(root.join("src/http")).expect("create");
+        std::fs::create_dir_all(root.join("src/orders")).expect("create");
+        std::fs::write(root.join("src/http/connection.ts"), "export const c = 1;\n")
+            .expect("write");
+        std::fs::write(
+            root.join("src/orders/update.ts"),
+            "import { c } from '../http/connection';\nexport const u = () => c;\n",
+        )
+        .expect("write");
+        std::fs::write(
+            root.join("src/orders/monthly.ts"),
+            "export const m = () => 1;\n",
+        )
+        .expect("write");
+        (guard, root)
+    }
+
+    fn path(p: &str) -> RepoRelPath {
+        RepoRelPath::new(p).expect("valid path")
+    }
+
+    /// The pre-write hook applies the same filter the full run does. A write
+    /// judged here against a rule `check` would not have applied to it is the
+    /// two surfaces disagreeing about one file — decision 22's lesson, on the
+    /// axis decision 25 added.
+    #[test]
+    fn a_file_that_imports_what_the_rule_names_is_judged() {
+        let (_guard, root) = repository();
+
+        let judged = super::check_file(
+            &root,
+            &naming(Some("src/http/**")),
+            &path("src/orders/update.ts"),
+        );
+
+        assert!(!judged.findings.is_empty(), "the rule applied: {judged:?}");
+    }
+
+    /// And a sibling that imports nothing named is not judged by it at all.
+    #[test]
+    fn a_file_that_does_not_is_left_alone() {
+        let (_guard, root) = repository();
+
+        let judged = super::check_file(
+            &root,
+            &naming(Some("src/http/**")),
+            &path("src/orders/monthly.ts"),
+        );
+
+        assert!(
+            judged.findings.is_empty(),
+            "the rule was not about it: {judged:?}"
+        );
+    }
+
+    /// The same rule without the narrowing judges both — which is what makes
+    /// the pair above mean something.
+    #[test]
+    fn the_same_rule_unnarrowed_judges_both() {
+        let (_guard, root) = repository();
+
+        for file in ["src/orders/update.ts", "src/orders/monthly.ts"] {
+            let judged = super::check_file(&root, &naming(None), &path(file));
+            assert!(!judged.findings.is_empty(), "{file}: {judged:?}");
+        }
     }
 }

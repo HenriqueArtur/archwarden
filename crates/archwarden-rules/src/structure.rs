@@ -408,6 +408,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind,

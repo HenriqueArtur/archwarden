@@ -135,6 +135,51 @@ impl Rule {
         }
     }
 
+    /// The import globs that narrow this rule's population, if any.
+    ///
+    /// Empty for every rule that does not ask, which is the ordinary case and
+    /// the one that must stay free: a rule with nothing here never causes an
+    /// import to be resolved. Decision 25.
+    ///
+    /// `import-boundary` has none and never will — it already chooses its
+    /// importers with `from`, `from_module` and `from_kind`, and a second way
+    /// to say the same thing is a second thing to get wrong.
+    #[must_use]
+    pub fn when_importing(&self) -> &Patterns {
+        // A rule that never asks. A `const` rather than a `Default::default()`
+        // so the borrow outlives the match without a field to hold it.
+        const NONE: &Patterns = &OneOrMany::Many(Vec::new());
+        match self {
+            Self::Structure(r) => &r.when_importing,
+            Self::Naming(r) => &r.when_importing,
+            Self::SpecPair(r) => &r.when_importing,
+            Self::ImportBoundary(_) => NONE,
+            Self::ImportCycle(r) => &r.when_importing,
+            Self::CallObligation(r) => &r.when_importing,
+            Self::NoPassthrough(r) => &r.when_importing,
+            Self::Presence(r) => &r.when_importing,
+            Self::Pair(r) => &r.when_importing,
+            Self::Frontmatter(r) => &r.when_importing,
+        }
+    }
+
+    /// The package names that narrow this rule's population, if any.
+    #[must_use]
+    pub fn when_importing_packages(&self) -> &[String] {
+        match self {
+            Self::Structure(r) => &r.when_importing_packages,
+            Self::Naming(r) => &r.when_importing_packages,
+            Self::SpecPair(r) => &r.when_importing_packages,
+            Self::ImportBoundary(_) => &[],
+            Self::ImportCycle(r) => &r.when_importing_packages,
+            Self::CallObligation(r) => &r.when_importing_packages,
+            Self::NoPassthrough(r) => &r.when_importing_packages,
+            Self::Presence(r) => &r.when_importing_packages,
+            Self::Pair(r) => &r.when_importing_packages,
+            Self::Frontmatter(r) => &r.when_importing_packages,
+        }
+    }
+
     /// The discriminator, as written in the config.
     #[must_use]
     pub fn type_name(&self) -> &'static str {
@@ -233,6 +278,22 @@ pub struct StructureRule {
     /// Regexes every direct child file's name must match at least one of.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub filename_patterns: Vec<String>,
+    /// Narrow this rule to the files that import something.
+    ///
+    /// Path globs, matched against where an import *lands* — the same way an
+    /// `import-boundary` matches. Without this a rule's population is where a
+    /// file sits and what it is called; with it, what the file talks to.
+    ///
+    /// Leave it out and nothing changes, including the cost: a rule that does
+    /// not ask never resolves an import. Issue #98, decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    ///
+    /// Matched against the package a specifier belongs to, so `zod` covers
+    /// `zod/v4` as it does everywhere else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
 }
 
 /// Files that must exist in each governed directory.
@@ -272,6 +333,22 @@ pub struct PresenceRule {
     /// one for each.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub require_any: Patterns,
+    /// Narrow this rule to the files that import something.
+    ///
+    /// Path globs, matched against where an import *lands* — the same way an
+    /// `import-boundary` matches. Without this a rule's population is where a
+    /// file sits and what it is called; with it, what the file talks to.
+    ///
+    /// Leave it out and nothing changes, including the cost: a rule that does
+    /// not ask never resolves an import. Issue #98, decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    ///
+    /// Matched against the package a specifier belongs to, so `zod` covers
+    /// `zod/v4` as it does everywhere else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
 }
 
 /// A file of one kind must have a companion of another.
@@ -312,6 +389,22 @@ pub struct PairRule {
     /// `file_pattern` needs the companion, and never the reverse — an orphan
     /// `notas.md` is a note taken before the lesson was written, which is fine.
     pub must_exist: String,
+    /// Narrow this rule to the files that import something.
+    ///
+    /// Path globs, matched against where an import *lands* — the same way an
+    /// `import-boundary` matches. Without this a rule's population is where a
+    /// file sits and what it is called; with it, what the file talks to.
+    ///
+    /// Leave it out and nothing changes, including the cost: a rule that does
+    /// not ask never resolves an import. Issue #98, decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    ///
+    /// Matched against the package a specifier belongs to, so `zod` covers
+    /// `zod/v4` as it does everywhere else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
 }
 
 /// A document's frontmatter must carry these keys.
@@ -364,6 +457,22 @@ pub struct FrontmatterRule {
     /// asked of a file that has no exported symbol to ask it about.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub equals: std::collections::BTreeMap<String, String>,
+    /// Narrow this rule to the files that import something.
+    ///
+    /// Path globs, matched against where an import *lands* — the same way an
+    /// `import-boundary` matches. Without this a rule's population is where a
+    /// file sits and what it is called; with it, what the file talks to.
+    ///
+    /// Leave it out and nothing changes, including the cost: a rule that does
+    /// not ask never resolves an import. Issue #98, decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    ///
+    /// Matched against the package a specifier belongs to, so `zod` covers
+    /// `zod/v4` as it does everywhere else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
 }
 
 /// The filename dictates the exported symbol's name.
@@ -413,6 +522,22 @@ pub struct NamingRule {
     pub dir_pattern: Option<String>,
     /// The export the file must carry.
     pub must_export: MustExport,
+    /// Narrow this rule to the files that import something.
+    ///
+    /// Path globs, matched against where an import *lands* — the same way an
+    /// `import-boundary` matches. Without this a rule's population is where a
+    /// file sits and what it is called; with it, what the file talks to.
+    ///
+    /// Leave it out and nothing changes, including the cost: a rule that does
+    /// not ask never resolves an import. Issue #98, decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    ///
+    /// Matched against the package a specifier belongs to, so `zod` covers
+    /// `zod/v4` as it does everywhere else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
 }
 
 /// The export a `naming` rule requires.
@@ -540,6 +665,22 @@ pub struct SpecPairRule {
     /// `require_non_empty_spec` makes.
     #[serde(default)]
     pub skip_type_only: bool,
+    /// Narrow this rule to the files that import something.
+    ///
+    /// Path globs, matched against where an import *lands* — the same way an
+    /// `import-boundary` matches. Without this a rule's population is where a
+    /// file sits and what it is called; with it, what the file talks to.
+    ///
+    /// Leave it out and nothing changes, including the cost: a rule that does
+    /// not ask never resolves an import. Issue #98, decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    ///
+    /// Matched against the package a specifier belongs to, so `zod` covers
+    /// `zod/v4` as it does everywhere else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
 }
 
 fn default_spec_markers() -> Patterns {
@@ -747,6 +888,22 @@ pub struct CallObligationRule {
     pub file_pattern: String,
     /// The call the file must contain.
     pub must_call: MustCall,
+    /// Narrow this rule to the files that import something.
+    ///
+    /// Path globs, matched against where an import *lands* — the same way an
+    /// `import-boundary` matches. Without this a rule's population is where a
+    /// file sits and what it is called; with it, what the file talks to.
+    ///
+    /// Leave it out and nothing changes, including the cost: a rule that does
+    /// not ask never resolves an import. Issue #98, decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    ///
+    /// Matched against the package a specifier belongs to, so `zod` covers
+    /// `zod/v4` as it does everywhere else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
 }
 
 /// The call a `call-obligation` rule requires.
@@ -1540,6 +1697,22 @@ pub struct ImportCycleRule {
     /// care about runtime.
     #[serde(default = "default_true")]
     pub include_type_only: bool,
+    /// Narrow this rule to the files that import something.
+    ///
+    /// Path globs, matched against where an import *lands* — the same way an
+    /// `import-boundary` matches. Without this a rule's population is where a
+    /// file sits and what it is called; with it, what the file talks to.
+    ///
+    /// Leave it out and nothing changes, including the cost: a rule that does
+    /// not ask never resolves an import. Issue #98, decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    ///
+    /// Matched against the package a specifier belongs to, so `zod` covers
+    /// `zod/v4` as it does everywhere else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
 }
 
 /// Which shapes of pure forwarding are refused, and where.
@@ -1599,6 +1772,22 @@ pub struct NoPassthroughRule {
     /// indirection its importers could skip.
     #[serde(default = "default_true")]
     pub allow_partial: bool,
+    /// Narrow this rule to the files that import something.
+    ///
+    /// Path globs, matched against where an import *lands* — the same way an
+    /// `import-boundary` matches. Without this a rule's population is where a
+    /// file sits and what it is called; with it, what the file talks to.
+    ///
+    /// Leave it out and nothing changes, including the cost: a rule that does
+    /// not ask never resolves an import. Issue #98, decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    ///
+    /// Matched against the package a specifier belongs to, so `zod` covers
+    /// `zod/v4` as it does everywhere else.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
 }
 
 /// One shape of pure forwarding.
@@ -1620,4 +1809,67 @@ fn default_forms() -> Vec<PassthroughForm> {
         PassthroughForm::Alias,
         PassthroughForm::Wrapper,
     ]
+}
+
+#[cfg(test)]
+mod narrowing_tests {
+    use super::Rule;
+
+    fn parsed(source: &str) -> Rule {
+        serde_json::from_str(source).expect("the rule parses")
+    }
+
+    /// The second axis reaches the rule it was written on, whichever kind that
+    /// is. Issue #98, decision 25.
+    #[test]
+    fn a_rule_carries_the_imports_it_was_narrowed_by() {
+        let narrowed = parsed(
+            r#"{"type":"call-obligation","id":"c","level":"error","roots":["src/*"],
+                "file_pattern":"^x$","when_importing":"src/http/**",
+                "when_importing_packages":["zod"],
+                "must_call":{"symbol":"S","imported_from":"m"}}"#,
+        );
+
+        assert_eq!(narrowed.when_importing().as_slice(), ["src/http/**"]);
+        assert_eq!(narrowed.when_importing_packages(), ["zod"]);
+    }
+
+    /// And a rule that names none carries none — which is what keeps every
+    /// rule written before 0.20 as cheap as it was.
+    #[test]
+    fn a_rule_that_names_none_carries_none() {
+        let plain = parsed(
+            r#"{"type":"presence","id":"p","level":"error","roots":["src/*"],
+                "require":["a.md"]}"#,
+        );
+
+        assert!(plain.when_importing().is_empty());
+        assert!(plain.when_importing_packages().is_empty());
+    }
+
+    /// A directory rule carries it too: "some file inside imports X" is the
+    /// reading decided for `presence` and `structure`.
+    #[test]
+    fn a_directory_rule_carries_it_as_well() {
+        let narrowed = parsed(
+            r#"{"type":"presence","id":"p","level":"error","roots":["src/*"],
+                "when_importing":"src/db/**","require":["contract.md"]}"#,
+        );
+
+        assert_eq!(narrowed.when_importing().as_slice(), ["src/db/**"]);
+    }
+
+    /// `import-boundary` has none and never will: it already chooses its
+    /// importers with `from`, `from_module` and `from_kind`, and a second way
+    /// to say one thing is a second thing to get wrong.
+    #[test]
+    fn a_boundary_rule_never_narrows_by_import() {
+        let boundary = parsed(
+            r#"{"type":"import-boundary","id":"b","level":"error",
+                "from":["src/**"],"forbid_import_from":["infra/**"]}"#,
+        );
+
+        assert!(boundary.when_importing().is_empty());
+        assert!(boundary.when_importing_packages().is_empty());
+    }
 }

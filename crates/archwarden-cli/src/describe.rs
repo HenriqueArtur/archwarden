@@ -184,6 +184,7 @@ mod tests {
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,

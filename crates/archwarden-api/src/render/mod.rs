@@ -340,6 +340,7 @@ mod tests {
             module: None,
             why: why.map(ToOwned::to_owned),
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: archwarden_core::scope::Scope::compile(["src/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Structure {

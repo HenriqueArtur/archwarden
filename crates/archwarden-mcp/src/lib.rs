@@ -348,6 +348,26 @@ fn tools() -> Vec<Value> {
             },
         }),
         json!({
+            "name": "config_options",
+            "description":
+                "What an arch.config.json can carry: the config's own keys, and the ten \
+                 values a rule's `type` can take, each with its required fields, what they \
+                 mean, their defaults, and a rule to paste. Ask this before writing or \
+                 changing a rule rather than guessing at the shape.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description":
+                            "One key or rule kind, such as `call-obligation` or \
+                             `governance`. Omit for the list of everything.",
+                    },
+                },
+                "required": [],
+            },
+        }),
+        json!({
             "name": "scaffold",
             "description":
                 "The smallest shape that would satisfy the rules at a path: required \
@@ -379,6 +399,14 @@ fn call(
         return failure(id, INVALID_REQUEST, "the call names no tool");
     };
     let arguments = params.and_then(|p| p.get("arguments"));
+
+    // Answered before a configuration is loaded, and that is deliberate: the
+    // moment this is asked is *before* there is one, or while the one there is
+    // is the thing being changed. Every other tool here needs a repository;
+    // this one is about the ones you could write. Issue #97.
+    if name == "config_options" {
+        return configurable(id, arguments);
+    }
 
     let Some(path) = arguments
         .and_then(|a| a.get("path"))
@@ -441,6 +469,46 @@ fn call(
                 id,
                 METHOD_NOT_FOUND,
                 &format!("`{other}` is not a tool this server has"),
+            );
+        }
+    };
+
+    match answer {
+        Ok(value) => success(id, &text_content(&value.to_string(), false)),
+        Err(error) => tool_error(id, &format!("the answer could not be serialised: {error}")),
+    }
+}
+
+/// What an `arch.config.json` can carry.
+///
+/// The surface where the report's workaround does not exist: an MCP client has
+/// no `node_modules` to read `schema/v0.json` out of, so before this there was
+/// no way to learn a rule's shape at all.
+fn configurable(id: &Value, arguments: Option<&Value>) -> Value {
+    let options = archwarden_api::options::options();
+
+    let Some(name) = arguments
+        .and_then(|a| a.get("name"))
+        .and_then(Value::as_str)
+    else {
+        return match serde_json::to_value(&options) {
+            Ok(value) => success(id, &text_content(&value.to_string(), false)),
+            Err(error) => tool_error(id, &format!("the answer could not be serialised: {error}")),
+        };
+    };
+
+    let answer = match options.find(name) {
+        Some(archwarden_api::options::Found::Key(field)) => serde_json::to_value(field),
+        Some(archwarden_api::options::Found::Kind(entry)) => serde_json::to_value(entry),
+        // Named, and the names it could have been. A model handed "unknown"
+        // retries the same word; handed the list, it picks the right one.
+        None => {
+            return tool_error(
+                id,
+                &format!(
+                    "nothing configurable is called `{name}`; there is {}",
+                    archwarden_api::describe::join_or(&options.names(), "nothing")
+                ),
             );
         }
     };
@@ -823,7 +891,10 @@ mod tests {
             .iter()
             .filter_map(|tool| tool["name"].as_str())
             .collect();
-        assert_eq!(names, ["check_write", "describe", "scaffold"]);
+        assert_eq!(
+            names,
+            ["check_write", "describe", "config_options", "scaffold"]
+        );
 
         for tool in &offered {
             assert_eq!(
@@ -836,10 +907,15 @@ mod tests {
                     .is_some_and(|said| said.len() > 40),
                 "the description is what decides whether a model reaches for it: {tool}"
             );
-            assert!(
+            // `config_options` is the one tool that takes nothing, because it
+            // is about the configurations you could write rather than about a
+            // repository. Everything else needs to be told what to look at.
+            let takes_nothing = tool["name"] == "config_options";
+            assert_eq!(
                 tool["inputSchema"]["required"]
                     .as_array()
-                    .is_some_and(|required| !required.is_empty()),
+                    .is_some_and(Vec::is_empty),
+                takes_nothing,
                 "{tool}"
             );
         }
@@ -1037,5 +1113,86 @@ mod tests {
         let said = tool_text(&reply);
         assert!(said.contains("/home/dev/outro"), "{said}");
         assert!(said.contains("where the caller says"), "{said}");
+    }
+
+    /// The surface where the reported workaround does not exist: an MCP client
+    /// has no `node_modules` to read `schema/v0.json` out of, so before 0.20
+    /// there was no way to learn a rule's shape at all. Issue #97.
+    #[test]
+    fn the_configurable_surface_is_answered_over_mcp() {
+        let (_guard, root) = repository();
+
+        let reply = answer(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"config_options","arguments":{"name":"call-obligation"}}}"#,
+            &root,
+        );
+        let entry: Value = serde_json::from_str(tool_text(&reply)).expect("carrying JSON");
+
+        assert_eq!(entry["name"], "call-obligation");
+        let required: Vec<&str> = entry["fields"]
+            .as_array()
+            .expect("fields")
+            .iter()
+            .filter(|field| field["required"] == true)
+            .filter_map(|field| field["name"].as_str())
+            .collect();
+        assert!(required.contains(&"must_call"), "{entry}");
+        assert!(entry["example"].is_string(), "a rule to paste: {entry}");
+    }
+
+    /// And with no name, the whole surface — the config's own keys as well as
+    /// the rule kinds, because `governance` and `extends` send somebody into
+    /// `node_modules` exactly as a rule kind does.
+    #[test]
+    fn with_no_name_it_answers_the_whole_surface() {
+        let (_guard, root) = repository();
+
+        let reply = answer(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"config_options","arguments":{}}}"#,
+            &root,
+        );
+        let all: Value = serde_json::from_str(tool_text(&reply)).expect("carrying JSON");
+
+        assert!(
+            all["top_level"]
+                .as_array()
+                .is_some_and(|keys| keys.len() > 8)
+        );
+        assert_eq!(all["kinds"].as_array().map(Vec::len), Some(10));
+    }
+
+    /// It answers with no configuration at all, which is the moment it is
+    /// asked: before there is one, or while the one there is is being changed.
+    #[test]
+    fn it_answers_a_repository_with_no_configuration() {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("utf-8");
+
+        let reply = answer(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"config_options","arguments":{"name":"presence"}}}"#,
+            &root,
+        );
+
+        assert_ne!(
+            reply["result"]["isError"], true,
+            "no config is not a reason to withhold this: {reply}"
+        );
+    }
+
+    /// A name nothing has is refused with the names it could have been. A
+    /// model handed "unknown" retries the same word.
+    #[test]
+    fn a_name_nothing_has_is_answered_with_the_names_there_are() {
+        let (_guard, root) = repository();
+
+        let reply = answer(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"config_options","arguments":{"name":"call-obligations"}}}"#,
+            &root,
+        );
+
+        assert_eq!(reply["result"]["isError"], true);
+        let said = tool_text(&reply);
+        assert!(said.contains("call-obligation"), "{said}");
+        assert!(said.contains("governance"), "{said}");
     }
 }
