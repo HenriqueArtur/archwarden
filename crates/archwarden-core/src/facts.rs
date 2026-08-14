@@ -252,8 +252,8 @@ pub struct ExportFact {
     /// `["Foo"]` — and one per clause for a class, since
     /// `export class X implements A, B` claims two contracts and satisfying
     /// either is satisfying one of them. Empty when the declaration annotates
-    /// nothing, and empty for the forms that have no annotation position: a
-    /// function declares a *return* type, which is a different claim.
+    /// nothing, and empty for a function, which declares a *return* type — a
+    /// different claim, carried in [`returns`](Self::returns).
     ///
     /// Text, not a type. Whitespace is collapsed to single spaces so a finding
     /// can print it back, and nothing else is done — no resolution, no
@@ -264,6 +264,26 @@ pub struct ExportFact {
     /// of that type stays `tsc`'s question.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub annotations: Vec<String>,
+    /// The return type this declaration writes down, as written.
+    ///
+    /// A field of its own rather than another entry in
+    /// [`annotations`](Self::annotations), because the two are different
+    /// claims: an annotation says *what this value is*, a return type says
+    /// *what this call gives you*. A rule asking for one must not be satisfied
+    /// by the other — `export const X: ResponsePattern<…> = () => {}` writes
+    /// the pattern down about the wrong thing, and a single list could not tell
+    /// the two apart. A declaration carrying both fills both.
+    ///
+    /// `None` for anything that is not callable, and — the case the rule exists
+    /// for — for a callable that declared nothing. `tsc` checks what is
+    /// annotated and cannot require that you annotate at all, so the absence is
+    /// exactly what archwarden is placed to see. Issue #101.
+    ///
+    /// Text, on the same terms as `annotations`: collapsed whitespace, no
+    /// resolution, no inference. An alias is a different string for the same
+    /// type, and a rule that cares lists the aliases it accepts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub returns: Option<String>,
     /// Where it appears in the source.
     pub span: Span,
 }
@@ -520,6 +540,7 @@ mod tests {
             reexport_from: None,
             forwards: None,
             annotations: Vec::new(),
+            returns: None,
             span: Span::new(0, 1),
         }
     }

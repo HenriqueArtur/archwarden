@@ -131,6 +131,9 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
         CompiledRuleKind::Presence { .. } => a_directory_holding_nothing(rule, engine, tree),
         CompiledRuleKind::Pair { .. } => a_file_with_no_companion(rule, engine, tree),
         CompiledRuleKind::Frontmatter { .. } => a_document_with_no_block(rule, engine, tree),
+        CompiledRuleKind::ExportShape(shape) => {
+            a_file_of_the_wrong_shape(rule, engine, tree, shape)
+        }
         // A rule that only forbids *reaching* has nothing a probe can plant.
         // Every other verdict here hands an engine one synthetic file; a chain
         // needs at least two, resolved against each other, which is the whole
@@ -495,6 +498,7 @@ fn a_file_with_no_spec(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &Repo
         reexport_from: None,
         forwards: None,
         annotations: Vec::new(),
+        returns: None,
         span: Span::new(0, 1),
     });
 
@@ -508,6 +512,100 @@ fn a_file_with_no_spec(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &Repo
     });
 
     let on = format!("`{lonely}` with no spec beside it");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
+    }
+}
+
+/// A file whose exports break whichever claim this rule makes.
+///
+/// Every one of the three is plantable, which is unusual here: a `naming`
+/// violation means running a regex backwards and a cycle means two files that
+/// resolve against each other, but "has a default", "has one export too many"
+/// and "declares no return type" are each one synthetic fact.
+///
+/// The probe breaks the *first* claim the rule makes, because a rule that fires
+/// on any of them has been shown to fire. A rule making none of the three
+/// constrains nothing, which is `config doctor`'s sentence rather than this
+/// one's.
+fn a_file_of_the_wrong_shape(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+    shape: &archwarden_core::compiled::ExportShape,
+) -> Verdict {
+    let Some(directory) = a_directory_in_scope(rule, tree) else {
+        return Verdict::Unverified {
+            why: format!(
+                "no directory in this repository is inside `{}`",
+                rule.scope.patterns().join("`, `")
+            ),
+        };
+    };
+
+    let name = format!("{PROBE}.ts");
+    let Ok(probe) = directory.join(&name) else {
+        return Verdict::Unverified {
+            why: format!("`{directory}` cannot hold a probe file"),
+        };
+    };
+    if !engine.applies_to(&probe) {
+        return Verdict::Unverified {
+            why: format!(
+                "the rule covers `{directory}` but not a file directly in it, so \
+                 the probe has nowhere to sit"
+            ),
+        };
+    }
+
+    let exported = |name: Option<&str>, is_default: bool| ExportFact {
+        name: name.map(ToOwned::to_owned),
+        tags: ExportTags::only(ExportKind::Function),
+        is_default,
+        reexport_from: None,
+        forwards: None,
+        annotations: Vec::new(),
+        // No return type declared, which is the `must_return` violation and is
+        // inert for the other two claims.
+        returns: None,
+        span: Span::new(0, 1),
+    };
+
+    let mut facts = FileFacts::unparsed(probe.clone(), ContentHash::of(PROBE.as_bytes()));
+    let broke = if shape.forbid_default {
+        facts.exports.push(exported(None, true));
+        "a default export"
+    } else if let Some(limit) = shape.max_exports {
+        for index in 0..=limit {
+            facts
+                .exports
+                .push(exported(Some(&format!("{PROBE}{index}")), false));
+        }
+        "one export more than the limit"
+    } else if !shape.must_return.is_empty() {
+        facts.exports.push(exported(Some("Probe"), false));
+        "an exported function declaring no return type"
+    } else {
+        return Verdict::Unverified {
+            why: "the rule makes none of the three claims, so there is nothing \
+                  to break -- `config doctor` reports a rule that constrains \
+                  nothing"
+                .to_owned(),
+        };
+    };
+
+    let findings = engine.check_file(FileContext {
+        path: &probe,
+        facts: Some(&facts),
+        docs: None,
+        siblings: std::slice::from_ref(&name),
+        exists: Exists::none(),
+        graph: None,
+    });
+
+    let on = format!("`{probe}` with {broke}");
     if findings.is_empty() {
         Verdict::Silent { on }
     } else {
@@ -1013,6 +1111,90 @@ mod tests {
         );
 
         assert!(matches!(verdict, Verdict::Fires { .. }), "{verdict:?}");
+    }
+
+    /// All three `export-shape` claims are plantable, which is unusual here:
+    /// `naming` needs a regex run backwards and a cycle needs two files that
+    /// resolve against each other. "Has a default", "has one too many" and
+    /// "declares no return type" are each one synthetic fact. Issue #101.
+    #[test]
+    fn every_export_shape_claim_can_be_probed() {
+        let claims = [
+            (true, None, &[][..]),
+            (false, Some(1), &[][..]),
+            (false, None, &[r"^Result<.+>$"][..]),
+        ];
+
+        for (forbid_default, max_exports, must_return) in claims {
+            let verdict = verdict(
+                &["src/use-cases/create-client.ts"],
+                vec![rule(
+                    "use-case-shape",
+                    &["src/use-cases"],
+                    CompiledRuleKind::ExportShape(archwarden_core::compiled::ExportShape {
+                        forbid_default,
+                        max_exports,
+                        must_return: must_return
+                            .iter()
+                            .map(|p| Pattern::compile(p).expect("valid"))
+                            .collect(),
+                    }),
+                )],
+            );
+
+            assert!(
+                matches!(verdict, Verdict::Fires { .. }),
+                "{forbid_default} {max_exports:?} {must_return:?}: {verdict:?}"
+            );
+        }
+    }
+
+    /// A rule making none of the three has nothing to break, and says so
+    /// rather than reporting a confident tick — `config doctor` is what calls
+    /// a rule that constrains nothing what it is.
+    #[test]
+    fn an_export_shape_rule_that_asks_nothing_cannot_be_probed() {
+        let verdict = verdict(
+            &["src/use-cases/create-client.ts"],
+            vec![rule(
+                "asks-nothing",
+                &["src/use-cases"],
+                CompiledRuleKind::ExportShape(archwarden_core::compiled::ExportShape {
+                    forbid_default: false,
+                    max_exports: None,
+                    must_return: Vec::new(),
+                }),
+            )],
+        );
+
+        let Verdict::Unverified { why } = &verdict else {
+            panic!("expected Unverified, got {verdict:?}");
+        };
+        assert!(why.contains("none of the three claims"), "{why}");
+    }
+
+    /// And a rule whose scope reaches a directory but not a file directly in
+    /// it has nowhere to sit the probe, which is reported rather than guessed
+    /// past.
+    #[test]
+    fn an_export_shape_rule_with_nowhere_to_sit_a_probe_says_so() {
+        let verdict = verdict(
+            &["src/use-cases/nested/create-client.ts"],
+            vec![rule(
+                "use-case-shape",
+                &["src/use-cases"],
+                CompiledRuleKind::ExportShape(archwarden_core::compiled::ExportShape {
+                    forbid_default: true,
+                    max_exports: None,
+                    must_return: Vec::new(),
+                }),
+            )],
+        );
+
+        assert!(
+            matches!(verdict, Verdict::Fires { .. } | Verdict::Unverified { .. }),
+            "either it plants the probe or it says why not, never silence: {verdict:?}"
+        );
     }
 
     /// And a `structure` rule that constrains neither axis really does enforce

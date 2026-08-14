@@ -542,6 +542,7 @@ mod tests {
             reexport_from: None,
             forwards: None,
             annotations: Vec::new(),
+            returns: None,
             span: crate::facts::Span::new(0, 10),
         });
 

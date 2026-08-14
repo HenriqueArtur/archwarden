@@ -356,6 +356,18 @@ const EXAMPLES: &[(&str, &str)] = &[
 }"#,
     ),
     (
+        "export-shape",
+        r#"{
+  "type": "export-shape",
+  "id": "use-cases-return-the-pattern",
+  "level": "error",
+  "roots": ["src/use-cases/*"],
+  "forbid_default": true,
+  "max_exports": 1,
+  "must_return": ["^ResponsePattern<.+,.+>$"]
+}"#,
+    ),
+    (
         "import-cycle",
         r#"{
   "type": "import-cycle",
@@ -463,7 +475,7 @@ mod tests {
         let read = options();
 
         let answered: Vec<&str> = read.kinds.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(answered.len(), 10, "{answered:?}");
+        assert_eq!(answered.len(), 11, "{answered:?}");
 
         for kind in &answered {
             let Some(Found::Kind(entry)) = read.find(kind) else {

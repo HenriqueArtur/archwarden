@@ -1161,6 +1161,81 @@
             "roots",
             "file_pattern"
           ]
+        },
+        {
+          "description": "What a file exposes, without saying anything about its name.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier, unique across the config and its presets.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "decision": {
+              "description": "The decision this rule implements. See [`StructureRule::decision`].",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DecisionId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "roots": {
+              "description": "Directory globs this rule applies to.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "forbid_default": {
+              "description": "Whether a default export is refused.\n\n`false` by default, so a rule that only wants to say something about\nreturn types says nothing about defaults.",
+              "type": "boolean"
+            },
+            "max_exports": {
+              "description": "The most exports a file may have.\n\n**Counts what exists at runtime.** `type` and `interface` exports do\nnot count, and the default counts as one. A file exporting a function\nand the interface of its dependencies is idiomatic TypeScript, and a\n`max_exports: 1` that fired on it would be a rule nobody leaves on —\nwhich is the same argument `spec-pair.skip_type_only` already makes one\nrule over.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint",
+              "minimum": 0
+            },
+            "must_return": {
+              "description": "Return types an exported function may declare, as regexes.\n\nA **list**, and that is what settles the alias problem without imposing\na convention. `type Result<T> = ResponsePattern<T, Error>` is the same\ntype and a different string, so a team that has aliases lists them:\n\n```json\n\"must_return\": [\"^ResponsePattern<.+,.+>$\", \"^Result<.+>$\"]\n```\n\nA team that decides *\"annotate with the canonical name\"* writes one\npattern and gets that convention enforced — which is itself an\narchitectural decision, and now one the config states rather than\nimplies.\n\nMatched **text against text**, on the same terms as `naming`'s\nannotations: no resolution, no inference, no assignability. Pair it with\n`import-boundary.must_import_from` to close the remaining hole, which is\nsomebody declaring a local lookalike under the canonical name.\n\nApplies to the exports that *can* return something — a `function`\ndeclaration, or a function or arrow assigned to a binding. A callable\nthat declares nothing is a finding, which is the point.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something. See decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "export-shape"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots"
+          ]
         }
       ]
     },

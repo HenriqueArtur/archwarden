@@ -103,6 +103,7 @@ impl OxcParser {
 
         let declaration_tags = declaration_tags(&parsed.program);
         let declaration_annotations = declaration_annotations(&parsed.program, source);
+        let declaration_returns = declaration_returns(&parsed.program, source);
         let forwarded = forwarded_bindings(&parsed.program);
 
         let (imports, has_opaque_import) = imports(&parsed.module_record, &parsed.program);
@@ -116,6 +117,7 @@ impl OxcParser {
                 &parsed.module_record,
                 &declaration_tags,
                 &declaration_annotations,
+                &declaration_returns,
                 &forwarded,
             ),
             calls: calls(&parsed.program),
@@ -416,6 +418,113 @@ fn declaration_annotations(program: &Program<'_>, source: &str) -> HashMap<Strin
     annotations
 }
 
+/// The return type each declaration writes down, by local name.
+///
+/// A sibling of [`declaration_annotations`] rather than a third arm inside it,
+/// which is where issue #101 expected this to land. The field decided it: a
+/// return type is its own claim on [`ExportFact::returns`], not another entry
+/// in `annotations`, so the two are gathered separately and a declaration
+/// carrying both fills both. Merging them here would mean unpicking them again
+/// at the call site.
+///
+/// Two forms, because those are the two places a TypeScript function declares
+/// what it gives you: a `function` declaration, and a function or arrow
+/// expression assigned to a binding. Anything that is not callable has no
+/// return position and is left absent rather than guessed at.
+fn declaration_returns(program: &Program<'_>, source: &str) -> HashMap<String, String> {
+    let mut returns = HashMap::new();
+
+    for statement in &program.body {
+        // `export default function (): T {}` has no binding name at all, so
+        // the module record reports its local name as null and there is
+        // nothing to key on. It is filed under a name no identifier can take,
+        // and the export side looks there when it has a default and no name.
+        if let Statement::ExportDefaultDeclaration(export) = statement
+            && let oxc_ast::ast::ExportDefaultDeclarationKind::FunctionDeclaration(function) =
+                &export.declaration
+            && let Some(annotation) = &function.return_type
+            && let Some(text) = collapsed(source, annotation.type_annotation.span())
+        {
+            let name = function
+                .id
+                .as_ref()
+                .map_or_else(|| ANONYMOUS_DEFAULT.to_owned(), |id| id.name.to_string());
+            returns.insert(name, text);
+            continue;
+        }
+
+        let declaration = match statement {
+            Statement::ExportNamedDeclaration(export) => export.declaration.as_ref(),
+            Statement::VariableDeclaration(_) | Statement::FunctionDeclaration(_) => {
+                statement.as_declaration()
+            }
+            _ => None,
+        };
+
+        if let Some(declaration) = declaration {
+            record_returns(declaration, source, &mut returns);
+        }
+    }
+
+    returns
+}
+
+/// The key an anonymous `export default function` is filed under.
+///
+/// Not a valid JavaScript identifier, so it cannot collide with a real
+/// binding. oxc spells its own internal default the same way.
+const ANONYMOUS_DEFAULT: &str = "*default*";
+
+/// Records the return type of one declaration, for the forms that have one.
+fn record_returns(
+    declaration: &Declaration<'_>,
+    source: &str,
+    returns: &mut HashMap<String, String>,
+) {
+    match declaration {
+        Declaration::FunctionDeclaration(function) => {
+            let (Some(identifier), Some(annotation)) = (&function.id, &function.return_type) else {
+                return;
+            };
+            if let Some(text) = collapsed(source, annotation.type_annotation.span()) {
+                returns.insert(identifier.name.to_string(), text);
+            }
+        }
+
+        // `export const X = (): T => …` and `export const X = function (): T
+        // {}`. The binding names it and the expression declares the return, so
+        // both halves are needed and either missing means there is nothing to
+        // record.
+        Declaration::VariableDeclaration(variable) => {
+            for declarator in &variable.declarations {
+                let Some(identifier) = declarator.id.get_binding_identifier() else {
+                    continue;
+                };
+                let Some(annotation) = declarator.init.as_ref().and_then(return_type_of) else {
+                    continue;
+                };
+                if let Some(text) = collapsed(source, annotation.type_annotation.span()) {
+                    returns.insert(identifier.name.to_string(), text);
+                }
+            }
+        }
+
+        _ => {}
+    }
+}
+
+/// The declared return type of a callable expression, when it is one and it
+/// declared anything.
+fn return_type_of<'a>(
+    expression: &'a oxc_ast::ast::Expression<'a>,
+) -> Option<&'a oxc_ast::ast::TSTypeAnnotation<'a>> {
+    match expression {
+        oxc_ast::ast::Expression::ArrowFunctionExpression(arrow) => arrow.return_type.as_deref(),
+        oxc_ast::ast::Expression::FunctionExpression(function) => function.return_type.as_deref(),
+        _ => None,
+    }
+}
+
 /// Records the annotations of one declaration, for the forms that have any.
 ///
 /// Two forms, because those are the two places TypeScript lets a declaration
@@ -510,6 +619,7 @@ fn exports(
     record: &oxc_syntax::module_record::ModuleRecord<'_>,
     declaration_tags: &HashMap<String, ExportTags>,
     declaration_annotations: &HashMap<String, Vec<String>>,
+    declaration_returns: &HashMap<String, String>,
     forwarded: &HashMap<String, String>,
 ) -> Vec<ExportFact> {
     let mut facts = Vec::new();
@@ -530,6 +640,24 @@ fn exports(
                 .as_ref()
                 .and_then(|name| declaration_annotations.get(name).cloned())
                 .unwrap_or_default(),
+            // Keyed by the local name for the same reason. An anonymous
+            // `export default function` has no local name, and is the one
+            // export that has to be found the other way round.
+            returns: local
+                .as_ref()
+                .and_then(|name| declaration_returns.get(name).cloned())
+                .or_else(|| {
+                    // Only a default can be nameless, and a *named* default is
+                    // filed under its own name above — so reaching here with a
+                    // default in hand means the anonymous one. Testing
+                    // `local.is_none()` as well would be a second way to say
+                    // the same thing, and one no input can tell apart.
+                    entry
+                        .export_name
+                        .is_default()
+                        .then(|| declaration_returns.get(ANONYMOUS_DEFAULT).cloned())
+                        .flatten()
+                }),
             is_default: entry.export_name.is_default(),
             // Either the binding is an alias or a wrapper this file declared,
             // or `export { X }` names something the file never declared — in
@@ -559,6 +687,7 @@ fn exports(
             // anything is not knowable from here -- the same reason the kind
             // is `reexport` rather than guessed at.
             annotations: Vec::new(),
+            returns: None,
             is_default: entry.export_name.is_default(),
             reexport_from: entry
                 .module_request
@@ -567,6 +696,34 @@ fn exports(
             // Forwards by construction: the file holds the name and nothing
             // else about it.
             forwards: export_name(&entry.export_name),
+            span: span_of(entry.span),
+        });
+    }
+
+    // `export * from './x'`. It produced no fact at all until 0.22, which made
+    // it invisible to `no-passthrough` — the rule against a file that adds
+    // nothing of its own was silent about the loudest form of exactly that.
+    //
+    // Named `*` rather than left nameless: it exports a set nobody here can
+    // enumerate, which is the whole complaint against the form, and a fact
+    // with no name is dropped by every rule that reports one. `export * as ns`
+    // binds a name and arrives through `indirect_export_entries` above, since
+    // that file *does* add something.
+    for entry in &record.star_export_entries {
+        facts.push(ExportFact {
+            name: Some("*".to_owned()),
+            tags: ExportTags::only(ExportKind::Reexport),
+            // Whatever is on the other side, this file did not declare it.
+            annotations: Vec::new(),
+            returns: None,
+            is_default: false,
+            reexport_from: entry
+                .module_request
+                .as_ref()
+                .map(|request| request.name.to_string()),
+            // Forwards by construction, and more completely than a named
+            // re-export does: the file holds not even the names.
+            forwards: Some("*".to_owned()),
             span: span_of(entry.span),
         });
     }
@@ -1006,6 +1163,58 @@ export { Value, Helper, Thing };
         assert_eq!(export.reexport_from.as_deref(), Some("./other"));
     }
 
+    /// `export * from './x'` is *the* barrel, and until 0.22 it was invisible:
+    /// `export { A } from './x'` produced a fact and the star produced
+    /// nothing, so the rule that forbids a file adding nothing of its own was
+    /// silent about the loudest form of it. Issue #101.
+    ///
+    /// No name, because the star exports a set nobody here can enumerate —
+    /// which is the whole complaint against it, and is why the fact says `*`
+    /// rather than guessing.
+    #[test]
+    fn a_star_reexport_is_a_fact_with_no_name_of_its_own() {
+        let facts = parse("src/index.ts", "export * from './other';");
+
+        let star = facts.exports.first().expect("the star is an export");
+        assert_eq!(star.name.as_deref(), Some("*"));
+        assert_eq!(star.tags, ExportTags::only(ExportKind::Reexport));
+        assert_eq!(star.reexport_from.as_deref(), Some("./other"));
+        assert_eq!(
+            star.forwards.as_deref(),
+            Some("*"),
+            "it forwards by construction: the file holds nothing else"
+        );
+        assert!(!star.is_default);
+    }
+
+    /// A named star — `export * as ns from './x'` — binds one name locally and
+    /// is a different statement: the file does add something, a namespace
+    /// object under a name of its choosing.
+    #[test]
+    fn a_named_star_reexport_carries_the_name_it_binds() {
+        let facts = parse("src/index.ts", "export * as helpers from './other';");
+
+        let star = facts.exports.first().expect("is an export");
+        assert_eq!(star.name.as_deref(), Some("helpers"));
+        assert_eq!(star.reexport_from.as_deref(), Some("./other"));
+    }
+
+    /// And its source is an import, the same as a named re-export's, so the
+    /// graph sees the edge.
+    #[test]
+    fn a_star_reexports_source_counts_as_an_import() {
+        let facts = parse("src/index.ts", "export * from './other';");
+
+        assert!(
+            facts
+                .imports
+                .iter()
+                .any(|import| import.specifier == "./other"),
+            "{:?}",
+            facts.imports
+        );
+    }
+
     /// The fact issue #39 needs: whether the declaration wrote its type down.
     /// Not what that type resolves to -- the token, as the author typed it.
     #[test]
@@ -1057,6 +1266,186 @@ export { Value, Helper, Thing };
 
         let export = facts.named_export("AGENT_TOOL").expect("is exported");
         assert!(export.annotations.is_empty());
+    }
+
+    /// Issue #101. `tsc` checks what is annotated; it cannot require that you
+    /// annotate. A function returning `{ ok: true }` with no return type
+    /// compiles perfectly — so the fact archwarden needs is whether the
+    /// declaration submitted its *return* to `tsc`'s judgement at all.
+    #[test]
+    fn a_function_records_the_return_type_it_declared() {
+        let facts = parse(
+            "src/x.ts",
+            "export function CreateClient(): ResponsePattern<Client, Error> {}",
+        );
+
+        let export = facts.named_export("CreateClient").expect("is exported");
+        assert_eq!(
+            export.returns.as_deref(),
+            Some("ResponsePattern<Client, Error>")
+        );
+    }
+
+    /// An arrow assigned to a const is how most of this codebase's use cases
+    /// are written, and it declares its return in a different position. Both
+    /// forms are the same claim.
+    #[test]
+    fn an_arrow_records_the_return_type_it_declared() {
+        let facts = parse(
+            "src/x.ts",
+            "export const CreateClient = (): ResponsePattern<Client, Error> => ({});",
+        );
+
+        let export = facts.named_export("CreateClient").expect("is exported");
+        assert_eq!(
+            export.returns.as_deref(),
+            Some("ResponsePattern<Client, Error>")
+        );
+
+        // And a `function` expression in the same position.
+        let expression = parse(
+            "src/y.ts",
+            "export const Other = function (): Result<T> { return x; };",
+        );
+        assert_eq!(
+            expression
+                .named_export("Other")
+                .expect("is exported")
+                .returns
+                .as_deref(),
+            Some("Result<T>")
+        );
+    }
+
+    /// The absence has to be visible as an absence. This is the state the
+    /// whole rule exists to report: `tsc` is green and nothing ever said what
+    /// this gives you.
+    #[test]
+    fn a_function_with_no_return_type_records_nothing() {
+        let facts = parse(
+            "src/x.ts",
+            "export function CreateClient() { return { ok: true }; }",
+        );
+        assert_eq!(
+            facts
+                .named_export("CreateClient")
+                .expect("is exported")
+                .returns,
+            None
+        );
+
+        let arrow = parse("src/y.ts", "export const Other = () => ({ ok: true });");
+        assert_eq!(
+            arrow.named_export("Other").expect("is exported").returns,
+            None
+        );
+    }
+
+    /// **The separation this field exists for.** A binding's annotation says
+    /// *what this value is*; a return type says *what this call gives you*.
+    /// They are different claims, and a rule asking for one must not be
+    /// satisfied by the other — so they are two fields, and a declaration
+    /// carrying both fills both.
+    #[test]
+    fn a_binding_annotation_and_a_return_type_are_not_the_same_claim() {
+        let facts = parse(
+            "src/x.ts",
+            "export const CreateClient: UseCase = (): ResponsePattern<C, E> => ({});",
+        );
+
+        let export = facts.named_export("CreateClient").expect("is exported");
+        assert_eq!(export.annotations, ["UseCase"], "what the value is");
+        assert_eq!(
+            export.returns.as_deref(),
+            Some("ResponsePattern<C, E>"),
+            "what the call gives you"
+        );
+    }
+
+    /// A declaration exported separately from where it is written. The module
+    /// record says `X` is exported; the AST says what `X` declared, and the two
+    /// are joined by local name — which is the whole shape of this front-end
+    /// and the arm that would go unexercised if every test wrote `export`
+    /// and the declaration on one line.
+    #[test]
+    fn a_return_type_is_found_when_the_export_is_a_separate_statement() {
+        let declared = parse(
+            "src/x.ts",
+            "function CreateClient(): Result<T> {}\nexport { CreateClient };",
+        );
+        assert_eq!(
+            declared
+                .named_export("CreateClient")
+                .expect("is exported")
+                .returns
+                .as_deref(),
+            Some("Result<T>")
+        );
+
+        let assigned = parse(
+            "src/y.ts",
+            "const Other = (): Result<U> => ({});\nexport { Other };",
+        );
+        assert_eq!(
+            assigned
+                .named_export("Other")
+                .expect("is exported")
+                .returns
+                .as_deref(),
+            Some("Result<U>")
+        );
+    }
+
+    /// A value that is not callable has no return type, and does not gain an
+    /// empty one.
+    #[test]
+    fn a_non_callable_export_records_no_return_type() {
+        for source in [
+            "export const CONFIG: Settings = { a: 1 };",
+            "export class Tool implements Disposable {}",
+            "export interface Deps { a: number }",
+        ] {
+            let facts = parse("src/x.ts", source);
+            assert!(
+                facts.exports.iter().all(|export| export.returns.is_none()),
+                "{source}"
+            );
+        }
+    }
+
+    /// A default export declares its return the same way, and the rule that
+    /// forbids default exports is a different rule from the one that asks what
+    /// they give you.
+    #[test]
+    fn a_default_function_records_its_return_type() {
+        let facts = parse("src/x.ts", "export default function (): Result<T> {}");
+
+        let default = facts
+            .exports
+            .iter()
+            .find(|export| export.is_default)
+            .expect("is exported");
+        assert_eq!(default.returns.as_deref(), Some("Result<T>"));
+    }
+
+    /// Whitespace is the formatter's business here too, and for the same
+    /// reason: the text is printed back at a user in a finding, and the
+    /// pattern that matches it was written on one line.
+    #[test]
+    fn a_return_type_broken_over_lines_is_collapsed_to_one() {
+        let facts = parse(
+            "src/x.ts",
+            "export function X(): ResponsePattern<\n  Client,\n  Error\n> {}",
+        );
+
+        assert_eq!(
+            facts
+                .named_export("X")
+                .expect("is exported")
+                .returns
+                .as_deref(),
+            Some("ResponsePattern< Client, Error >")
+        );
     }
 
     /// Whitespace is the formatter's business. The fact keeps a readable form

@@ -1,6 +1,6 @@
 # Rule categories
 
-archwarden ships ten rule categories in v0. Each has narrow, well-defined
+archwarden ships eleven rule categories in v0. Each has narrow, well-defined
 semantics. This document is the reference for what each rule can and cannot
 express. Config syntax lives in [`CONFIG.md`](CONFIG.md).
 
@@ -1170,7 +1170,7 @@ not resolve.
 
 | form | looks like |
 |---|---|
-| `reexport` | `export { A } from './x'`, or `import { A }` followed by `export { A }` |
+| `reexport` | `export { A } from './x'`, `export * from './x'`, or `import { A }` followed by `export { A }` |
 | `alias` | `export const planToJson = planToJsonShared`, `export type PlanJson = PlanJsonShared` |
 | `wrapper` | `export function f(a, b) { return g(a, b); }` |
 
@@ -1216,6 +1216,107 @@ questions, which is why it is a flag and not a default.
 instead. That is what `impact` is for.
 
 ---
+
+## 11. Export shape
+
+**What it enforces**: what a file exposes, with nothing said about what it is
+called.
+
+**Scope**: file-local. Needs parse, not resolve.
+
+`naming` couples the export to the *filename*. Plenty of architectural
+decisions are about the export alone:
+
+> *"We do not use default exports."*
+> *"One export per file."*
+> *"Every exported function in `use-cases/` returns `ResponsePattern<R, E>`."*
+
+None of them mentions a filename, and until 0.22 the only way to say any of
+them was inside a `naming` rule — which demands a name template, so you had to
+invent a naming claim you did not mean in order to make an export claim you
+did.
+
+```json
+{ "type": "export-shape",
+  "id": "use-cases-return-the-pattern",
+  "level": "error",
+  "roots": ["src/use-cases/*"],
+  "forbid_default": true,
+  "max_exports": 1,
+  "must_return": ["^ResponsePattern<.+,.+>$"],
+  "why": "a use case returns the pattern, it never throws" }
+```
+
+**Three claims in one kind**, because they are the same question asked three
+ways — *what does this file expose?* — and splitting them would be three kinds
+sharing one scope, one `roots` and one `why`. Each is optional; a rule that
+asks none of them constrains nothing, and `config doctor` says so.
+
+| field | what it asks |
+|---|---|
+| `forbid_default` | the file must not export a default |
+| `max_exports` | at most this many **runtime** exports |
+| `must_return` | every exported callable declares one of these return types |
+
+**`max_exports` counts what exists at runtime.** `type` and `interface` do not
+count, and the default counts as one. A file exporting a function and the
+interface of its dependencies is idiomatic TypeScript, and a `max_exports: 1`
+that fired on it would be a rule nobody leaves on — the same argument
+`spec-pair.skip_type_only` already makes one rule over.
+
+**`must_return` applies to what can return something**: a `function`
+declaration, or a function or arrow assigned to a binding. A constant, a class
+or an interface has no return position and is left alone. A re-export declared
+its return type in another file, which is why its kind is `reexport` rather
+than guessed at, and it is left alone too.
+
+### The division of labour, which is the whole design
+
+`must_return` requires that a function **declares** its return type. It does
+not check that the body conforms — that is `tsc`'s job and `tsc` is good at it.
+
+What `tsc` cannot do is *require that you annotate at all*. A function
+returning `{ ok: true }` with no return type compiles perfectly, which is
+exactly the gap a team standardising on a result shape falls into.
+
+> **archwarden guarantees the pattern is declared. `tsc` guarantees the body
+> conforms.**
+
+Neither alone is the guarantee a team wants; together they are. A callable that
+declares nothing is one finding, and one that declares the wrong thing is a
+different finding — two sentences and two fixes, the same way
+`ExportMissingAnnotation` and `ExportWrongAnnotation` differ.
+
+### The ressalva: an alias defeats a text match
+
+`must_return` matches the annotation **as text**, on the same terms as
+`naming`'s annotations: no resolution, no inference, no assignability. So
+`type Result<T> = ResponsePattern<T, Error>` is the same type and a different
+string, and a rule naming only the canonical form will not see it.
+
+The field takes a **list** for exactly that reason, and the two honest answers
+are both writable:
+
+```json
+"must_return": ["^ResponsePattern<.+,.+>$", "^Result<.+>$"]
+```
+
+A team that has aliases lists them. A team that writes one pattern has decided
+*"annotate with the canonical name"* — which is itself an architectural
+decision, and now one the config states rather than implies.
+
+**What closes the hole completely** is pairing this with
+`import-boundary.must_import_from`: the annotation must be the canonical name,
+imported from the module that owns it. Without that, somebody declares a local
+lookalike and every check passes. Three guarantees together — it is annotated,
+it is the right type, and the body obeys.
+
+### What it deliberately does not do
+
+Inspect the returned object literal in the AST. Early returns, ternaries,
+delegation to a helper, spreads — a rule right about most files and silently
+wrong about the rest is worse than no rule, because it is read as a guarantee.
+The same line this document draws for `call-obligation`.
 
 ## Rule interaction and evaluation order
 

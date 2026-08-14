@@ -443,6 +443,7 @@ mod tests {
             reexport_from: None,
             forwards: None,
             annotations: Vec::new(),
+            returns: None,
             span: Span::new(0, 1),
         }
     }
@@ -978,6 +979,7 @@ mod tests {
             TOOL,
             vec![ExportFact {
                 annotations: Vec::new(),
+                returns: None,
                 ..export("AGENT_TOOL", ExportTags::only(ExportKind::Function))
             }],
         );

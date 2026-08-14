@@ -921,6 +921,18 @@ fn compile_rule(
                 .collect::<Result<_, CompileError>>()?,
         },
 
+        Rule::ExportShape(r) => {
+            CompiledRuleKind::ExportShape(archwarden_core::compiled::ExportShape {
+                forbid_default: r.forbid_default,
+                max_exports: r.max_exports,
+                must_return: r
+                    .must_return
+                    .iter()
+                    .map(|p| pattern(&id, "must_return", p))
+                    .collect::<Result<_, _>>()?,
+            })
+        }
+
         Rule::CallObligation(r) => CompiledRuleKind::CallObligation {
             file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
             symbol: r.must_call.symbol.clone(),
