@@ -161,6 +161,21 @@ Rules that apply to this path:
 Output — JSON mode: same content as a stable, versioned object. Agents
 should prefer JSON.
 
+**Each rule also carries the decision it implements**, when the config declares
+one — id, title, reason, link and status, resolved rather than left as a
+reference an agent would have to look up somewhere else:
+
+```
+  [error] domain-forbids-http (import-boundary)
+    decision: ADR-014 — The domain does not know about transport
+      it is published, and a consumer must not inherit our HTTP client
+      written down in docs/adr/014-domain-transport.md
+    why: an import here makes the published artefact unbuildable outside this repo
+```
+
+The reason explains the rule; the decision explains why there is a rule here at
+all. A constraint that looks arbitrary is the one that gets worked around.
+
 ### `archwarden scaffold <path>`
 
 Given a path, returns the smallest valid skeleton the file could have

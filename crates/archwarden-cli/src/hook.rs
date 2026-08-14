@@ -372,6 +372,9 @@ pub fn landed(
         if let Some(why) = reasons.of_rule(rule) {
             let _ = writeln!(message, "  why: {why}");
         }
+        // Once per rule, like the reason above it: this message's whole job is
+        // being short enough that somebody reads it.
+        write_decision(&mut message, reasons.decision_of_rule(rule));
     }
 
     message
@@ -410,6 +413,10 @@ pub fn explain(
         if let Some(why) = reasons.of_rule(&finding.rule_id) {
             let _ = writeln!(message, "  why: {why}");
         }
+        // And the decision the rule serves, which is the same argument one
+        // level up: a rule id is a thing to satisfy, a decision with a link is
+        // a thing to understand or to argue with. Issue #100.
+        write_decision(&mut message, reasons.decision_of_rule(&finding.rule_id));
     }
 
     let _ = write!(
@@ -418,6 +425,20 @@ pub fn explain(
         single.path
     );
     message
+}
+
+/// The decision block under a finding, when the rule serves a declared one.
+///
+/// The block itself is [`archwarden_api::describe::describe_decision`], beside
+/// `describe_observed` and for the same reason: a blocked write and a
+/// `describe` of the same file must say this in the same words.
+fn write_decision(
+    message: &mut String,
+    decision: Option<&archwarden_core::compiled::CompiledDecision>,
+) {
+    if let Some(decision) = decision {
+        message.push_str(&archwarden_api::describe::describe_decision(decision, "  "));
+    }
 }
 
 /// Why the hook formed no opinion about a write, in the words it says it in.
@@ -596,6 +617,191 @@ mod tests {
             message.contains("why: the registry imports these by name, not by path"),
             "{message}"
         );
+    }
+
+    /// Issue #100, at the same surface and one level up. A rule id in a
+    /// denial is a thing to satisfy; a decision with a link is a thing to
+    /// understand or to argue with — and the difference decides whether an
+    /// agent complies or edits the config to make the check pass.
+    #[test]
+    fn a_denial_names_the_decision_the_rule_implements() {
+        let single = denied_write();
+        let reasons = crate::report::Reasons::from([(
+            "usecase-name",
+            "the registry imports these by name, not by path",
+        )])
+        .deciding([(
+            "usecase-name",
+            archwarden_core::compiled::CompiledDecision {
+                id: archwarden_core::ids::DecisionId::new("ADR-014").expect("valid"),
+                title: "The domain does not know about transport".to_owned(),
+                why: Some("it is published, and a consumer must not inherit our client".to_owned()),
+                link: Some("docs/adr/014-domain-transport.md".to_owned()),
+                status: archwarden_core::compiled::DecisionStatus::Accepted,
+            },
+        )]);
+
+        let message = explain(&single, &reasons, "npx archwarden");
+
+        assert!(
+            message.contains("decision: ADR-014 — The domain does not know about transport"),
+            "the id alone is what this replaces: {message}"
+        );
+        assert!(
+            message.contains("it is published, and a consumer must not inherit our client"),
+            "and here is why: {message}"
+        );
+        assert!(
+            message.contains("docs/adr/014-domain-transport.md"),
+            "and here is where it is written: {message}"
+        );
+        assert!(
+            message.contains("why: the registry imports these by name, not by path"),
+            "the rule's own reason is a separate answer and both are shown: {message}"
+        );
+    }
+
+    /// An accepted decision does not announce that it is accepted. Every
+    /// denial would carry the word, which is how a message stops being read.
+    /// A decision that no longer holds is the case worth interrupting for.
+    #[test]
+    fn a_denial_says_a_decisions_status_only_when_it_is_not_accepted() {
+        let quiet = explain(
+            &denied_write(),
+            &deciding_with(DecisionStatus::Accepted),
+            "a",
+        );
+        assert!(!quiet.contains("accepted"), "{quiet}");
+
+        let loud = explain(
+            &denied_write(),
+            &deciding_with(DecisionStatus::Superseded),
+            "a",
+        );
+        assert!(
+            loud.contains("superseded"),
+            "a write denied over a decision that was replaced must say so: {loud}"
+        );
+    }
+
+    /// A rule that names no decision denies exactly as it did before 0.21,
+    /// which is every configuration in the world on the day this ships.
+    #[test]
+    fn a_denial_over_a_rule_with_no_decision_is_unchanged() {
+        let message = explain(
+            &denied_write(),
+            &crate::report::Reasons::from([("usecase-name", "the registry imports these by name")]),
+            "npx archwarden",
+        );
+
+        assert!(!message.contains("decision:"), "{message}");
+        assert!(
+            message.contains("why: the registry imports these by name"),
+            "{message}"
+        );
+    }
+
+    /// A decision whose prose is entirely in the document it links to. The
+    /// block still earns its place: a title and a path is the whole answer to
+    /// "what is this and where do I read it".
+    #[test]
+    fn a_decision_with_no_why_of_its_own_still_names_itself_and_its_link() {
+        let reasons = crate::report::Reasons::default().deciding([(
+            "usecase-name",
+            archwarden_core::compiled::CompiledDecision {
+                id: archwarden_core::ids::DecisionId::new("ADR-014").expect("valid"),
+                title: "The domain does not know about transport".to_owned(),
+                why: None,
+                link: Some("docs/adr/014.md".to_owned()),
+                status: DecisionStatus::Accepted,
+            },
+        )]);
+
+        let message = explain(&denied_write(), &reasons, "npx archwarden");
+
+        assert!(
+            message.contains("ADR-014 — The domain does not know about transport"),
+            "{message}"
+        );
+        assert!(message.contains("docs/adr/014.md"), "{message}");
+    }
+
+    /// The message read after the fact carries it too, and for the same
+    /// reason: what landed is what somebody now has to decide whether to fix,
+    /// and "it breaks ADR-014" is the sentence that decides it.
+    ///
+    /// Once per rule, like the reason beside it — a `presence` rule that fired
+    /// on four directories is one thing to fix, and four copies of the same
+    /// paragraph is a message people learn to skip.
+    #[test]
+    fn the_end_of_turn_message_names_the_decision_once_per_rule() {
+        let finding = |path: &str| Finding {
+            rule_id: RuleId::new("usecase-name").expect("valid"),
+            module_id: None,
+            level: Level::Error,
+            path: RepoRelPath::new(path).expect("valid"),
+            span: None,
+            observed: Observed::ExportMissing {
+                name: "X".to_owned(),
+            },
+            expected: Expectation::RequiredExport {
+                kind: KindFilter::Any,
+                name: "X".to_owned(),
+                annotation: Vec::new(),
+                signature_hint: None,
+            },
+        };
+
+        let message = landed(
+            &[finding("src/a.ts"), finding("src/b.ts")],
+            &deciding_with(DecisionStatus::Accepted),
+        );
+
+        assert_eq!(
+            message.matches("decision: ADR-014").count(),
+            1,
+            "two findings of one rule, one decision line: {message}"
+        );
+    }
+
+    /// The write every denial test above is about.
+    fn denied_write() -> archwarden_engine::single::Single {
+        archwarden_engine::single::Single {
+            path: RepoRelPath::new("src/user/create-client.use-case.ts").expect("valid"),
+            findings: vec![Finding {
+                rule_id: RuleId::new("usecase-name").expect("valid"),
+                module_id: None,
+                level: Level::Error,
+                path: RepoRelPath::new("src/user/create-client.use-case.ts").expect("valid"),
+                span: None,
+                observed: Observed::ExportMissing {
+                    name: "CreateClient".to_owned(),
+                },
+                expected: Expectation::RequiredExport {
+                    kind: KindFilter::Any,
+                    name: "CreateClient".to_owned(),
+                    annotation: Vec::new(),
+                    signature_hint: None,
+                },
+            }],
+            skipped: Vec::new(),
+            unresolved_imports: Vec::new(),
+        }
+    }
+
+    use archwarden_core::compiled::DecisionStatus;
+
+    fn deciding_with(status: DecisionStatus) -> crate::report::Reasons {
+        crate::report::Reasons::default().deciding([(
+            "usecase-name",
+            archwarden_core::compiled::CompiledDecision {
+                id: archwarden_core::ids::DecisionId::new("ADR-014").expect("valid"),
+                title: "A wall".to_owned(),
+                why: None,
+                link: None,
+                status,
+            },
+        )])
     }
 
     #[test]

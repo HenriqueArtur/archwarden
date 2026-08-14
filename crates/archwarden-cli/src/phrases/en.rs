@@ -35,6 +35,32 @@ impl Phrases for En {
     fn tally_no_reason(&self) -> &'static str {
         "say no why"
     }
+    fn tally_decisions(&self) -> &'static str {
+        "decisions"
+    }
+    fn decisions_eyebrow(&self) -> &'static str {
+        "what was decided"
+    }
+    fn decisions_heading(&self) -> &'static str {
+        "The decisions, and what enforces them"
+    }
+    fn decisions_lede(&self) -> &'static str {
+        "An architecture is a set of choices somebody made. The rules below are \
+         how each one is kept; a decision nothing enforces is a choice this \
+         repository is only describing."
+    }
+    fn enforced_by(&self, rules: &str) -> String {
+        format!("Enforced by {rules}")
+    }
+    fn enforced_by_nothing(&self) -> &'static str {
+        "Nothing enforces this."
+    }
+    fn written_down_in(&self) -> &'static str {
+        "Written down in"
+    }
+    fn decision_status(&self, status: &str) -> String {
+        status.to_owned()
+    }
     fn rules_eyebrow(&self) -> &'static str {
         "the walls"
     }

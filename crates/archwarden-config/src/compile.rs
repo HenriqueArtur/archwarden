@@ -56,6 +56,22 @@ pub enum CompileError {
         module: archwarden_core::ids::ModuleId,
     },
 
+    /// A rule names a decision the config never declared.
+    ///
+    /// Refused here rather than reported by `config doctor`, on the precedent
+    /// [`UnknownModule`](Self::UnknownModule) already sets: a reference to
+    /// nothing is a typo, and a typo should fail when the config loads rather
+    /// than in a separate command the user may never run. A rule that names
+    /// *no* decision is a different thing entirely, and stays valid. Issue
+    /// #100.
+    #[error("rule `{rule}` names decision `{decision}`, which this config does not declare")]
+    UnknownDecision {
+        /// The rule.
+        rule: RuleId,
+        /// The reference that matched nothing.
+        decision: archwarden_core::ids::DecisionId,
+    },
+
     /// A rule names a module that declared no paths.
     #[error("rule `{rule}` names module `{module}`, which declares no `scope`")]
     ModuleHasNoScope {
@@ -309,6 +325,7 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
     let config = &merged.config;
 
     let modules = Modules::compile(config)?;
+    let decisions = compile_decisions(config);
 
     let mut rules = Vec::new();
     for (module, module_why, rule) in config.rules() {
@@ -320,6 +337,18 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
                 rule: rule.id().clone(),
             });
         }
+        // A reference is checked against the declared list here, once, rather
+        // than by every surface that later resolves one. That is what lets
+        // `CompiledRule::decision` promise it names something.
+        if let Some(named) = rule.decision()
+            && !decisions.iter().any(|decision| &decision.id == named)
+        {
+            return Err(CompileError::UnknownDecision {
+                rule: rule.id().clone(),
+                decision: named.clone(),
+            });
+        }
+
         rules.push(compile_rule(
             rule,
             module.cloned(),
@@ -345,11 +374,41 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
     Ok(
         CompiledConfig::new(rules, ignore, skip_dirs, rules_hash(config))
             .with_modules(modules.compiled())
+            .with_decisions(decisions)
             .with_languages(archwarden_core::compiled::Languages {
                 astro: config.languages.contains(&config::Language::Astro),
             })
             .with_governance(config.governance.level()),
     )
+}
+
+/// Lowers the declared decisions.
+///
+/// Infallible, and that is the whole shape of them: a decision is prose. There
+/// is no glob to compile and no regex to reject, so the only thing that can be
+/// wrong is a *reference* to one, which is checked where the rules are.
+fn compile_decisions(config: &Config) -> Vec<archwarden_core::compiled::CompiledDecision> {
+    config
+        .decisions
+        .iter()
+        .map(|decision| archwarden_core::compiled::CompiledDecision {
+            id: decision.id.clone(),
+            title: decision.title.clone(),
+            why: decision.why.clone(),
+            link: decision.link.clone(),
+            status: match decision.status {
+                config::DecisionStatus::Accepted => {
+                    archwarden_core::compiled::DecisionStatus::Accepted
+                }
+                config::DecisionStatus::Proposed => {
+                    archwarden_core::compiled::DecisionStatus::Proposed
+                }
+                config::DecisionStatus::Superseded => {
+                    archwarden_core::compiled::DecisionStatus::Superseded
+                }
+            },
+        })
+        .collect()
 }
 
 /// The paths a boundary forbids, from whichever field it used.
@@ -880,6 +939,7 @@ fn compile_rule(
         imports,
         why: rule.why().map(ToOwned::to_owned),
         module_why,
+        decision: rule.decision().cloned(),
         level: rule.level(),
         scope,
         kind,
@@ -1167,6 +1227,7 @@ fn check_template(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use archwarden_core::ids::DecisionId;
 
     /// `must_exist` names one companion beside the file, literally.
     ///
@@ -1213,6 +1274,7 @@ mod tests {
             id: id.clone(),
             level: Level::Error,
             why: None,
+            decision: None,
             roots: crate::one_or_many::OneOrMany::One("src/*".to_owned()),
             subfolders: crate::one_or_many::OneOrMany::One(".".to_owned()),
             spec_markers: crate::one_or_many::OneOrMany::One("spec".to_owned()),
@@ -1253,6 +1315,7 @@ mod tests {
             id: id.clone(),
             level: Level::Error,
             why: None,
+            decision: None,
             roots: crate::one_or_many::OneOrMany::One("src/*".to_owned()),
             subfolders: crate::one_or_many::OneOrMany::One(".".to_owned()),
             spec_markers: crate::one_or_many::OneOrMany::One("spec".to_owned()),
@@ -2031,6 +2094,181 @@ mod tests {
         let rule = compiled.rules().next().expect("one rule");
         assert_eq!(rule.why, None);
         assert_eq!(rule.module_why, None);
+    }
+
+    /// Issue #100. The rule carries the reference; the prose stays in one
+    /// place on the config, because N rules serve one decision and copying it
+    /// onto each is N places for it to disagree with itself.
+    #[test]
+    fn a_rule_carries_the_decision_it_implements() {
+        let compiled = compile_json(
+            r#"{"version":0,
+                "decisions":[{"id":"ADR-014",
+                              "title":"The domain does not know about transport",
+                              "why":"it is published, and a consumer must not inherit our client",
+                              "link":"docs/adr/014.md"}],
+                "rules":[{"type":"structure","id":"shape","level":"error",
+                          "decision":"ADR-014",
+                          "roots":"packages/domain/src/*",
+                          "allowed_subfolders":["types"]}]}"#,
+        )
+        .expect("compiles");
+
+        let rule = compiled.rules().next().expect("one rule");
+        assert_eq!(
+            rule.decision.as_ref().map(DecisionId::as_str),
+            Some("ADR-014")
+        );
+
+        let decision = compiled
+            .decision(rule.decision.as_ref().expect("names one"))
+            .expect("the config declares it");
+        assert_eq!(decision.title, "The domain does not know about transport");
+        assert_eq!(decision.link.as_deref(), Some("docs/adr/014.md"));
+        assert!(decision.status.is_accepted());
+    }
+
+    /// Every rule written before 0.21, unchanged.
+    #[test]
+    fn a_rule_naming_no_decision_carries_none() {
+        let compiled = compile_json(
+            r#"{"version":0,"rules":[{"type":"structure","id":"shape","level":"error",
+                 "roots":"src/*","allowed_subfolders":["types"]}]}"#,
+        )
+        .expect("compiles");
+
+        assert_eq!(compiled.rules().next().expect("one rule").decision, None);
+        assert_eq!(compiled.decisions().count(), 0);
+    }
+
+    /// A reference to a decision nobody declared is a typo, and it is refused
+    /// where `from_module` naming an undeclared module is refused: at compile,
+    /// when the config loads, rather than in a command the user may never run.
+    ///
+    /// Not to be confused with a rule that names *no* decision, which is every
+    /// existing config and stays perfectly valid.
+    #[test]
+    fn a_rule_pointing_at_an_undeclared_decision_is_refused() {
+        let error = compile_json(
+            r#"{"version":0,
+                "decisions":[{"id":"ADR-014","title":"t"}],
+                "rules":[{"type":"structure","id":"shape","level":"error",
+                          "decision":"ADR-041","roots":"src/*",
+                          "allowed_subfolders":[]}]}"#,
+        )
+        .expect_err("should refuse");
+
+        let CompileError::UnknownDecision { rule, decision } = &error else {
+            panic!("expected UnknownDecision, got {error:?}");
+        };
+        assert_eq!(rule.as_str(), "shape");
+        assert_eq!(decision.as_str(), "ADR-041");
+        assert!(
+            error.to_string().contains("ADR-041"),
+            "the message names the id that matched nothing: {error}"
+        );
+    }
+
+    /// The decisions survive compilation whether or not any rule points at
+    /// them: `config doctor` has to be able to see an orphan, and the page
+    /// lists what the architecture decided rather than what it enforces.
+    #[test]
+    fn decisions_reach_the_compiled_config_in_declaration_order() {
+        let compiled = compile_json(
+            r#"{"version":0,"decisions":[
+                 {"id":"ADR-2","title":"second","status":"superseded"},
+                 {"id":"ADR-1","title":"first"}],"rules":[]}"#,
+        )
+        .expect("compiles");
+
+        let ids: Vec<&str> = compiled.decisions().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["ADR-2", "ADR-1"]);
+        assert_eq!(
+            compiled.decisions().next().expect("one").status,
+            archwarden_core::compiled::DecisionStatus::Superseded
+        );
+    }
+
+    /// Rewording a decision does not invalidate the findings cache.
+    ///
+    /// The same promise `why` makes one level down — prose is not part of a
+    /// finding's identity — and here it falls out of where the prose lives:
+    /// `rules_hash` serialises the *rules*, and the words are on the config.
+    /// A team fixing a typo in a decision's title should not pay for a full
+    /// re-check of the repository.
+    #[test]
+    fn rewording_a_decision_does_not_change_the_rules_hash() {
+        let with = |title: &str| {
+            compile_json(&format!(
+                r#"{{"version":0,
+                    "decisions":[{{"id":"ADR-014","title":"{title}"}}],
+                    "rules":[{{"type":"structure","id":"shape","level":"error",
+                               "decision":"ADR-014","roots":"src/*",
+                               "allowed_subfolders":[]}}]}}"#
+            ))
+            .expect("compiles")
+            .rules_hash()
+        };
+
+        assert_eq!(with("first wording"), with("second wording"));
+    }
+
+    /// But repointing a *rule* at a different decision does, because that is
+    /// the rule changing.
+    #[test]
+    fn repointing_a_rule_at_another_decision_changes_the_rules_hash() {
+        let with = |decision: &str| {
+            compile_json(&format!(
+                r#"{{"version":0,
+                    "decisions":[{{"id":"ADR-1","title":"a"}},{{"id":"ADR-2","title":"b"}}],
+                    "rules":[{{"type":"structure","id":"shape","level":"error",
+                               "decision":"{decision}","roots":"src/*",
+                               "allowed_subfolders":[]}}]}}"#
+            ))
+            .expect("compiles")
+            .rules_hash()
+        };
+
+        assert_ne!(with("ADR-1"), with("ADR-2"));
+    }
+
+    /// A rule inside a module names its decision the same way a top-level one
+    /// does. Decisions are top level only — a decision that spans modules is
+    /// the common case — but the rules that serve them are wherever they are.
+    #[test]
+    fn a_rule_inside_a_module_may_name_a_top_level_decision() {
+        let compiled = compile_json(
+            r#"{"version":0,
+                "decisions":[{"id":"ADR-014","title":"t"}],
+                "modules":[{"id":"domain","rules":[
+                  {"type":"structure","id":"shape","level":"error","decision":"ADR-014",
+                   "roots":"src/*","allowed_subfolders":[]}]}]}"#,
+        )
+        .expect("compiles");
+
+        assert_eq!(
+            compiled
+                .rules()
+                .next()
+                .expect("one rule")
+                .decision
+                .as_ref()
+                .map(DecisionId::as_str),
+            Some("ADR-014")
+        );
+    }
+
+    /// A decision may not be declared inside a module, and the refusal is the
+    /// parser's: `deny_unknown_fields` on `Module` means the key is not a
+    /// thing a module has. One place to look for a decision, not two.
+    #[test]
+    fn a_module_may_not_declare_decisions() {
+        assert!(
+            serde_json::from_str::<crate::config::Config>(
+                r#"{"version":0,"modules":[{"id":"m","decisions":[{"id":"d","title":"t"}]}]}"#
+            )
+            .is_err()
+        );
     }
 
     /// The compiled annotations of the config's single naming rule.

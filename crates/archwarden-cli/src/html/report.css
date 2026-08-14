@@ -166,6 +166,62 @@ h2 {
 
 code, .mono { font-family: var(--font-code); font-size: 0.9em; }
 
+/* ---- what was decided ------------------------------------------------ */
+
+/* Cards rather than the map's tight grid: a decision is a paragraph somebody
+   has to read and agree or disagree with, and the map is a list of names to
+   scan. Same frame as `.walls` so the page reads as one document. */
+.decisions { display: flex; flex-direction: column; gap: 1px; background: var(--rule-hair); border: 1px solid var(--rule); border-radius: 2px; }
+.decision {
+  background: var(--paper);
+  padding: 18px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 16px;
+  align-items: baseline;
+}
+.decision .id { font-family: var(--font-code); font-size: 13px; font-weight: 600; color: var(--ink-soft); }
+.decision h3 {
+  grid-column: 1 / -1;
+  max-width: var(--measure);
+  margin: 2px 0 0;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.decision .why {
+  grid-column: 1 / -1;
+  max-width: var(--measure);
+  font-size: 14px;
+  color: var(--ink-soft);
+  border-left: 2px solid var(--blue);
+  padding-left: 12px;
+  margin: 10px 0 0;
+}
+.decision .link, .decision .enforced {
+  grid-column: 1 / -1;
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin: 6px 0 0;
+}
+/* The one state on this page worth stopping at: a choice with a name that
+   nothing keeps. Drawn like accepted debt elsewhere in the report, because
+   that is what it is. */
+.decision .enforced.is-absent { color: var(--accepted); font-style: italic; }
+/* A status is only ever rendered when it is *not* `accepted`, so it never
+   needs a quiet variant. */
+.decision .status {
+  font-family: var(--font-code);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accepted);
+  background: color-mix(in srgb, var(--accepted) 12%, transparent);
+  padding: 2px 7px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+
 /* ---- the map -------------------------------------------------------- */
 
 .modules { display: grid; gap: 1px; background: var(--rule-hair); border: 1px solid var(--rule); border-radius: 2px; }

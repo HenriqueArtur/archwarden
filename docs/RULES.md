@@ -21,6 +21,12 @@ repository's import graph — which is a real cost, stated in
 [what a graph rule costs](#what-a-graph-rule-costs), and paid only by a
 configuration that asks for it.
 
+**Every one of them can name the decision it implements.** `decision` takes the
+id of an entry in the config's top-level `decisions` block, and it is what turns
+a denial from *"breaks `domain-forbids-http`"* into *"breaks ADR-014, and here is
+why, and here is where it is written"*. It changes nothing about what the rule
+checks. See [`CONFIG.md`](CONFIG.md#decisions--what-the-rules-are-for).
+
 ---
 
 ## Scope: how `roots` selects what a rule sees

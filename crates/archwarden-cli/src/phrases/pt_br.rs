@@ -55,6 +55,41 @@ impl Phrases for PtBr {
     fn tally_no_reason(&self) -> &'static str {
         "sem motivo"
     }
+    fn tally_decisions(&self) -> &'static str {
+        "decisões"
+    }
+    fn decisions_eyebrow(&self) -> &'static str {
+        "o que foi decidido"
+    }
+    fn decisions_heading(&self) -> &'static str {
+        "As decisões, e o que as sustenta"
+    }
+    fn decisions_lede(&self) -> &'static str {
+        "Uma arquitetura é um conjunto de escolhas que alguém fez. As regras \
+         abaixo são como cada uma se mantém; uma decisão que nada sustenta é \
+         uma escolha que este repositório apenas descreve."
+    }
+    fn enforced_by(&self, rules: &str) -> String {
+        format!("Sustentada por {rules}")
+    }
+    fn enforced_by_nothing(&self) -> &'static str {
+        "Nada sustenta esta decisão."
+    }
+    fn written_down_in(&self) -> &'static str {
+        "Escrita em"
+    }
+    /// The three status words, which are the only place this page translates a
+    /// value that also appears in the JSON. The slug stays English there — it
+    /// is an identifier — and the page is prose.
+    fn decision_status(&self, status: &str) -> String {
+        match status {
+            "accepted" => "aceita",
+            "proposed" => "proposta",
+            "superseded" => "substituída",
+            other => other,
+        }
+        .to_owned()
+    }
     fn rules_eyebrow(&self) -> &'static str {
         "as boundaries"
     }

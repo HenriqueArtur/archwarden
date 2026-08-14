@@ -210,7 +210,13 @@ fn render_suppressed(
     let _ = writeln!(out);
 }
 
-fn render_finding(finding: &Finding, at: &str, why: Option<&str>, out: &mut dyn std::io::Write) {
+fn render_finding(
+    finding: &Finding,
+    at: &str,
+    why: Option<&str>,
+    decision: Option<&archwarden_core::compiled::CompiledDecision>,
+    out: &mut dyn std::io::Write,
+) {
     let module = finding
         .module_id
         .as_ref()
@@ -234,6 +240,15 @@ fn render_finding(finding: &Finding, at: &str, why: Option<&str>, out: &mut dyn 
     // paragraph, and the two lines above are a diagnosis.
     if let Some(why) = why {
         let _ = writeln!(out, "        why: {why}");
+    }
+    // And the decision the rule serves, in the block every terminal surface
+    // shares. Issue #100.
+    if let Some(decision) = decision {
+        let _ = write!(
+            out,
+            "{}",
+            archwarden_api::describe::describe_decision(decision, "        ")
+        );
     }
     let _ = writeln!(out);
 }
@@ -294,12 +309,19 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         // two hundred paragraphs. Six, at the point each rule first comes up,
         // is where a reader is already looking. Issue #46.
         let mut explained = std::collections::BTreeSet::new();
+        // A second set, keyed by *decision* rather than by rule: a decision
+        // serving six rules would otherwise print six identical blocks, which
+        // is the once-per-rule economy above failing one level up.
+        let mut decided = std::collections::BTreeSet::new();
         for finding in view.findings() {
             let at = positions.label(root, finding);
             let why = reasons
                 .of_rule(&finding.rule_id)
                 .filter(|_| explained.insert(finding.rule_id.as_str()));
-            render_finding(finding, &at, why, out);
+            let decision = reasons
+                .decision_of_rule(&finding.rule_id)
+                .filter(|decision| decided.insert(decision.id.clone()));
+            render_finding(finding, &at, why, decision, out);
         }
     }
 
@@ -491,11 +513,15 @@ fn render_single_text(
     out: &mut dyn std::io::Write,
 ) {
     let mut explained = std::collections::BTreeSet::new();
+    let mut decided = std::collections::BTreeSet::new();
     for finding in &single.findings {
         let why = reasons
             .of_rule(&finding.rule_id)
             .filter(|_| explained.insert(finding.rule_id.as_str()));
-        render_finding(finding, finding.path.as_str(), why, out);
+        let decision = reasons
+            .decision_of_rule(&finding.rule_id)
+            .filter(|decision| decided.insert(decision.id.clone()));
+        render_finding(finding, finding.path.as_str(), why, decision, out);
     }
 
     for skipped in &single.skipped {
@@ -1901,6 +1927,47 @@ mod tests {
             1,
             "one paragraph per rule, not per finding: {text}"
         );
+    }
+
+    /// Issue #100, and the economy is one step coarser than the reason's.
+    ///
+    /// A `why` is printed once per *rule*, because it belongs to one. A
+    /// decision belongs to many rules by construction, so it is printed once
+    /// per *decision* — a decision serving six rules would otherwise print six
+    /// identical blocks in one report, which is the thing the once-per-rule
+    /// rule was introduced to prevent, arriving one level up.
+    #[test]
+    fn a_decision_is_printed_once_per_decision_not_once_per_rule() {
+        let other = Finding {
+            rule_id: RuleId::new("domain-forbids-http").expect("valid"),
+            ..finding(Level::Error, None)
+        };
+        let report = report(vec![
+            finding(Level::Error, None),
+            finding(Level::Error, None),
+            other,
+        ]);
+
+        let adr = archwarden_core::compiled::CompiledDecision {
+            id: archwarden_core::ids::DecisionId::new("ADR-014").expect("valid"),
+            title: "The domain does not know about transport".to_owned(),
+            why: Some("it is published".to_owned()),
+            link: Some("docs/adr/014.md".to_owned()),
+            status: archwarden_core::compiled::DecisionStatus::Accepted,
+        };
+        let reasons = Reasons::default().deciding([
+            ("domain-entity-shape", adr.clone()),
+            ("domain-forbids-http", adr),
+        ]);
+
+        let text = rendered_with(&report, &reasons, Format::Text);
+
+        assert_eq!(
+            text.matches("decision: ADR-014").count(),
+            1,
+            "three findings over two rules serving one decision, one block: {text}"
+        );
+        assert!(text.contains("docs/adr/014.md"), "{text}");
     }
 
     /// A rule whose author said nothing prints nothing extra, which is every

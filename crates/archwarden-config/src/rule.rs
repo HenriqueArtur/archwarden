@@ -9,7 +9,7 @@
 //! See `docs/RULES.md` for semantics and `docs/CONFIG.md` for examples.
 
 use archwarden_core::{
-    ids::{ModuleId, RuleId},
+    ids::{DecisionId, ModuleId, RuleId},
     level::Level,
 };
 use schemars::JsonSchema;
@@ -111,6 +111,27 @@ impl Rule {
             Self::Presence(r) => r.why.as_deref(),
             Self::Pair(r) => r.why.as_deref(),
             Self::Frontmatter(r) => r.why.as_deref(),
+        }
+    }
+
+    /// The decision this rule implements, when it names one.
+    ///
+    /// Every kind has the field, and that is why issue #100 shipped first of
+    /// its milestone: a kind landing after it carries the field from birth,
+    /// where four kinds landing before it would each have been a retrofit.
+    #[must_use]
+    pub fn decision(&self) -> Option<&DecisionId> {
+        match self {
+            Self::Structure(r) => r.decision.as_ref(),
+            Self::Naming(r) => r.decision.as_ref(),
+            Self::SpecPair(r) => r.decision.as_ref(),
+            Self::ImportBoundary(r) => r.decision.as_ref(),
+            Self::ImportCycle(r) => r.decision.as_ref(),
+            Self::CallObligation(r) => r.decision.as_ref(),
+            Self::NoPassthrough(r) => r.decision.as_ref(),
+            Self::Presence(r) => r.decision.as_ref(),
+            Self::Pair(r) => r.decision.as_ref(),
+            Self::Frontmatter(r) => r.decision.as_ref(),
         }
     }
 
@@ -221,6 +242,17 @@ pub struct StructureRule {
     /// rule changes. Issue #46.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The decision this rule implements, when it implements a declared one.
+    ///
+    /// A plain foreign key into [`Config::decisions`](crate::config::Config::decisions),
+    /// written here rather than as a list of rule ids on the decision: this is
+    /// where the author already is, there is no second list to keep in step, a
+    /// deleted rule leaves nothing dangling, and a new rule that forgets its
+    /// decision is visible in the one place it exists. Naming a decision the
+    /// config does not declare is refused at compile — a reference to nothing
+    /// is a typo, not a style. Issue #100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Subdirectory names that are permitted.
@@ -313,6 +345,17 @@ pub struct PresenceRule {
     /// Why this rule exists, in the author's words. See [`StructureRule::why`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The decision this rule implements, when it implements a declared one.
+    ///
+    /// A plain foreign key into [`Config::decisions`](crate::config::Config::decisions),
+    /// written here rather than as a list of rule ids on the decision: this is
+    /// where the author already is, there is no second list to keep in step, a
+    /// deleted rule leaves nothing dangling, and a new rule that forgets its
+    /// decision is visible in the one place it exists. Naming a decision the
+    /// config does not declare is refused at compile — a reference to nothing
+    /// is a typo, not a style. Issue #100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Filenames that must exist directly inside each governed directory.
@@ -368,6 +411,17 @@ pub struct PairRule {
     /// Why this rule exists, in the author's words. See [`StructureRule::why`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The decision this rule implements, when it implements a declared one.
+    ///
+    /// A plain foreign key into [`Config::decisions`](crate::config::Config::decisions),
+    /// written here rather than as a list of rule ids on the decision: this is
+    /// where the author already is, there is no second list to keep in step, a
+    /// deleted rule leaves nothing dangling, and a new rule that forgets its
+    /// decision is visible in the one place it exists. Naming a decision the
+    /// config does not declare is refused at compile — a reference to nothing
+    /// is a typo, not a style. Issue #100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Regex over the filename of the file that *needs* a companion.
@@ -425,6 +479,17 @@ pub struct FrontmatterRule {
     /// Why this rule exists, in the author's words. See [`StructureRule::why`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The decision this rule implements, when it implements a declared one.
+    ///
+    /// A plain foreign key into [`Config::decisions`](crate::config::Config::decisions),
+    /// written here rather than as a list of rule ids on the decision: this is
+    /// where the author already is, there is no second list to keep in step, a
+    /// deleted rule leaves nothing dangling, and a new rule that forgets its
+    /// decision is visible in the one place it exists. Naming a decision the
+    /// config does not declare is refused at compile — a reference to nothing
+    /// is a typo, not a style. Issue #100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Regex over the filename of the documents this rule is about.
@@ -498,6 +563,17 @@ pub struct NamingRule {
     /// rule changes. Issue #46.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The decision this rule implements, when it implements a declared one.
+    ///
+    /// A plain foreign key into [`Config::decisions`](crate::config::Config::decisions),
+    /// written here rather than as a list of rule ids on the decision: this is
+    /// where the author already is, there is no second list to keep in step, a
+    /// deleted rule leaves nothing dangling, and a new rule that forgets its
+    /// decision is visible in the one place it exists. Naming a decision the
+    /// config does not declare is refused at compile — a reference to nothing
+    /// is a typo, not a style. Issue #100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Regex over the filename, with a named capture group.
@@ -596,6 +672,17 @@ pub struct SpecPairRule {
     /// rule changes. Issue #46.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The decision this rule implements, when it implements a declared one.
+    ///
+    /// A plain foreign key into [`Config::decisions`](crate::config::Config::decisions),
+    /// written here rather than as a list of rule ids on the decision: this is
+    /// where the author already is, there is no second list to keep in step, a
+    /// deleted rule leaves nothing dangling, and a new rule that forgets its
+    /// decision is visible in the one place it exists. Naming a decision the
+    /// config does not declare is refused at compile — a reference to nothing
+    /// is a typo, not a style. Issue #100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Subdirectories subject to the rule, each covering everything below it.
@@ -710,6 +797,17 @@ pub struct ImportBoundaryRule {
     /// rule changes. Issue #46.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The decision this rule implements, when it implements a declared one.
+    ///
+    /// A plain foreign key into [`Config::decisions`](crate::config::Config::decisions),
+    /// written here rather than as a list of rule ids on the decision: this is
+    /// where the author already is, there is no second list to keep in step, a
+    /// deleted rule leaves nothing dangling, and a new rule that forgets its
+    /// decision is visible in the one place it exists. Naming a decision the
+    /// config does not declare is refused at compile — a reference to nothing
+    /// is a typo, not a style. Issue #100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
     /// Directory globs selecting the importer. Same semantics as `roots`.
     ///
     /// Exactly one of this and [`from_module`](Self::from_module) is required.
@@ -882,6 +980,17 @@ pub struct CallObligationRule {
     /// rule changes. Issue #46.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The decision this rule implements, when it implements a declared one.
+    ///
+    /// A plain foreign key into [`Config::decisions`](crate::config::Config::decisions),
+    /// written here rather than as a list of rule ids on the decision: this is
+    /// where the author already is, there is no second list to keep in step, a
+    /// deleted rule leaves nothing dangling, and a new rule that forgets its
+    /// decision is visible in the one place it exists. Naming a decision the
+    /// config does not declare is refused at compile — a reference to nothing
+    /// is a typo, not a style. Issue #100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Regex over the filename.
@@ -1236,6 +1345,78 @@ mod tests {
         for json in cases {
             assert_eq!(parse(json).why(), Some("w"), "{json}");
         }
+    }
+
+    /// Every kind of every kind, and this list is deliberately the complete
+    /// ten rather than the six above.
+    ///
+    /// Issue #100 was scheduled first of its milestone for exactly this: every
+    /// rule kind that lands after it carries `decision` from birth, and one
+    /// that shipped without it would be a retrofit. A kind added to `Rule` and
+    /// not to this list fails `every_kind_carries_a_decision_field`, which
+    /// counts the arms.
+    #[test]
+    fn every_rule_kind_can_name_the_decision_it_implements() {
+        let cases = [
+            r#"{"type":"structure","id":"r","level":"error","roots":"src","decision":"ADR-014",
+                "allowed_subfolders":[]}"#,
+            r#"{"type":"naming","id":"r","level":"error","roots":"src","decision":"ADR-014",
+                "file_pattern":"^(?<n>.+)$","must_export":{"kind":"any","name":"{{pascal(n)}}"}}"#,
+            r#"{"type":"spec-pair","id":"r","level":"error","roots":"src","decision":"ADR-014",
+                "subfolders":"."}"#,
+            r#"{"type":"import-boundary","id":"r","level":"error","from":"src","decision":"ADR-014",
+                "forbid_import_from":["x/**"]}"#,
+            r#"{"type":"import-cycle","id":"r","level":"error","roots":"src","decision":"ADR-014"}"#,
+            r#"{"type":"call-obligation","id":"r","level":"error","roots":"src","decision":"ADR-014",
+                "file_pattern":"^x$","must_call":{"symbol":"s","imported_from":"m"}}"#,
+            r#"{"type":"no-passthrough","id":"r","level":"error","roots":"src","decision":"ADR-014"}"#,
+            r#"{"type":"presence","id":"r","level":"error","roots":"src/*","decision":"ADR-014",
+                "require":["x.md"]}"#,
+            r#"{"type":"pair","id":"r","level":"error","roots":"src/*","decision":"ADR-014",
+                "file_pattern":"^a\\.md$","must_exist":"b.md"}"#,
+            r#"{"type":"frontmatter","id":"r","level":"error","roots":"src/*","decision":"ADR-014",
+                "file_pattern":"^a\\.md$","require":["id"]}"#,
+        ];
+
+        let mut kinds = std::collections::BTreeSet::new();
+        for json in cases {
+            let rule = parse(json);
+            assert_eq!(
+                rule.decision().map(DecisionId::as_str),
+                Some("ADR-014"),
+                "{json}"
+            );
+            kinds.insert(rule.type_name());
+        }
+
+        // The set, not the count of the list: a case duplicated while editing
+        // would otherwise let a kind drop off the list unnoticed.
+        assert_eq!(
+            kinds.len(),
+            10,
+            "these are meant to be every kind archwarden has, one each: {kinds:?}"
+        );
+    }
+
+    /// A rule that names none is every rule written before 0.21, and it stays
+    /// exactly as valid. `config doctor` is the only thing that mentions it,
+    /// at `warning`, and `check` says nothing at all — a repository's build
+    /// must not fail because its config is under-documented.
+    #[test]
+    fn a_rule_that_names_no_decision_is_still_a_rule() {
+        let rule = parse(r#"{"type":"no-passthrough","id":"r","level":"error","roots":"src"}"#);
+        assert_eq!(rule.decision(), None);
+    }
+
+    /// An id with a space in it is refused on the way in, like every other id,
+    /// rather than becoming a reference nothing can resolve.
+    #[test]
+    fn a_decision_reference_is_validated_as_an_id() {
+        let bad = serde_json::from_str::<Rule>(
+            r#"{"type":"no-passthrough","id":"r","level":"error","roots":"src","decision":"ADR 14"}"#,
+        )
+        .expect_err("should reject");
+        assert!(bad.to_string().contains("decision id"), "{bad}");
     }
 
     /// Issue #43. The regex-over-a-directory-name capability existed on
@@ -1676,6 +1857,17 @@ pub struct ImportCycleRule {
     /// Why this rule exists, in the author's words. See [`StructureRule::why`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The decision this rule implements, when it implements a declared one.
+    ///
+    /// A plain foreign key into [`Config::decisions`](crate::config::Config::decisions),
+    /// written here rather than as a list of rule ids on the decision: this is
+    /// where the author already is, there is no second list to keep in step, a
+    /// deleted rule leaves nothing dangling, and a new rule that forgets its
+    /// decision is visible in the one place it exists. Naming a decision the
+    /// config does not declare is refused at compile — a reference to nothing
+    /// is a typo, not a style. Issue #100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
     /// Directory globs this rule applies to.
     ///
     /// `roots` rather than `from`: `import-boundary` calls its scope `from`
@@ -1742,6 +1934,17 @@ pub struct NoPassthroughRule {
     /// rule changes. Issue #46.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
+    /// The decision this rule implements, when it implements a declared one.
+    ///
+    /// A plain foreign key into [`Config::decisions`](crate::config::Config::decisions),
+    /// written here rather than as a list of rule ids on the decision: this is
+    /// where the author already is, there is no second list to keep in step, a
+    /// deleted rule leaves nothing dangling, and a new rule that forgets its
+    /// decision is visible in the one place it exists. Naming a decision the
+    /// config does not declare is refused at compile — a reference to nothing
+    /// is a typo, not a style. Issue #100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Which shapes count. Defaults to all three.
