@@ -368,6 +368,28 @@ const EXAMPLES: &[(&str, &str)] = &[
 }"#,
     ),
     (
+        "frozen",
+        r#"{
+  "type": "frozen",
+  "id": "legacy-is-closed-for-extension",
+  "level": "error",
+  "roots": ["packages/legacy/**"],
+  "why": "ADR-021: closed for extension; new work goes in packages/core"
+}"#,
+    ),
+    (
+        "mirror",
+        r#"{
+  "type": "mirror",
+  "id": "entities-have-migrations",
+  "level": "error",
+  "roots": ["src/entities/*"],
+  "file_pattern": "^(?<name>[a-z-]+)\\.ts$",
+  "must_exist": "migrations/{{raw(name)}}.sql",
+  "why": "ADR-009: a schema change ships with the entity that needs it"
+}"#,
+    ),
+    (
         "import-cycle",
         r#"{
   "type": "import-cycle",
@@ -475,7 +497,7 @@ mod tests {
         let read = options();
 
         let answered: Vec<&str> = read.kinds.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(answered.len(), 11, "{answered:?}");
+        assert_eq!(answered.len(), 13, "{answered:?}");
 
         for kind in &answered {
             let Some(Found::Kind(entry)) = read.find(kind) else {

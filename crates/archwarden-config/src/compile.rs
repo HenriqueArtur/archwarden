@@ -921,6 +921,13 @@ fn compile_rule(
                 .collect::<Result<_, CompileError>>()?,
         },
 
+        Rule::Frozen(_) => CompiledRuleKind::Frozen,
+
+        Rule::Mirror(r) => CompiledRuleKind::Mirror {
+            file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
+            must_exist: r.must_exist.clone(),
+        },
+
         Rule::ExportShape(r) => {
             CompiledRuleKind::ExportShape(archwarden_core::compiled::ExportShape {
                 forbid_default: r.forbid_default,

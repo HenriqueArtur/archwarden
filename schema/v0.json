@@ -1236,6 +1236,132 @@
             "level",
             "roots"
           ]
+        },
+        {
+          "description": "A directory that has stopped growing.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier, unique across the config and its presets.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "decision": {
+              "description": "The decision this rule implements. See [`StructureRule::decision`].",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DecisionId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "roots": {
+              "description": "The directories that have stopped growing.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something. See decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "frozen"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots"
+          ]
+        },
+        {
+          "description": "A counterpart in a parallel tree.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier, unique across the config and its presets.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "decision": {
+              "description": "The decision this rule implements. See [`StructureRule::decision`].",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DecisionId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "roots": {
+              "description": "Directory globs whose files this rule is about.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "file_pattern": {
+              "description": "Regex over the filename, with the capture groups the template uses.\n\nA file the pattern does not match is outside the population, the same\nway it is for `pair`.",
+              "type": "string"
+            },
+            "must_exist": {
+              "description": "The counterpart's path, as a template rendered from repository root.\n\nThe groups are `file_pattern`'s, plus two the path itself provides:\n\n- `dirname` — the immediate parent directory's name, which\n  `frontmatter.equals` already defines the same way;\n- `subpath` — the directory path from the rule's root down to the file,\n  which is what a mirror across a *nested* tree needs.\n  `src/a/b/x.ts` under `roots: [\"src/**\"]` gives `a/b`, so\n  `test/{{raw(subpath)}}/{{raw(name)}}.test.ts` is writable. Empty when\n  the file sits directly in the root, and the renderer collapses the\n  `//` that would leave.\n\nOnly that the counterpart **exists** is checked. *\"And it must contain a\ntest case\"* is `spec-pair`'s question and has an answer there already.",
+              "type": "string"
+            },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something. See decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "mirror"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots",
+            "file_pattern",
+            "must_exist"
+          ]
         }
       ]
     },

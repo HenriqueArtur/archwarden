@@ -71,6 +71,22 @@ pub enum Expectation {
         patterns: Vec<String>,
     },
 
+    /// A counterpart must exist at this path, in a parallel tree.
+    ///
+    /// Only that it *exists*. Whether it has anything in it is `spec-pair`'s
+    /// question and has an answer there. Issue #103.
+    RequiredCounterpart {
+        /// The path, already rendered from the template.
+        path: String,
+    },
+
+    /// No file may be added under these roots.
+    ///
+    /// The expectation a `frozen` rule states. What makes it satisfiable is
+    /// `baseline`: today's files are accepted by rule and path, and tomorrow's
+    /// are not. Issue #102.
+    NoNewFiles,
+
     /// Exports that are nothing but a forward of another module.
     NoPassthrough {
         /// The shapes the rule refuses.
@@ -313,6 +329,17 @@ pub enum Observed {
     },
     /// The only export is a default, whose name does not bind importers.
     OnlyDefaultExport,
+    /// The counterpart in a parallel tree is not on disk.
+    CounterpartMissing {
+        /// The path that was looked for.
+        expected: String,
+    },
+    /// A file sits inside a tree that has stopped growing.
+    ///
+    /// Reported for *every* file under a `frozen` rule's scope, which is what
+    /// lets `baseline` hold the accepted set. A reader sees it only for a path
+    /// the baseline does not carry. Issue #102.
+    FileInFrozenTree,
     /// A file exports a default where the rule forbids one.
     ///
     /// Separate from [`Observed::OnlyDefaultExport`], which is `naming`

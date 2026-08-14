@@ -1,14 +1,14 @@
 # Rule categories
 
-archwarden ships eleven rule categories in v0. Each has narrow, well-defined
+archwarden ships thirteen rule categories in v0. Each has narrow, well-defined
 semantics. This document is the reference for what each rule can and cannot
 express. Config syntax lives in [`CONFIG.md`](CONFIG.md).
 
 Ordering: cheap and file-local first, expensive and graph-wide last. The
 engine runs them in the same order for cache-friendly evaluation.
 
-**Three of them need no parser at all.** `structure`, `presence` and `pair`
-reason about names and paths on disk, so they work on a repository in any
+**Five of them need no parser at all.** `structure`, `presence`, `pair`, `frozen` and
+`mirror` reason about names and paths on disk, so they work on a repository in any
 language — or in none. `spec-pair` joins them unless `require_non_empty_spec`
 or `skip_type_only` is set. The rules that do open a file are `naming`,
 `call-obligation`, `no-passthrough`, `import-boundary` and `import-cycle` for
@@ -1317,6 +1317,168 @@ Inspect the returned object literal in the AST. Early returns, ternaries,
 delegation to a helper, spreads — a rule right about most files and silently
 wrong about the rest is worse than no rule, because it is read as a guarantee.
 The same line this document draws for `call-obligation`.
+
+## 12. Frozen
+
+**What it enforces**: a directory has stopped growing. No file may be added
+under it.
+
+**Scope**: paths only. No parse, no resolve, no `git`.
+
+`import-boundary` can forbid **importing** something. Nothing could forbid
+**adding** to it — and that is half of every migration ADR:
+
+> *"The legacy module is closed for extension. New code goes in
+> `packages/core`."*
+
+```json
+{ "type": "frozen",
+  "id": "legacy-is-closed-for-extension",
+  "level": "error",
+  "roots": ["packages/legacy/**"],
+  "why": "ADR-021: closed for extension; new work goes in packages/core" }
+```
+
+### It is `baseline` pointed forward, and that is the whole rule
+
+Every file under `roots` is a finding. Which of them are *accepted* is
+`baseline`'s to say, and `baseline` already accepts by rule and path:
+
+> every file under these roots is a finding; today's are accepted; tomorrow's
+> are not.
+
+So turning one on is **two steps**, and the second is not optional:
+
+```bash
+archwarden baseline     # accept what is there today
+```
+
+Skip it and the first `check` reports every file that was already there.
+`config doctor` names that as `frozen-with-nothing-accepted` and gives you the
+command, rather than leaving you to work out why a freeze is shouting about the
+past.
+
+It also turns `baseline` from a record of debt into a **statement of intent**,
+which is a better thing for it to be.
+
+### What it never does
+
+**Read `git`.** archwarden answers from a working tree and a committed
+baseline. A freeze that consulted history would answer differently in CI than
+on a laptop, and would stop working in a shallow clone.
+
+**Exempt a move.**
+
+| | |
+|---|---|
+| `legacy/a.ts → legacy/sub/a.ts` | reported |
+| `legacy/a.ts → core/a.ts` | silent — it left, which is the point |
+| `legacy/novo.ts` | reported |
+
+A module closed for extension is one that has stopped, and reshuffling it is not
+stopping. When a move within is deliberate, `archwarden baseline` accepts it and
+leaves the change in a diff somebody reviews — which reads as one move rather
+than a removal and an addition, because `baseline` already pairs those.
+
+**Ask what kind of file it is.** A directory that has stopped growing has
+stopped growing, whether the new file is `.ts` or `.md`. The two doors already
+exist: `ignore` for what is deliberately outside the architecture, and
+`archwarden-allow` for the one urgent exception — one line, one reason, never
+hidden, written beside the file that needed it rather than argued in a pull
+request.
+
+**Say anything about exports.** *"No new exports in this file"* is a real second
+claim and a much harder one: it needs the frozen set to be per-symbol, and
+`baseline` accepts paths.
+
+## 13. Mirror
+
+**What it enforces**: a counterpart exists at a path in a **parallel tree**.
+
+**Scope**: paths only. No parse, no resolve.
+
+`pair` and `spec-pair` both look in the *same directory*. Plenty of conventions
+pair across parallel trees, and `pair` takes a sibling **name** — so there was
+no way to say *"the same path, elsewhere, transformed"*.
+
+```json
+{ "type": "mirror",
+  "id": "entities-have-migrations",
+  "level": "error",
+  "roots": ["src/entities"],
+  "file_pattern": "^(?<name>[a-z-]+)\\.ts$",
+  "must_exist": "migrations/{{raw(name)}}.sql",
+  "why": "ADR-009: a schema change ships with the entity that needs it" }
+```
+
+Two pieces that already existed, put together: `presence` proves a file is on
+disk without parsing anything, and `naming` renders a path from capture groups
+with transforms. A mirror is the second producing a path for the first to check.
+
+> **`roots` selects directories, as everywhere else.** A rule about the files
+> directly inside `src/entities` takes `"roots": ["src/entities"]`. Writing
+> `"src/entities/*"` selects the directories *inside* it, and a rule whose
+> population is empty enforces nothing — which `config doctor` reports as
+> `scope-matches-nothing`.
+
+### One direction per rule
+
+*"Every entity has a migration"* and *"every migration belongs to an entity"*
+are two claims, and each deserves its own `why`: the first is about
+completeness, the second about orphans. A flag would put two reasons on one rule
+and make a reader work out which half fired. So the config says both things out
+loud:
+
+```json
+{ "type": "mirror", "id": "migrations-belong-to-an-entity", "level": "error",
+  "roots": ["migrations"], "file_pattern": "^(?<name>[a-z-]+)\\.sql$",
+  "must_exist": "src/entities/{{raw(name)}}.ts",
+  "why": "ADR-009: an orphan migration is a table nobody owns" }
+```
+
+### What the template may name
+
+`file_pattern`'s capture groups, with the transforms `naming` already has, plus
+two the path itself provides:
+
+| group | is |
+|---|---|
+| `dirname` | the immediate parent directory's **name**, as `frontmatter.equals` already defines it |
+| `subpath` | the directory path from the rule's root down to the file |
+
+`subpath` is what a mirror across a **nested** tree needs, and what `dirname`
+cannot carry:
+
+```json
+{ "type": "mirror", "id": "tests-mirror-src", "level": "error",
+  "roots": ["src/**"], "file_pattern": "^(?<name>[a-z-]+)\\.ts$",
+  "must_exist": "test/{{raw(subpath)}}/{{raw(name)}}.test.ts" }
+```
+
+```
+src/a/b/x.ts   →  test/a/b/x.test.ts
+src/x.ts       →  test/x.test.ts
+```
+
+It is empty for a file sitting directly in a root, and the separator that would
+leave is collapsed — the same template has to work at both depths, which is the
+whole reason the group exists.
+
+### What it never asks
+
+Whether the counterpart has anything **in** it. *"And it must contain a test
+case"* is `spec-pair`'s question, and it has an answer there already.
+
+### Why `pair` and `spec-pair` stay
+
+They are the ergonomic forms: a bare sibling name, and a sibling with a marker.
+Collapsing them into a template would make the common case wordier to buy a
+generality most configs never use.
+
+This is worth writing down because the opposite is tempting. The test is whether
+the specialised forms are **shorter to write**, not whether they are
+expressible — three kinds that are one kind wearing three names is how a format
+gets heavy.
 
 ## Rule interaction and evaluation order
 

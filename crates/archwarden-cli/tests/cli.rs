@@ -1248,6 +1248,71 @@ fn the_stop_hook_honours_the_baseline() {
         .stdout("{}\n");
 }
 
+/// **The whole thesis of issue #102, end to end.** A `frozen` rule adds no
+/// machinery of its own: it points `baseline` — which already records what a
+/// repository has accepted, by rule and path — forward instead of back.
+///
+/// Three states in one test, because the value is in how they compose and no
+/// unit test spans `baseline` and `check`:
+///
+/// - what is there when the freeze is declared is accepted, and `check` is
+///   clean;
+/// - a file added afterwards is reported;
+/// - a file moved *out* is silent, which is the point of the freeze.
+#[test]
+fn a_freeze_accepts_what_is_there_and_reports_what_arrives() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"frozen","id":"legacy-is-closed","level":"error",
+                 "roots":["packages/legacy/**"]}]}"#,
+        ),
+        ("packages/legacy/a.ts", "export const a = 1;\n"),
+        ("packages/core/keep.ts", "export const keep = 1;\n"),
+        (
+            ".archwarden/baseline.json",
+            r#"{"version":0,"accepted":[
+                {"rule":"legacy-is-closed","path":"packages/legacy/a.ts",
+                 "note":"here when the freeze was declared"}]}"#,
+        ),
+    ]);
+    git_init(dir.path());
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success();
+
+    // A file added to the frozen tree is a path nobody accepted.
+    std::fs::write(
+        dir.path().join("packages/legacy/novo.ts"),
+        "export const novo = 1;\n",
+    )
+    .expect("write");
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .failure()
+        .stdout(predicates::str::contains("packages/legacy/novo.ts"));
+
+    // Moved out, and the freeze has nothing to say: leaving is the point.
+    std::fs::rename(
+        dir.path().join("packages/legacy/novo.ts"),
+        dir.path().join("packages/core/novo.ts"),
+    )
+    .expect("move");
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .success();
+}
+
 /// A turn that broke nothing says nothing. A hook that spoke every turn is one
 /// somebody removes.
 #[test]

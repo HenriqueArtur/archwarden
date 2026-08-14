@@ -126,7 +126,7 @@ pub struct GuideRule<'a> {
 /// and it is load-bearing: `no-passthrough` was missing from this list from the
 /// day that rule shipped, so `agent-guide --kinds no-passthrough` refused a
 /// kind archwarden has.
-pub const KINDS: [&str; 11] = [
+pub const KINDS: [&str; 13] = [
     "structure",
     "naming",
     "spec-pair",
@@ -138,6 +138,8 @@ pub const KINDS: [&str; 11] = [
     "import-cycle",
     "call-obligation",
     "export-shape",
+    "frozen",
+    "mirror",
 ];
 
 /// Checks the kinds a caller asked for.
@@ -537,6 +539,22 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             }
             lines
         }
+        CompiledRuleKind::Frozen => vec![
+            "has stopped growing: no file may be added under it".to_owned(),
+            "what is here today is accepted by the baseline; a path it does not \
+             carry is reported"
+                .to_owned(),
+        ],
+
+        CompiledRuleKind::Mirror {
+            file_pattern,
+            must_exist,
+        } => vec![format!(
+            "every file matching {} must have a counterpart at {}",
+            format!("`{}`", file_pattern.as_str()),
+            format!("`{must_exist}`"),
+        )],
+
         CompiledRuleKind::ExportShape(shape) => {
             let mut lines = Vec::new();
             if shape.forbid_default {
@@ -1025,6 +1043,11 @@ mod tests {
                     Pattern::compile(r"^ResponsePattern<.+,.+>$").expect("valid pattern"),
                 ],
             }),
+            CompiledRuleKind::Frozen,
+            CompiledRuleKind::Mirror {
+                file_pattern: Pattern::compile(r"^(?<name>[a-z-]+)\.ts$").expect("valid pattern"),
+                must_exist: "migrations/{{raw(name)}}.sql".to_owned(),
+            },
         ];
 
         for kind in &every {

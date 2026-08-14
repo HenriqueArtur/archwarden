@@ -1166,6 +1166,14 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
             }
             sentence
         }
+        Expectation::NoNewFiles => {
+            "no file to be added here -- what is present today is accepted by \
+             `.archwarden/baseline.json`, and a path it does not carry is new"
+                .to_owned()
+        }
+        Expectation::RequiredCounterpart { path } => {
+            format!("a counterpart at `{path}`")
+        }
         Expectation::NoDefaultExport => {
             "no default export -- an importer names a default itself, so the \
              name it is reached by is not the one it was given"

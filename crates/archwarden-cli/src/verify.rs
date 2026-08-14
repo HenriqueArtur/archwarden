@@ -131,6 +131,10 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
         CompiledRuleKind::Presence { .. } => a_directory_holding_nothing(rule, engine, tree),
         CompiledRuleKind::Pair { .. } => a_file_with_no_companion(rule, engine, tree),
         CompiledRuleKind::Frontmatter { .. } => a_document_with_no_block(rule, engine, tree),
+        // Both are file-existence questions, which is the easiest kind to
+        // plant: one file that should not be there, and one that should.
+        CompiledRuleKind::Frozen => a_file_added_to_a_freeze(rule, engine, tree),
+        CompiledRuleKind::Mirror { .. } => a_file_with_no_counterpart(rule, engine, tree),
         CompiledRuleKind::ExportShape(shape) => {
             a_file_of_the_wrong_shape(rule, engine, tree, shape)
         }
@@ -512,6 +516,92 @@ fn a_file_with_no_spec(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &Repo
     });
 
     let on = format!("`{lonely}` with no spec beside it");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
+    }
+}
+
+/// A file added under a freeze.
+///
+/// The probe is the whole rule: every file under the scope is a finding, so
+/// planting one is planting a path. What `baseline` would do with it is not
+/// this command's question — `verify-rules` asks whether the rule *bites*, and
+/// an accepted finding is a finding that fired.
+fn a_file_added_to_a_freeze(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+) -> Verdict {
+    let Some(directory) = a_directory_in_scope(rule, tree) else {
+        return Verdict::Unverified {
+            why: format!(
+                "no directory in this repository is inside `{}`",
+                rule.scope.patterns().join("`, `")
+            ),
+        };
+    };
+
+    let name = format!("{PROBE}.ts");
+    let Ok(added) = directory.join(&name) else {
+        return Verdict::Unverified {
+            why: format!("`{directory}` cannot hold a probe file"),
+        };
+    };
+
+    let facts = FileFacts::unparsed(added.clone(), ContentHash::of(PROBE.as_bytes()));
+    let findings = engine.check_file(FileContext {
+        path: &added,
+        facts: Some(&facts),
+        docs: None,
+        siblings: std::slice::from_ref(&name),
+        exists: Exists::none(),
+        graph: None,
+    });
+
+    let on = format!("`{added}`, a file added under the freeze");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
+    }
+}
+
+/// A file this rule covers whose counterpart is not on disk.
+///
+/// `Exists::none()` is the whole probe: the counterpart the template names is
+/// absent by construction, which is exactly the violation.
+fn a_file_with_no_counterpart(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+) -> Verdict {
+    let Some(covered) = tree
+        .files()
+        .map(|file| &file.path)
+        .find(|path| engine.applies_to(path))
+    else {
+        return Verdict::Unverified {
+            why: format!(
+                "no file in this repository matches this rule's `file_pattern` \
+                 inside `{}`",
+                rule.scope.patterns().join("`, `")
+            ),
+        };
+    };
+
+    let findings = engine.check_file(FileContext {
+        path: covered,
+        facts: None,
+        docs: None,
+        siblings: &[],
+        // Nothing exists, so the counterpart certainly does not.
+        exists: Exists::none(),
+        graph: None,
+    });
+
+    let on = format!("`{covered}`, whose counterpart is not on disk");
     if findings.is_empty() {
         Verdict::Silent { on }
     } else {
