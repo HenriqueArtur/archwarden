@@ -3241,3 +3241,247 @@ fn a_session_in_an_ungoverned_repository_is_told_nothing() {
         .success()
         .stdout("{}\n");
 }
+
+// ---------------------------------------------------------------------------
+// One rule, two ways to choose its files
+// ---------------------------------------------------------------------------
+//
+// Issue #98, decided in 25. A rule's population was where a file sits and what
+// it is called. Some obligations are about neither: "every write goes through
+// the request helper" is about what the file *talks to*, and in the reported
+// repository reads and writes are deliberate siblings whose names say what the
+// action does and not how it travels.
+
+/// The reported case, end to end. Two sibling files, one importing the HTTP
+/// connection and one not, and a rule that must catch exactly the first.
+#[test]
+fn a_rule_can_choose_its_files_by_what_they_import() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"call-obligation","id":"writes-go-through-the-helper","level":"error",
+                 "roots":["src/entities/*"],"file_pattern":"^[a-z-]+\\.ts$",
+                 "when_importing":"src/http/connection.ts",
+                 "must_call":{"symbol":"HttpRequest","imported_from":"../../http/request"}}]}"#,
+        ),
+        ("src/http/connection.ts", "export const conn = 1;\n"),
+        ("src/http/request.ts", "export function HttpRequest() {}\n"),
+        // A write: it reaches the connection, and forgets the helper.
+        (
+            "src/entities/consumer-unit/update.ts",
+            "import { conn } from '../../http/connection';\nexport const update = () => conn;\n",
+        ),
+        // A read: same shape of name, same kind of place, and it must not be
+        // obliged — this is the half that `roots` alone could never express.
+        (
+            "src/entities/system-user/find-by-email.ts",
+            "export const findByEmail = () => 1;\n",
+        ),
+    ]);
+
+    let output = archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--format", "json"])
+        .assert()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).expect("JSON");
+
+    let flagged: Vec<&str> = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .filter_map(|finding| finding["path"].as_str())
+        .collect();
+
+    assert_eq!(
+        flagged,
+        ["src/entities/consumer-unit/update.ts"],
+        "the write is obliged and the read is not: {report}"
+    );
+}
+
+/// And a rule that names no imports is untouched — including in what it costs.
+/// Every rule written before 0.20 is one of these.
+#[test]
+fn a_rule_that_names_no_imports_behaves_exactly_as_before() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"call-obligation","id":"everything-calls-it","level":"error",
+                 "roots":["src/entities/*"],"file_pattern":"^[a-z-]+\\.ts$",
+                 "must_call":{"symbol":"HttpRequest","imported_from":"../../http/request"}}]}"#,
+        ),
+        (
+            "src/entities/consumer-unit/update.ts",
+            "export const update = () => 1;\n",
+        ),
+        (
+            "src/entities/system-user/find-by-email.ts",
+            "export const findByEmail = () => 1;\n",
+        ),
+    ]);
+
+    let output = archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--format", "json"])
+        .assert()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).expect("JSON");
+
+    assert_eq!(
+        report["findings"].as_array().map(Vec::len),
+        Some(2),
+        "both files, as before: {report}"
+    );
+}
+
+/// A directory rule asks whether *something in here* talks to it, which is the
+/// only reading of the axis that means anything for a rule about a directory.
+#[test]
+fn a_directory_rule_asks_whether_anything_inside_imports_it() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"presence","id":"talkers-write-a-contract","level":"error",
+                 "roots":["src/*"],
+                 "when_importing":"src/http/connection.ts",
+                 "require":["contract.md"]}]}"#,
+        ),
+        ("src/http/connection.ts", "export const conn = 1;\n"),
+        // Talks to it, and has no contract: reported.
+        (
+            "src/orders/update.ts",
+            "import { conn } from '../http/connection';\nexport const update = () => conn;\n",
+        ),
+        // Talks to nothing, and has no contract either: not this rule's
+        // business, which is the whole point of narrowing.
+        (
+            "src/reports/monthly.ts",
+            "export const monthly = () => 1;\n",
+        ),
+    ]);
+
+    let output = archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--format", "json"])
+        .assert()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).expect("JSON");
+
+    let flagged: Vec<&str> = report["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .filter_map(|finding| finding["path"].as_str())
+        .collect();
+
+    assert_eq!(flagged, ["src/orders"], "{report}");
+}
+
+/// The trap. An import nothing could place is not evidence that a file is out
+/// of the population — it is evidence that nobody knows, and a rule that
+/// quietly stopped applying because an alias is misconfigured is a gate that
+/// evaporated. It is counted as a skipped check rather than read as "no".
+#[test]
+fn an_import_that_did_not_resolve_is_reported_rather_than_read_as_no() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"call-obligation","id":"writes-go-through-the-helper","level":"error",
+                 "roots":["src/entities/*"],"file_pattern":"^[a-z-]+\\.ts$",
+                 "when_importing":"src/http/connection.ts",
+                 "must_call":{"symbol":"HttpRequest","imported_from":"../../http/request"}}]}"#,
+        ),
+        // An alias nothing can place: no tsconfig declares `@Http`.
+        (
+            "src/entities/consumer-unit/update.ts",
+            "import { conn } from '@Http/connection';\nexport const update = () => conn;\n",
+        ),
+    ]);
+
+    let output = archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--format", "json"])
+        .assert()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).expect("JSON");
+
+    // Reported where a boundary rule's blind spot is already reported, naming
+    // the file and the specifier. This cannot tell an unplaceable alias from an
+    // external package — both arrive with nothing resolved — so it says which
+    // imports nobody placed and lets a reader see that the narrowing may have
+    // been decided on incomplete information.
+    let unresolved = &report["summary"]["imports"]["unresolved_imports"];
+    assert_eq!(
+        unresolved[0]["specifier"], "@Http/connection",
+        "a rule that could not tell must leave the reason visible: {report}"
+    );
+    assert_eq!(
+        unresolved[0]["path"], "src/entities/consumer-unit/update.ts",
+        "{report}"
+    );
+}
+
+/// The pre-write hook and `check` must agree about which files a narrowed rule
+/// is even about. A write judged here against a rule `check` would not have
+/// applied to it is the two surfaces disagreeing about one file — which is the
+/// failure the whole 0.18 milestone was built to make impossible.
+#[test]
+fn the_hook_and_check_agree_about_a_rule_narrowed_by_imports() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"call-obligation","id":"writes-go-through-the-helper","level":"error",
+                 "roots":["src/entities/*"],"file_pattern":"^[a-z-]+\\.ts$",
+                 "when_importing":"src/http/connection.ts",
+                 "must_call":{"symbol":"HttpRequest","imported_from":"../../http/request"}}]}"#,
+        ),
+        ("src/http/connection.ts", "export const conn = 1;\n"),
+        ("src/http/request.ts", "export function HttpRequest() {}\n"),
+    ]);
+
+    // The read: it does not reach the connection, so nothing obliges it. The
+    // hook must permit it.
+    let read = dir.path().join("src/entities/system-user/find-by-email.ts");
+    std::fs::create_dir_all(read.parent().expect("a parent")).expect("create");
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}",
+               "content":"export const findByEmail = () => 1;"}}}}"#,
+            read.to_str().expect("utf-8")
+        ))
+        .assert()
+        .success()
+        .stdout("{}\n");
+
+    // The write: it reaches the connection and forgets the helper, so the same
+    // rule that ignored the file above refuses this one.
+    let write = dir.path().join("src/entities/consumer-unit/update.ts");
+    std::fs::create_dir_all(write.parent().expect("a parent")).expect("create");
+    archwarden()
+        .current_dir(dir.path())
+        .args(["hook", "claude-code"])
+        .write_stdin(format!(
+            r#"{{"tool_name":"Write","tool_input":{{"file_path":"{}",
+               "content":"import {{ conn }} from '../../http/connection';\nexport const update = () => conn;"}}}}"#,
+            write.to_str().expect("utf-8")
+        ))
+        .assert()
+        .success()
+        .stdout(contains("permissionDecision"));
+}

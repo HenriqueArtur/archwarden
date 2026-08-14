@@ -17,6 +17,59 @@ saying so.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-08-14
+
+Authoring. Asking before you write a rule, and being able to write the rule you
+mean. **No existing configuration reports anything new.**
+
+### Added
+
+- **`config options`, on the CLI and over MCP** (#97). *"What does a rule of
+  kind X take?"* had no answer: `describe` and `scaffold` are about paths,
+  `config explain` is about a rule you already declared, and `agent-guide` is a
+  digest of the ones you have. The reported workaround was reaching into
+  `node_modules/archwarden/schema/v0.json` and chasing `$defs` by hand — and
+  over MCP there was no workaround at all, because a client has no
+  `node_modules` to read.
+
+  It answers about the config's **own keys** as well as the ten rule kinds:
+  required fields, what each means, defaults, and a rule to paste. Everything
+  but the examples is generated from archwarden's own types, so it cannot
+  describe a shape the binary would refuse. It answers with **no configuration
+  present**, which is the moment it is asked.
+
+- **`when_importing`, on every rule kind whose population it can mean anything
+  for** (#98). A rule's files were where they sit and what they are called.
+  Some obligations are about neither: *"every write goes through the request
+  helper"*, in a repository where reads and writes are deliberate siblings
+  because erasing the transport from the filename was the point of the design.
+
+  ```json
+  { "type": "call-obligation", "roots": ["services/api/Entities/*"],
+    "when_importing": "services/api/Http/connection.ts",
+    "must_call": { "symbol": "HttpRequest", "imported_from": "../../Http/request" } }
+  ```
+
+  **Opt-in, including in cost.** A rule that names no imports resolves nothing
+  and behaves exactly as it did. A rule that names them turns resolution on for
+  the files its scope reaches, and no further.
+
+  For a rule about a **directory** — `presence`, `structure` — it means *some
+  file inside imports it*, which is the only reading of the axis that is ever
+  both true and false there. Those two lose their walk-only status when they
+  narrow, and that is the largest cost here. Decision 25 has the argument.
+
+  `import-boundary` does not get it: it already chooses its importers with
+  `from`, `from_module` and `from_kind`.
+
+### Fixed
+
+- **`agent-guide --kind <kind>` no longer says a repository has no rules when
+  it has nine** (#97). Three states shared one sentence, and one of them was
+  false — it read as *this kind does not exist* rather than *you have none of
+  it*. Each says its own thing now, and the kind case points at
+  `config options`.
+
 ## [0.19.0] — 2026-08-13
 
 One repository, two roots. **No existing configuration reports anything new**,
@@ -1728,7 +1781,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.19.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.18.0...v0.18.1
 [0.18.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.17.0...v0.18.0

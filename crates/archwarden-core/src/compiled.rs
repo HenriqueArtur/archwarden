@@ -330,6 +330,71 @@ pub struct PassthroughForms {
     pub wrapper: bool,
 }
 
+/// Which files a rule narrows itself to by what they import.
+///
+/// Both halves are matched the way `import-boundary` already matches: paths
+/// against where an import lands, packages against the package a specifier
+/// belongs to. A file passes when **either** matches — they are two spellings
+/// of "talks to this", not two conditions to satisfy at once.
+#[derive(Debug, Clone)]
+pub struct ImportFilter {
+    /// Resolved import paths that put a file in the population.
+    pub paths: crate::glob::PathSet,
+    /// Package names that do the same.
+    pub packages: Vec<String>,
+}
+
+impl ImportFilter {
+    /// Whether this file's imports put it in the population.
+    ///
+    /// **An import that did not resolve cannot answer**, and this cannot tell
+    /// one from an external package: both reach here with `resolved: None`,
+    /// and only the resolver knows which was which. So the run reports them
+    /// where it already does — `summary.imports.unresolved_imports`, naming
+    /// the file and the specifier — which is the same answer a boundary rule
+    /// gets for the same situation, and a better one than a count.
+    ///
+    /// It matters more here than there. A boundary rule with an unresolved
+    /// import checked the others; a rule *narrowed* by one may not have
+    /// applied at all. `RULES.md` says so beside the field.
+    #[must_use]
+    pub fn matches(&self, facts: &crate::facts::FileFacts) -> bool {
+        facts.imports.iter().any(|import| {
+            import
+                .resolved
+                .as_ref()
+                .is_some_and(|resolved| self.paths.is_match(resolved.as_path()))
+                || self
+                    .packages
+                    .iter()
+                    .any(|package| package_of(&import.specifier) == *package)
+        })
+    }
+}
+
+/// The package a specifier belongs to, so `zod` covers `zod/v4`.
+///
+/// Scoped packages keep two segments: `@org/pkg/deep` is `@org/pkg`. The same
+/// rule `import-boundary` applies, spelled here rather than reached for across
+/// a crate boundary that points the wrong way.
+#[must_use]
+fn package_of(specifier: &str) -> String {
+    let bare = specifier.strip_prefix("node:").unwrap_or(specifier);
+    let segments: Vec<&str> = bare.split('/').collect();
+
+    if bare.starts_with('@') {
+        return segments
+            .iter()
+            .take(2)
+            .copied()
+            .collect::<Vec<_>>()
+            .join("/");
+    }
+    segments
+        .first()
+        .map_or_else(String::new, |first| (*first).to_owned())
+}
+
 /// One rule, ready to evaluate.
 #[derive(Debug, Clone)]
 pub struct CompiledRule {
@@ -350,6 +415,20 @@ pub struct CompiledRule {
     /// eight rules at once and is not an answer to "why this one". Both are
     /// shown; neither stands in for the other.
     pub module_why: Option<String>,
+    /// Which files this rule narrows itself to by what they import.
+    ///
+    /// A second axis beside [`scope`](Self::scope), and the difference is what
+    /// each can see. A scope is lexical: where the file sits, what it is
+    /// called, answerable before anything is read. This one is about where the
+    /// file's imports *land*, which is knowable only after they are resolved —
+    /// so a rule that carries one costs a resolution pass over the files its
+    /// scope reaches, and a rule that does not costs nothing.
+    ///
+    /// `None` is "this rule does not ask", which is every rule written before
+    /// 0.20 and most rules after it. An **empty** filter would be a different
+    /// and much louder statement — "narrow me to the files that import
+    /// nothing" — so the two must not be the same value. Decision 25.
+    pub imports: Option<ImportFilter>,
     /// Severity of its findings.
     pub level: Level,
     /// The directories it applies to.
@@ -563,6 +642,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind,
@@ -929,5 +1009,98 @@ mod tests {
                 Some(level)
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod import_filter_tests {
+    use super::{ImportFilter, package_of};
+    use crate::facts::{FileFacts, ImportFact, Span};
+    use crate::hash::ContentHash;
+    use crate::path::RepoRelPath;
+
+    fn importing(specifiers: &[(&str, Option<&str>)]) -> FileFacts {
+        FileFacts {
+            path: RepoRelPath::new("src/a.ts").expect("valid"),
+            content_hash: ContentHash::of(b"x"),
+            exports: Vec::new(),
+            calls: Vec::new(),
+            imports: specifiers
+                .iter()
+                .map(|(specifier, resolved)| ImportFact {
+                    specifier: (*specifier).to_owned(),
+                    resolved: resolved.map(|path| RepoRelPath::new(path).expect("valid")),
+                    type_only: false,
+                    names: Vec::new(),
+                    span: Span::new(0, 1),
+                })
+                .collect(),
+            allowances: Vec::new(),
+            has_opaque_import: false,
+        }
+    }
+
+    fn filter(paths: &[&str], packages: &[&str]) -> ImportFilter {
+        ImportFilter {
+            paths: crate::glob::PathSet::compile(paths.iter().map(|p| (*p).to_owned()))
+                .expect("valid globs"),
+            packages: packages.iter().map(|p| (*p).to_owned()).collect(),
+        }
+    }
+
+    /// The reported case: a file is in the population because of where one of
+    /// its imports landed, not because of where it sits.
+    #[test]
+    fn a_file_is_in_when_an_import_lands_on_a_named_path() {
+        let write = importing(&[("../http/connection", Some("src/http/connection.ts"))]);
+
+        assert!(filter(&["src/http/**"], &[]).matches(&write));
+        assert!(!filter(&["src/db/**"], &[]).matches(&write));
+    }
+
+    /// And a sibling that imports nothing is out, which is the half `roots`
+    /// alone could never express.
+    #[test]
+    fn a_file_that_imports_nothing_named_is_out() {
+        let read = importing(&[]);
+
+        assert!(!filter(&["src/http/**"], &[]).matches(&read));
+    }
+
+    /// Packages are the other spelling of "talks to this", and either matching
+    /// is enough — they are not two conditions to satisfy at once.
+    #[test]
+    fn either_half_puts_a_file_in() {
+        let uses_zod = importing(&[("zod/v4", None)]);
+
+        assert!(filter(&[], &["zod"]).matches(&uses_zod));
+        assert!(
+            filter(&["src/nowhere/**"], &["zod"]).matches(&uses_zod),
+            "the package half alone is enough"
+        );
+    }
+
+    /// An import nothing could place cannot put a file in. It cannot keep it
+    /// out honestly either, which is why the run reports every unplaced
+    /// specifier rather than this pretending to know. Decision 25.
+    #[test]
+    fn an_import_nobody_placed_does_not_match_a_path() {
+        let unplaced = importing(&[("@Http/connection", None)]);
+
+        assert!(!filter(&["src/http/**"], &[]).matches(&unplaced));
+    }
+
+    /// A package is what a specifier belongs to, so a deep import counts as
+    /// the package it came from — the same rule a boundary applies.
+    #[test]
+    fn a_package_is_what_a_specifier_belongs_to() {
+        assert_eq!(package_of("zod"), "zod");
+        assert_eq!(package_of("zod/v4"), "zod");
+        assert_eq!(package_of("@org/pkg"), "@org/pkg");
+        assert_eq!(package_of("@org/pkg/deep/thing"), "@org/pkg");
+        // `fs` is not part of `node:fs`; it is the same module spelled the
+        // other way, which is how the boundary rules already read it.
+        assert_eq!(package_of("node:fs"), "fs");
+        assert_eq!(package_of(""), "");
     }
 }

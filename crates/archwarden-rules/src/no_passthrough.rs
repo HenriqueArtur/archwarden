@@ -282,6 +282,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Warning,
             scope: Scope::compile(["packages/domain/src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::NoPassthrough {
@@ -530,6 +531,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["packages/domain/src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::NoPassthrough {

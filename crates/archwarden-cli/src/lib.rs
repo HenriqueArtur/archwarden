@@ -26,6 +26,7 @@ pub mod html;
 pub mod impact;
 pub mod locate;
 pub mod matrix;
+pub mod options;
 pub mod orphans;
 pub mod phrases;
 pub mod report;
@@ -457,6 +458,25 @@ pub enum Command {
 /// `archwarden config ...`
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
+    /// Say what can go in an `arch.config.json`, before you write it.
+    ///
+    /// Every other question here is about a configuration that exists. This
+    /// one is about the ones you could write: the config's own keys, and the
+    /// ten values a rule's `type` can take, each with its required fields,
+    /// what they mean, their defaults, and a rule to paste.
+    ///
+    /// Read out of archwarden's own types, so it cannot describe a shape the
+    /// binary would refuse. Issue #97.
+    Options {
+        /// One key or rule kind, instead of the list.
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+
+        /// How to render the answer.
+        #[arg(long, value_enum, default_value_t = Format::Text)]
+        format: Format,
+    },
+
     /// Check that the config parses and matches the schema. Fast; no files are
     /// walked. For the semantic checks, use `config doctor`.
     Validate,
@@ -744,6 +764,12 @@ fn run_config(
     output: &mut Output<'_>,
 ) -> Exit {
     match command {
+        // Answered without a configuration, and that is the point: the moment
+        // you need this is before there is one to read, or while the one you
+        // have is the thing being changed.
+        ConfigCommand::Options { name, format } => {
+            crate::options::run(name.as_deref(), *format, output)
+        }
         ConfigCommand::Validate => validate(location, working_directory, output),
         ConfigCommand::Doctor { format } => doctor(location, working_directory, *format, output),
         ConfigCommand::VerifyRules { format } => {

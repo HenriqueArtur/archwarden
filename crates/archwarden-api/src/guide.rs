@@ -31,6 +31,14 @@ pub struct Guide<'a> {
     /// The scope the guide was restricted to, when it was.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<&'a str>,
+    /// The kinds it was restricted to, when it was.
+    ///
+    /// Carried so a renderer can tell an empty *repository* from an empty
+    /// *slice of one*. Without it the digest said "No rules are configured"
+    /// to somebody with nine rules and none of the kind they asked about —
+    /// two states, one sentence, and one of them false. Issue #97.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub kinds: Vec<&'a str>,
     /// Every rule it covers, in configuration order.
     pub rules: Vec<GuideRule<'a>>,
 }
@@ -113,11 +121,12 @@ pub fn guide_kinds(kinds: &[String]) -> Result<(), String> {
 pub fn guide<'a>(
     config: &'a CompiledConfig,
     scope: Option<&'a RepoRelPath>,
-    kinds: &[String],
+    kinds: &'a [String],
 ) -> Guide<'a> {
     Guide {
         version: GUIDE_VERSION,
         scope: scope.map(RepoRelPath::as_str),
+        kinds: kinds.iter().map(String::as_str).collect(),
         rules: config
             .rules()
             .filter(|rule| kinds.is_empty() || kinds.iter().any(|k| k == rule.kind.type_name()))
@@ -514,6 +523,7 @@ mod tests {
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,

@@ -348,6 +348,17 @@
                 "type": "string"
               }
             },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands* — the same way an\n`import-boundary` matches. Without this a rule's population is where a\nfile sits and what it is called; with it, what the file talks to.\n\nLeave it out and nothing changes, including the cost: a rule that does\nnot ask never resolves an import. Issue #98, decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.\n\nMatched against the package a specifier belongs to, so `zod` covers\n`zod/v4` as it does everywhere else.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "type": {
               "type": "string",
               "const": "structure"
@@ -398,6 +409,17 @@
             "must_export": {
               "description": "The export the file must carry.",
               "$ref": "#/$defs/MustExport"
+            },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands* — the same way an\n`import-boundary` matches. Without this a rule's population is where a\nfile sits and what it is called; with it, what the file talks to.\n\nLeave it out and nothing changes, including the cost: a rule that does\nnot ask never resolves an import. Issue #98, decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.\n\nMatched against the package a specifier belongs to, so `zod` covers\n`zod/v4` as it does everywhere else.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             },
             "type": {
               "type": "string",
@@ -466,6 +488,17 @@
               "description": "Whether a file whose exports are all `type` or `interface` is exempt.\n\nA file with no runtime export has nothing a test could call. Demanding\na spec for one produces work that reduces no risk — and the spec that\ngets written to satisfy the rule tests a mock of the contract rather\nthan the contract, because there is nothing else to test. `tsc` is the\ntool that checks an interface, and it checks it on every build.\n\n`enum` is a runtime export and does not count as type-only. A file with\nno exports at all does not either: that is a file with no callers, not\na contract, and the rule has something to say about it.\n\nCosts a parse. `spec-pair` otherwise reads no file, so a rule that sets\nthis reads every file in its scope — the same trade\n`require_non_empty_spec` makes.",
               "type": "boolean",
               "default": false
+            },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands* — the same way an\n`import-boundary` matches. Without this a rule's population is where a\nfile sits and what it is called; with it, what the file talks to.\n\nLeave it out and nothing changes, including the cost: a rule that does\nnot ask never resolves an import. Issue #98, decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.\n\nMatched against the package a specifier belongs to, so `zod` covers\n`zod/v4` as it does everywhere else.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             },
             "type": {
               "type": "string",
@@ -615,6 +648,17 @@
               "type": "boolean",
               "default": true
             },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands* — the same way an\n`import-boundary` matches. Without this a rule's population is where a\nfile sits and what it is called; with it, what the file talks to.\n\nLeave it out and nothing changes, including the cost: a rule that does\nnot ask never resolves an import. Issue #98, decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.\n\nMatched against the package a specifier belongs to, so `zod` covers\n`zod/v4` as it does everywhere else.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "type": {
               "type": "string",
               "const": "import-cycle"
@@ -658,6 +702,17 @@
             "must_call": {
               "description": "The call the file must contain.",
               "$ref": "#/$defs/MustCall"
+            },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands* — the same way an\n`import-boundary` matches. Without this a rule's population is where a\nfile sits and what it is called; with it, what the file talks to.\n\nLeave it out and nothing changes, including the cost: a rule that does\nnot ask never resolves an import. Issue #98, decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.\n\nMatched against the package a specifier belongs to, so `zod` covers\n`zod/v4` as it does everywhere else.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             },
             "type": {
               "type": "string",
@@ -723,6 +778,17 @@
               "type": "boolean",
               "default": true
             },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands* — the same way an\n`import-boundary` matches. Without this a rule's population is where a\nfile sits and what it is called; with it, what the file talks to.\n\nLeave it out and nothing changes, including the cost: a rule that does\nnot ask never resolves an import. Issue #98, decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.\n\nMatched against the package a specifier belongs to, so `zod` covers\n`zod/v4` as it does everywhere else.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "type": {
               "type": "string",
               "const": "no-passthrough"
@@ -767,6 +833,17 @@
               "description": "Regexes at least one file in each governed directory must match.\n\nFor \"there has to be a sketch and I do not care what it is called\".\nOne entry, one requirement: two regexes mean two files must be found,\none for each.",
               "$ref": "#/$defs/OneOrMany"
             },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands* — the same way an\n`import-boundary` matches. Without this a rule's population is where a\nfile sits and what it is called; with it, what the file talks to.\n\nLeave it out and nothing changes, including the cost: a rule that does\nnot ask never resolves an import. Issue #98, decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.\n\nMatched against the package a specifier belongs to, so `zod` covers\n`zod/v4` as it does everywhere else.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
             "type": {
               "type": "string",
               "const": "presence"
@@ -810,6 +887,17 @@
             "must_exist": {
               "description": "The companion, as a path relative to the directory the file sits in.\n\n**Literal, never derived.** `<stem>.<marker>.<ext>` is `spec-pair`'s\nidea and does not generalise; two fixed names in one directory is what\nthe rest of the world has.\n\n**May leave the directory.** `../projeto.md` is the case this rule\nexists for alongside the flat one — a sketch needs the lesson one level\nup, and no directory-scoped rule can say that. `presence` refuses paths\nfor exactly the opposite reason: it answers for a directory, and this\none answers for a file, which is what gives it an anchor to be relative\nto.\n\n**One direction, always.** This rule says the file matching\n`file_pattern` needs the companion, and never the reverse — an orphan\n`notas.md` is a note taken before the lesson was written, which is fine.",
               "type": "string"
+            },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands* — the same way an\n`import-boundary` matches. Without this a rule's population is where a\nfile sits and what it is called; with it, what the file talks to.\n\nLeave it out and nothing changes, including the cost: a rule that does\nnot ask never resolves an import. Issue #98, decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.\n\nMatched against the package a specifier belongs to, so `zod` covers\n`zod/v4` as it does everywhere else.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
             },
             "type": {
               "type": "string",
@@ -868,6 +956,17 @@
               "description": "A key whose value must equal a template rendered from the path.\n\n`{{raw(dirname)}}` is the name of the directory the document sits in,\nand it is the only group a document template may name. The form is the\none `naming` already uses, so the transforms come along:\n`{{kebab(dirname)}}` is spelled the same way here as there.\n\nThis is the `naming` rule's question — a name agreeing with a path —\nasked of a file that has no exported symbol to ask it about.",
               "type": "object",
               "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands* — the same way an\n`import-boundary` matches. Without this a rule's population is where a\nfile sits and what it is called; with it, what the file talks to.\n\nLeave it out and nothing changes, including the cost: a rule that does\nnot ask never resolves an import. Issue #98, decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.\n\nMatched against the package a specifier belongs to, so `zod` covers\n`zod/v4` as it does everywhere else.",
+              "type": "array",
+              "items": {
                 "type": "string"
               }
             },

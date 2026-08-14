@@ -329,6 +329,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile([from]).expect("valid scope"),
             kind: CompiledRuleKind::ImportBoundary {
@@ -352,6 +353,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile([roots]).expect("valid scope"),
             kind: CompiledRuleKind::Structure {

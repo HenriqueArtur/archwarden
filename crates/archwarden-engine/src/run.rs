@@ -269,22 +269,42 @@ pub fn check(run: Run<'_>) -> Report {
     // `needs_resolution`, because an edge is a *resolved* import and a graph
     // built without a resolver would be empty -- which a cycle rule reports as
     // "no cycles".
-    let resolver = (building_graph || engines.iter().any(|engine| engine.needs_resolution()))
-        .then(|| archwarden_resolver::imports::ImportResolver::new(root));
+    // Paired by position, which is what `engines_for` promises and what
+    // `describe` already relies on. A rule's import filter lives on the rule
+    // and not on the engine, deliberately: it narrows a *population*, and no
+    // rule kind should have to know that the axis exists. Decision 25.
+    let rules: Vec<&archwarden_core::compiled::CompiledRule> = config.rules().collect();
+    let narrowed_by_imports = rules.iter().any(|rule| rule.imports.is_some());
+
+    let resolver = (building_graph
+        || narrowed_by_imports
+        || engines.iter().any(|engine| engine.needs_resolution()))
+    .then(|| archwarden_resolver::imports::ImportResolver::new(root));
 
     for (path, directory) in tree.directories() {
         let file_names = directory.file_names();
         files_scanned += file_names.len();
 
-        for engine in &engines {
-            findings.extend(
-                engine.check_directory(archwarden_core::traits::DirectoryContext {
-                    path,
-                    subdirectories: &directory.subdirectories,
-                    files: &file_names,
-                }),
-            );
-        }
+        // Which rules a file in *this* directory put in the population. A
+        // directory rule narrowed by imports asks "does something in here talk
+        // to X?", and that cannot be answered before the files are read --
+        // which is why the directory checks now run after the loop below
+        // rather than before it. Findings are sorted afterwards, so nothing a
+        // reader sees moved.
+        let mut matched_here: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+
+        // Which import-narrowed rules could be about *this* directory. A
+        // directory rule's `applies_to` answers `false` for every file, by
+        // design -- its findings are about the directory -- so it never appears
+        // in a file's `wanted_by` and its files would never be read. This is
+        // how they get read: the rule's own scope says which directories it is
+        // about, and the files inside decide the rest.
+        let narrowing_here: Vec<usize> = rules
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| rule.imports.is_some() && rule.scope.matches_dir(path.as_path()))
+            .map(|(index, _)| index)
+            .collect();
 
         // Cloned at most once per directory, and only when a graph rule
         // actually holds a file in it.
@@ -293,14 +313,20 @@ pub fn check(run: Run<'_>) -> Report {
         for file in &directory.files {
             let wanted_by: Vec<_> = engines
                 .iter()
-                .filter(|engine| engine.applies_to(&file.path))
+                .enumerate()
+                .filter(|(_, engine)| engine.applies_to(&file.path))
                 .collect();
             // A file nothing governs is normally not opened at all. While a
             // graph is being built it is opened anyway, if it is source: its
             // imports are edges, and a loop is made of edges from files whose
             // own scope has nothing to do with the rule that reports it.
             let feeds_graph = building_graph && reads_as_code(file.class, config.languages());
-            if wanted_by.is_empty() && !feeds_graph {
+            // `narrowing_here` is the third reason to open a file nothing
+            // appears to govern. A directory rule's `applies_to` answers
+            // `false` for every file by design, so `wanted_by` is empty for one
+            // — and its files are exactly what decides whether the directory is
+            // in the population at all. Decision 25.
+            if wanted_by.is_empty() && !feeds_graph && narrowing_here.is_empty() {
                 continue;
             }
 
@@ -312,7 +338,7 @@ pub fn check(run: Run<'_>) -> Report {
             let docs = if file.class == FileClass::Document
                 && wanted_by
                     .iter()
-                    .any(|engine| engine.needs_facts() == FactsNeeded::Document)
+                    .any(|(_, engine)| engine.needs_facts() == FactsNeeded::Document)
             {
                 read_docs(
                     root,
@@ -330,10 +356,13 @@ pub fn check(run: Run<'_>) -> Report {
 
             let mut facts = if reads_as_code(file.class, config.languages())
                 && (feeds_graph
-                    || wanted_by
-                        .iter()
-                        .any(|engine| engine.needs_facts() == FactsNeeded::Code))
-            {
+                    || !narrowing_here.is_empty()
+                    || wanted_by.iter().any(|(index, engine)| {
+                        engine.needs_facts() == FactsNeeded::Code
+                                // A rule narrowed by imports has to read the
+                                // file to find out whether it is about it.
+                                || rules.get(*index).is_some_and(|rule| rule.imports.is_some())
+                    })) {
                 match facts_for(root, &file.path, cache.as_deref_mut()) {
                     Ok((facts, Source::Cache)) => {
                         facts_reused += 1;
@@ -370,7 +399,12 @@ pub fn check(run: Run<'_>) -> Report {
             // never placed is a hole in the graph rather than a file the rule
             // was not about.
             if let (Some(resolver), Some(facts)) = (resolver.as_ref(), facts.as_mut())
-                && (feeds_graph || wanted_by.iter().any(|engine| engine.needs_resolution()))
+                && (feeds_graph
+                    || !narrowing_here.is_empty()
+                    || wanted_by.iter().any(|(index, engine)| {
+                        engine.needs_resolution()
+                            || rules.get(*index).is_some_and(|rule| rule.imports.is_some())
+                    }))
             {
                 imports.absorb(crate::resolve::resolve_imports(resolver, facts));
             }
@@ -393,7 +427,43 @@ pub fn check(run: Run<'_>) -> Report {
             // be asked again once there is one.
             let mut held = false;
 
-            for engine in wanted_by {
+            // A directory rule asks whether *anything in here* talks to it, and
+            // this is where "anything" is counted. Separate from the loop below
+            // because that one is about rules that apply to the file, and a
+            // directory rule never does.
+            if let Some(facts) = facts.as_ref() {
+                for index in &narrowing_here {
+                    if rules
+                        .get(*index)
+                        .and_then(|rule| rule.imports.as_ref())
+                        .is_some_and(|filter| filter.matches(facts))
+                    {
+                        matched_here.insert(*index);
+                    }
+                }
+            }
+
+            for (index, engine) in wanted_by {
+                // The second axis. A rule narrowed by imports is about this
+                // file only if the file's imports say so — and an import that
+                // did not resolve cannot say, which is reported rather than
+                // read as "no". Decision 25.
+                if let Some(rule) = rules.get(index)
+                    && let Some(filter) = rule.imports.as_ref()
+                {
+                    // Out of the population when the imports do not say so,
+                    // and when there are no imports to read at all: a rule that
+                    // narrows by import cannot decide about a file nobody
+                    // could open. An unplaceable specifier is why that might be
+                    // wrong, and the run already reports those by file and
+                    // specifier.
+                    let Some(facts) = facts.as_ref().filter(|facts| filter.matches(facts)) else {
+                        continue;
+                    };
+                    let _ = facts;
+                    matched_here.insert(index);
+                }
+
                 // A rule that reads inside a file, handed no facts, cannot
                 // decide anything -- it returns nothing, which is
                 // indistinguishable from deciding the file is fine. Counted so
@@ -477,6 +547,27 @@ pub fn check(run: Run<'_>) -> Report {
                     siblings: index,
                 });
             }
+        }
+
+        // After the files, not before: a directory rule narrowed by imports
+        // asks whether anything in here talks to X, and nothing knew until the
+        // loop above read them. A rule that does not narrow is unaffected and
+        // runs exactly as it did.
+        for (index, engine) in engines.iter().enumerate() {
+            if let Some(rule) = rules.get(index)
+                && rule.imports.is_some()
+                && !matched_here.contains(&index)
+            {
+                continue;
+            }
+
+            findings.extend(
+                engine.check_directory(archwarden_core::traits::DirectoryContext {
+                    path,
+                    subdirectories: &directory.subdirectories,
+                    files: &file_names,
+                }),
+            );
         }
     }
 
@@ -793,6 +884,7 @@ mod tests {
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind,
@@ -2425,5 +2517,184 @@ mod tests {
             report.imports.in_repo, 1,
             "only the file a boundary rule covers should have been resolved"
         );
+    }
+}
+
+#[cfg(test)]
+mod narrowing_tests {
+    use archwarden_core::compiled::{
+        CompiledConfig, CompiledRule, CompiledRuleKind, ImportFilter, SkipDirs,
+    };
+    use archwarden_core::glob::PathSet;
+    use archwarden_core::hash::ContentHash;
+    use archwarden_core::ids::RuleId;
+    use archwarden_core::level::Level;
+    use archwarden_core::pattern::Pattern;
+    use archwarden_core::scope::Scope;
+    use camino::Utf8PathBuf;
+
+    /// A `presence` rule over `src/*`, optionally narrowed by what the files
+    /// inside import.
+    fn presence(narrowed: Option<&str>) -> CompiledConfig {
+        CompiledConfig::new(
+            vec![CompiledRule {
+                id: RuleId::new("p").expect("valid id"),
+                module: None,
+                why: None,
+                module_why: None,
+                imports: narrowed.map(|glob| ImportFilter {
+                    paths: PathSet::compile([glob.to_owned()]).expect("valid glob"),
+                    packages: Vec::new(),
+                }),
+                level: Level::Error,
+                scope: Scope::compile(["src/*"]).expect("valid scope"),
+                kind: CompiledRuleKind::Presence {
+                    require: vec!["contract.md".to_owned()],
+                    require_any: Vec::new(),
+                },
+            }],
+            PathSet::default(),
+            SkipDirs::default(),
+            ContentHash::of(b"narrowing"),
+        )
+    }
+
+    /// A `naming` rule that no file satisfies, so that whether it *ran* is
+    /// visible in the findings.
+    fn naming(narrowed: Option<&str>) -> CompiledConfig {
+        CompiledConfig::new(
+            vec![CompiledRule {
+                id: RuleId::new("n").expect("valid id"),
+                module: None,
+                why: None,
+                module_why: None,
+                imports: narrowed.map(|glob| ImportFilter {
+                    paths: PathSet::compile([glob.to_owned()]).expect("valid glob"),
+                    packages: Vec::new(),
+                }),
+                level: Level::Error,
+                scope: Scope::compile(["src/*"]).expect("valid scope"),
+                kind: CompiledRuleKind::Naming {
+                    file_pattern: Pattern::compile(r"^(?<n>[a-z-]+)\.ts$").expect("valid"),
+                    dir_pattern: None,
+                    name_template: "Nothing{{pascal(n)}}".to_owned(),
+                    kind: archwarden_core::facts::KindFilter::Any,
+                    annotation: Vec::new(),
+                    signature_hint: None,
+                },
+            }],
+            PathSet::default(),
+            SkipDirs::default(),
+            ContentHash::of(b"narrowing"),
+        )
+    }
+
+    fn tree(files: &[(&str, &str)]) -> (tempfile::TempDir, Utf8PathBuf) {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("utf-8");
+        for (name, contents) in files {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().expect("a parent")).expect("create");
+            std::fs::write(&path, contents).expect("write");
+        }
+        (guard, root)
+    }
+
+    fn run(root: &camino::Utf8Path, config: &CompiledConfig) -> crate::run::Report {
+        let tree = crate::walk::walk(root, config).expect("walks");
+        crate::run::check(crate::run::Run {
+            root,
+            config,
+            tree: &tree,
+            cache: None,
+        })
+    }
+
+    const TREE: &[(&str, &str)] = &[
+        ("src/http/connection.ts", "export const conn = 1;\n"),
+        (
+            "src/orders/update.ts",
+            "import { conn } from '../http/connection';\nexport const u = () => conn;\n",
+        ),
+        ("src/reports/monthly.ts", "export const m = () => 1;\n"),
+    ];
+
+    /// A rule narrowed by imports resolves, even though nothing else in the
+    /// configuration asked for resolution. Without that the filter would be
+    /// asked about imports nobody had placed and would answer "no" to
+    /// everything. Decision 25.
+    #[test]
+    fn a_narrowed_rule_turns_resolution_on_by_itself() {
+        let (_guard, root) = tree(TREE);
+
+        let report = run(&root, &naming(Some("src/http/**")));
+
+        assert!(
+            report.imports.in_repo > 0,
+            "resolution ran because a rule asked: {:?}",
+            report.imports
+        );
+    }
+
+    /// And a configuration that narrows nothing resolves nothing, which is
+    /// what keeps every rule written before 0.20 as cheap as it was.
+    #[test]
+    fn a_configuration_that_narrows_nothing_resolves_nothing() {
+        let (_guard, root) = tree(TREE);
+
+        let report = run(&root, &naming(None));
+
+        assert_eq!(
+            report.imports.in_repo, 0,
+            "nothing asked, so nothing was resolved: {:?}",
+            report.imports
+        );
+    }
+
+    /// A file rule narrowed by imports runs on the files that import, and not
+    /// on the ones that do not.
+    #[test]
+    fn a_file_rule_runs_only_where_the_imports_say_so() {
+        let (_guard, root) = tree(TREE);
+
+        let flagged: Vec<String> = run(&root, &naming(Some("src/http/**")))
+            .findings
+            .iter()
+            .map(|finding| finding.path.as_str().to_owned())
+            .collect();
+
+        assert_eq!(flagged, ["src/orders/update.ts"]);
+    }
+
+    /// A directory rule reports only the directories something inside talks
+    /// to. The one that talks to nothing is not this rule's business, and a
+    /// rule that reported it would be reporting a directory it was never
+    /// about.
+    #[test]
+    fn a_directory_rule_reports_only_where_something_inside_matched() {
+        let (_guard, root) = tree(TREE);
+
+        let flagged: Vec<String> = run(&root, &presence(Some("src/http/connection.ts")))
+            .findings
+            .iter()
+            .map(|finding| finding.path.as_str().to_owned())
+            .collect();
+
+        assert_eq!(flagged, ["src/orders"]);
+    }
+
+    /// And the same rule without the narrowing reports every directory its
+    /// scope reaches — which is what makes the test above mean something.
+    #[test]
+    fn the_same_directory_rule_unnarrowed_reports_all_of_them() {
+        let (_guard, root) = tree(TREE);
+
+        let flagged: Vec<String> = run(&root, &presence(None))
+            .findings
+            .iter()
+            .map(|finding| finding.path.as_str().to_owned())
+            .collect();
+
+        assert_eq!(flagged, ["src/http", "src/orders", "src/reports"]);
     }
 }

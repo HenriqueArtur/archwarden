@@ -482,6 +482,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind: CompiledRuleKind::SpecPair {
@@ -835,6 +836,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Warning,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -931,6 +933,7 @@ mod tests {
             module: Some(ModuleId::new("domain").expect("valid")),
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -971,6 +974,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::Structure {
@@ -1003,6 +1007,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -1034,6 +1039,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -1089,6 +1095,7 @@ mod tests {
             module: None,
             why: None,
             module_why: None,
+            imports: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind: CompiledRuleKind::SpecPair {

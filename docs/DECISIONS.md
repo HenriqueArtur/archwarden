@@ -17,6 +17,87 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 25 — A rule can choose its files by what they import, and pays only if it asks
+Status: accepted.
+Context: issue #98. A rule's population was where a file sits and what it is
+called. Some obligations are about neither. The reported case is a service that
+reaches one legacy system two ways — reads over a replica, writes over an HTTP
+API — where reads and writes are deliberate siblings and the filenames say what
+the action *does*, not how it travels, because erasing the transport from the
+contract was the point of the refactor:
+
+```
+Entities/ConsumerUnit/update.ts        → an HTTP write
+Entities/SystemUser/find-by-email.ts   → a replica read
+```
+
+"Every write goes through the request helper" was inexpressible. `roots` caught
+the reads too, and no `file_pattern` separates them. The reporter considered
+renaming the files and rejected it, correctly: **a linter should not be the
+reason a design says something it does not mean.**
+
+Decision: a second axis, `when_importing` and `when_importing_packages`, on
+every rule kind whose population it can mean anything for. Path globs matched
+against where an import *lands* and package names matched the way
+`import-boundary` already matches them — one dialect, because two eventually
+disagree.
+
+**Opt-in, and that is the cost model.** A rule that names no imports resolves
+nothing and behaves exactly as it did; a rule that names them turns resolution
+on for the files its scope reaches, and no further. That is decision 21's shape
+— `import-boundary` answers `needs_graph` from its `forbid_reaching` field
+rather than from its kind — applied one axis over.
+
+**For a directory rule it means "some file inside imports it".** `presence` and
+`structure` report about a directory, so "this file imports X" has no reading
+there. Of the three candidates, only this one is ever both true and false: "all
+files" is defeated by one `index.ts`, and excluding directory rules would leave
+the axis meaning one thing in seven kinds and nothing in two. It costs those two
+their walk-only status — a `presence` rule that narrows parses and resolves
+everything under its roots, where before it read a directory listing — and that
+is the largest single cost here, paid only by a rule that asks for it.
+
+**It lives in the runner, not in any engine.** No rule kind knows the axis
+exists: the runner pairs each engine with its rule by position, which is what
+`engines_for` already promises and what `describe` already relies on, and drops
+the ones the filter excludes. Nine engines that each had to remember to ask
+would be nine chances to forget.
+
+`import-boundary` does not get it and will not. It already chooses its importers
+with `from`, `from_module` and `from_kind`, and a second way to say one thing is
+a second thing to get wrong.
+
+Alternatives:
+- **`--command-prefix`-style scoping, or a new rule kind.** Rejected: the
+  obligation is the same obligation. A `call-obligation-when-importing` kind
+  would double every future change to the one that exists.
+- **Only on `call-obligation`.** What the reported case needs, and half the
+  cost. Rejected on the ask: `spec-pair` narrowed by import — *"every file that
+  talks to the database needs a spec"* — is the same question, and a field
+  landing three releases apart under three names is worse than one decided
+  once.
+- **A skip count for a file whose imports did not resolve.** Attempted, and it
+  cannot be done honestly: an unplaceable alias and an external package both
+  arrive with nothing resolved, and only the resolver knows which was which.
+  So the run reports them where it already does — `unresolved_imports`, naming
+  the file and the specifier.
+Consequences: the reported rules are writable, and the invariant the reporter
+called the most valuable in their codebase — *"every write twin records the
+call"* — is enforceable.
+
+**A narrowing decided on an unresolved import is the sharp edge**, and it is
+sharper here than for a boundary rule: that one checked the imports it could
+place, while a rule narrowed by one may not have applied at all. Nothing new
+reports it, deliberately — `summary.imports.unresolved_imports` already names
+every specifier nobody placed, and a second signal for the same fact is a second
+thing to keep true. `RULES.md` says so beside the field.
+
+The pre-write hook applies the same filter, and
+`the_hook_and_check_agree_about_a_rule_narrowed_by_imports` pins it. A write
+judged by the hook against a rule `check` would not have applied is the two
+surfaces disagreeing about one file, which is what decision 22 exists to make
+impossible.
+
 ### 24 — The caller says where the repository is, and a translation has to earn it
 Status: accepted.
 Context: issue #93, then #95. A harness on the host sends

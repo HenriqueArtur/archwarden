@@ -61,6 +61,89 @@ things for different rule kinds, the matcher would need a branch per kind —
 and that branch is exactly where `check` and `describe` would drift apart,
 which decision 9 exists to prevent.
 
+## Narrowing by what a file imports
+
+`roots` selects by **where a file sits**. `when_importing` selects by **what it
+talks to**, and the two are `AND`: a rule with both applies where its scope
+reaches *and* the import matches.
+
+```json
+{
+  "type": "call-obligation",
+  "id": "writes-go-through-the-request-helper",
+  "roots": ["services/api/Entities/*"],
+  "when_importing": "services/api/Http/connection.ts",
+  "must_call": { "symbol": "HttpRequest", "imported_from": "../../Http/request" }
+}
+```
+
+Some obligations are about neither where a file is nor what it is called. In the
+case this was built for, reads and writes are deliberate siblings — the
+filenames say what the action *does*, not how it travels, because erasing the
+transport from the contract was the point. Renaming the files would make the
+rule expressible and would put back the fact the design spent a refactor
+removing.
+
+`when_importing_packages` is the sibling for package specifiers, matched the way
+a boundary matches them, so `zod` covers `zod/v4`.
+
+### What it costs, and when
+
+**Nothing, unless a rule asks.** A rule that names no imports resolves nothing
+and behaves exactly as it did. A rule that names them turns resolution on for
+the files its scope reaches — and no further, so a narrowed rule over one
+module does not make the rest of the repository pay.
+
+| kind of rule | before | with `when_importing` |
+|---|---|---|
+| `naming`, `spec-pair`, `call-obligation`, `pair`, `frontmatter`, `no-passthrough` | parses each file | parses, and resolves its imports |
+| `presence`, `structure` | reads a directory listing, opens nothing | parses and resolves **every file under its roots** |
+
+That last row is the expensive one, and it is the price of the only reading
+that means anything for a rule about a directory.
+
+### For a directory rule it means "something in here"
+
+`presence` and `structure` report about a **directory**, so *"this file imports
+X"* has no reading there. A directory is in the population when **some file
+inside it** matches:
+
+```json
+{ "type": "presence", "roots": ["src/*"],
+  "when_importing": "src/db/**", "require": ["contract.md"] }
+```
+
+> Every directory with something that talks to the database carries a written
+> contract.
+
+`src/orders`, holding one file that imports `src/db/pool.ts`, is in. `src/reports`,
+holding none, is out — and a rule that reported it would be reporting a
+directory it was never about.
+
+### An unresolved import is the sharp edge
+
+A specifier nobody could place — a misconfigured alias, a dependency that is not
+installed — leaves the narrowing undecided, and the file falls out of the
+population. **The rule then does not apply at all**, which is a larger silence
+than the one a boundary rule leaves: that one checked the imports it could
+place.
+
+Nothing new reports it, because something already does.
+`summary.imports.unresolved_imports` names every specifier nobody placed, with
+the file it is in:
+
+```
+note: `@Http/connection` did not resolve, so boundary rules did not see it
+```
+
+A run with entries there is a run whose narrowing may have been decided on
+incomplete information. `archwarden config doctor` is where to start.
+
+`import-boundary` has no `when_importing` and will not: it already chooses its
+importers with `from`, `from_module` and `from_kind`.
+
+See decision 25.
+
 ## Severity precedence
 
 Within a single rule, **the most specific declaration wins**. Specificity is

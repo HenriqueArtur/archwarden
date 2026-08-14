@@ -20,6 +20,10 @@ archwarden-resolver = { workspace = true }
 # that asked the question through its own engine list would be answering it a
 # second way, and the two would drift.
 archwarden-rules = { workspace = true }
+# `config options` reads the configurable surface out of the config types
+# themselves rather than out of `schema/v0.json`, which a release archive does
+# not ship beside the binary and an MCP client cannot read at all.
+schemars = { workspace = true }
 camino = { workspace = true }
 # The baseline is a committed file with a schema of its own, so the crate that
 # owns the operation owns its format too.

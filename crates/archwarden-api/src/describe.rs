@@ -965,6 +965,7 @@ mod tests {
             module: module.map(|m| archwarden_core::ids::ModuleId::new(m).expect("valid module")),
             why: None,
             module_why: None,
+            imports: None,
             level: archwarden_core::level::Level::Error,
             scope: archwarden_core::scope::Scope::compile(scope.iter().copied())
                 .expect("valid scope"),
