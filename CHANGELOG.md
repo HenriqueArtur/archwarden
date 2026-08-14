@@ -17,6 +17,82 @@ saying so.
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-08-14
+
+Decisions. The config can name the choices its rules keep, and every surface
+says so. **No existing configuration reports anything new** — this release
+changes what archwarden *says*, not what it checks.
+
+### Added
+
+- **`decisions`, and a `decision` on every rule** (#100). A rule could say why
+  it exists (#46); nothing said *what decision it implements*, which is the
+  difference between a config that enforces an architecture and one that
+  describes it.
+
+  ```json
+  {
+    "decisions": [
+      { "id": "ADR-014", "title": "The domain does not know about transport",
+        "why": "it is published, and a consumer must not inherit our HTTP client",
+        "link": "docs/adr/014-domain-transport.md", "status": "accepted" }
+    ],
+    "rules": [
+      { "type": "import-boundary", "id": "domain-forbids-http",
+        "decision": "ADR-014", "level": "error", "from": ["packages/domain/**"],
+        "forbid_import_from_packages": ["axios"] }
+    ]
+  }
+  ```
+
+  The rule points at the decision, not the other way round: there is no second
+  list to keep in step, a deleted rule leaves nothing dangling, and a rule that
+  forgets its decision is visible where it is written. Declared at the top level
+  only. Every rule kind takes the field, so the kinds landing after this one
+  carry it from birth.
+
+- **What each surface now says.** The pre-write hook's denial stops being
+  *"breaks `domain-forbids-http`"* and becomes *"breaks ADR-014, and here is why,
+  and here is where it is written"*. `describe` answers with the decision each
+  rule serves. `agent-guide` opens with the decisions and the rules that keep
+  each one. The HTML page leads with the architecture as decisions rather than a
+  rule table. MCP's `check_write` names the decision a refusal breaks — and
+  gained the rule's `why` alongside it, which it had never carried.
+
+- **`config explain` takes a decision id**, not only a rule id, and answers the
+  question people actually ask: not *what does this rule do* but *why is this
+  like this* — plus the half a document cannot answer, which is whether the
+  decision is still being kept. An id may not be both a rule and a decision;
+  that collision is refused when the config loads.
+
+- **Three checks in `config doctor`.** `rule-without-a-decision` at `warning`,
+  counted in one line and only once some rule names one. `decision-nobody-
+  enforces` at `warning`. And `superseded-decision-still-enforced` at `error`,
+  which is the check most worth having: a decision recorded as replaced with
+  rules still enforcing it is a config saying two things at once.
+
+- **Presets ship decisions**, folded the way rules are folded. A preset stops
+  being a bag of rules and becomes a set of opinions with names and reasons.
+
+### Changed
+
+- **`config doctor` prints a level on every concern.** The sixteen checks that
+  came before are all `warning`, which is what they have always been in
+  practice. It does not reach the exit code — `doctor` is advice and `check` is
+  the gate.
+
+- **`config explain`'s not-found message** says *"nothing is called `x`"* rather
+  than *"no rule is called `x`"*, and lists the declared decisions as well as
+  the configured rules. A user who mistyped does not know which of the two
+  namespaces they got wrong.
+
+### Reasoning
+
+Decision 26 in [`DECISIONS.md`](docs/DECISIONS.md), including why the foreign
+key points from the rule, why a dangling reference is refused at compile while a
+*missing* one is only ever a `doctor` warning, and why `proposed` is reported by
+nothing.
+
 ## [0.20.0] — 2026-08-14
 
 Authoring. Asking before you write a rule, and being able to write the rule you
@@ -1781,7 +1857,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.20.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.21.0...HEAD
+[0.21.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.20.0...v0.21.0
 [0.20.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.19.0...v0.20.0
 [0.19.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.18.1...v0.19.0
 [0.18.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.18.0...v0.18.1
