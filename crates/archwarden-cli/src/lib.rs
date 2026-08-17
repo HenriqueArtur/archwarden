@@ -620,6 +620,25 @@ pub struct Output<'a> {
     pub input: &'a mut dyn std::io::Read,
 }
 
+impl Output<'_> {
+    /// Where something that is not the report goes.
+    ///
+    /// In `--format json`, stdout is the document and nothing else: a note
+    /// written past the closing brace is trailing text, and `JSON.parse` of a
+    /// whole-repository report was broken for every repository that has a
+    /// baseline. An aside goes to stderr there, which is where the failure
+    /// half of the same write already went. Issue #110.
+    ///
+    /// In the text format nothing moves. The report *is* prose, and a note
+    /// beside it is part of what somebody at a terminal reads.
+    fn aside(&mut self, format: crate::report::Format) -> &mut dyn std::io::Write {
+        match format {
+            crate::report::Format::Json => &mut *self.err,
+            crate::report::Format::Text => &mut *self.out,
+        }
+    }
+}
+
 /// Runs a parsed command line.
 ///
 /// Never returns an error: every failure is rendered to `output.err` and
@@ -2123,6 +2142,12 @@ fn check(
         &compiled,
     );
 
+    // Worked out before the report is written rather than after it, because in
+    // `--format json` it travels *inside* the document. Issue #110.
+    let standing = baseline
+        .as_ref()
+        .map(|baseline| baseline.standing(&outcome.findings));
+
     crate::report::render(
         &crate::report::Rendered {
             root: &merged.root,
@@ -2130,6 +2155,7 @@ fn check(
             view: &presented.view,
             reasons: &crate::report::Reasons::of(&compiled),
             elapsed: started.elapsed(),
+            standing,
         },
         options.format,
         output.out,
@@ -2148,7 +2174,10 @@ fn check(
         );
         match std::fs::write(destination, page) {
             Ok(()) => {
-                let _ = writeln!(output.out, "page written to {destination}");
+                let _ = writeln!(
+                    output.aside(options.format),
+                    "page written to {destination}"
+                );
             }
             // Reported and not fatal: the gate already ran, and refusing its
             // exit code because a side artefact could not be written would let
@@ -2159,8 +2188,13 @@ fn check(
         }
     }
 
-    if let Some(baseline) = &baseline {
-        report_standing(baseline, &outcome.findings, output);
+    // The prose form, for somebody at a terminal. `--format json` said it
+    // inside the document, under `summary.baseline`, and saying it twice would
+    // be the trailing text again.
+    if let Some(standing) = standing
+        && options.format == crate::report::Format::Text
+    {
+        report_standing(standing, output.out);
     }
 
     // One question, asked of the thing that knows the rule. `fails_build` reads
@@ -2174,23 +2208,23 @@ fn check(
     }
 }
 
-/// How this run stands against the baseline.
+/// How this run stands against the baseline, as a sentence.
 ///
-/// Printed on every run that has one, deliberately. A baseline nobody is
+/// Written on every text run that has one, deliberately. A baseline nobody is
 /// reminded of is a suppression file, and the entries that no longer occur are
 /// the only cheerful number archwarden has -- as well as the thing that stops
 /// a stale entry hiding a violation that came back.
-fn report_standing(
-    baseline: &crate::baseline::Baseline,
-    findings: &[archwarden_core::finding::Finding],
-    output: &mut Output<'_>,
-) {
-    let standing = baseline.standing(findings);
-    let _ = write!(output.out, "{} accepted", standing.accepted);
+///
+/// The number, not the sentence, is what `--format json` carries, under
+/// `summary.baseline`. Two renderings of one fact rather than one rendering on
+/// two streams: a document that ends and then keeps writing is not a document,
+/// which is what issue #110 was filed about.
+fn report_standing(standing: archwarden_api::baseline::Standing, out: &mut dyn std::io::Write) {
+    let _ = write!(out, "{} accepted", standing.accepted);
 
     if standing.gone > 0 {
         let _ = write!(
-            output.out,
+            out,
             ", {} no longer {} — run `archwarden baseline` to update",
             standing.gone,
             if standing.gone == 1 {
@@ -2201,7 +2235,7 @@ fn report_standing(
         );
     }
 
-    let _ = writeln!(output.out);
+    let _ = writeln!(out);
 }
 
 /// Walks the repository, rendering a refusal as this surface says it.

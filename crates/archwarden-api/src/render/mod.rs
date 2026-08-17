@@ -239,6 +239,17 @@ pub struct Rendered<'a> {
     /// to the invocation, and a test that could not fix it could not assert on
     /// the format.
     pub elapsed: std::time::Duration,
+    /// How this run stands against the baseline, when there is one.
+    ///
+    /// `None` means no baseline was loaded, which is a different fact from a
+    /// baseline that accepted nothing -- the distinction
+    /// [`Summary::imports`](Summary::imports) already draws for resolution.
+    ///
+    /// It reaches the renderer rather than being printed after it because the
+    /// JSON document is the whole of stdout: a line written past the closing
+    /// brace is trailing text, and it is what issue #110 was filed about. The
+    /// text format still prints its own sentence, from the same number.
+    pub standing: Option<crate::baseline::Standing>,
 }
 
 /// One check nobody could make.
@@ -309,6 +320,18 @@ pub struct Summary {
     /// boundary rule ran" from "every import resolved".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imports: Option<Imports>,
+    /// How this run stands against the baseline. Absent when there is none.
+    ///
+    /// In the document rather than on a line after it, which is what issue
+    /// #110 was filed about, and in the document rather than on stderr, which
+    /// is the argument `suppressed` already makes one field up: a number that
+    /// only ever goes up, visibly, is a number somebody eventually acts on.
+    /// `gone` is the other half and the cheerful one -- accepted entries that
+    /// no longer occur -- and a baseline nobody is reminded of is a suppression
+    /// file. Sending that to a stream CI throws away would fix the parse and
+    /// lose the point.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<crate::baseline::Standing>,
 }
 
 #[allow(
@@ -359,7 +382,15 @@ impl Summary {
     /// rest describes the run that happened. `hidden` is what keeps the two
     /// reconcilable.
     #[must_use]
-    pub fn of(report: &Report, view: &View<'_>, elapsed: std::time::Duration) -> Self {
+    pub fn of(rendered: &Rendered<'_>) -> Self {
+        let Rendered {
+            report,
+            view,
+            elapsed,
+            standing,
+            ..
+        } = *rendered;
+
         Self {
             errors: view.count(archwarden_core::level::Level::Error),
             warnings: view.count(archwarden_core::level::Level::Warning),
@@ -380,6 +411,7 @@ impl Summary {
             duration_ms: elapsed.as_millis(),
             hidden: view.hidden(),
             by_rule: view.breakdown().map(breakdown_as_map),
+            baseline: standing,
             imports: (report.imports.total() > 0).then_some(Imports {
                 in_repo: report.imports.in_repo,
                 external: report.imports.external,

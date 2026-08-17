@@ -1896,6 +1896,93 @@ fn the_json_report_has_the_documented_shape() {
     assert_eq!(first["expected"]["type"], "required-sibling");
 }
 
+/// Issue #110. In `--format json`, stdout is the document and nothing else.
+///
+/// The baseline standing and the `--html` note were both written to stdout
+/// after the object, unconditionally, so a repository with a baseline — which
+/// is every repository that adopted archwarden after its code existed — handed
+/// every consumer a document with trailing text after it. `AGENTS.md` tells an
+/// agent to use this format instead of parsing the prose, so the path the
+/// documentation calls the tool path was the broken one.
+///
+/// Both writers are asserted here, and the standing is asserted *inside* the
+/// document: moving it to stderr would have fixed the parse and lost the number
+/// the baseline exists to keep in front of somebody.
+#[test]
+fn the_json_report_is_the_whole_of_stdout() {
+    let dir = repo_with_violations();
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("baseline")
+        .assert()
+        .success();
+
+    let run = archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--format", "json", "--html", "page.html"])
+        .assert()
+        .code(0);
+    let output = run.get_output();
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout is the document and nothing else");
+
+    assert_eq!(parsed["summary"]["baseline"]["accepted"], 3);
+    assert_eq!(
+        parsed["summary"]["baseline"]["gone"], 0,
+        "present at zero: a consumer branching on the ratchet needs the field"
+    );
+
+    // The note about the side artefact is still made, on the stream that is
+    // not the contract.
+    let stderr = String::from_utf8(output.stderr.clone()).expect("stderr is UTF-8");
+    assert!(stderr.contains("page written to page.html"), "{stderr}");
+}
+
+/// And the text format is untouched: the standing still reads as a sentence
+/// under the counts, which is where somebody at a terminal is reminded that a
+/// baseline nobody looks at is a suppression file.
+#[test]
+fn the_text_report_still_says_where_the_run_stands() {
+    let dir = repo_with_violations();
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("baseline")
+        .assert()
+        .success();
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(0)
+        .stdout(contains("3 accepted"));
+}
+
+/// A run with no baseline carries no `baseline` key at all, so a consumer can
+/// tell "this repository accepts nothing" from "nothing is accepted" — the
+/// distinction `summary.imports` already draws for resolution.
+#[test]
+fn a_run_without_a_baseline_says_nothing_about_one() {
+    let dir = repo_with_violations();
+
+    let output = archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--format", "json"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&output).expect("the report is valid JSON");
+
+    assert!(parsed["summary"].get("baseline").is_none(), "{parsed}");
+}
+
 /// The same repository checked twice must produce byte-identical output, or
 /// snapshot tests and CI diffs become noise. This is design goal 3.
 ///

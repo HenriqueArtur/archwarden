@@ -17,6 +17,54 @@ saying so.
 
 ## [Unreleased]
 
+## [0.24.1] — 2026-08-17
+
+One fix, and it is about the format the documentation tells a tool to use.
+
+### Fixed
+
+- **`check --format json` wrote text after the document** (#110). With a
+  `.archwarden/baseline.json` present — which is every repository that adopted
+  archwarden after its code existed — the line `N accepted` was written to
+  **stdout, past the closing brace**, so stdout was not JSON:
+
+  ```
+  $ archwarden check --format json | python3 -c "import json,sys; json.load(sys.stdin)"
+  json.decoder.JSONDecodeError: Extra data: line 263 column 1
+  ```
+
+  `AGENTS.md` tells an agent to use this format *instead of* parsing the prose,
+  so the path the documentation calls the tool path was the broken one.
+
+  **The numbers moved into the document** rather than to stderr, which is the
+  half of the fix worth stating. A baseline nobody is reminded of is a
+  suppression file, and `gone` — accepted entries that no longer occur — is the
+  only cheerful number archwarden has as well as the thing that stops a stale
+  entry hiding a violation that came back. Sending that to a stream CI throws
+  away would have fixed the parse and lost the point:
+
+  ```json
+  "summary": { "baseline": { "accepted": 78, "gone": 12 } }
+  ```
+
+  Absent when the repository has no baseline, so a consumer can tell "accepts
+  nothing" from "nothing accepted" — the distinction `summary.imports` already
+  draws. `REPORT_VERSION` stays 0 on `duration_ms`'s precedent: a consumer that
+  ignores the field reads the report exactly as before.
+
+- **And the second writer, one line above it in the same function.**
+  `check --format json --html page.html` also wrote `page written to page.html`
+  to stdout. The issue did not name it and it is the same defect, so it went in
+  the same fix: under `--format json` it goes to stderr, where the failure half
+  of that same write already went. The rule is now one sentence — in
+  `--format json`, stdout is the document and nothing else — and `AGENTS.md`
+  says it.
+
+  **The text format is untouched**, deliberately: same lines, same order, same
+  stream. The report *is* prose there, and a note beside it is part of what
+  somebody at a terminal reads.
+
+
 ## [0.24.0] — 2026-08-17
 
 What a file says about itself: ownership, stability and lifecycle, declared in
@@ -2057,7 +2105,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.1...HEAD
+[0.24.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.21.0...v0.22.0
