@@ -564,6 +564,7 @@ mod tests {
                 .collect(),
             calls: Vec::new(),
             allowances: Vec::new(),
+            metadata: Vec::new(),
             has_opaque_import: false,
         }
     }

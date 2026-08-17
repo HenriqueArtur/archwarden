@@ -345,6 +345,18 @@ const EXAMPLES: &[(&str, &str)] = &[
 }"#,
     ),
     (
+        "metadata",
+        r#"{
+  "type": "metadata",
+  "id": "payments-declares-an-owner",
+  "level": "error",
+  "roots": ["src/payments/**"],
+  "require": ["owner"],
+  "one_of": { "stability": ["stable", "experimental", "deprecated"] },
+  "why": "ADR-031: a module without an owner is a module nobody reviews"
+}"#,
+    ),
+    (
         "import-boundary",
         r#"{
   "type": "import-boundary",
@@ -497,7 +509,7 @@ mod tests {
         let read = options();
 
         let answered: Vec<&str> = read.kinds.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(answered.len(), 13, "{answered:?}");
+        assert_eq!(answered.len(), 14, "{answered:?}");
 
         for kind in &answered {
             let Some(Found::Kind(entry)) = read.find(kind) else {

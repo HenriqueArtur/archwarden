@@ -1,6 +1,6 @@
 # Rule categories
 
-archwarden ships thirteen rule categories in v0. Each has narrow, well-defined
+archwarden ships fourteen rule categories in v0. Each has narrow, well-defined
 semantics. This document is the reference for what each rule can and cannot
 express. Config syntax lives in [`CONFIG.md`](CONFIG.md).
 
@@ -11,9 +11,9 @@ engine runs them in the same order for cache-friendly evaluation.
 `mirror` reason about names and paths on disk, so they work on a repository in any
 language — or in none. `spec-pair` joins them unless `require_non_empty_spec`
 or `skip_type_only` is set. The rules that do open a file are `naming`,
-`call-obligation`, `no-passthrough`, `import-boundary` and `import-cycle` for
-JS/TS, and `frontmatter` for markdown. See decision 19 for what a new language
-costs.
+`call-obligation`, `no-passthrough`, `export-shape`, `metadata`,
+`import-boundary` and `import-cycle` for JS/TS, and `frontmatter` for markdown.
+See decision 19 for what a new language costs.
 
 **One of them reads more than the file in front of it.** `import-cycle`, and
 `import-boundary` when it sets `forbid_reaching`, ask about the whole
@@ -1479,6 +1479,136 @@ This is worth writing down because the opposite is tempting. The test is whether
 the specialised forms are **shorter to write**, not whether they are
 expressible — three kinds that are one kind wearing three names is how a format
 gets heavy.
+
+## 14. Metadata
+
+**What it enforces**: a file's **header** declares these keys about itself.
+
+**Scope**: parse. The claims come out of the same pass over the comments that
+`archwarden-allow` already uses.
+
+`frontmatter` asks a **document** to declare things about itself, and code had
+no equivalent. Ownership, stability and lifecycle are ordinary ADR content, and
+they are properties of a file that no rule could ask about:
+
+> *"Every file under `payments/` declares an `@owner`."*
+> *"An `@experimental` export carries a removal date."*
+
+```json
+{ "type": "metadata",
+  "id": "payments-declares-an-owner",
+  "level": "error",
+  "roots": ["src/payments/**"],
+  "require": ["owner"],
+  "one_of": { "stability": ["stable", "experimental", "deprecated"] },
+  "why": "ADR-031: a module without an owner is a module nobody reviews" }
+```
+
+and the file that satisfies it:
+
+```ts
+// Copyright 2026
+// archwarden-owner: payments-team
+// archwarden-stability: experimental
+
+import { db } from './db';
+export const refund = () => db;
+```
+
+### The grammar
+
+`// archwarden-<key>: <value>`, **one key per line**, in a comment above the
+file's first statement. The value is the rest of the line, trimmed; a key with
+nothing after the colon is not a claim, on the same terms as a suppression with
+no reason.
+
+**Its own prefix, not a JSDoc tag.** `@internal` and `@deprecated` already mean
+something to `tsc`, to editors and to TypeDoc, and a marker with two readers
+eventually has two interpretations: the day somebody writes `@internal` for the
+editor's benefit and archwarden reports a boundary violation is the day the
+feature gets removed. It also puts these in the same family as
+`archwarden-allow`, so a `grep` for `archwarden-` finds everything this tool
+reads out of a comment. The cost is that it is uglier than `@owner`, and that
+is the trade.
+
+**One key per line**, rather than `archwarden: owner=x, stability=y`. Fewer
+lines, and a second grammar to parse, to validate and to explain when somebody
+writes it wrong. This is the shape `archwarden-allow` already uses and the
+shape a `sed` can find.
+
+> **A suppression is never a claim.** The two grammars share a prefix, so
+> `// archwarden-allow: reason` would otherwise read as a key called `allow`.
+> One comment has one meaning, and the suppression wins — which is why a rule
+> asking for a key beginning with `allow` is **refused where the config
+> compiles** rather than left reporting an absence no file could fix.
+
+### The header, and what happens below it
+
+The header is everything above the file's first statement. A licence block
+above the claims does not push them out; a `"use client"` directive above them
+does, because a directive is the first thing the file does.
+
+A marker written lower down is **not ignored** — it is reported as misplaced:
+
+```
+error   src/payments/capture.ts:2:1
+        [*] payments-declares-an-owner — declares `owner` below the first
+            statement, where it is not read
+```
+
+Telling an author who wrote `archwarden-owner` that the file declares no owner
+is the one answer nobody can act on. This is the closed-vocabulary argument
+arriving from the other direction: what is *confidently wrong* costs more than
+what is absent.
+
+Above any export is far more useful and far more work — it needs the marker
+bound to the declaration that follows it, which is a position a suppression
+never has to solve because it applies to the next line. Left out until there is
+a rule that needs it, and the header-only reading is what keeps that door open:
+a marker above an `export` means nothing today, so it can mean something later.
+
+### The same key twice
+
+Reported, with both values:
+
+```
+declares `owner` twice, as `payments-team` and `risk-team`
+```
+
+Two claims about one thing. Picking a winner in silence would make which one
+wins something an author has to know by heart, and would hide the correction
+behind the line it was meant to replace. The questions about the value wait:
+which value a vocabulary would judge is exactly what has not been settled.
+
+### The shape is `frontmatter`'s, deliberately
+
+| field | asks |
+|---|---|
+| `require` | these keys are declared |
+| `one_of` | this key's value comes from a closed vocabulary |
+| `equals` | this key's value agrees with the path |
+
+Two kinds asking the same question of two file formats should look the same,
+and `frontmatter` already settled the hard parts: values compare as **text**
+with no type system, a value outside a closed vocabulary is worse than an
+absent one, and `equals` can tie a value to the path. `{{raw(dirname)}}` is the
+only group an agreement may name, defined exactly as it is there, and the
+transforms come along — `{{kebab(dirname)}}` is spelled the same way here.
+
+### What it never asks
+
+**Whether a value is true.** `archwarden-owner: payments-team` is a claim the
+file makes, and nothing here checks that the team exists, that they review it,
+or that the name is spelled the way the directory is. `one_of` closes the
+vocabulary and `equals` ties it to a path; both are text against text.
+
+**Anything about a specific export.** This is a file-level claim. *"Every
+`@experimental` export carries a removal date"* needs the marker bound to a
+declaration, which is the version this one deliberately leaves out.
+
+**Whether a doc comment exists.** *"Every export has a doc comment"* is a style
+question with a linter that already does it well. This is about a file
+**declaring facts about itself** that no other file can state.
 
 ## Rule interaction and evaluation order
 

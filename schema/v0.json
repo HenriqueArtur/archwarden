@@ -1362,6 +1362,82 @@
             "file_pattern",
             "must_exist"
           ]
+        },
+        {
+          "description": "What a file's header declares about itself.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier, unique across the config and its presets.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "decision": {
+              "description": "The decision this rule implements. See [`StructureRule::decision`].",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DecisionId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "roots": {
+              "description": "Directory globs whose files this rule is about.\n\nThe whole population. There is no `file_pattern` here, which is\ndecision 28's argument about `frozen`: a field decided before anybody\nasked for one, and addable later without breaking a config.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "require": {
+              "description": "Keys the header must declare.\n\nNames, written without the `archwarden-` prefix: `\"owner\"` is the key\na file declares as `// archwarden-owner: payments-team`.\n\nA key beginning with `allow` is refused where the config compiles. The\nsuppression grammar reaches that spelling first — `archwarden-allow:`\nis a suppression and never a claim — so no file could satisfy the rule\nhowever it was written.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "one_of": {
+              "description": "The closed vocabulary a key's value must come from.\n\nThe case that justifies the rule existing, on `frontmatter`'s\nreasoning: a missing key is at least an absence, and a value outside\nthe vocabulary is *confidently wrong*. Values compare as text.",
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/OneOrMany"
+              }
+            },
+            "equals": {
+              "description": "A key whose value must equal a template rendered from the path.\n\n`{{raw(dirname)}}` is the name of the directory the file sits in, and\nit is the only group this template may name — the same group, defined\nthe same way, as `frontmatter.equals`. The transforms come along:\n`{{kebab(dirname)}}` is spelled the same way here as there.",
+              "type": "object",
+              "additionalProperties": {
+                "type": "string"
+              }
+            },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something. See decision 25.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "metadata"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots"
+          ]
         }
       ]
     },

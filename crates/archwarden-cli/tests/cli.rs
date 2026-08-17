@@ -672,6 +672,136 @@ fn a_document_whose_frontmatter_is_wrong_fails_the_check() {
         .stdout(contains("why: three scripts and the generated index"));
 }
 
+/// Issue #104, end to end and through every layer that is new: the JS/TS
+/// front-end reads a second kind of marker out of the comments it already
+/// scans, the header boundary is worked out where the source text is, and the
+/// rule asks `frontmatter`'s three questions of a `.ts` file.
+///
+/// Five faults in five files, because they are five different edits.
+#[test]
+fn a_file_whose_header_declares_the_wrong_thing_fails_the_check() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"metadata","id":"payments-declares-an-owner","level":"error",
+                 "why":"a module without an owner is a module nobody reviews",
+                 "roots":["src/payments/**"],
+                 "require":["owner"],
+                 "one_of":{"stability":["stable","experimental","deprecated"]},
+                 "equals":{"module":"{{raw(dirname)}}"}}]}"#,
+        ),
+        (
+            "src/payments/refund.ts",
+            "// Copyright 2026\n\
+             // archwarden-owner: payments-team\n\
+             // archwarden-stability: stable\n\
+             // archwarden-module: payments\n\
+             export const refund = () => 1;\n",
+        ),
+        ("src/payments/charge.ts", "export const charge = () => 1;\n"),
+        (
+            "src/payments/void.ts",
+            "// archwarden-owner: payments-team\n\
+             // archwarden-stability: wip\n\
+             export const cancel = () => 1;\n",
+        ),
+        (
+            "src/payments/settle.ts",
+            "// archwarden-owner: payments-team\n\
+             // archwarden-module: billing\n\
+             export const settle = () => 1;\n",
+        ),
+        (
+            "src/payments/capture.ts",
+            "import { charge } from './charge';\n\
+             // archwarden-owner: payments-team\n\
+             export const capture = () => charge();\n",
+        ),
+        (
+            "src/payments/dispute.ts",
+            "// archwarden-owner: payments-team\n\
+             // archwarden-owner: risk-team\n\
+             export const dispute = () => 1;\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        // The key that is simply absent.
+        .stdout(contains("declares no `owner` in its header"))
+        // The value outside the vocabulary — quoted back, because it is almost
+        // always a spelling.
+        .stdout(contains("`stability` is `wip`"))
+        // The value that disagrees with the path.
+        .stdout(contains(
+            "`module` is `billing`, and the path says `payments`",
+        ))
+        // The decision the milestone turned on: a marker that is there, in the
+        // wrong place, is never reported as absent.
+        .stdout(contains(
+            "declares `owner` below the first statement, where it is not read",
+        ))
+        // Two claims about one thing, with both quoted back.
+        .stdout(contains(
+            "declares `owner` twice, as `payments-team` and `risk-team`",
+        ))
+        // A licence block above the claims does not push them out of the header.
+        .stdout(contains("refund.ts").not())
+        // The reason travels with it.
+        .stdout(contains("why: a module without an owner"));
+}
+
+/// A suppression is a suppression. The two grammars share a prefix, and the
+/// day `archwarden-allow` starts reading as a claim about a key called `allow`
+/// is the day one comment has two meanings.
+#[test]
+fn a_suppression_is_not_read_as_a_claim() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"metadata","id":"payments-declares-an-owner","level":"error",
+                 "roots":["src/payments/**"],
+                 "require":["owner"]}]}"#,
+        ),
+        (
+            "src/payments/refund.ts",
+            "// archwarden-allow: the owner of this file is being decided\n\
+             export const refund = () => 1;\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("declares no `owner` in its header"));
+}
+
+/// A key no comment could ever spell is refused where the config loads, rather
+/// than reporting every file in its scope for ever.
+#[test]
+fn a_metadata_rule_asking_for_an_unreachable_key_does_not_load() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"rules":[
+            {"type":"metadata","id":"payments-owned","level":"error",
+             "roots":["src/**"],"require":["allow"]}]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .failure()
+        .stderr(contains("archwarden-allow"));
+}
+
 /// A number in the document and a number in the config are one question in two
 /// notations, and a quoted value is the same value.
 #[test]

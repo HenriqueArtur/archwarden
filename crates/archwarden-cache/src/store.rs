@@ -25,6 +25,11 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 /// cache is a rebuildable artefact, and migration code for one is a liability
 /// nobody is paid back for. See decision 3.
 ///
+/// 7 → 8: `FileFacts::metadata`. The same dangerous shape again — an entry
+/// written by the previous build deserialises cleanly and claims the file
+/// declares nothing about itself, which is a finding against a file whose
+/// `archwarden-owner` is right there in the header. Issue #104.
+///
 /// 6 → 7: `ExportFact::returns`. The same dangerous shape as 3 → 4 and for the
 /// same reason — an entry written by the previous build deserialises cleanly
 /// and claims every export declared no return type, which is a finding against
@@ -38,7 +43,7 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 /// dangerous kind of shape change — an entry written by the previous build
 /// deserialises cleanly and claims every export annotates nothing, which is a
 /// finding against a file whose annotation is right there in the source.
-pub const FORMAT_VERSION: u32 = 7;
+pub const FORMAT_VERSION: u32 = 8;
 
 const META: TableDefinition<'_, &str, u32> = TableDefinition::new("meta");
 const FACTS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("facts");

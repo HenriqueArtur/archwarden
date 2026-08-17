@@ -17,6 +17,76 @@ saying so.
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-08-17
+
+What a file says about itself: ownership, stability and lifecycle, declared in
+the file they are about. **No existing configuration reports anything new.**
+
+### Changed — this changes nothing a config reports, and costs one cold run
+
+- **The cache format is 8.** `FileFacts` gained a field, so entries written by
+  0.23 are discarded rather than misread. You lose one warm cache and pay one
+  cold run. Misreading them would have been the expensive failure: an old entry
+  deserialises cleanly and claims the file declares nothing about itself, which
+  is a finding against a file whose `archwarden-owner` is right there in the
+  header.
+
+### Added
+
+- **`metadata`, the fourteenth rule kind** (#104). `frontmatter` asks a
+  *document* to declare things about itself, and code had no equivalent —
+  ownership, stability and lifecycle are ordinary ADR content and were
+  properties of a file no rule could ask about.
+
+  ```json
+  { "type": "metadata", "id": "payments-declares-an-owner", "level": "error",
+    "roots": ["src/payments/**"],
+    "require": ["owner"],
+    "one_of": { "stability": ["stable", "experimental", "deprecated"] },
+    "why": "ADR-031: a module without an owner is a module nobody reviews" }
+  ```
+
+  and the file that satisfies it:
+
+  ```ts
+  // archwarden-owner: payments-team
+  // archwarden-stability: experimental
+
+  import { db } from './db';
+  ```
+
+  **Its own prefix, not a JSDoc tag.** `@internal` and `@deprecated` already
+  mean something to `tsc`, to editors and to TypeDoc, and a marker with two
+  readers eventually has two interpretations. It also puts these in the same
+  family as `archwarden-allow`, so a `grep` for `archwarden-` finds everything
+  archwarden reads out of a comment.
+
+  **The shape is `frontmatter`'s, deliberately.** `require`, `one_of`,
+  `equals`, values compared as text, `{{raw(dirname)}}` in an agreement. Two
+  kinds asking the same question of two file formats should look the same.
+
+- **A marker below the header is reported, never treated as absent.** Claims
+  are read from above the file's first statement; one written lower down is a
+  finding of its own, pointing at the line it is on. Telling an author who
+  wrote `archwarden-owner` that the file declares no owner is the one answer
+  nobody can act on.
+
+- **The same key twice is reported, with both values.** Picking a winner in
+  silence would make which one wins something an author has to know by heart.
+
+- **A rule asking for an unreachable key is refused where the config loads.**
+  The suppression grammar reaches every key beginning with `allow` first —
+  `// archwarden-allow: reason` is a suppression and never a claim — so a rule
+  asking for one could never be satisfied by any file.
+
+### Reasoning
+
+Decision 30 in [`DECISIONS.md`](docs/DECISIONS.md), including why this is a
+fact of its own rather than a widening of `allowances`, why the kind is called
+`metadata` when the issue called it `annotation`, and why the header-only
+reading is what keeps the per-export version possible.
+
+
 ## [0.23.0] — 2026-08-14
 
 Two rules the config could not write: a directory that has stopped growing, and
@@ -1987,7 +2057,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.23.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.0...HEAD
+[0.24.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.22.0...v0.23.0
 [0.22.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.21.0...v0.22.0
 [0.21.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.20.0...v0.21.0

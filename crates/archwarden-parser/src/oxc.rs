@@ -108,6 +108,7 @@ impl OxcParser {
 
         let (imports, has_opaque_import) = imports(&parsed.module_record, &parsed.program);
         let allowances = allowances(&parsed.program, source);
+        let metadata = metadata(&parsed.program, source);
 
         Ok(FileFacts {
             path: path.clone(),
@@ -122,6 +123,7 @@ impl OxcParser {
             ),
             calls: calls(&parsed.program),
             allowances,
+            metadata,
             has_opaque_import,
         })
     }
@@ -374,6 +376,57 @@ fn allowances(program: &Program<'_>, source: &str) -> Vec<archwarden_core::facts
             archwarden_core::facts::AllowanceFact::parse(text, next_line(source, comment.span.end))
         })
         .collect()
+}
+
+/// Every claim the file makes about itself, in source order.
+///
+/// The second reader over the pass the suppressions already come out of, and a
+/// fact of its own at the end of it. Same list of comments, two questions:
+/// what has been silenced, and what the file says it is. Issue #104.
+///
+/// Ordinary comments are still not carried — the two markers are, and nothing
+/// else. `FileFacts` is cached per file and a repository's prose is larger
+/// than its code.
+fn metadata(program: &Program<'_>, source: &str) -> Vec<archwarden_core::facts::MetadataFact> {
+    let header_ends = header_ends(program, source);
+
+    program
+        .comments
+        .iter()
+        .filter_map(|comment| {
+            let content = comment.content_span();
+            let text = source.get(content.start as usize..content.end as usize)?;
+            archwarden_core::facts::MetadataFact::parse(
+                text,
+                comment.span.end <= header_ends,
+                archwarden_core::facts::Span::new(comment.span.start, comment.span.end),
+            )
+        })
+        .collect()
+}
+
+/// Where the file header stops: the start of the first statement.
+///
+/// A claim is about the file, so it is read from above the file's first
+/// instruction and nowhere else. A licence block above the claims does not
+/// push them out; a claim under an `import` is out, and stays readable as
+/// something else the day markers may sit above a declaration.
+///
+/// A directive counts as a statement — `"use client"` is the first thing the
+/// file does — because "everything above the first statement" is a boundary a
+/// reader can predict without knowing which of the two lists oxc files it in.
+///
+/// A file that never starts is all header: nothing has ended it.
+fn header_ends(program: &Program<'_>, source: &str) -> u32 {
+    let first_directive = program.directives.first().map(|directive| directive.span);
+    let first_statement = program.body.first().map(oxc_span::GetSpan::span);
+
+    first_directive
+        .into_iter()
+        .chain(first_statement)
+        .map(|span| span.start)
+        .min()
+        .unwrap_or_else(|| u32::try_from(source.len()).unwrap_or(u32::MAX))
 }
 
 /// The byte range of the line beginning after `offset`.
@@ -1044,6 +1097,104 @@ mod tests {
         let facts = parse("src/a.ts", "// an ordinary comment\nexport const x = 1;\n");
 
         assert!(facts.allowances.is_empty());
+        assert!(facts.metadata.is_empty());
+    }
+
+    /// The header is everything above the first statement, so a licence block
+    /// above the claims does not push them out of it. Issue #104.
+    #[test]
+    fn the_header_is_everything_above_the_first_statement() {
+        let facts = parse(
+            "src/payments/refund.ts",
+            "// Copyright 2026 the payments team\n\
+             // archwarden-owner: payments-team\n\
+             /* archwarden-stability: experimental */\n\
+             \n\
+             import { db } from './db';\n\
+             export const refund = () => db;\n",
+        );
+
+        let claimed: Vec<_> = facts
+            .metadata
+            .iter()
+            .map(|claim| (claim.key.as_str(), claim.value.as_str(), claim.in_header))
+            .collect();
+        assert_eq!(
+            claimed,
+            [
+                ("owner", "payments-team", true),
+                ("stability", "experimental", true),
+            ]
+        );
+    }
+
+    /// Below the first statement is not the header, and the marker is carried
+    /// anyway so the rule can say *that* rather than "no owner declared".
+    ///
+    /// Left out until there is a rule that needs it, per the issue: binding a
+    /// marker to the declaration under it is the per-export version's problem,
+    /// and reading this one as a file-level claim today would give the same
+    /// line a second meaning the day that version lands.
+    #[test]
+    fn a_marker_below_the_first_statement_is_carried_and_marked() {
+        let source = "import { db } from './db';\n\
+                      // archwarden-owner: payments-team\n\
+                      export const refund = () => db;\n";
+        let facts = parse("src/payments/refund.ts", source);
+
+        let claim = facts.metadata.first().expect("carried");
+        assert_eq!(claim.key, "owner");
+        assert!(!claim.in_header);
+
+        let at = &source[claim.span.start as usize..claim.span.end as usize];
+        assert_eq!(at, "// archwarden-owner: payments-team");
+    }
+
+    /// A file that is nothing but comments is all header. Nothing has started,
+    /// so nothing has ended the header.
+    #[test]
+    fn a_file_with_no_statements_is_all_header() {
+        let facts = parse("src/a.ts", "// archwarden-owner: payments-team\n");
+
+        assert!(facts.metadata.first().expect("carried").in_header);
+    }
+
+    /// A directive is a statement. `"use client"` above the claims puts them
+    /// below the header, which is the honest reading of "the file header" and
+    /// the one a reader can predict without knowing what oxc calls a directive.
+    #[test]
+    fn a_directive_ends_the_header_like_any_other_statement() {
+        let facts = parse(
+            "src/a.ts",
+            "\"use client\";\n// archwarden-owner: payments-team\nexport const x = 1;\n",
+        );
+
+        assert!(!facts.metadata.first().expect("carried").in_header);
+    }
+
+    /// A claim inside a string is a string, for the reason a suppression
+    /// inside one is: the comment list is the source, never the text.
+    #[test]
+    fn the_words_inside_a_string_are_not_a_claim() {
+        let facts = parse(
+            "src/a.ts",
+            "const sample = \"// archwarden-owner: not real\";\nexport const x = sample;\n",
+        );
+
+        assert!(facts.metadata.is_empty(), "{:?}", facts.metadata);
+    }
+
+    /// One comment, one meaning. A suppression in the header is a suppression
+    /// and is not also a claim about a key called `allow`.
+    #[test]
+    fn a_suppression_in_the_header_is_not_a_claim() {
+        let facts = parse(
+            "src/a.ts",
+            "// archwarden-allow: the vendor SDK has no types\nexport const x = 1;\n",
+        );
+
+        assert_eq!(facts.allowances.len(), 1);
+        assert!(facts.metadata.is_empty(), "{:?}", facts.metadata);
     }
 
     /// The table in docs/RULES.md, checked against a real parser rather than

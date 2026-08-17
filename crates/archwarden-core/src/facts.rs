@@ -395,6 +395,119 @@ impl AllowanceFact {
 /// The word a suppression comment starts with.
 pub const MARKER: &str = "archwarden-allow";
 
+/// The word every comment archwarden reads starts with.
+///
+/// A grep for it finds everything this tool takes out of a comment, which is
+/// half the reason the markers have a prefix of their own instead of borrowing
+/// `JSDoc`'s `@`.
+pub const PREFIX: &str = "archwarden-";
+
+/// A claim a file makes about itself, as written in a header comment.
+///
+/// The frontmatter of code. `archwarden-owner: payments-team` is ownership,
+/// stability or lifecycle written where it belongs — in the file it is about —
+/// and it is a **claim**, never a suppression. Issue #104.
+///
+/// # Why it is not a `JSDoc` tag
+///
+/// `@internal` and `@deprecated` already mean something to `tsc`, to editors
+/// and to `TypeDoc`, and a marker with two readers eventually has two
+/// interpretations. The day somebody writes `@internal` for the editor's
+/// benefit and archwarden reports a boundary violation is the day the feature
+/// gets removed. The prefix costs an uglier line and buys one meaning.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetadataFact {
+    /// The key, without the `archwarden-` prefix. Never empty.
+    pub key: String,
+    /// The value, as written, trimmed at both ends. Never empty.
+    ///
+    /// Text. There is no type system here, on the same terms as
+    /// `frontmatter`: a vocabulary compares as text, `equals` compares as
+    /// text, and a rule asking anything else is asking about the shape of a
+    /// value, which is JSON Schema's question.
+    pub value: String,
+    /// Whether it was written in the file header.
+    ///
+    /// The header is everything before the first statement, and this version
+    /// of the rule reads claims only from there — a file-level claim belongs
+    /// at file level, and above-any-export needs the marker bound to the
+    /// declaration under it, which is a position this does not have to solve.
+    ///
+    /// Worked out by the front-end, where the source text is in hand, for the
+    /// same reason [`AllowanceFact::governs`] is: by the time a rule sees
+    /// facts the text is gone, so a marker that stored only where *it* was
+    /// could never find out what came before it.
+    ///
+    /// A marker below the header is carried anyway, and this is what makes it
+    /// reportable. Dropping it would have archwarden say "this file declares
+    /// no owner" about a file with `archwarden-owner` written in it.
+    pub in_header: bool,
+    /// Where the comment appears in the source.
+    pub span: Span,
+}
+
+impl MetadataFact {
+    /// The claim a comment's text spells, if it spells one.
+    ///
+    /// ```text
+    /// // archwarden-owner: payments-team
+    /// // archwarden-stability: experimental
+    /// ```
+    ///
+    /// One key per line. `archwarden: owner=x, stability=y` is fewer lines and
+    /// a second grammar to parse, to validate and to explain when somebody
+    /// writes it wrong; this is the shape `archwarden-allow` already uses and
+    /// the shape a `sed` can find.
+    ///
+    /// **No value, no claim**, on the same terms as a suppression with no
+    /// reason. A key with nothing after the colon says nothing, and the rule
+    /// that asked for the key reports it absent — which is the honest reading
+    /// and the same next step.
+    ///
+    /// **A comment that spells a suppression is never a claim.** The two
+    /// grammars share a prefix, so `archwarden-allow: because` would otherwise
+    /// read as the key `allow` holding the word `because`. One comment has one
+    /// meaning, and the suppression is the one that wins: that grammar has to
+    /// stay small and boring, and this one gives way to it by construction
+    /// rather than by keeping a list of words in step with it.
+    #[must_use]
+    pub fn parse(text: &str, in_header: bool, span: Span) -> Option<Self> {
+        if AllowanceFact::parse(text, span).is_some() {
+            return None;
+        }
+
+        let rest = text.trim_start().strip_prefix(PREFIX)?;
+        let (key, value) = rest.split_once(':')?;
+
+        let value = value.trim();
+        // A key with whitespace inside it is prose that began with the word,
+        // exactly as it is for a suppression; an empty one is a value with
+        // nothing to hang on.
+        if value.is_empty() || key.is_empty() || key.chars().any(char::is_whitespace) {
+            return None;
+        }
+
+        Some(Self {
+            key: key.to_owned(),
+            value: value.to_owned(),
+            in_header,
+            span,
+        })
+    }
+
+    /// Whether `archwarden-<key>:` could ever be read as this key.
+    ///
+    /// It cannot when the suppression grammar reaches the spelling first, which
+    /// is every key beginning with `allow`. A rule asking for one of those
+    /// would be unenforceable however the file was written, so the config that
+    /// asks is refused where it compiles rather than left quietly reporting an
+    /// absence nobody can fix.
+    #[must_use]
+    pub fn key_is_reachable(key: &str) -> bool {
+        Self::parse(&format!("{PREFIX}{key}: value"), true, Span::new(0, 0)).is_some()
+    }
+}
+
 /// Everything archwarden knows about one file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileFacts {
@@ -415,6 +528,16 @@ pub struct FileFacts {
     /// than its code. Issue #72.
     #[serde(default)]
     pub allowances: Vec<AllowanceFact>,
+    /// Claims the file makes about itself, in source order.
+    ///
+    /// Read out of the same pass over the comments the suppressions come from,
+    /// and kept a fact of its own rather than a widening of them. They are both
+    /// markers in comments and that is where the resemblance stops: a
+    /// suppression changes what is reported, and a claim is something the file
+    /// says. Merging them would put a grammar that can silence findings and a
+    /// grammar that carries ownership in one parser. Issue #104.
+    #[serde(default)]
+    pub metadata: Vec<MetadataFact>,
     /// Whether the file has a dynamic import naming no single module.
     ///
     /// `import(name)` and ``import(`./locales/${name}`)`` are recorded nowhere
@@ -453,6 +576,9 @@ impl FileFacts {
         for call in &mut self.calls {
             shift(&mut call.span);
         }
+        for claim in &mut self.metadata {
+            shift(&mut claim.span);
+        }
     }
 
     /// Facts for a file that has been hashed but not parsed. Used for files no
@@ -467,6 +593,7 @@ impl FileFacts {
             exports: Vec::new(),
             calls: Vec::new(),
             allowances: Vec::new(),
+            metadata: Vec::new(),
             has_opaque_import: false,
         }
     }
@@ -836,6 +963,169 @@ mod tests {
                 span
             )
             .is_none()
+        );
+    }
+
+    fn header(text: &str) -> Option<MetadataFact> {
+        MetadataFact::parse(text, true, Span::new(0, 10))
+    }
+
+    /// One key per line, and the value is the rest of it. Issue #104.
+    #[test]
+    fn a_marker_is_a_key_and_the_rest_of_the_line() {
+        assert_eq!(
+            header("archwarden-owner: payments-team"),
+            Some(MetadataFact {
+                key: "owner".to_owned(),
+                value: "payments-team".to_owned(),
+                in_header: true,
+                span: Span::new(0, 10),
+            })
+        );
+    }
+
+    /// The value is trimmed at both ends and untouched in the middle: it is
+    /// text, compared as text, and a team called `payments team` is a team.
+    #[test]
+    fn the_value_keeps_what_is_inside_it() {
+        assert_eq!(
+            header("   archwarden-owner:   payments team  ")
+                .expect("a marker")
+                .value,
+            "payments team"
+        );
+    }
+
+    /// Only the first colon separates. A value is free text and a ticket
+    /// reference has one in it.
+    #[test]
+    fn a_value_may_contain_a_colon() {
+        let marker = header("archwarden-ticket: JIRA: PAY-41").expect("a marker");
+
+        assert_eq!(marker.key, "ticket");
+        assert_eq!(marker.value, "JIRA: PAY-41");
+    }
+
+    /// Nothing after the colon is nothing said, on the same terms as a
+    /// suppression with no reason: a key with no value is not a claim, and the
+    /// rule that asked for the key reports it as absent.
+    #[test]
+    fn a_marker_without_a_value_is_not_a_marker() {
+        assert!(header("archwarden-owner:").is_none());
+        assert!(header("archwarden-owner:    ").is_none());
+        assert!(
+            header("archwarden-owner").is_none(),
+            "and no colon at all is a word somebody wrote"
+        );
+        assert!(
+            header("archwarden-: payments-team").is_none(),
+            "nor is a value with no key to hang on"
+        );
+    }
+
+    /// Prose that begins with the prefix is prose, told apart the way a
+    /// suppression is: a key has no spaces in it.
+    #[test]
+    fn a_sentence_that_starts_with_the_prefix_is_not_a_marker() {
+        assert!(header("archwarden-owner and the rest are read from here: see ADR-031").is_none());
+    }
+
+    /// A comment that spells a suppression is a suppression, never a claim.
+    ///
+    /// The two grammars share a prefix and `archwarden-allow: because` would
+    /// otherwise read as the key `allow` holding the word `because`. One
+    /// comment must have one meaning — the argument the issue makes against
+    /// `JSDoc` — and the suppression is the one that wins, because that grammar
+    /// has to stay small and boring.
+    #[test]
+    fn a_suppression_is_never_a_claim() {
+        assert!(header("archwarden-allow: the vendor SDK has no types").is_none());
+        assert!(header("archwarden-allow ui-forbids-domain: one screen").is_none());
+        assert!(
+            header("archwarden-allowance: 40 hours").is_none(),
+            "including the shapes the suppression grammar reaches by accident"
+        );
+    }
+
+    /// A marker below the header is carried, and says where it was.
+    ///
+    /// Reporting "this file declares no owner" about a file with the word
+    /// `archwarden-owner` in it is the confidently-wrong failure this
+    /// repository chases, so the fact has to survive the walk to be reported.
+    #[test]
+    fn a_marker_outside_the_header_is_carried_and_says_so() {
+        let marker =
+            MetadataFact::parse("archwarden-owner: payments-team", false, Span::new(80, 99))
+                .expect("a marker");
+
+        assert!(!marker.in_header);
+        assert_eq!(marker.span, Span::new(80, 99));
+    }
+
+    /// The keys no file could ever carry are the ones the suppression grammar
+    /// reaches first, and a config asking for one is refused where it compiles
+    /// rather than left reporting an absence nobody can fix.
+    #[test]
+    fn a_key_the_suppression_grammar_swallows_is_unreachable() {
+        assert!(MetadataFact::key_is_reachable("owner"));
+        assert!(MetadataFact::key_is_reachable("stability"));
+        assert!(MetadataFact::key_is_reachable("alignment"));
+
+        assert!(!MetadataFact::key_is_reachable("allow"));
+        assert!(
+            !MetadataFact::key_is_reachable("allowance"),
+            "and every key the suppression prefix reaches, not only that one"
+        );
+        assert!(!MetadataFact::key_is_reachable("allowed-owner"));
+
+        assert!(
+            !MetadataFact::key_is_reachable("two words"),
+            "and so is a key no comment could spell"
+        );
+        assert!(!MetadataFact::key_is_reachable(""));
+    }
+
+    /// A file that uses none of this carries none of it, which is what keeps
+    /// the cache from growing for every repository that never asks.
+    #[test]
+    fn a_file_without_metadata_carries_none() {
+        let facts = FileFacts::unparsed(path(), ContentHash::of(b"source"));
+
+        assert!(facts.metadata.is_empty());
+    }
+
+    /// An `.astro` module is parsed as a slice, so every span it carries is
+    /// relative to the fence. A marker reported at the wrong line is one a
+    /// reader opens. Issue #13's argument, applied to a new fact.
+    #[test]
+    fn shifting_moves_a_metadata_span_too() {
+        let mut facts = FileFacts::unparsed(path(), ContentHash::of(b""));
+        facts.metadata.push(MetadataFact {
+            key: "owner".to_owned(),
+            value: "payments-team".to_owned(),
+            in_header: true,
+            span: Span::new(4, 34),
+        });
+
+        facts.shift_spans(100);
+
+        assert_eq!(facts.metadata[0].span, Span::new(104, 134));
+    }
+
+    #[test]
+    fn metadata_round_trips_through_json() {
+        let mut facts = FileFacts::unparsed(path(), ContentHash::of(b"source"));
+        facts.metadata.push(MetadataFact {
+            key: "stability".to_owned(),
+            value: "experimental".to_owned(),
+            in_header: false,
+            span: Span::new(4, 34),
+        });
+
+        let json = serde_json::to_string(&facts).expect("serialises");
+        assert_eq!(
+            serde_json::from_str::<FileFacts>(&json).expect("deserialises"),
+            facts
         );
     }
 }

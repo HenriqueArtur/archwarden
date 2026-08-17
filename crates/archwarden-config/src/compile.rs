@@ -72,6 +72,25 @@ pub enum CompileError {
         decision: archwarden_core::ids::DecisionId,
     },
 
+    /// A `metadata` rule asks about a key no comment could ever spell.
+    ///
+    /// The suppression grammar reaches every key beginning with `allow`
+    /// first — `// archwarden-allow: x` is a suppression and never a claim —
+    /// so a rule asking for one would report the key absent from every file in
+    /// its scope, for ever, with no edit that could satisfy it. Refused where
+    /// the config compiles, on [`UnknownDecision`](Self::UnknownDecision)'s
+    /// precedent: a rule that cannot be met is a typo, not a style.
+    #[error(
+        "rule `{rule}` asks for metadata key `{key}`, which no comment can \
+         spell: `archwarden-{key}:` reads as an `archwarden-allow` suppression"
+    )]
+    UnreachableMetadataKey {
+        /// The rule.
+        rule: RuleId,
+        /// The key nothing could declare.
+        key: String,
+    },
+
     /// A rule names a module that declared no paths.
     #[error("rule `{rule}` names module `{module}`, which declares no `scope`")]
     ModuleHasNoScope {
@@ -921,6 +940,32 @@ fn compile_rule(
                 .collect::<Result<_, CompileError>>()?,
         },
 
+        Rule::Metadata(r) => CompiledRuleKind::Metadata {
+            require: r
+                .require
+                .iter()
+                .map(|key| reachable_key(&id, key))
+                .collect::<Result<_, CompileError>>()?,
+            one_of: r
+                .one_of
+                .iter()
+                .map(|(key, values)| {
+                    Ok((
+                        reachable_key(&id, key)?,
+                        values.iter().cloned().collect::<Vec<_>>(),
+                    ))
+                })
+                .collect::<Result<_, CompileError>>()?,
+            equals: r
+                .equals
+                .iter()
+                .map(|(key, template)| {
+                    check_document_template(&id, template)?;
+                    Ok((reachable_key(&id, key)?, template.clone()))
+                })
+                .collect::<Result<_, CompileError>>()?,
+        },
+
         Rule::Frozen(_) => CompiledRuleKind::Frozen,
 
         Rule::Mirror(r) => CompiledRuleKind::Mirror {
@@ -991,6 +1036,22 @@ fn import_filter(
         )?,
         packages: packages.to_vec(),
     }))
+}
+
+/// A metadata key, refused if no comment could spell it.
+///
+/// Asked of the fact grammar itself rather than of a list of reserved words
+/// kept here, so the two can never drift: whatever the suppression parser
+/// accepts is exactly what this refuses.
+fn reachable_key(rule: &RuleId, key: &str) -> Result<String, CompileError> {
+    if archwarden_core::facts::MetadataFact::key_is_reachable(key) {
+        return Ok(key.to_owned());
+    }
+
+    Err(CompileError::UnreachableMetadataKey {
+        rule: rule.clone(),
+        key: key.to_owned(),
+    })
 }
 
 /// The only group a document template may name.
@@ -2185,6 +2246,102 @@ mod tests {
         assert!(
             error.to_string().contains("ADR-041"),
             "the message names the id that matched nothing: {error}"
+        );
+    }
+
+    /// The three claims of a `metadata` rule reach the compiled kind, and the
+    /// keys are names rather than patterns. Issue #104.
+    #[test]
+    fn a_metadata_rule_carries_its_keys_vocabularies_and_agreements() {
+        let compiled = compile_json(
+            r#"{"version":0,"rules":[{"type":"metadata","id":"payments-owned","level":"error",
+                 "roots":"src/payments/**","require":["owner"],
+                 "one_of":{"stability":["stable","experimental"]},
+                 "equals":{"module":"{{raw(dirname)}}"}}]}"#,
+        )
+        .expect("compiles");
+
+        let CompiledRuleKind::Metadata {
+            require,
+            one_of,
+            equals,
+        } = &compiled.rules().next().expect("one rule").kind
+        else {
+            panic!("expected a metadata rule");
+        };
+
+        assert_eq!(require, &["owner".to_owned()]);
+        assert_eq!(
+            one_of,
+            &[(
+                "stability".to_owned(),
+                vec!["stable".to_owned(), "experimental".to_owned()]
+            )]
+        );
+        assert_eq!(
+            equals,
+            &[("module".to_owned(), "{{raw(dirname)}}".to_owned())]
+        );
+    }
+
+    /// A key the suppression grammar reaches first is unenforceable however a
+    /// file is written: `// archwarden-allow: x` is a suppression and never a
+    /// claim. Refused where the config compiles rather than left reporting an
+    /// absence nobody can fix — the precedent `UnknownDecision` sets.
+    #[test]
+    fn a_metadata_rule_asking_for_an_unreachable_key_is_refused() {
+        let error = compile_json(
+            r#"{"version":0,"rules":[{"type":"metadata","id":"payments-owned","level":"error",
+                 "roots":"src/payments/**","require":["allowance"]}]}"#,
+        )
+        .expect_err("should refuse");
+
+        let CompileError::UnreachableMetadataKey { rule, key } = &error else {
+            panic!("expected UnreachableMetadataKey, got {error:?}");
+        };
+        assert_eq!(rule.as_str(), "payments-owned");
+        assert_eq!(key, "allowance");
+        assert!(
+            error.to_string().contains("archwarden-allow"),
+            "the message says which grammar swallows it: {error}"
+        );
+    }
+
+    /// Every clause that names a key is checked, not only `require`: a
+    /// vocabulary about a key no file can declare is the same dead rule.
+    #[test]
+    fn an_unreachable_key_is_refused_wherever_it_is_named() {
+        for clause in [
+            r#""one_of":{"allow":["yes"]}"#,
+            r#""equals":{"allow":"{{raw(dirname)}}"}"#,
+        ] {
+            let error = compile_json(&format!(
+                r#"{{"version":0,"rules":[{{"type":"metadata","id":"r","level":"error",
+                     "roots":"src/**",{clause}}}]}}"#
+            ))
+            .expect_err("should refuse");
+
+            assert!(
+                matches!(error, CompileError::UnreachableMetadataKey { .. }),
+                "expected UnreachableMetadataKey for {clause}, got {error:?}"
+            );
+        }
+    }
+
+    /// A template naming a group nothing defines is refused here as it is for
+    /// a document: a rule that quietly demanded the wrong value would be worse
+    /// than one that would not load.
+    #[test]
+    fn a_metadata_agreement_may_name_only_the_directory() {
+        let error = compile_json(
+            r#"{"version":0,"rules":[{"type":"metadata","id":"r","level":"error",
+                 "roots":"src/**","equals":{"module":"{{raw(basename)}}"}}]}"#,
+        )
+        .expect_err("should refuse");
+
+        assert!(
+            matches!(error, CompileError::Template { .. }),
+            "got {error:?}"
         );
     }
 

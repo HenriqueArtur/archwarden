@@ -1304,7 +1304,7 @@ mod tests {
                 .as_array()
                 .is_some_and(|keys| keys.len() > 8)
         );
-        assert_eq!(all["kinds"].as_array().map(Vec::len), Some(13));
+        assert_eq!(all["kinds"].as_array().map(Vec::len), Some(14));
     }
 
     /// It answers with no configuration at all, which is the moment it is

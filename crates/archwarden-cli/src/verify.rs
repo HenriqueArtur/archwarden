@@ -131,6 +131,11 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
         CompiledRuleKind::Presence { .. } => a_directory_holding_nothing(rule, engine, tree),
         CompiledRuleKind::Pair { .. } => a_file_with_no_companion(rule, engine, tree),
         CompiledRuleKind::Frontmatter { .. } => a_document_with_no_block(rule, engine, tree),
+        CompiledRuleKind::Metadata {
+            require,
+            one_of,
+            equals,
+        } => a_file_declaring_the_wrong_thing(rule, engine, tree, require, one_of, equals),
         // Both are file-existence questions, which is the easiest kind to
         // plant: one file that should not be there, and one that should.
         CompiledRuleKind::Frozen => a_file_added_to_a_freeze(rule, engine, tree),
@@ -201,6 +206,94 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
                   of one shape would tick for a rule about another"
                 .to_owned(),
         },
+    }
+}
+
+/// A file this rule covers, handed a header that cannot satisfy it.
+///
+/// Two plants in one, because a `metadata` rule can ask two different kinds of
+/// question and a probe for one would tick for the other. Keys the rule only
+/// *requires* are left undeclared — the headline case, and the same absence
+/// `a_document_with_no_block` plants one rule over. Keys it asks a question
+/// *about* are declared with a value that provably fails: a vocabulary is
+/// refused by a string longer than every word in it, and an agreement by the
+/// wanted value with a character stuck on the end.
+fn a_file_declaring_the_wrong_thing(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+    require: &[String],
+    one_of: &[(String, Vec<String>)],
+    equals: &[(String, String)],
+) -> Verdict {
+    let Some(covered) = tree
+        .directories()
+        .flat_map(|(_, directory)| directory.files.iter())
+        .map(|file| &file.path)
+        .find(|path| engine.applies_to(path))
+    else {
+        return Verdict::Unverified {
+            why: format!("no file in this repository is one `{}` is about", rule.id),
+        };
+    };
+
+    let mut facts = FileFacts::unparsed(covered.clone(), ContentHash::of(PROBE.as_bytes()));
+    let mut planted = false;
+
+    for (key, accepted) in one_of {
+        // Longer than every word in the vocabulary, so it is none of them.
+        facts
+            .metadata
+            .push(claim(key, &format!("{}-", accepted.concat())));
+        planted = true;
+    }
+    for (key, _) in equals {
+        // An agreement's wanted value is rendered from the path, and working it
+        // out here would be this module's own warning: a probe that
+        // reimplements what it checks ticks when both are wrong the same way.
+        // The same key declared twice violates the rule on its own terms and
+        // needs to know nothing about templates.
+        facts.metadata.push(claim(key, PROBE));
+        facts.metadata.push(claim(key, PROBE));
+        planted = true;
+    }
+
+    let on = if planted {
+        format!("`{covered}` with a header this rule refuses")
+    } else if require.is_empty() {
+        return Verdict::Unverified {
+            why: format!(
+                "`{}` asks for no key, so there is nothing to plant",
+                rule.id
+            ),
+        };
+    } else {
+        format!("`{covered}` declaring nothing about itself")
+    };
+
+    let findings = engine.check_file(FileContext {
+        path: covered,
+        facts: Some(&facts),
+        docs: None,
+        siblings: &[],
+        exists: Exists::none(),
+        graph: None,
+    });
+
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
+    }
+}
+
+/// One synthesised claim, in the header where the rule reads them.
+fn claim(key: &str, value: &str) -> archwarden_core::facts::MetadataFact {
+    archwarden_core::facts::MetadataFact {
+        key: key.to_owned(),
+        value: value.to_owned(),
+        in_header: true,
+        span: Span::new(0, 0),
     }
 }
 
@@ -1016,6 +1109,108 @@ mod tests {
         let mut verifications = verify(&config, &tree);
         drop(guard);
         verifications.pop().expect("one rule, one verdict").verdict
+    }
+
+    fn metadata(
+        require: &[&str],
+        one_of: &[(&str, &[&str])],
+        equals: &[(&str, &str)],
+    ) -> CompiledRuleKind {
+        CompiledRuleKind::Metadata {
+            require: require.iter().map(|k| (*k).to_owned()).collect(),
+            one_of: one_of
+                .iter()
+                .map(|(key, values)| {
+                    (
+                        (*key).to_owned(),
+                        values.iter().map(|v| (*v).to_owned()).collect(),
+                    )
+                })
+                .collect(),
+            equals: equals
+                .iter()
+                .map(|(key, template)| ((*key).to_owned(), (*template).to_owned()))
+                .collect(),
+        }
+    }
+
+    /// The headline claim, planted as an absence: a file declaring nothing.
+    #[test]
+    fn a_metadata_rule_requiring_a_key_is_reported_as_firing() {
+        let verdict = verdict(
+            &["src/payments/refund.ts"],
+            vec![rule(
+                "payments-declares-an-owner",
+                &["src/payments/**"],
+                metadata(&["owner"], &[], &[]),
+            )],
+        );
+
+        assert!(
+            matches!(&verdict, Verdict::Fires { on } if on.contains("declaring nothing about itself")),
+            "{verdict:?}"
+        );
+    }
+
+    /// A rule that only asks what a value must be is satisfied by a file that
+    /// declares nothing, so the probe has to declare something the rule
+    /// refuses. Both clauses, because they are planted two different ways.
+    #[test]
+    fn a_metadata_rule_asking_only_about_values_is_still_probed() {
+        for kind in [
+            metadata(&[], &[("stability", &["stable", "experimental"])], &[]),
+            metadata(&[], &[], &[("module", "{{raw(dirname)}}")]),
+        ] {
+            let verdict = verdict(
+                &["src/payments/refund.ts"],
+                vec![rule("payments-owned", &["src/payments/**"], kind.clone())],
+            );
+
+            assert!(
+                matches!(&verdict, Verdict::Fires { on } if on.contains("a header this rule refuses")),
+                "{kind:?} gave {verdict:?}"
+            );
+        }
+    }
+
+    /// A rule that asks for nothing is reported as unverified rather than as
+    /// firing or silent: there is no violation of its terms to plant, and
+    /// saying so is worth more than a confident answer to a question nobody
+    /// asked.
+    #[test]
+    fn a_metadata_rule_asking_for_nothing_is_unverified() {
+        let verdict = verdict(
+            &["src/payments/refund.ts"],
+            vec![rule(
+                "payments-owned",
+                &["src/payments/**"],
+                metadata(&[], &[], &[]),
+            )],
+        );
+
+        assert!(
+            matches!(&verdict, Verdict::Unverified { why } if why.contains("asks for no key")),
+            "{verdict:?}"
+        );
+    }
+
+    /// A rule whose scope reaches no file in this repository cannot be probed,
+    /// and the reason is stated rather than guessed at.
+    #[test]
+    fn a_metadata_rule_reaching_nothing_is_unverified() {
+        let verdict = verdict(
+            &["src/billing/invoice.ts"],
+            vec![rule(
+                "payments-owned",
+                &["src/payments/**"],
+                metadata(&["owner"], &[], &[]),
+            )],
+        );
+
+        assert!(
+            matches!(&verdict, Verdict::Unverified { why } if why.contains("no file in this repository")),
+            "{verdict:?}"
+        );
     }
 
     /// The rule the issue's author proved by hand, by planting a file and

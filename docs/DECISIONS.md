@@ -17,6 +17,90 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 30 — A claim in a comment is a fact of its own, and the header is where it lives
+Status: accepted.
+Context: issue #104. `frontmatter` asks a **document** to declare things about
+itself, and code had no equivalent. Ownership, stability and lifecycle are
+ordinary ADR content — *"every file under `payments/` declares an `@owner`"* —
+and they were properties of a file no rule could ask about.
+
+Decision: a `metadata` kind reading `// archwarden-<key>: value` out of the
+file header, carrying `frontmatter`'s three claims unchanged.
+
+**Its own prefix, not JSDoc.** `@internal` and `@deprecated` already mean
+something to `tsc`, to editors and to TypeDoc, and a marker with two readers
+eventually has two interpretations: the day somebody writes `@internal` for the
+editor's benefit and archwarden reports a boundary violation is the day the
+feature gets removed. It also puts this in the same family as
+`archwarden-allow`, so a `grep` for `archwarden-` finds everything this tool
+reads out of a comment. The cost is that it is uglier than `@owner`.
+
+**Called `metadata`, not `annotation`** — the one thing the issue's sketch got
+changed. `naming.must_export.annotation` already means *"a TypeScript type is
+written down"*, and `ExportFact::annotations` already carries those. A kind
+called `annotation` would put the same word in a config with two meanings one
+line apart, and two fields called `annotations` in one `facts.rs` with two
+meanings. That is the issue's own argument against JSDoc — a marker with two
+readers ends with two interpretations — applied to a word instead of a marker.
+The marker a user writes is unaffected: it is still `archwarden-owner`.
+
+**A fact of its own, not a widening of `allowances`.** They are both markers in
+comments and that is where the resemblance stops: a suppression changes what is
+reported, and a claim is something the file says. Merging them would put a
+grammar that can silence findings and a grammar that carries ownership in one
+parser, and the first has to stay small and boring for a reason. Same pass over
+the comments; two facts out of it.
+
+**And where they touch, the suppression wins.** The two grammars share a
+prefix, so `archwarden-allow: reason` would otherwise read as a key called
+`allow` holding the word `reason`. Rather than keep a list of reserved words in
+step with the suppression parser, the claim parser asks *that* parser first:
+whatever it accepts is not a claim. The same question answers the config side —
+a rule asking for a key beginning with `allow` is unenforceable however a file
+is written, and is refused where a rule naming an undeclared decision is.
+
+**The header only, and everything below it is reported rather than ignored.**
+The header is everything above the first statement, which reserves the space
+for the per-export version the issue defers: a marker above an `export` means
+nothing today, so it can mean something later without the same line acquiring a
+second meaning. What building settled is the other half — a marker written
+lower down is a finding of its own, `MetadataOutsideHeader`, not an absence.
+Telling an author who wrote `archwarden-owner` that the file declares no owner
+is the one answer nobody can act on, and it is the closed-vocabulary argument
+arriving from the other direction: confidently wrong costs more than absent.
+That is what makes the fact carry markers it will not read, and the flag that
+says so is worked out in the front-end, where the source text is, for the
+reason `AllowanceFact::governs` is.
+
+**The same key twice is reported, not resolved.** Two claims about one thing.
+A winner would be something an author has to know by heart, and would hide the
+correction behind the line it was meant to replace. The questions about the
+value wait, because which value a vocabulary would judge is exactly what has
+not been settled.
+
+**No `file_pattern`**, on decision 28's argument about `frozen`: a field
+decided before anybody asked for one, addable later without breaking a config.
+
+Alternatives:
+- **JSDoc tags.** Shorter, familiar, and already understood by every editor —
+  which is the problem, above.
+- **Pairs on one line.** Fewer lines and a second grammar to explain when
+  somebody writes it wrong.
+- **Above any export, in this version.** Far more useful and far more work: it
+  needs the marker bound to the declaration that follows it, a position a
+  suppression never has to solve. `presence` of an owner is a file-level claim
+  and covers the reported cases.
+- **Widening `allowances`.** One parser, one pass, and a suppression grammar
+  that starts carrying ownership.
+- **Ignoring a marker below the header.** Less code and a smaller fact, and it
+  reports the one thing an author cannot act on.
+Consequences: `FileFacts` gained a field, so `FORMAT_VERSION` goes to 8 and a
+warm cache is discarded once — the dangerous shape, as 3 → 4 and 6 → 7 were:
+an entry written by the previous build deserialises cleanly and claims the file
+declares nothing, which is a finding against a file whose `archwarden-owner` is
+right there. Nothing an existing config reports changes otherwise: no rule of
+this kind exists until one is written.
+
 ### 29 — A mirror is `presence` fed by `naming`'s renderer
 Status: accepted.
 Context: issue #103. `pair` and `spec-pair` both look in the *same directory*,
