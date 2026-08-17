@@ -260,6 +260,20 @@ pub enum CompiledRuleKind {
         /// A key whose value must equal this template, rendered from the path.
         equals: Vec<(String, String)>,
     },
+    /// A file's header must declare these keys about itself.
+    ///
+    /// `frontmatter`'s three claims, asked of code. The values live in
+    /// `archwarden-<key>:` comments above the first statement, and the shape is
+    /// deliberately the document rule's: two kinds asking the same question of
+    /// two file formats should look the same. Issue #104.
+    Metadata {
+        /// Keys the header must declare.
+        require: Vec<String>,
+        /// The closed vocabulary a key's value must come from, as text.
+        one_of: Vec<(String, Vec<String>)>,
+        /// A key whose value must equal this template, rendered from the path.
+        equals: Vec<(String, String)>,
+    },
     /// Files matching a pattern must call a symbol.
     CallObligation {
         /// Regex over the filename.
@@ -302,6 +316,7 @@ impl CompiledRuleKind {
             Self::Presence { .. } => "presence",
             Self::Pair { .. } => "pair",
             Self::Frontmatter { .. } => "frontmatter",
+            Self::Metadata { .. } => "metadata",
             Self::CallObligation { .. } => "call-obligation",
             Self::ExportShape(_) => "export-shape",
             Self::Frozen => "frozen",
@@ -342,7 +357,10 @@ impl CompiledRuleKind {
             | Self::NoPassthrough { .. }
             // Every one of its three claims is about the exports, which is
             // the one thing here that cannot be read off a directory listing.
-            | Self::ExportShape(_) => true,
+            | Self::ExportShape(_)
+            // The claims are in the comments, and the comments come out of
+            // the same pass as everything else this front-end reads.
+            | Self::Metadata { .. } => true,
         }
     }
 }
@@ -1323,6 +1341,7 @@ mod import_filter_tests {
                 })
                 .collect(),
             allowances: Vec::new(),
+            metadata: Vec::new(),
             has_opaque_import: false,
         }
     }

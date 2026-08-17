@@ -197,14 +197,40 @@ pub fn describe_observed(observed: &Observed) -> String {
         // The value is quoted back rather than merely called wrong: a
         // vocabulary miss is almost always a spelling, and seeing the spelling
         // is the fix.
-        Observed::FrontmatterValueOutsideVocabulary { key, found } => {
+        //
+        // One sentence for the document and the code, because it is one
+        // sentence: a key, the value written there, and the vocabulary it is
+        // not in. Where the value lives is already on the finding's path, and
+        // the `expected` half names the block or the header.
+        Observed::FrontmatterValueOutsideVocabulary { key, found }
+        | Observed::MetadataOutsideVocabulary { key, found } => {
             format!("`{key}` is `{found}`, which is not one of the accepted values")
         }
-        Observed::FrontmatterValueDisagrees { key, found, wanted } => {
+        Observed::FrontmatterValueDisagrees { key, found, wanted }
+        | Observed::MetadataDisagrees { key, found, wanted } => {
             format!("`{key}` is `{found}`, and the path says `{wanted}`")
         }
         Observed::FrontmatterValueNotScalar { key } => {
             format!("`{key}` is not a single value, so there is nothing to compare")
+        }
+        Observed::MetadataMissing { key } => {
+            format!("declares no `{key}` in its header")
+        }
+        // The sentence has to say where the marker *is*, because the reader is
+        // looking at a file that contains the word they are told is missing.
+        Observed::MetadataOutsideHeader { key } => {
+            format!("declares `{key}` below the first statement, where it is not read")
+        }
+        // Every value, not a count: which two claims disagree is the whole
+        // question, and "twice" alone sends the reader back to the file.
+        Observed::MetadataDeclaredTwice { key, found } => {
+            let quoted: Vec<String> = found.iter().map(|value| format!("`{value}`")).collect();
+            let listed = match quoted.split_last() {
+                None => "nothing".to_owned(),
+                Some((last, [])) => last.clone(),
+                Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+            };
+            format!("declares `{key}` twice, as {listed}")
         }
         Observed::CompanionMissing { path } | Observed::SiblingMissing { path } => {
             format!("`{path}` does not exist")
@@ -854,6 +880,58 @@ mod tests {
             let sentence = describe_observed(&observed);
             assert!(
                 sentence.contains(expected_fragment),
+                "{observed:?} rendered as {sentence}"
+            );
+        }
+    }
+
+    /// Issue #104. Five ways a header can disappoint a rule, and five
+    /// sentences, because they are five different edits. The last two are the
+    /// ones that pay for themselves: "declares no owner" about a file with
+    /// `archwarden-owner` written in it is the one answer nobody can act on.
+    #[test]
+    fn a_metadata_fault_reads_as_a_sentence() {
+        let cases = [
+            (
+                Observed::MetadataMissing {
+                    key: "owner".to_owned(),
+                },
+                "declares no `owner` in its header",
+            ),
+            (
+                Observed::MetadataOutsideVocabulary {
+                    key: "stability".to_owned(),
+                    found: "wip".to_owned(),
+                },
+                "`stability` is `wip`, which is not one of the accepted values",
+            ),
+            (
+                Observed::MetadataDisagrees {
+                    key: "module".to_owned(),
+                    found: "billing".to_owned(),
+                    wanted: "payments".to_owned(),
+                },
+                "`module` is `billing`, and the path says `payments`",
+            ),
+            (
+                Observed::MetadataOutsideHeader {
+                    key: "owner".to_owned(),
+                },
+                "declares `owner` below the first statement, where it is not read",
+            ),
+            (
+                Observed::MetadataDeclaredTwice {
+                    key: "owner".to_owned(),
+                    found: vec!["payments-team".to_owned(), "billing-team".to_owned()],
+                },
+                "declares `owner` twice, as `payments-team` and `billing-team`",
+            ),
+        ];
+
+        for (observed, fragment) in cases {
+            let sentence = describe_observed(&observed);
+            assert!(
+                sentence.contains(fragment),
                 "{observed:?} rendered as {sentence}"
             );
         }

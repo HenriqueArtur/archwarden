@@ -984,12 +984,18 @@ fn render_unattempted_skips(report: &Report, out: &mut dyn std::io::Write) {
     }
 }
 
-/// What a document's frontmatter must carry.
+/// What a file must declare about itself, in a block or in a header.
 ///
 /// Three clauses, in the order the rule reads them: the keys, then the closed
 /// vocabularies, then the agreements with the path. Each is skipped when the
 /// rule did not ask for it, so a rule that only names keys gets one clause.
-fn describe_frontmatter(
+///
+/// `frontmatter` and `metadata` share every clause but the first, because they
+/// are the same three questions asked of two file formats. Only the lead
+/// differs, and it has to: a reader following a finding about a `.ts` file must
+/// not be sent looking for a YAML block.
+fn describe_declarations(
+    lead: &str,
     keys: &[String],
     vocabularies: &[(String, Vec<String>)],
     agreements: &[(String, String)],
@@ -998,7 +1004,7 @@ fn describe_frontmatter(
 
     if !keys.is_empty() {
         let quoted: Vec<&str> = keys.iter().map(String::as_str).collect();
-        parts.push(format!("frontmatter carrying {}", join_and(&quoted)));
+        parts.push(format!("{lead} {}", join_and(&quoted)));
     }
     for (key, accepted) in vocabularies {
         let quoted: Vec<&str> = accepted.iter().map(String::as_str).collect();
@@ -1135,7 +1141,12 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
             keys,
             vocabularies,
             agreements,
-        } => describe_frontmatter(keys, vocabularies, agreements),
+        } => describe_declarations("frontmatter carrying", keys, vocabularies, agreements),
+        Expectation::DeclaredMetadata {
+            keys,
+            vocabularies,
+            agreements,
+        } => describe_declarations("a header declaring", keys, vocabularies, agreements),
         Expectation::FilenamePattern { patterns } => {
             format!("a file name matching {}", join_or(patterns, "no pattern"))
         }
@@ -1911,6 +1922,39 @@ mod tests {
     }
 
     /// What the rule wants, for someone who has not read the config.
+    #[test]
+    fn declared_metadata_reads_as_a_sentence() {
+        let expected = describe_expectation(&Expectation::DeclaredMetadata {
+            keys: vec!["owner".to_owned(), "stability".to_owned()],
+            vocabularies: vec![(
+                "stability".to_owned(),
+                vec!["stable".to_owned(), "experimental".to_owned()],
+            )],
+            agreements: vec![("module".to_owned(), "payments".to_owned())],
+        });
+
+        assert_eq!(
+            expected,
+            "a header declaring `owner` and `stability`, \
+             with `stability` one of `stable` or `experimental`, \
+             and `module` equal to `payments`"
+        );
+    }
+
+    /// A rule that only names keys gets one clause, and the sentence has to
+    /// say where they go — a reader who has never met the marker cannot guess
+    /// its spelling from `owner`.
+    #[test]
+    fn declared_metadata_says_where_the_claims_go() {
+        let expected = describe_expectation(&Expectation::DeclaredMetadata {
+            keys: vec!["owner".to_owned()],
+            vocabularies: Vec::new(),
+            agreements: Vec::new(),
+        });
+
+        assert_eq!(expected, "a header declaring `owner`");
+    }
+
     #[test]
     fn a_required_frontmatter_reads_as_a_sentence() {
         let expected = describe_expectation(&Expectation::RequiredFrontmatter {

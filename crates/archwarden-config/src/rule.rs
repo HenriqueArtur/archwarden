@@ -66,6 +66,8 @@ pub enum Rule {
     Frozen(FrozenRule),
     /// A counterpart in a parallel tree.
     Mirror(MirrorRule),
+    /// What a file's header declares about itself.
+    Metadata(MetadataRule),
 }
 
 impl Rule {
@@ -86,6 +88,7 @@ impl Rule {
             Self::ExportShape(r) => &r.id,
             Self::Frozen(r) => &r.id,
             Self::Mirror(r) => &r.id,
+            Self::Metadata(r) => &r.id,
         }
     }
 
@@ -106,6 +109,7 @@ impl Rule {
             Self::ExportShape(r) => r.level,
             Self::Frozen(r) => r.level,
             Self::Mirror(r) => r.level,
+            Self::Metadata(r) => r.level,
         }
     }
 
@@ -126,6 +130,7 @@ impl Rule {
             Self::ExportShape(r) => r.why.as_deref(),
             Self::Frozen(r) => r.why.as_deref(),
             Self::Mirror(r) => r.why.as_deref(),
+            Self::Metadata(r) => r.why.as_deref(),
         }
     }
 
@@ -150,6 +155,7 @@ impl Rule {
             Self::ExportShape(r) => r.decision.as_ref(),
             Self::Frozen(r) => r.decision.as_ref(),
             Self::Mirror(r) => r.decision.as_ref(),
+            Self::Metadata(r) => r.decision.as_ref(),
         }
     }
 
@@ -174,6 +180,7 @@ impl Rule {
             Self::ExportShape(r) => &r.roots,
             Self::Frozen(r) => &r.roots,
             Self::Mirror(r) => &r.roots,
+            Self::Metadata(r) => &r.roots,
         }
     }
 
@@ -205,6 +212,7 @@ impl Rule {
             Self::ExportShape(r) => &r.when_importing,
             Self::Frozen(r) => &r.when_importing,
             Self::Mirror(r) => &r.when_importing,
+            Self::Metadata(r) => &r.when_importing,
         }
     }
 
@@ -225,6 +233,7 @@ impl Rule {
             Self::ExportShape(r) => &r.when_importing_packages,
             Self::Frozen(r) => &r.when_importing_packages,
             Self::Mirror(r) => &r.when_importing_packages,
+            Self::Metadata(r) => &r.when_importing_packages,
         }
     }
 
@@ -245,6 +254,7 @@ impl Rule {
             Self::ExportShape(_) => "export-shape",
             Self::Frozen(_) => "frozen",
             Self::Mirror(_) => "mirror",
+            Self::Metadata(_) => "metadata",
         }
     }
 }
@@ -2290,6 +2300,102 @@ pub struct MirrorRule {
     /// Only that the counterpart **exists** is checked. *"And it must contain a
     /// test case"* is `spec-pair`'s question and has an answer there already.
     pub must_exist: String,
+    /// Narrow this rule to the files that import something. See decision 25.
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
+}
+
+/// What a file's header declares about itself.
+///
+/// `frontmatter` asks a **document** to declare things about itself, and code
+/// had no equivalent. Ownership, stability and lifecycle are ordinary ADR
+/// content — *"every file under `payments/` declares an `@owner`"*, *"an
+/// experimental export carries a removal date"* — and they are properties of a
+/// file that no rule could ask about. Issue #104.
+///
+/// # The grammar
+///
+/// One key per line, in a comment above the file's first statement:
+///
+/// ```text
+/// // archwarden-owner: payments-team
+/// // archwarden-stability: experimental
+/// ```
+///
+/// **Its own prefix, not a `JSDoc` tag.** `@internal` and `@deprecated` already
+/// mean something to `tsc`, to editors and to `TypeDoc`, and a marker with two
+/// readers eventually has two interpretations: the day somebody writes
+/// `@internal` for the editor's benefit and archwarden reports a boundary
+/// violation is the day the feature gets removed. It also puts these in the
+/// same family as `archwarden-allow`, so a `grep` for `archwarden-` finds
+/// everything this tool reads out of a comment. The cost is that it is uglier
+/// than `@owner`, and that is the trade.
+///
+/// **One key per line**, rather than `archwarden: owner=x, stability=y`. Fewer
+/// lines and a second grammar to parse, to validate and to explain when
+/// somebody writes it wrong; this is the shape `archwarden-allow` already uses
+/// and the shape a `sed` can find.
+///
+/// **The header only, in this version.** Above any export is far more useful
+/// and far more work — it needs the marker bound to the declaration that
+/// follows it. A marker written lower down is not ignored: it is reported as
+/// misplaced, because telling an author who wrote `archwarden-owner` that the
+/// file declares no owner is the one answer they cannot act on.
+///
+/// # The shape is `frontmatter`'s, deliberately
+///
+/// Two kinds asking the same question of two file formats should look the
+/// same, and the document rule already settled the hard parts: values compare
+/// as **text** with no type system, a value outside a closed vocabulary is
+/// worse than an absent one, and `equals` can tie a value to the path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct MetadataRule {
+    /// Stable identifier, unique across the config and its presets.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// The decision this rule implements. See [`StructureRule::decision`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
+    /// Directory globs whose files this rule is about.
+    ///
+    /// The whole population. There is no `file_pattern` here, which is
+    /// decision 28's argument about `frozen`: a field decided before anybody
+    /// asked for one, and addable later without breaking a config.
+    pub roots: Patterns,
+    /// Keys the header must declare.
+    ///
+    /// Names, written without the `archwarden-` prefix: `"owner"` is the key
+    /// a file declares as `// archwarden-owner: payments-team`.
+    ///
+    /// A key beginning with `allow` is refused where the config compiles. The
+    /// suppression grammar reaches that spelling first — `archwarden-allow:`
+    /// is a suppression and never a claim — so no file could satisfy the rule
+    /// however it was written.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub require: Patterns,
+    /// The closed vocabulary a key's value must come from.
+    ///
+    /// The case that justifies the rule existing, on `frontmatter`'s
+    /// reasoning: a missing key is at least an absence, and a value outside
+    /// the vocabulary is *confidently wrong*. Values compare as text.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub one_of: std::collections::BTreeMap<String, Patterns>,
+    /// A key whose value must equal a template rendered from the path.
+    ///
+    /// `{{raw(dirname)}}` is the name of the directory the file sits in, and
+    /// it is the only group this template may name — the same group, defined
+    /// the same way, as `frontmatter.equals`. The transforms come along:
+    /// `{{kebab(dirname)}}` is spelled the same way here as there.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub equals: std::collections::BTreeMap<String, String>,
     /// Narrow this rule to the files that import something. See decision 25.
     #[serde(default, skip_serializing_if = "Patterns::is_empty")]
     pub when_importing: Patterns,

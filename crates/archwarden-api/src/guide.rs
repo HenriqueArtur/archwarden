@@ -126,7 +126,7 @@ pub struct GuideRule<'a> {
 /// and it is load-bearing: `no-passthrough` was missing from this list from the
 /// day that rule shipped, so `agent-guide --kinds no-passthrough` refused a
 /// kind archwarden has.
-pub const KINDS: [&str; 13] = [
+pub const KINDS: [&str; 14] = [
     "structure",
     "naming",
     "spec-pair",
@@ -140,6 +140,7 @@ pub const KINDS: [&str; 13] = [
     "export-shape",
     "frozen",
     "mirror",
+    "metadata",
 ];
 
 /// Checks the kinds a caller asked for.
@@ -485,6 +486,31 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             }
             lines
         }
+        CompiledRuleKind::Metadata {
+            require,
+            one_of,
+            equals,
+        } => {
+            let mut lines = vec![
+                "claims go as `// archwarden-<key>: value` above the first statement".to_owned(),
+            ];
+            if !require.is_empty() {
+                let quoted: Vec<String> = require.iter().map(|k| format!("`{k}`")).collect();
+                lines.push(format!(
+                    "files declare, in a header comment: {}",
+                    quoted.join(", ")
+                ));
+            }
+            for (key, accepted) in one_of {
+                let quoted: Vec<String> = accepted.iter().map(|v| format!("`{v}`")).collect();
+                lines.push(format!("`{key}` one of: {}", quoted.join(", ")));
+            }
+            for (key, template) in equals {
+                lines.push(format!("`{key}` equal to `{template}`"));
+            }
+            lines
+        }
+
         CompiledRuleKind::Frontmatter {
             file_pattern,
             require,
@@ -800,6 +826,63 @@ mod tests {
         assert!(!markdown.contains("only "), "{markdown}");
     }
 
+    /// Issue #104. The digest is what an agent has before it writes a file,
+    /// and a claim it does not know to make is one nothing prompts it for.
+    #[test]
+    fn a_metadata_rule_lists_what_the_header_must_declare() {
+        let config = config(vec![rule(
+            "payments-owned",
+            None,
+            &["src/payments/**"],
+            CompiledRuleKind::Metadata {
+                require: vec!["owner".to_owned()],
+                one_of: vec![(
+                    "stability".to_owned(),
+                    vec!["stable".to_owned(), "experimental".to_owned()],
+                )],
+                equals: vec![("module".to_owned(), "{{raw(dirname)}}".to_owned())],
+            },
+        )]);
+
+        let markdown = sentences(&config, None, &[]);
+
+        assert!(
+            markdown.contains("files declare, in a header comment: `owner`"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("`stability` one of: `stable`, `experimental`"),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("`module` equal to `{{raw(dirname)}}`"),
+            "{markdown}"
+        );
+    }
+
+    /// The line an agent needs most, because it cannot guess the spelling: the
+    /// marker is `// archwarden-<key>:` and it lives above the first statement.
+    #[test]
+    fn a_metadata_rule_says_where_the_claims_go() {
+        let config = config(vec![rule(
+            "payments-owned",
+            None,
+            &["src/payments/**"],
+            CompiledRuleKind::Metadata {
+                require: vec!["owner".to_owned()],
+                one_of: Vec::new(),
+                equals: Vec::new(),
+            },
+        )]);
+
+        assert!(
+            sentences(&config, None, &[])
+                .contains("as `// archwarden-<key>: value` above the first statement"),
+            "{}",
+            sentences(&config, None, &[])
+        );
+    }
+
     /// Issue #44. The digest is what an agent has before it writes a document,
     /// and the frontmatter is the half a human never reads.
     #[test]
@@ -1047,6 +1130,11 @@ mod tests {
             CompiledRuleKind::Mirror {
                 file_pattern: Pattern::compile(r"^(?<name>[a-z-]+)\.ts$").expect("valid pattern"),
                 must_exist: "migrations/{{raw(name)}}.sql".to_owned(),
+            },
+            CompiledRuleKind::Metadata {
+                require: Vec::new(),
+                one_of: Vec::new(),
+                equals: Vec::new(),
             },
         ];
 

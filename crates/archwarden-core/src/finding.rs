@@ -166,6 +166,23 @@ pub enum Expectation {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         agreements: Vec<(String, String)>,
     },
+    /// A file's header must declare these keys about itself.
+    ///
+    /// The same three claims as [`RequiredFrontmatter`](Self::RequiredFrontmatter)
+    /// and deliberately so: two kinds asking the same question of two file
+    /// formats should look the same. Kept a variant of its own because the
+    /// place the answer is written is different, and a reader following a
+    /// finding to a `.ts` file must not be sent looking for a YAML block.
+    DeclaredMetadata {
+        /// Keys the header must carry.
+        keys: Vec<String>,
+        /// The closed vocabulary a key's value must come from.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        vocabularies: Vec<(String, Vec<String>)>,
+        /// A key whose value must equal this, already rendered from the path.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        agreements: Vec<(String, String)>,
+    },
     /// A companion file must exist, named relative to this one.
     ///
     /// Distinct from [`RequiredSibling`](Self::RequiredSibling), which carries
@@ -456,6 +473,53 @@ pub enum Observed {
     FrontmatterValueNotScalar {
         /// The key.
         key: String,
+    },
+    /// The file's header declares no such key.
+    MetadataMissing {
+        /// The key that was looked for.
+        key: String,
+    },
+    /// A key's value is outside the closed vocabulary the rule names.
+    ///
+    /// The confidently-wrong case, on the same terms `frontmatter` states it:
+    /// worse than an absence, because whatever reads the value gets an answer
+    /// and the answer is not one of the ones that mean anything.
+    MetadataOutsideVocabulary {
+        /// The key.
+        key: String,
+        /// What was written there.
+        found: String,
+    },
+    /// A key's value does not agree with what the path says it should be.
+    MetadataDisagrees {
+        /// The key.
+        key: String,
+        /// What was written there.
+        found: String,
+        /// What the path says it should be.
+        wanted: String,
+    },
+    /// The key is declared, below the header, where nothing reads it.
+    ///
+    /// Its own finding rather than an absence, and that is the whole reason
+    /// the fact survives the walk: "this file declares no owner" about a file
+    /// with `archwarden-owner` written in it is the failure the closed
+    /// vocabulary exists to prevent, arriving from the other direction. The
+    /// author believes they have already said it.
+    MetadataOutsideHeader {
+        /// The key that was written in the wrong place.
+        key: String,
+    },
+    /// The header declares the same key more than once.
+    ///
+    /// Two claims about one thing. Picking a winner in silence would make
+    /// which one wins something an author has to know by heart, and would hide
+    /// the correction behind the line it was meant to replace.
+    MetadataDeclaredTwice {
+        /// The key.
+        key: String,
+        /// Every value declared for it, in source order.
+        found: Vec<String>,
     },
     /// The companion this file needs is not there.
     CompanionMissing {

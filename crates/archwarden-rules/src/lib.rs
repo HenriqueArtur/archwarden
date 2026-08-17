@@ -19,6 +19,7 @@ pub mod frontmatter;
 pub mod frozen;
 pub mod import_boundary;
 pub mod import_cycle;
+pub mod metadata;
 pub mod mirror;
 pub mod naming;
 pub mod no_passthrough;
@@ -151,6 +152,13 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     require,
                     one_of,
                     equals,
+                )),
+                CompiledRuleKind::Metadata {
+                    require,
+                    one_of,
+                    equals,
+                } => Box::new(metadata::MetadataEngine::build(
+                    rule, require, one_of, equals,
                 )),
                 CompiledRuleKind::Pair {
                     file_pattern,
