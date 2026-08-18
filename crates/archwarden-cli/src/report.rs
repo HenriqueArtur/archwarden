@@ -247,7 +247,11 @@ fn render_finding(
         let _ = write!(
             out,
             "{}",
-            archwarden_api::describe::describe_decision(decision, "        ")
+            archwarden_api::describe::describe_decision_refusing(
+                decision,
+                "        ",
+                decision.refusal_by(&finding.rule_id),
+            )
         );
     }
     let _ = writeln!(out);
@@ -2032,6 +2036,9 @@ mod tests {
             why: Some("it is published".to_owned()),
             link: Some("docs/adr/014.md".to_owned()),
             status: archwarden_core::compiled::DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         };
         let reasons = Reasons::default().deciding([
             ("domain-entity-shape", adr.clone()),

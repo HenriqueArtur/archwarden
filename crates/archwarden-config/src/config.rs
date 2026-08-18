@@ -163,8 +163,69 @@ pub struct Decision {
     /// decision whose rules still fire is a config saying two things at once,
     /// and `config doctor` reports it as an error. See
     /// [`DecisionStatus`].
-    #[serde(default, skip_serializing_if = "DecisionStatus::is_accepted")]
-    pub status: DecisionStatus,
+    ///
+    /// Optional so *unset* can be told from *explicitly accepted*, which is
+    /// what lets a decision another one supersedes be refused for calling
+    /// itself accepted rather than silently overridden. Absent means
+    /// `accepted`, as it always did. Issue #115.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<DecisionStatus>,
+    /// The decisions this one replaces.
+    ///
+    /// Written on the **new** decision, which is where the author already is:
+    /// the old one does not have to be edited to be replaced, there is no
+    /// second list to keep in step, and the reverse — what replaced this — is
+    /// computed. Decision 26's argument for `rule.decision`, one level over.
+    ///
+    /// A decision named here is `superseded`, and does not repeat it. Naming
+    /// a decision the config does not declare, naming itself, or closing a
+    /// cycle are all refused where the config compiles. Issue #115.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub supersedes: OneOrMany<DecisionId>,
+    /// What was considered and rejected, and why it lost.
+    ///
+    /// The half of an ADR that stops the losing option being proposed again —
+    /// by the next person, or by an agent that reads the rules, complies, and
+    /// helpfully suggests the thing that was already tried. A rule says what is
+    /// refused; this says what was *weighed*. Issue #114.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<Alternative>,
+}
+
+/// One option a decision considered and did not take.
+///
+/// # It points at a rule; it does not become one
+///
+/// `refused_by` names a rule the author already wrote. It was measured the
+/// other way first: a generated refusal needs a rule id, `baseline` keys on
+/// rule ids, and every way of deriving one is unstable — a slug of `option`
+/// breaks when the sentence is reworded, an index breaks when the list is
+/// reordered. Either way, accepted debt is orphaned in silence.
+///
+/// What the reference buys is the page's most honest line: an alternative with
+/// a rule is mechanically refused, one without it is written down and nothing
+/// stops anybody taking it, and the two are told apart by whether the field is
+/// filled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Alternative {
+    /// The option, named as the team named it.
+    pub option: String,
+    /// Why it lost.
+    ///
+    /// Required. An option with no argument against it is a name nobody can
+    /// disagree with, and the argument is the whole reason to write the option
+    /// down — the same shape `archwarden-allow` takes, where a marker with no
+    /// reason is not a marker.
+    pub why_not: String,
+    /// The rule that refuses this option today, when one does.
+    ///
+    /// Refused at compile if no rule has that id, where a rule naming an
+    /// undeclared module already is. Whether that rule also names this
+    /// decision is left to the author: a constraint there would be a field
+    /// decided before anybody asked for one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused_by: Option<RuleId>,
 }
 
 /// Whether a decision still holds.
@@ -689,7 +750,11 @@ mod decision_tests {
             decision.link.as_deref(),
             Some("docs/adr/014-domain-transport.md")
         );
-        assert_eq!(decision.status, DecisionStatus::Accepted);
+        assert_eq!(
+            decision.status,
+            Some(DecisionStatus::Accepted),
+            "written out, which is different from unset"
+        );
     }
 
     /// A decision that says nothing about its status is one that holds. The
@@ -700,8 +765,10 @@ mod decision_tests {
     fn a_decision_that_says_nothing_is_accepted() {
         let config = parse(r#"{"version":0,"decisions":[{"id":"ADR-1","title":"A wall"}]}"#);
 
-        assert_eq!(config.decisions[0].status, DecisionStatus::Accepted);
-        assert!(config.decisions[0].status.is_accepted());
+        assert_eq!(
+            config.decisions[0].status, None,
+            "unset, which is what `accepted` means and what compile resolves it to"
+        );
         assert_eq!(config.decisions[0].why, None);
         assert_eq!(config.decisions[0].link, None);
     }
@@ -718,7 +785,7 @@ mod decision_tests {
             let config = parse(&format!(
                 r#"{{"version":0,"decisions":[{{"id":"d","title":"t","status":"{written}"}}]}}"#
             ));
-            assert_eq!(config.decisions[0].status, expected, "{written}");
+            assert_eq!(config.decisions[0].status, Some(expected), "{written}");
         }
 
         assert!(
@@ -808,9 +875,11 @@ mod decision_tests {
             title: "built".to_owned(),
             why: None,
             link: None,
-            status: DecisionStatus::Proposed,
+            status: Some(DecisionStatus::Proposed),
+            supersedes: crate::one_or_many::OneOrMany::default(),
+            alternatives: Vec::new(),
         };
-        assert!(!decision.status.is_accepted());
+        assert_eq!(decision.status, Some(DecisionStatus::Proposed));
     }
 }
 

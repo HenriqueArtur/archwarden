@@ -404,12 +404,26 @@ fn render_decision_text(explanation: &DecisionExplanation<'_>, out: &mut dyn std
     // reading it needs most — a decision that was replaced, with rules still
     // enforcing it — is the one `config doctor` calls an error, and this must
     // not be quieter than that.
-    let status = if decision.status.is_accepted() {
-        String::new()
-    } else {
-        format!(" ({})", decision.status)
+    let status = match (
+        decision.status.is_accepted(),
+        decision.superseded_by.first(),
+    ) {
+        (true, _) => String::new(),
+        // A reader told to stop trusting a decision needs to be told where to
+        // go instead, which is the one thing the flag alone could not say.
+        // Issue #115.
+        (false, Some(by)) => format!(" (superseded by {by})"),
+        (false, None) => format!(" ({})", decision.status),
     };
     let _ = writeln!(out, "{}{status} — {}", decision.id, decision.title);
+    if !decision.supersedes.is_empty() {
+        let named: Vec<String> = decision
+            .supersedes
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
+        let _ = writeln!(out, "  replaces {}", named.join(", "));
+    }
     if let Some(why) = &decision.why {
         let _ = writeln!(out, "  {why}");
     }
@@ -452,6 +466,23 @@ fn render_decision_text(explanation: &DecisionExplanation<'_>, out: &mut dyn std
             under.rule.id,
             under.rule.kind.type_name(),
         );
+    }
+
+    // What was weighed and lost, before the verdict about what is holding: a
+    // reader deciding whether to reopen this needs the argument that closed it
+    // first. Issue #114.
+    if !decision.alternatives.is_empty() {
+        let _ = writeln!(out, "\n  Considered and rejected:");
+        for alternative in &decision.alternatives {
+            let refused = match &alternative.refused_by {
+                Some(rule) => format!(" — refused by `{rule}`"),
+                // Said out loud. An option nothing stops is the one somebody
+                // takes, and a blank here would read as "this is handled".
+                None => " — nothing refuses it".to_owned(),
+            };
+            let _ = writeln!(out, "    {}{refused}", alternative.option);
+            let _ = writeln!(out, "      {}", alternative.why_not);
+        }
     }
 
     // The half a document cannot answer: not what was decided, but whether it
@@ -729,6 +760,9 @@ mod tests {
             why: Some("the loader reads the directory and imports by filename".to_owned()),
             link: Some("docs/adr/014.md".to_owned()),
             status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         }])
     }
 
@@ -855,6 +889,101 @@ mod tests {
         );
     }
 
+    /// A configuration where one decision replaced another and rejected two
+    /// options, one of which a rule refuses.
+    fn with_history() -> CompiledConfig {
+        let mut named = rule("usecase-name", &["src/*"], naming());
+        named.decision = Some(DecisionId::new("ADR-031").expect("valid"));
+
+        config(vec![named]).with_decisions(vec![
+            CompiledDecision {
+                id: DecisionId::new("ADR-009").expect("valid"),
+                title: "The old way".to_owned(),
+                why: None,
+                link: None,
+                status: archwarden_core::compiled::DecisionStatus::Superseded,
+                supersedes: Vec::new(),
+                superseded_by: vec![DecisionId::new("ADR-031").expect("valid")],
+                alternatives: Vec::new(),
+            },
+            CompiledDecision {
+                id: DecisionId::new("ADR-031").expect("valid"),
+                title: "The registry resolves use cases by name".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Accepted,
+                supersedes: vec![DecisionId::new("ADR-009").expect("valid")],
+                superseded_by: Vec::new(),
+                alternatives: vec![
+                    archwarden_core::compiled::CompiledAlternative {
+                        option: "a static registry".to_owned(),
+                        why_not: "every use case had to be added to it by hand".to_owned(),
+                        refused_by: Some(RuleId::new("usecase-name").expect("valid")),
+                    },
+                    archwarden_core::compiled::CompiledAlternative {
+                        option: "decorators".to_owned(),
+                        why_not: "they need a runtime nobody wanted".to_owned(),
+                        refused_by: None,
+                    },
+                ],
+            },
+        ])
+    }
+
+    /// Issue #114. The argument that closed the question, before the verdict
+    /// about whether it is holding: a reader deciding whether to reopen this
+    /// needs to know what was already weighed.
+    #[test]
+    fn a_decision_lists_what_it_considered_and_rejected() {
+        let text = rendered(
+            &FILES,
+            &with_history(),
+            "ADR-031",
+            crate::report::Format::Text,
+        )
+        .expect("explains");
+
+        assert!(text.contains("Considered and rejected:"), "{text}");
+        assert!(
+            text.contains("a static registry — refused by `usecase-name`"),
+            "{text}"
+        );
+        assert!(
+            text.contains("every use case had to be added to it by hand"),
+            "{text}"
+        );
+        assert!(
+            text.contains("decorators — nothing refuses it"),
+            "an option nothing stops is the one somebody takes: {text}"
+        );
+    }
+
+    /// Issue #115. Both directions of the chain, because a reader arrives from
+    /// either end: told to stop trusting one, or asking what a new one changed.
+    #[test]
+    fn a_decision_says_what_it_replaced_and_what_replaced_it() {
+        let new = rendered(
+            &FILES,
+            &with_history(),
+            "ADR-031",
+            crate::report::Format::Text,
+        )
+        .expect("explains");
+        assert!(new.contains("replaces ADR-009"), "{new}");
+
+        let old = rendered(
+            &FILES,
+            &with_history(),
+            "ADR-009",
+            crate::report::Format::Text,
+        )
+        .expect("explains");
+        assert!(
+            old.contains("ADR-009 (superseded by ADR-031)"),
+            "not just that it was replaced, but by what: {old}"
+        );
+    }
+
     /// The cheerful half, and the reason it is here at all: somebody asking
     /// about a decision is asking whether it is being kept, and debt paid
     /// against it is the answer they hoped for.
@@ -978,6 +1107,9 @@ mod tests {
                 why: None,
                 link: None,
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
             CompiledDecision {
                 id: DecisionId::new("ADR-020").expect("valid"),
@@ -985,6 +1117,9 @@ mod tests {
                 why: None,
                 link: None,
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
         ]);
 
@@ -1035,6 +1170,9 @@ mod tests {
             why: None,
             link: None,
             status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         }]);
 
         let held =
@@ -1068,6 +1206,9 @@ mod tests {
                 why: None,
                 link: None,
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
         ]);
 
@@ -1094,6 +1235,9 @@ mod tests {
             why: None,
             link: None,
             status: DecisionStatus::Superseded,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         }]);
 
         let text =
@@ -1385,6 +1529,9 @@ mod tests {
                 why: None,
                 link: None,
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             }]),
             "ADR-2",
             crate::report::Format::Text,

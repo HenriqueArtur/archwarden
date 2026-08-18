@@ -212,6 +212,26 @@ code, .mono { font-family: var(--font-code); font-size: 0.9em; }
   color: var(--accepted);
   font-variant-numeric: tabular-nums;
 }
+.decision .replaces { grid-column: 1 / -1; font-size: 13px; color: var(--ink-soft); margin: 6px 0 0; }
+/* What was weighed and lost. The two tags are the honest half of this card:
+   an option a rule refuses has teeth, and one nothing refuses is written down
+   and nothing stops anybody taking it -- drawn like the debt it is. #114. */
+.decision .rejected-k {
+  grid-column: 1 / -1;
+  font-family: var(--font-code);
+  font-size: 10.5px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+  margin: 14px 0 6px;
+}
+.decision ul.rejected { grid-column: 1 / -1; list-style: none; padding: 0; margin: 0; }
+.decision ul.rejected li { padding: 5px 0; font-size: 13px; }
+.decision ul.rejected .opt { font-weight: 600; }
+.decision ul.rejected .whynot { display: block; color: var(--ink-soft); }
+.decision ul.rejected .tag { font-family: var(--font-code); font-size: 11px; }
+.decision ul.rejected .tag.is-refused { color: var(--blue); }
+.decision ul.rejected .tag.is-absent { color: var(--accepted); font-style: italic; }
 /* The one state on this page worth stopping at: a choice with a name that
    nothing keeps. Drawn like accepted debt elsewhere in the report, because
    that is what it is. */

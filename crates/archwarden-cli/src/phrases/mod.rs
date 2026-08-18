@@ -124,6 +124,20 @@ pub trait Phrases: Send + Sync {
     /// that file which excuses nothing. `config explain` runs a check and can
     /// tell the two apart; this cannot, and must not claim to. Issue #112.
     fn debt_against(&self, entries: usize) -> String;
+    /// The heading over what a decision weighed and did not take.
+    fn rejected_heading(&self) -> &'static str;
+    /// That an option is refused by a rule today.
+    fn refused_by(&self, rule: &str) -> String;
+    /// That nothing refuses an option.
+    ///
+    /// Said out loud rather than left blank, for the reason
+    /// [`Self::enforced_by_nothing`] is: an option nothing stops is the one
+    /// somebody takes, and a blank reads as *handled*.
+    fn refused_by_nothing(&self) -> &'static str;
+    /// That this decision replaced another.
+    fn replaces(&self, decisions: &str) -> String;
+    /// That another decision replaced this one.
+    fn superseded_by(&self, decision: &str) -> String;
     /// Where a decision is written down, before the link itself.
     fn written_down_in(&self) -> &'static str;
     /// A decision's status, when it is not `accepted`.

@@ -17,6 +17,86 @@ saying so.
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-08-18
+
+The two fields an ADR has and a decision did not: the options that lost, and
+what replaced this one. **No existing configuration reports anything new.**
+
+### Added
+
+- **`alternatives`, what was considered and rejected** (#114). Every entry in
+  this repository's own `docs/DECISIONS.md` has one, and the config could not
+  hold it — which is how the losing option gets proposed again, by the next
+  person or by an agent that reads the rules, complies, and helpfully suggests
+  the thing that was already tried.
+
+  ```json
+  "alternatives": [
+    { "option": "an HTTP client in the domain",
+      "why_not": "a consumer would inherit our transport",
+      "refused_by": "domain-forbids-http" },
+    { "option": "a shared kernel",
+      "why_not": "it becomes the place everything goes" }
+  ]
+  ```
+
+  It reaches the place it is worth most — a denial, a finding, and `describe`:
+
+  ```
+  decision: ADR-031 — the domain does not know about transport
+    `an HTTP client in the domain` was considered and rejected:
+      a consumer would inherit our transport, and the retry policy with it
+  ```
+
+  **`refused_by` points at a rule you already wrote and never generates one.**
+  `baseline` keys on rule ids, and an id derived from this prose would orphan
+  accepted debt the day somebody reworded the sentence. What the reference buys
+  is the distinction every surface now draws: an option with a rule is
+  mechanically refused, one without it is written down while nothing stops
+  anybody taking it, and `config explain` and the page say which is which.
+
+  `why_not` is required. An option with no argument against it is a name nobody
+  can disagree with — the shape `archwarden-allow` already takes.
+
+- **`supersedes`, and the chain drawn both ways** (#115). `status:
+  "superseded"` said a decision was replaced and could not say *by what*, which
+  is the one thing a reader who finds it needs.
+
+  ```json
+  { "id": "ADR-031", "title": "the new way", "supersedes": "ADR-009" }
+  ```
+
+  Written on the new decision, where the author already is; the reverse is
+  computed. `config explain ADR-009` now answers *and what now?* —
+  `ADR-009 (superseded by ADR-031)`.
+
+- **The status comes with the edge.** A decision another one supersedes is
+  superseded, and does not repeat it. Somebody who writes `supersedes` and
+  forgets to go and edit the old decision used to leave a config that said two
+  things — and silently disarmed `superseded-decision-still-enforced`, which is
+  the check with the most value here. Writing the contradiction is refused
+  where the config compiles; writing it out in agreement is fine.
+
+- **`config doctor` names the replacement.** The check that already existed can
+  now say what to do instead of posing a dilemma:
+
+  ```
+  error  superseded-decision-still-enforced
+         decision `ADR-009` is superseded by `ADR-031`, and 1 rule still
+         enforces it: `domain-forbids-http`
+    fix: point those rules at `ADR-031`, or the config renamed a decision
+         rather than replacing it
+  ```
+
+### Reasoning
+
+Issues #114 and #115 carry both decisions, taken before the code was written.
+A second doctor check was built for #115 and **deleted**: *"the new decision
+has no rules while the old one still does"* fires under exactly the condition
+the existing check does, so it was one mistake reported in two voices. One
+check, saying more, is the version that shipped.
+
+
 ## [0.25.0] — 2026-08-18
 
 The first half of making a decision the unit rather than a footnote on a rule.
@@ -2169,7 +2249,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.25.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.26.0...HEAD
+[0.26.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.23.0...v0.24.0

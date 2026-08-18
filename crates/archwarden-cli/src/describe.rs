@@ -147,7 +147,11 @@ fn render_text(path: &RepoRelPath, applies: &[Applies<'_>], out: &mut dyn std::i
             let _ = write!(
                 out,
                 "{}",
-                archwarden_api::describe::describe_decision(decision, "    ")
+                archwarden_api::describe::describe_decision_refusing(
+                    decision,
+                    "    ",
+                    decision.refusal_by(&entry.rule.id),
+                )
             );
         }
         if let Some(why) = &entry.rule.why {
@@ -328,6 +332,9 @@ mod tests {
                 why: None,
                 link: Some("docs/adr/014.md".to_owned()),
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             }]),
             &path("src/user/create-client.use-case.ts"),
             crate::report::Format::Text,

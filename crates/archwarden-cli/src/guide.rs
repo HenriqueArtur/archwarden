@@ -161,13 +161,18 @@ fn render_html(
 
         let _ = writeln!(out, "<div class=\"decisions\">\n");
         for decision in &guide.decisions {
-            let status = if decision.status == "accepted" {
-                String::new()
-            } else {
-                format!(
+            // The chain, not just the flag: a reader told to stop trusting a
+            // decision needs to be told where to go instead. Issue #115.
+            let status = match (decision.status, decision.superseded_by.first()) {
+                ("accepted", _) => String::new(),
+                (_, Some(by)) => format!(
                     "\n<span class=\"status\">{}</span>",
-                    escape(&say.decision_status(decision.status))
-                )
+                    escape(&say.superseded_by(by))
+                ),
+                (other, None) => format!(
+                    "\n<span class=\"status\">{}</span>",
+                    escape(&say.decision_status(other))
+                ),
             };
             let _ = write!(
                 out,
@@ -194,6 +199,13 @@ fn render_html(
             // Absent when no baseline was read, and absent at zero -- a
             // decision carrying no debt has nothing to say here, and "0
             // excused" on every card is a column of noise. Issue #112.
+            if !decision.supersedes.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "<p class=\"replaces\">{}</p>",
+                    escape(&say.replaces(&decision.supersedes.join(", ")))
+                );
+            }
             if let Some(excused) = decision.excused.filter(|excused| *excused > 0) {
                 let _ = writeln!(
                     out,
@@ -222,6 +234,32 @@ fn render_html(
                             .join(", ")
                     )
                 );
+            }
+            // What was weighed and lost, and which half of it has teeth. The
+            // page's most honest line: an option with a rule is mechanically
+            // refused, one without is written down and nothing stops anybody
+            // taking it. Issue #114.
+            if !decision.alternatives.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "<p class=\"rejected-k\">{}</p>\n<ul class=\"rejected\">",
+                    escape(say.rejected_heading())
+                );
+                for alternative in &decision.alternatives {
+                    let refused = match alternative.refused_by {
+                        Some(rule) => (say.refused_by(&code(rule)), "is-refused"),
+                        None => (escape(say.refused_by_nothing()), "is-absent"),
+                    };
+                    let _ = writeln!(
+                        out,
+                        "<li><span class=\"opt\">{}</span>                          <span class=\"tag {}\">{}</span>\n                         <span class=\"whynot\">{}</span></li>",
+                        escape(alternative.option),
+                        refused.1,
+                        refused.0,
+                        escape(alternative.why_not),
+                    );
+                }
+                let _ = writeln!(out, "</ul>");
             }
             let _ = writeln!(out, "</article>\n");
         }
@@ -382,6 +420,33 @@ fn render_markdown(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
             // every time. Issue #112.
             if let Some(entries) = decision.excused.filter(|entries| *entries > 0) {
                 let _ = writeln!(out, "- **Baseline entries against it**: {entries}");
+            }
+            if !decision.supersedes.is_empty() {
+                let _ = writeln!(out, "- **Replaces**: {}", decision.supersedes.join(", "));
+            }
+            if !decision.superseded_by.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "- **Superseded by**: {}",
+                    decision.superseded_by.join(", ")
+                );
+            }
+            // The options this decision already weighed, so an agent reading
+            // the digest does not propose one of them back. Issue #114.
+            if !decision.alternatives.is_empty() {
+                let _ = writeln!(out, "\n**Considered and rejected**:\n");
+                for alternative in &decision.alternatives {
+                    let refused = match alternative.refused_by {
+                        Some(rule) => format!("refused by `{rule}`"),
+                        None => "nothing refuses it".to_owned(),
+                    };
+                    let _ = writeln!(
+                        out,
+                        "- **{}** ({refused}) — {}",
+                        alternative.option, alternative.why_not
+                    );
+                }
+                let _ = writeln!(out);
             }
             // Said out loud when it is empty, because a decision nothing
             // enforces is the thing worth noticing here.
@@ -859,6 +924,115 @@ mod tests {
         );
     }
 
+    /// A config whose decision replaced another and rejected two options, one
+    /// of which a rule refuses.
+    fn with_history() -> CompiledConfig {
+        let mut serving = rule(
+            "domain-forbids-http",
+            None,
+            &["packages/domain/**"],
+            boundary(),
+        );
+        serving.decision = Some(DecisionId::new("ADR-031").expect("valid"));
+
+        config(vec![serving]).with_decisions(vec![
+            CompiledDecision {
+                id: DecisionId::new("ADR-009").expect("valid"),
+                title: "The old way".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Superseded,
+                supersedes: Vec::new(),
+                superseded_by: vec![DecisionId::new("ADR-031").expect("valid")],
+                alternatives: Vec::new(),
+            },
+            CompiledDecision {
+                id: DecisionId::new("ADR-031").expect("valid"),
+                title: "The domain does not know about transport".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Accepted,
+                supersedes: vec![DecisionId::new("ADR-009").expect("valid")],
+                superseded_by: Vec::new(),
+                alternatives: vec![
+                    archwarden_core::compiled::CompiledAlternative {
+                        option: "an HTTP client in the domain".to_owned(),
+                        why_not: "a consumer would inherit our transport".to_owned(),
+                        refused_by: Some(RuleId::new("domain-forbids-http").expect("valid")),
+                    },
+                    archwarden_core::compiled::CompiledAlternative {
+                        option: "a shared kernel".to_owned(),
+                        why_not: "it becomes the place everything goes".to_owned(),
+                        refused_by: None,
+                    },
+                ],
+            },
+        ])
+    }
+
+    /// Issue #114. The page's most honest line: which of the rejected options
+    /// has teeth, and which is only written down.
+    #[test]
+    fn the_page_separates_a_rejection_with_teeth_from_one_without() {
+        let page = rendered(&with_history(), None, GuideFormat::Html);
+
+        assert!(page.contains("Considered and rejected"), "{page}");
+        assert!(
+            page.contains(
+                r#"<span class="tag is-refused">refused by <code>domain-forbids-http</code></span>"#
+            ),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"<span class="tag is-absent">nothing refuses it</span>"#),
+            "an option nothing stops is the one somebody takes: {page}"
+        );
+        assert!(
+            page.contains("a consumer would inherit our transport"),
+            "the argument travels with the option: {page}"
+        );
+    }
+
+    /// Issue #115. The chain, both ways, because a reader arrives from either
+    /// end.
+    #[test]
+    fn the_page_draws_the_supersession_chain() {
+        let page = rendered(&with_history(), None, GuideFormat::Html);
+
+        assert!(
+            page.contains(r#"<span class="status">superseded by ADR-031</span>"#),
+            "not just that it was replaced, but by what: {page}"
+        );
+        assert!(
+            page.contains(r#"<p class="replaces">Replaces ADR-009</p>"#),
+            "{page}"
+        );
+    }
+
+    /// And the digest an agent reads carries both, so it does not propose an
+    /// option this architecture already weighed and turned down.
+    #[test]
+    fn the_digest_carries_what_was_rejected_and_what_was_replaced() {
+        let markdown = rendered(&with_history(), None, GuideFormat::Markdown);
+
+        assert!(
+            markdown.contains(
+                "- **an HTTP client in the domain** (refused by `domain-forbids-http`) \
+                 — a consumer would inherit our transport"
+            ),
+            "{markdown}"
+        );
+        assert!(
+            markdown.contains("- **a shared kernel** (nothing refuses it)"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("- **Replaces**: ADR-009"), "{markdown}");
+        assert!(
+            markdown.contains("- **Superseded by**: ADR-031"),
+            "{markdown}"
+        );
+    }
+
     /// A decision the baseline carries nothing against says nothing, rather
     /// than printing "0 entries" on every card of every clean repository.
     #[test]
@@ -907,6 +1081,9 @@ mod tests {
                 why: None,
                 link: None,
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
         ]);
 
@@ -950,6 +1127,9 @@ mod tests {
                 why: None,
                 link: None,
                 status: DecisionStatus::Superseded,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
         ]);
 
@@ -1009,6 +1189,9 @@ mod tests {
                 why: None,
                 link: None,
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
         ]);
 
@@ -1048,6 +1231,9 @@ mod tests {
                     why: None,
                     link: None,
                     status: DecisionStatus::Superseded,
+                    supersedes: Vec::new(),
+                    superseded_by: Vec::new(),
+                    alternatives: Vec::new(),
                 },
             ]);
         assert!(
@@ -1067,6 +1253,9 @@ mod tests {
             why: Some("it is published, and a consumer must not inherit our client".to_owned()),
             link: Some("docs/adr/014.md".to_owned()),
             status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         }])
     }
 

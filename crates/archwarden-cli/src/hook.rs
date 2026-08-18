@@ -374,7 +374,7 @@ pub fn landed(
         }
         // Once per rule, like the reason above it: this message's whole job is
         // being short enough that somebody reads it.
-        write_decision(&mut message, reasons.decision_of_rule(rule));
+        write_decision(&mut message, reasons.decision_of_rule(rule), rule);
     }
 
     message
@@ -416,7 +416,11 @@ pub fn explain(
         // And the decision the rule serves, which is the same argument one
         // level up: a rule id is a thing to satisfy, a decision with a link is
         // a thing to understand or to argue with. Issue #100.
-        write_decision(&mut message, reasons.decision_of_rule(&finding.rule_id));
+        write_decision(
+            &mut message,
+            reasons.decision_of_rule(&finding.rule_id),
+            &finding.rule_id,
+        );
     }
 
     let _ = write!(
@@ -435,9 +439,18 @@ pub fn explain(
 fn write_decision(
     message: &mut String,
     decision: Option<&archwarden_core::compiled::CompiledDecision>,
+    rule: &archwarden_core::ids::RuleId,
 ) {
     if let Some(decision) = decision {
-        message.push_str(&archwarden_api::describe::describe_decision(decision, "  "));
+        // The denial is where this sentence is worth most: the write being
+        // refused is often exactly the option the decision already weighed and
+        // turned down, and saying so is the difference between an obstacle and
+        // an argument. Issue #114.
+        message.push_str(&archwarden_api::describe::describe_decision_refusing(
+            decision,
+            "  ",
+            decision.refusal_by(rule),
+        ));
     }
 }
 
@@ -638,6 +651,9 @@ mod tests {
                 why: Some("it is published, and a consumer must not inherit our client".to_owned()),
                 link: Some("docs/adr/014-domain-transport.md".to_owned()),
                 status: archwarden_core::compiled::DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
         )]);
 
@@ -714,6 +730,9 @@ mod tests {
                 why: None,
                 link: Some("docs/adr/014.md".to_owned()),
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
         )]);
 
@@ -800,6 +819,9 @@ mod tests {
                 why: None,
                 link: None,
                 status,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
         )])
     }

@@ -72,6 +72,59 @@ pub enum CompileError {
         decision: archwarden_core::ids::DecisionId,
     },
 
+    /// A decision supersedes one the config never declared.
+    #[error("decision `{decision}` supersedes `{superseded}`, which this config does not declare")]
+    UnknownSuperseded {
+        /// The decision doing the replacing.
+        decision: archwarden_core::ids::DecisionId,
+        /// The reference that matched nothing.
+        superseded: archwarden_core::ids::DecisionId,
+    },
+
+    /// A decision another one supersedes says it is something else.
+    ///
+    /// Refused rather than silently overridden: a field that can contradict
+    /// the edge is a field that will, and the omission it protects against --
+    /// writing `supersedes` and forgetting to edit the old decision -- is what
+    /// disarms `superseded-decision-still-enforced`. Issue #115.
+    #[error(
+        "decision `{decision}` says it is `{status}`, and `{by}` supersedes it; \
+         drop the `status` or drop the supersession"
+    )]
+    StatusContradictsSupersession {
+        /// The decision that was replaced.
+        decision: archwarden_core::ids::DecisionId,
+        /// What it claimed to be.
+        status: &'static str,
+        /// What replaced it.
+        by: archwarden_core::ids::DecisionId,
+    },
+
+    /// Supersession runs in a circle.
+    #[error("supersession runs in a circle: {decisions}")]
+    SupersessionCycle {
+        /// The chain, with the id it returned to on both ends.
+        decisions: String,
+    },
+
+    /// A rejected option names a rule the config never declared.
+    ///
+    /// The alternative points at a rule the author already wrote, and a
+    /// reference to nothing is a typo -- refused where a rule naming an
+    /// undeclared module already is. Issue #114.
+    #[error(
+        "decision `{decision}` says `{option}` is refused by rule `{rule}`, \
+         which this config does not declare"
+    )]
+    UnknownRefusingRule {
+        /// The decision.
+        decision: archwarden_core::ids::DecisionId,
+        /// The option it rejected.
+        option: String,
+        /// The rule that does not exist.
+        rule: RuleId,
+    },
+
     /// A `metadata` rule asks about a key no comment could ever spell.
     ///
     /// The suppression grammar reaches every key beginning with `allow`
@@ -344,7 +397,7 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
     let config = &merged.config;
 
     let modules = Modules::compile(config)?;
-    let decisions = compile_decisions(config);
+    let decisions = compile_decisions(config)?;
 
     let mut rules = Vec::new();
     for (module, module_why, rule) in config.rules() {
@@ -403,31 +456,160 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
 
 /// Lowers the declared decisions.
 ///
-/// Infallible, and that is the whole shape of them: a decision is prose. There
-/// is no glob to compile and no regex to reject, so the only thing that can be
-/// wrong is a *reference* to one, which is checked where the rules are.
-fn compile_decisions(config: &Config) -> Vec<archwarden_core::compiled::CompiledDecision> {
+/// Was infallible while a decision was only prose. It now carries two
+/// references — what it supersedes and what refuses each rejected option — and
+/// a dangling one is a typo, refused here for the reason every other dangling
+/// reference is. Issues #114 and #115.
+fn compile_decisions(
+    config: &Config,
+) -> Result<Vec<archwarden_core::compiled::CompiledDecision>, CompileError> {
+    let declared: std::collections::BTreeSet<&str> = config
+        .decisions
+        .iter()
+        .map(|decision| decision.id.as_str())
+        .collect();
+    let rules: std::collections::BTreeSet<&str> = config
+        .rules()
+        .map(|(_, _, rule)| rule.id().as_str())
+        .collect();
+
+    // Who replaced whom, so the reverse can be read without a second list and
+    // so a decision's status can be told from the edge rather than repeated.
+    let mut superseded_by: std::collections::BTreeMap<&str, Vec<archwarden_core::ids::DecisionId>> =
+        std::collections::BTreeMap::new();
+    for decision in &config.decisions {
+        for replaced in &decision.supersedes {
+            if !declared.contains(replaced.as_str()) {
+                return Err(CompileError::UnknownSuperseded {
+                    decision: decision.id.clone(),
+                    superseded: replaced.clone(),
+                });
+            }
+            superseded_by
+                .entry(replaced.as_str())
+                .or_default()
+                .push(decision.id.clone());
+        }
+    }
+    refuse_supersession_cycles(config)?;
+
     config
         .decisions
         .iter()
-        .map(|decision| archwarden_core::compiled::CompiledDecision {
-            id: decision.id.clone(),
-            title: decision.title.clone(),
-            why: decision.why.clone(),
-            link: decision.link.clone(),
-            status: match decision.status {
-                config::DecisionStatus::Accepted => {
-                    archwarden_core::compiled::DecisionStatus::Accepted
-                }
-                config::DecisionStatus::Proposed => {
-                    archwarden_core::compiled::DecisionStatus::Proposed
-                }
-                config::DecisionStatus::Superseded => {
-                    archwarden_core::compiled::DecisionStatus::Superseded
-                }
-            },
+        .map(|decision| {
+            let replaced_by = superseded_by
+                .get(decision.id.as_str())
+                .cloned()
+                .unwrap_or_default();
+
+            Ok(archwarden_core::compiled::CompiledDecision {
+                id: decision.id.clone(),
+                title: decision.title.clone(),
+                why: decision.why.clone(),
+                link: decision.link.clone(),
+                status: status_of(decision, replaced_by.first())?,
+                supersedes: decision.supersedes.iter().cloned().collect(),
+                superseded_by: replaced_by,
+                alternatives: decision
+                    .alternatives
+                    .iter()
+                    .map(|alternative| {
+                        if let Some(rule) = &alternative.refused_by
+                            && !rules.contains(rule.as_str())
+                        {
+                            return Err(CompileError::UnknownRefusingRule {
+                                decision: decision.id.clone(),
+                                option: alternative.option.clone(),
+                                rule: rule.clone(),
+                            });
+                        }
+                        Ok(archwarden_core::compiled::CompiledAlternative {
+                            option: alternative.option.clone(),
+                            why_not: alternative.why_not.clone(),
+                            refused_by: alternative.refused_by.clone(),
+                        })
+                    })
+                    .collect::<Result<_, CompileError>>()?,
+            })
         })
         .collect()
+}
+
+/// A decision's status, with supersession deciding it when there is any.
+///
+/// Inferred rather than repeated: somebody who writes `supersedes` and forgets
+/// to edit the old decision leaves a config that says two things, and disarms
+/// `superseded-decision-still-enforced` — which is the check with the most
+/// value here. Saying it out loud agrees with the edge and is allowed; saying
+/// the opposite is refused, not silently overridden.
+fn status_of(
+    decision: &config::Decision,
+    replaced_by: Option<&archwarden_core::ids::DecisionId>,
+) -> Result<archwarden_core::compiled::DecisionStatus, CompileError> {
+    let written = decision.status.map(|status| match status {
+        config::DecisionStatus::Accepted => archwarden_core::compiled::DecisionStatus::Accepted,
+        config::DecisionStatus::Proposed => archwarden_core::compiled::DecisionStatus::Proposed,
+        config::DecisionStatus::Superseded => archwarden_core::compiled::DecisionStatus::Superseded,
+    });
+
+    let Some(by) = replaced_by else {
+        return Ok(written.unwrap_or(archwarden_core::compiled::DecisionStatus::Accepted));
+    };
+
+    match written {
+        None | Some(archwarden_core::compiled::DecisionStatus::Superseded) => {
+            Ok(archwarden_core::compiled::DecisionStatus::Superseded)
+        }
+        Some(other) => Err(CompileError::StatusContradictsSupersession {
+            decision: decision.id.clone(),
+            status: other.as_str(),
+            by: by.clone(),
+        }),
+    }
+}
+
+/// Refuses a decision that replaces itself, directly or around a loop.
+///
+/// A cycle leaves a chain with no end, and every surface that draws one would
+/// walk it forever. Reported with the ids in it, because "there is a cycle" is
+/// a sentence nobody can act on.
+fn refuse_supersession_cycles(config: &Config) -> Result<(), CompileError> {
+    let edges: std::collections::BTreeMap<&str, Vec<&str>> = config
+        .decisions
+        .iter()
+        .map(|decision| {
+            (
+                decision.id.as_str(),
+                decision
+                    .supersedes
+                    .iter()
+                    .map(archwarden_core::ids::DecisionId::as_str)
+                    .collect(),
+            )
+        })
+        .collect();
+
+    for decision in &config.decisions {
+        let start = decision.id.as_str();
+        let mut walked = vec![start];
+        let mut seen: std::collections::BTreeSet<&str> = [start].into_iter().collect();
+        let mut frontier = edges.get(start).cloned().unwrap_or_default();
+
+        while let Some(next) = frontier.pop() {
+            if next == start {
+                walked.push(start);
+                return Err(CompileError::SupersessionCycle {
+                    decisions: walked.join(" → "),
+                });
+            }
+            if seen.insert(next) {
+                walked.push(next);
+                frontier.extend(edges.get(next).cloned().unwrap_or_default());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// The paths a boundary forbids, from whichever field it used.
@@ -2343,6 +2525,183 @@ mod tests {
             matches!(error, CompileError::Template { .. }),
             "got {error:?}"
         );
+    }
+
+    /// Issue #114. The half of an ADR that stops the losing option being
+    /// proposed again, and the half a rule can never carry.
+    #[test]
+    fn a_decision_carries_what_it_rejected() {
+        let compiled = compile_json(
+            r#"{"version":0,
+                "decisions":[{"id":"ADR-014","title":"hexagonal",
+                  "alternatives":[
+                    {"option":"TypeORM in the domain",
+                     "why_not":"the schema starts dictating the model",
+                     "refused_by":"no-orm-in-domain"},
+                    {"option":"a generic repository",
+                     "why_not":"it hides the queries worth reading"}]}],
+                "rules":[{"type":"structure","id":"no-orm-in-domain","level":"error",
+                          "roots":"src/*","allowed_subfolders":[]}]}"#,
+        )
+        .expect("compiles");
+
+        let decision = compiled.decisions().next().expect("one decision");
+        assert_eq!(decision.alternatives.len(), 2);
+        assert_eq!(decision.alternatives[0].option, "TypeORM in the domain");
+        assert_eq!(
+            decision.alternatives[0].why_not,
+            "the schema starts dictating the model"
+        );
+        assert_eq!(
+            decision.alternatives[0]
+                .refused_by
+                .as_ref()
+                .map(RuleId::as_str),
+            Some("no-orm-in-domain")
+        );
+        assert_eq!(
+            decision.alternatives[1].refused_by, None,
+            "an option nothing refuses is written down and nothing stops it"
+        );
+    }
+
+    /// A reference to a rule nobody wrote is a typo, and it is refused where a
+    /// rule naming an undeclared module already is: at compile.
+    #[test]
+    fn an_alternative_refused_by_a_rule_that_does_not_exist_is_refused() {
+        let error = compile_json(
+            r#"{"version":0,
+                "decisions":[{"id":"ADR-014","title":"hexagonal",
+                  "alternatives":[{"option":"TypeORM","why_not":"no",
+                                   "refused_by":"no-such-rule"}]}],
+                "rules":[]}"#,
+        )
+        .expect_err("should refuse");
+
+        let CompileError::UnknownRefusingRule {
+            decision,
+            option,
+            rule,
+        } = &error
+        else {
+            panic!("expected UnknownRefusingRule, got {error:?}");
+        };
+        assert_eq!(decision.as_str(), "ADR-014");
+        assert_eq!(option, "TypeORM");
+        assert_eq!(rule.as_str(), "no-such-rule");
+    }
+
+    /// Issue #115. The new decision knows what it replaces; the old one does
+    /// not have to be edited to be replaced, and the reverse is computed.
+    #[test]
+    fn supersession_is_written_forward_and_read_both_ways() {
+        let compiled = compile_json(
+            r#"{"version":0,
+                "decisions":[
+                  {"id":"ADR-009","title":"the old way"},
+                  {"id":"ADR-031","title":"the new way","supersedes":"ADR-009"}],
+                "rules":[]}"#,
+        )
+        .expect("compiles");
+
+        let decisions: Vec<_> = compiled.decisions().collect();
+        assert_eq!(
+            decisions[0].superseded_by,
+            vec![DecisionId::new("ADR-031").expect("valid")]
+        );
+        assert_eq!(
+            decisions[1].supersedes,
+            vec![DecisionId::new("ADR-009").expect("valid")]
+        );
+        assert!(decisions[1].superseded_by.is_empty());
+    }
+
+    /// And the status comes with it. Somebody who writes `supersedes` and
+    /// forgets to go and change the old decision's own status has a config
+    /// that says two things — and disarms `superseded-decision-still-enforced`,
+    /// which is the check with the most value here.
+    #[test]
+    fn a_superseded_decision_takes_the_status_without_repeating_it() {
+        let compiled = compile_json(
+            r#"{"version":0,
+                "decisions":[
+                  {"id":"ADR-009","title":"the old way"},
+                  {"id":"ADR-031","title":"the new way","supersedes":"ADR-009"}],
+                "rules":[]}"#,
+        )
+        .expect("compiles");
+
+        let decisions: Vec<_> = compiled.decisions().collect();
+        assert!(decisions[0].status.is_superseded(), "{:?}", decisions[0]);
+        assert!(decisions[1].status.is_accepted());
+    }
+
+    /// Writing it out is fine; writing the opposite is a config saying two
+    /// things, and it is refused rather than silently overridden.
+    #[test]
+    fn a_superseded_decision_that_calls_itself_accepted_is_refused() {
+        let saying_both = compile_json(
+            r#"{"version":0,
+                "decisions":[
+                  {"id":"ADR-009","title":"the old way","status":"accepted"},
+                  {"id":"ADR-031","title":"the new way","supersedes":"ADR-009"}],
+                "rules":[]}"#,
+        )
+        .expect_err("should refuse");
+
+        let CompileError::StatusContradictsSupersession { decision, by, .. } = &saying_both else {
+            panic!("expected StatusContradictsSupersession, got {saying_both:?}");
+        };
+        assert_eq!(decision.as_str(), "ADR-009");
+        assert_eq!(by.as_str(), "ADR-031");
+
+        compile_json(
+            r#"{"version":0,
+                "decisions":[
+                  {"id":"ADR-009","title":"the old way","status":"superseded"},
+                  {"id":"ADR-031","title":"the new way","supersedes":"ADR-009"}],
+                "rules":[]}"#,
+        )
+        .expect("saying it out loud agrees with the edge, and is allowed");
+    }
+
+    /// A reference to a decision nobody declared, on the same argument as
+    /// every other dangling reference here.
+    #[test]
+    fn superseding_a_decision_that_does_not_exist_is_refused() {
+        let error = compile_json(
+            r#"{"version":0,
+                "decisions":[{"id":"ADR-031","title":"the new way","supersedes":"ADR-009"}],
+                "rules":[]}"#,
+        )
+        .expect_err("should refuse");
+
+        assert!(
+            matches!(error, CompileError::UnknownSuperseded { .. }),
+            "got {error:?}"
+        );
+    }
+
+    /// A decision cannot replace itself, and two cannot replace each other:
+    /// both leave a chain with no end, and every surface that draws one would
+    /// walk it forever.
+    #[test]
+    fn a_supersession_cycle_is_refused() {
+        for decisions in [
+            r#"[{"id":"ADR-009","title":"itself","supersedes":"ADR-009"}]"#,
+            r#"[{"id":"ADR-009","title":"a","supersedes":"ADR-031"},
+                {"id":"ADR-031","title":"b","supersedes":"ADR-009"}]"#,
+        ] {
+            let error = compile_json(&format!(
+                r#"{{"version":0,"decisions":{decisions},"rules":[]}}"#
+            ))
+            .expect_err("should refuse");
+
+            assert!(
+                matches!(error, CompileError::SupersessionCycle { .. }),
+                "expected a cycle for {decisions}, got {error:?}"
+            );
+        }
     }
 
     /// The decisions survive compilation whether or not any rule points at

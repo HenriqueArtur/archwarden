@@ -81,6 +81,21 @@ impl Phrases for PtBr {
             plural(entries, "entrada", "entradas")
         )
     }
+    fn rejected_heading(&self) -> &'static str {
+        "Consideramos e descartamos"
+    }
+    fn refused_by(&self, rule: &str) -> String {
+        format!("recusado por {rule}")
+    }
+    fn refused_by_nothing(&self) -> &'static str {
+        "nada o recusa"
+    }
+    fn replaces(&self, decisions: &str) -> String {
+        format!("Substitui {decisions}")
+    }
+    fn superseded_by(&self, decision: &str) -> String {
+        format!("substituída por {decision}")
+    }
     fn written_down_in(&self) -> &'static str {
         "Escrita em"
     }

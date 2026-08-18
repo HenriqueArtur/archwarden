@@ -537,6 +537,9 @@ mod tests {
                 why: Some("it is published".to_owned()),
                 link: Some("docs/adr/014.md".to_owned()),
                 status: archwarden_core::compiled::DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
         )]);
 
@@ -581,6 +584,9 @@ mod tests {
             why: None,
             link: Some("docs/adr/014.md".to_owned()),
             status: archwarden_core::compiled::DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         };
         // Two rules, one decision, plus a third decision nothing here names.
         let reasons = Reasons::default().deciding([
@@ -594,6 +600,9 @@ mod tests {
                     why: None,
                     link: None,
                     status: archwarden_core::compiled::DecisionStatus::Accepted,
+                    supersedes: Vec::new(),
+                    superseded_by: Vec::new(),
+                    alternatives: Vec::new(),
                 },
             ),
         ]);

@@ -61,6 +61,21 @@ impl Phrases for En {
             plural(entries, "entry", "entries")
         )
     }
+    fn rejected_heading(&self) -> &'static str {
+        "Considered and rejected"
+    }
+    fn refused_by(&self, rule: &str) -> String {
+        format!("refused by {rule}")
+    }
+    fn refused_by_nothing(&self) -> &'static str {
+        "nothing refuses it"
+    }
+    fn replaces(&self, decisions: &str) -> String {
+        format!("Replaces {decisions}")
+    }
+    fn superseded_by(&self, decision: &str) -> String {
+        format!("superseded by {decision}")
+    }
     fn written_down_in(&self) -> &'static str {
         "Written down in"
     }

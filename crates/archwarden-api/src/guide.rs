@@ -94,6 +94,32 @@ pub struct GuideDecision<'a> {
     /// Issue #112.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub excused: Option<usize>,
+    /// The decisions this one replaced.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub supersedes: Vec<&'a str>,
+    /// The decisions that replaced it. Computed, never written. Issue #115.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub superseded_by: Vec<&'a str>,
+    /// What was considered and rejected, in the order it was written.
+    ///
+    /// The half that stops the losing option being proposed again — by the
+    /// next person, or by an agent that reads this digest, complies, and
+    /// helpfully suggests the thing that was already tried. Issue #114.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub alternatives: Vec<GuideAlternative<'a>>,
+}
+
+/// One option a decision weighed and did not take, as the digest carries it.
+#[derive(Debug, Serialize)]
+pub struct GuideAlternative<'a> {
+    /// The option, named as the team named it.
+    pub option: &'a str,
+    /// Why it lost.
+    pub why_not: &'a str,
+    /// The rule that refuses it today. Absent when nothing does, which is a
+    /// true and useful thing for a reader to know.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refused_by: Option<&'a str>,
 }
 
 /// One rule, as the digest carries it.
@@ -243,6 +269,28 @@ fn decisions_of<'a>(
                         .filter_map(|rule| excused.get(rule.id.as_str()))
                         .sum()
                 }),
+                supersedes: decision
+                    .supersedes
+                    .iter()
+                    .map(archwarden_core::ids::DecisionId::as_str)
+                    .collect(),
+                superseded_by: decision
+                    .superseded_by
+                    .iter()
+                    .map(archwarden_core::ids::DecisionId::as_str)
+                    .collect(),
+                alternatives: decision
+                    .alternatives
+                    .iter()
+                    .map(|alternative| GuideAlternative {
+                        option: alternative.option.as_str(),
+                        why_not: alternative.why_not.as_str(),
+                        refused_by: alternative
+                            .refused_by
+                            .as_ref()
+                            .map(archwarden_core::ids::RuleId::as_str),
+                    })
+                    .collect(),
                 rules: serving,
             })
         })
@@ -1376,6 +1424,9 @@ mod tests {
                 why: Some("it is published".to_owned()),
                 link: Some("docs/adr/014.md".to_owned()),
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             }]),
             None,
         );
@@ -1470,6 +1521,9 @@ mod tests {
                     why: None,
                     link: None,
                     status: DecisionStatus::Accepted,
+                    supersedes: Vec::new(),
+                    superseded_by: Vec::new(),
+                    alternatives: Vec::new(),
                 },
             ]),
             None,
@@ -1502,6 +1556,9 @@ mod tests {
                 why: None,
                 link: None,
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
             CompiledDecision {
                 id: DecisionId::new("ADR-031").expect("valid"),
@@ -1509,6 +1566,9 @@ mod tests {
                 why: None,
                 link: None,
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             },
         ]);
 
@@ -1562,6 +1622,9 @@ mod tests {
                 why: None,
                 link: None,
                 status: DecisionStatus::Accepted,
+                supersedes: Vec::new(),
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
             }]),
             None,
         );
@@ -1606,6 +1669,9 @@ mod tests {
                     why: None,
                     link: None,
                     status: DecisionStatus::Accepted,
+                    supersedes: Vec::new(),
+                    superseded_by: Vec::new(),
+                    alternatives: Vec::new(),
                 },
                 CompiledDecision {
                     id: DecisionId::new("ADR-020").expect("valid"),
@@ -1613,6 +1679,9 @@ mod tests {
                     why: None,
                     link: None,
                     status: DecisionStatus::Accepted,
+                    supersedes: Vec::new(),
+                    superseded_by: Vec::new(),
+                    alternatives: Vec::new(),
                 },
             ]),
             Some(&scope),

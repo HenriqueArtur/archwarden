@@ -320,6 +320,19 @@ this repository has written down and never kept; `config explain <decision-id>`
 says so in words. Debt from a rule that names no decision is in the totals and
 in no entry here.
 
+**A decision may say what it already rejected.** When a finding or a denial
+carries one, read it — it is the option you were about to propose:
+
+```
+decision: ADR-031 — the domain does not know about transport
+  `an HTTP client in the domain` was considered and rejected:
+    a consumer would inherit our transport, and the retry policy with it
+```
+
+Do not propose it again. `config explain <decision-id>` lists every rejected
+option, and says which ones a rule actually refuses and which are only written
+down.
+
 **Do not add to a decision's debt.** If your change would put a new entry under
 one, `archwarden baseline --dry-run` names it:
 
