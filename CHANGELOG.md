@@ -17,6 +17,70 @@ saying so.
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-08-18
+
+The first half of making a decision the unit rather than a footnote on a rule.
+**No existing configuration reports anything new**, and nothing new fires: what
+changes is what three surfaces are able to say.
+
+### Added
+
+- **The baseline, attributed to the decision it belongs to** (#112). A decision
+  could be `accepted`, be named by three rules, report **zero findings today**,
+  and still be one this repository had never kept — because all of it was in
+  `.archwarden/baseline.json`. The page said *Enforced by two rules* and
+  stopped there, which reads as *kept*.
+
+  Both halves already existed and had never been joined: the baseline records
+  what was accepted by rule and path, and every rule has carried `decision`
+  since 0.21. **No new config field.**
+
+  `config explain <decision-id>` now says it:
+
+  ```
+  Implemented by 2 rules:
+    [error] domain-forbids-infrastructure (import-boundary) — flags 68 paths, 68 excused
+    [error] no-orm-in-domain (import-boundary) — flags 19 paths, 19 excused
+
+  87 paths break it, and the baseline excuses all of them.
+  It has never refused anything.
+  12 accepted entries no longer occur — run `archwarden baseline` to update.
+  ```
+
+  It is the only honest measure of whether an ADR is real, and the one number
+  here with a direction.
+
+- **`summary.baseline.by_decision`** in `--format json`, carrying `accepted`
+  and `gone` per decision. Absent when no rule names one. Debt from a rule with
+  no decision stays in the totals and belongs to nobody.
+
+- **The decision card carries its debt**, on the HTML page and in the markdown
+  digest an agent is handed. Counted off the committed file rather than a run —
+  the digest does not walk anything — so it says *"The baseline carries 2
+  entries against it"* rather than claiming they are all still excusing
+  something. `config explain` runs a check and can tell those apart; this
+  cannot, and does not claim to.
+
+- **`baseline --dry-run` names the decision new debt is added against** (#113):
+
+  ```
+  + domain-forbids-infrastructure packages/domain/src/order/repo.ts — imports `axios`
+      against ADR-014 — the domain does not know infrastructure
+  ```
+
+  Under the addition and only the addition: the removals are the cheerful half
+  and already read well. A rule naming no decision adds nothing to the line,
+  which is every configuration written before 0.21.
+
+### Reasoning
+
+Issue #112 records why the verdict lives in `config explain` rather than in
+`config doctor`, and it was decided while building: the doctor walks and parses
+but **never resolves imports and never builds a graph**, and putting this there
+would have handed it the import graph — the one cost `RULES.md` singles out and
+that decisions 21 and 25 made opt-in.
+
+
 ## [0.24.1] — 2026-08-17
 
 One fix, and it is about the format the documentation tells a tool to use.
@@ -2105,7 +2169,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.1...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.25.0...HEAD
+[0.25.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.0...v0.24.1
 [0.24.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.23.0...v0.24.0
 [0.23.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.22.0...v0.23.0

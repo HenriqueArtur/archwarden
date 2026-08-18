@@ -55,6 +55,12 @@ impl Phrases for En {
     fn enforced_by_nothing(&self) -> &'static str {
         "Nothing enforces this."
     }
+    fn debt_against(&self, entries: usize) -> String {
+        format!(
+            "The baseline carries {entries} {} against it.",
+            plural(entries, "entry", "entries")
+        )
+    }
     fn written_down_in(&self) -> &'static str {
         "Written down in"
     }

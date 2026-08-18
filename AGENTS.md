@@ -303,12 +303,30 @@ In JSON the same two numbers are in the document, under `summary.baseline`,
 and the key is absent when the repository has no baseline at all:
 
 ```json
-"baseline": { "accepted": 78, "gone": 12 }
+"baseline": {
+  "accepted": 78,
+  "gone": 12,
+  "by_decision": { "ADR-014": { "accepted": 68, "gone": 9 } }
+}
 ```
 
 `gone` is the one to read. Accepted entries that no longer occur are debt that
 has actually been paid — and a stale entry is one that could hide a violation
 that came back.
+
+`by_decision` attributes both numbers to the decision the rule serves. A
+decision whose rules report nothing today and whose entire debt is here is one
+this repository has written down and never kept; `config explain <decision-id>`
+says so in words. Debt from a rule that names no decision is in the totals and
+in no entry here.
+
+**Do not add to a decision's debt.** If your change would put a new entry under
+one, `archwarden baseline --dry-run` names it:
+
+```
++ domain-forbids-http packages/domain/src/order/repo.ts — imports `axios`
+    against ADR-014 — the domain does not know infrastructure
+```
 
 **Do not add to it.** Writing `archwarden baseline` accepts every finding in the
 repository, which silently forgives whatever you just broke. It is a decision

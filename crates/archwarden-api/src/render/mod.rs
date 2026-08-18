@@ -387,7 +387,7 @@ impl Summary {
             report,
             view,
             elapsed,
-            standing,
+            ref standing,
             ..
         } = *rendered;
 
@@ -411,7 +411,7 @@ impl Summary {
             duration_ms: elapsed.as_millis(),
             hidden: view.hidden(),
             by_rule: view.breakdown().map(breakdown_as_map),
-            baseline: standing,
+            baseline: standing.clone(),
             imports: (report.imports.total() > 0).then_some(Imports {
                 in_repo: report.imports.in_repo,
                 external: report.imports.external,

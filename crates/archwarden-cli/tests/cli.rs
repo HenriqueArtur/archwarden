@@ -1785,6 +1785,75 @@ fn repo_with_violations() -> tempfile::TempDir {
     ])
 }
 
+/// Issue #112, end to end and through every surface it touches: a decision
+/// that is accepted, named by a rule, reporting nothing, and never kept —
+/// because everything it flags is in the baseline.
+///
+/// The three surfaces are asserted together deliberately. The value is in them
+/// agreeing, and no unit test spans `baseline`, `explain` and the report.
+#[test]
+fn the_debt_a_decision_carries_is_named_on_every_surface() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,
+                "decisions":[{"id":"ADR-014","title":"entities are flat",
+                              "why":"a nested entity is a module nobody named"}],
+                "rules":[{"type":"structure","id":"entity-shape","level":"error",
+                          "decision":"ADR-014","roots":["src/*"],
+                          "allowed_subfolders":["types"]}]}"#,
+        ),
+        ("src/order/handlers/a.ts", ""),
+        ("src/billing/types/b.ts", ""),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("baseline")
+        .assert()
+        .success();
+
+    // 1. The report, where the number is machine-readable and normalised
+    //    under the baseline it belongs to.
+    let stdout = archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--format", "json"])
+        .assert()
+        .code(0)
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&stdout).expect("valid JSON");
+    assert_eq!(
+        parsed["summary"]["baseline"]["by_decision"]["ADR-014"]["accepted"],
+        1
+    );
+    assert_eq!(
+        parsed["summary"]["baseline"]["by_decision"]["ADR-014"]["gone"],
+        0
+    );
+
+    // 2. `config explain`, where somebody asking about the decision is told
+    //    the thing the rule list cannot say.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "explain", "ADR-014"])
+        .assert()
+        .success()
+        .stdout(contains("1 excused"))
+        .stdout(contains("It has never refused anything."));
+
+    // 3. The page, which until now could only say what was declared.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["agent-guide", "--format", "html"])
+        .assert()
+        .success()
+        .stdout(contains(
+            r#"<p class="excused">The baseline carries 1 entry against it.</p>"#,
+        ));
+}
+
 /// Findings at error level exit 1, which is what a CI gate branches on.
 #[test]
 fn a_repository_with_errors_exits_one() {

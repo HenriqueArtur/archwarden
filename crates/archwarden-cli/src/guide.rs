@@ -188,6 +188,19 @@ fn render_html(
                     code(link)
                 );
             }
+            // The measurement, above the rule list rather than below it: a
+            // reader who stops at "Enforced by two rules" has been told this
+            // decision is kept, and the number is what says whether it is.
+            // Absent when no baseline was read, and absent at zero -- a
+            // decision carrying no debt has nothing to say here, and "0
+            // excused" on every card is a column of noise. Issue #112.
+            if let Some(excused) = decision.excused.filter(|excused| *excused > 0) {
+                let _ = writeln!(
+                    out,
+                    "<p class=\"excused\">{}</p>",
+                    escape(&say.debt_against(excused))
+                );
+            }
             // The debt, in words. An empty list here is the one thing on this
             // page worth stopping at, and a blank does not stop anybody.
             if decision.rules.is_empty() {
@@ -362,6 +375,14 @@ fn render_markdown(guide: &Guide<'_>, out: &mut dyn std::io::Write) {
             if let Some(link) = decision.link {
                 let _ = writeln!(out, "- **Written down in**: {link}");
             }
+            // The digest is what an agent has in context before it changes
+            // anything, and a decision carrying debt is one it must not add
+            // to. Absent at zero and absent with no baseline, for the reason
+            // the page leaves it out: a line saying nothing is a line read
+            // every time. Issue #112.
+            if let Some(entries) = decision.excused.filter(|entries| *entries > 0) {
+                let _ = writeln!(out, "- **Baseline entries against it**: {entries}");
+            }
             // Said out loud when it is empty, because a decision nothing
             // enforces is the thing worth noticing here.
             let _ = writeln!(
@@ -498,10 +519,20 @@ mod tests {
         kinds: &[&str],
         format: GuideFormat,
     ) -> String {
+        rendered_with_baseline(config, scope, kinds, format, None)
+    }
+
+    fn rendered_with_baseline(
+        config: &CompiledConfig,
+        scope: Option<&RepoRelPath>,
+        kinds: &[&str],
+        format: GuideFormat,
+        baseline: Option<&archwarden_api::baseline::Baseline>,
+    ) -> String {
         let owned: Vec<String> = kinds.iter().map(|k| (*k).to_owned()).collect();
         let mut out = Vec::new();
         render(
-            &guide(config, scope, &owned),
+            &guide(config, scope, &owned, baseline),
             format,
             crate::phrases::Language::En,
             &mut out,
@@ -771,6 +802,100 @@ mod tests {
         assert!(decisions < map, "the decisions come first: {page}");
     }
 
+    /// Issue #112. A decision named by rules that report nothing reads as kept
+    /// on this page, and a repository that excuses all of it has never kept it.
+    /// The count is what turns the card from a claim into a measurement.
+    #[test]
+    fn the_page_says_how_much_of_a_decision_is_still_excused() {
+        let baseline: archwarden_api::baseline::Baseline =
+            serde_json::from_value(serde_json::json!({
+                "version": 0,
+                "accepted": [
+                    { "rule": "domain-forbids-http", "path": "packages/domain/a.ts", "note": "" },
+                    { "rule": "domain-forbids-http", "path": "packages/domain/b.ts", "note": "" },
+                ],
+            }))
+            .expect("a baseline");
+
+        let page = rendered_with_baseline(
+            &decided_config(),
+            None,
+            &[],
+            GuideFormat::Html,
+            Some(&baseline),
+        );
+
+        assert!(
+            page.contains("<p class=\"excused\">The baseline carries 2 entries against it.</p>"),
+            "{page}"
+        );
+    }
+
+    /// The digest an agent is handed carries it too: a decision with debt is
+    /// one it must not add to, and that is the most actionable thing on the
+    /// card.
+    #[test]
+    fn the_digest_carries_the_debt_a_decision_holds() {
+        let baseline: archwarden_api::baseline::Baseline =
+            serde_json::from_value(serde_json::json!({
+                "version": 0,
+                "accepted": [
+                    { "rule": "domain-forbids-http", "path": "packages/domain/a.ts", "note": "" },
+                ],
+            }))
+            .expect("a baseline");
+
+        let markdown = rendered_with_baseline(
+            &decided_config(),
+            None,
+            &[],
+            GuideFormat::Markdown,
+            Some(&baseline),
+        );
+
+        assert!(
+            markdown.contains("- **Baseline entries against it**: 1"),
+            "{markdown}"
+        );
+    }
+
+    /// A decision the baseline carries nothing against says nothing, rather
+    /// than printing "0 entries" on every card of every clean repository.
+    #[test]
+    fn a_decision_with_no_debt_says_nothing_about_it() {
+        let baseline: archwarden_api::baseline::Baseline =
+            serde_json::from_value(serde_json::json!({
+                "version": 0,
+                "accepted": [
+                    { "rule": "some-other-rule", "path": "packages/app/a.ts", "note": "" },
+                ],
+            }))
+            .expect("a baseline");
+
+        for format in [GuideFormat::Html, GuideFormat::Markdown] {
+            let rendered =
+                rendered_with_baseline(&decided_config(), None, &[], format, Some(&baseline));
+            assert!(
+                !rendered.contains("<p class=\"excused\">")
+                    && !rendered.contains("**Baseline entries against it**"),
+                "a consulted baseline that holds nothing says nothing: {rendered}"
+            );
+        }
+    }
+
+    /// And a page rendered without one says nothing about it, rather than
+    /// showing a zero that reads as "this decision is clean"."""
+    ///
+    /// Asserted against the rendered element rather than the word: the
+    /// stylesheet carries `.decision .excused` and a section comment that says
+    /// it, so searching for the word finds the CSS on every page.
+    #[test]
+    fn a_page_with_no_baseline_says_nothing_about_excused_debt() {
+        let page = rendered(&decided_config(), None, GuideFormat::Html);
+
+        assert!(!page.contains("<p class=\"excused\">"), "{page}");
+    }
+
     /// A decision nothing enforces is the state the page exists to make
     /// visible, so it is said in words rather than left as an empty list.
     #[test]
@@ -830,7 +955,7 @@ mod tests {
 
         let mut page = Vec::new();
         render(
-            &guide(&config, None, &[]),
+            &guide(&config, None, &[], None),
             GuideFormat::Html,
             crate::phrases::Language::PtBr,
             &mut page,

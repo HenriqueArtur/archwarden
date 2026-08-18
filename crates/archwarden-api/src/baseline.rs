@@ -105,7 +105,7 @@ pub struct Baseline {
 /// out because a human reading `0 no longer occur` on every run only wonders
 /// why it is there, and a consumer branching on the ratchet needs the field to
 /// exist. Issue #110.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize)]
 pub struct Standing {
     /// How many accepted entries this run still matched.
     pub accepted: usize,
@@ -113,6 +113,34 @@ pub struct Standing {
     ///
     /// The ratchet, and the only cheerful number archwarden prints: it is the
     /// refactoring that has actually landed.
+    pub gone: usize,
+    /// The same two numbers, by the decision the debt belongs to.
+    ///
+    /// A decision can be `accepted`, be named by three rules, report nothing
+    /// today, and still be one this repository has never kept — because all of
+    /// it is excused here. That is the only honest measure of whether an ADR is
+    /// real, and it is the one number here with a direction. Issue #112.
+    ///
+    /// Computed in the same pass as the totals rather than beside them, so a
+    /// surface cannot print a total that disagrees with its own breakdown.
+    /// Debt from a rule that names no decision is in the totals and in no
+    /// entry here: it belongs to nobody, which is what
+    /// `rule-without-a-decision` is already about.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub by_decision: std::collections::BTreeMap<String, DecisionStanding>,
+}
+
+/// How one decision stands against the baseline.
+///
+/// Kept a type of its own rather than reusing [`Standing`], which would nest a
+/// breakdown inside every entry of a breakdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
+pub struct DecisionStanding {
+    /// Findings this decision's rules produce that the baseline excuses.
+    ///
+    /// The number to bring down.
+    pub accepted: usize,
+    /// Accepted entries of this decision's rules that no longer occur.
     pub gone: usize,
 }
 
@@ -303,24 +331,78 @@ impl Baseline {
         self.accepted.iter().any(|entry| entry.identity() == wanted)
     }
 
-    /// How this run stands against what was accepted.
+    /// How this run stands against what was accepted, in total and by decision.
+    ///
+    /// The config is here for the second half only: the totals are a property
+    /// of the file and the run, and the attribution needs to know which
+    /// decision each rule implements. One call rather than two, because a
+    /// surface that fetched them separately could print a total that does not
+    /// agree with its own breakdown. Issue #112.
     #[must_use]
-    pub fn standing(&self, findings: &[Finding]) -> Standing {
+    pub fn standing(
+        &self,
+        findings: &[Finding],
+        config: &archwarden_core::compiled::CompiledConfig,
+    ) -> Standing {
         let present: BTreeSet<(&str, &str)> = findings
             .iter()
             .map(|finding| (finding.rule_id.as_str(), finding.path.as_str()))
             .collect();
 
-        let accepted = self
-            .accepted
-            .iter()
-            .filter(|entry| present.contains(&entry.identity()))
-            .count();
+        let serves: std::collections::BTreeMap<&str, &str> = config
+            .rules()
+            .filter_map(|rule| {
+                rule.decision
+                    .as_ref()
+                    .map(|decision| (rule.id.as_str(), decision.as_str()))
+            })
+            .collect();
+
+        let mut accepted = 0;
+        let mut by_decision: std::collections::BTreeMap<String, DecisionStanding> =
+            std::collections::BTreeMap::new();
+
+        for entry in &self.accepted {
+            let still_there = present.contains(&entry.identity());
+            if still_there {
+                accepted += 1;
+            }
+
+            // A rule naming no decision is counted in the totals and attributed
+            // to nothing. Inventing a bucket for it would put debt under a
+            // heading nobody decided.
+            let Some(decision) = serves.get(entry.rule.as_str()) else {
+                continue;
+            };
+            let standing = by_decision.entry((*decision).to_owned()).or_default();
+            if still_there {
+                standing.accepted += 1;
+            } else {
+                standing.gone += 1;
+            }
+        }
 
         Standing {
             accepted,
             gone: self.accepted.len() - accepted,
+            by_decision,
         }
+    }
+
+    /// How much of the excused debt each rule carries.
+    ///
+    /// A property of the file rather than of a run: `config explain` breaks the
+    /// total down this way without needing to know what fired today, and the
+    /// page can say it without walking anything. Rules with no entry are
+    /// absent rather than zero — the map answers "who carries debt", not "which
+    /// rules exist".
+    #[must_use]
+    pub fn excused_by_rule(&self) -> std::collections::BTreeMap<&str, usize> {
+        let mut counts = std::collections::BTreeMap::new();
+        for entry in &self.accepted {
+            *counts.entry(entry.rule.as_str()).or_insert(0) += 1;
+        }
+        counts
     }
 
     /// The entries that no longer occur, in file order.
@@ -519,7 +601,7 @@ mod tests {
         let baseline = Baseline::of(&debt());
         let after = vec![debt()[0].clone()];
 
-        let standing = baseline.standing(&after);
+        let standing = baseline.standing(&after, &config_of(Vec::new()));
         assert_eq!(standing.accepted, 1);
         assert_eq!(standing.gone, 1);
 
@@ -528,12 +610,148 @@ mod tests {
         assert_eq!(gone[0].path, "packages/app/src/billing");
     }
 
+    /// A rule that serves a decision, for the attribution tests.
+    fn serving(rule: &str, decision: Option<&str>) -> archwarden_core::compiled::CompiledRule {
+        archwarden_core::compiled::CompiledRule {
+            id: RuleId::new(rule).expect("valid id"),
+            module: None,
+            why: None,
+            module_why: None,
+            decision: decision
+                .map(|id| archwarden_core::ids::DecisionId::new(id).expect("valid decision id")),
+            imports: None,
+            level: Level::Error,
+            scope: archwarden_core::scope::Scope::compile(["packages/*"]).expect("valid scope"),
+            kind: archwarden_core::compiled::CompiledRuleKind::Frozen,
+        }
+    }
+
+    fn config_of(
+        rules: Vec<archwarden_core::compiled::CompiledRule>,
+    ) -> archwarden_core::compiled::CompiledConfig {
+        archwarden_core::compiled::CompiledConfig::new(
+            rules,
+            archwarden_core::glob::PathSet::default(),
+            archwarden_core::compiled::SkipDirs::default(),
+            archwarden_core::hash::ContentHash::of(b""),
+        )
+    }
+
+    /// Issue #112. A decision can be accepted, be named by rules, report
+    /// nothing today, and still be a decision this repository has never kept —
+    /// because all of it is in the baseline. Both halves already existed and
+    /// had never been put together.
+    #[test]
+    fn the_debt_is_attributed_to_the_decision_it_belongs_to() {
+        let baseline = Baseline::of(&debt());
+        let config = config_of(vec![serving("shape", Some("ADR-014"))]);
+
+        let standing = baseline.standing(&debt(), &config);
+
+        assert_eq!(standing.accepted, 2);
+        assert_eq!(
+            standing.by_decision.get("ADR-014"),
+            Some(&DecisionStanding {
+                accepted: 2,
+                gone: 0
+            })
+        );
+    }
+
+    /// The ratchet, attributed: an entry that no longer occurs is debt paid
+    /// *for* a decision, and that is the only cheerful number here.
+    #[test]
+    fn what_was_paid_is_attributed_too() {
+        let baseline = Baseline::of(&debt());
+        let config = config_of(vec![serving("shape", Some("ADR-014"))]);
+
+        let standing = baseline.standing(&debt()[..1], &config);
+
+        assert_eq!(
+            standing.by_decision.get("ADR-014"),
+            Some(&DecisionStanding {
+                accepted: 1,
+                gone: 1
+            })
+        );
+    }
+
+    /// The totals and the breakdown are one answer, so they cannot disagree:
+    /// a rule naming no decision is counted in the totals and belongs to
+    /// nobody, which is what `rule-without-a-decision` is already about.
+    #[test]
+    fn debt_from_a_rule_naming_no_decision_belongs_to_nobody() {
+        let baseline = Baseline::of(&debt());
+        let config = config_of(vec![serving("shape", None)]);
+
+        let standing = baseline.standing(&debt(), &config);
+
+        assert_eq!(standing.accepted, 2, "still counted in the total");
+        assert!(standing.by_decision.is_empty(), "and attributed to nothing");
+    }
+
+    /// Several rules serving one decision are one number, which is the number
+    /// somebody has to bring down.
+    #[test]
+    fn rules_serving_one_decision_are_summed() {
+        let findings = [
+            finding(
+                "shape",
+                "packages/domain/src/order",
+                Level::Error,
+                "handlers",
+            ),
+            finding("no-orm", "packages/domain/src/user", Level::Error, "orm"),
+            finding(
+                "elsewhere",
+                "packages/app/src/billing",
+                Level::Error,
+                "ctrl",
+            ),
+        ];
+        let baseline = Baseline::of(&findings);
+        let config = config_of(vec![
+            serving("shape", Some("ADR-014")),
+            serving("no-orm", Some("ADR-014")),
+            serving("elsewhere", Some("ADR-031")),
+        ]);
+
+        let standing = baseline.standing(&findings, &config);
+
+        assert_eq!(standing.by_decision["ADR-014"].accepted, 2);
+        assert_eq!(standing.by_decision["ADR-031"].accepted, 1);
+    }
+
+    /// How much of the excused debt each rule carries, which is what
+    /// `config explain` breaks the total down into. Needs no findings: it is a
+    /// property of the file, not of the run.
+    #[test]
+    fn the_excused_debt_is_countable_per_rule_without_a_run() {
+        let findings = [
+            finding(
+                "shape",
+                "packages/domain/src/order",
+                Level::Error,
+                "handlers",
+            ),
+            finding("shape", "packages/app/src/billing", Level::Error, "ctrl"),
+            finding("no-orm", "packages/domain/src/user", Level::Error, "orm"),
+        ];
+
+        let baseline = Baseline::of(&findings);
+        let excused = baseline.excused_by_rule();
+
+        assert_eq!(excused.get("shape"), Some(&2));
+        assert_eq!(excused.get("no-orm"), Some(&1));
+        assert_eq!(excused.get("never-fired"), None);
+    }
+
     /// A clean run against a full baseline is all ratchet and no debt.
     #[test]
     fn a_repository_that_fixed_everything_says_so() {
         let baseline = Baseline::of(&debt());
 
-        let standing = baseline.standing(&[]);
+        let standing = baseline.standing(&[], &config_of(Vec::new()));
         assert_eq!(standing.accepted, 0);
         assert_eq!(standing.gone, 2);
     }
@@ -546,7 +764,10 @@ mod tests {
 
         assert!(baseline.is_empty());
         assert!(!baseline.accepts(&debt()[0]));
-        assert_eq!(baseline.standing(&debt()), Standing::default());
+        assert_eq!(
+            baseline.standing(&debt(), &config_of(Vec::new())),
+            Standing::default()
+        );
     }
 
     /// Two findings that differ only in what they observed are one accepted

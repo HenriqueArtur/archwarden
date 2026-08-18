@@ -75,6 +75,12 @@ impl Phrases for PtBr {
     fn enforced_by_nothing(&self) -> &'static str {
         "Nada sustenta esta decisão."
     }
+    fn debt_against(&self, entries: usize) -> String {
+        format!(
+            "O baseline carrega {entries} {} contra ela.",
+            plural(entries, "entrada", "entradas")
+        )
+    }
     fn written_down_in(&self) -> &'static str {
         "Escrita em"
     }

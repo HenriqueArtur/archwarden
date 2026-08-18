@@ -113,6 +113,17 @@ pub trait Phrases: Send + Sync {
     fn enforced_by(&self, rules: &str) -> String;
     /// Said in place of that line when nothing enforces it.
     fn enforced_by_nothing(&self) -> &'static str;
+    /// How much debt the baseline carries against a decision.
+    ///
+    /// A sentence rather than a bare number: on a page of claims, `87` on its
+    /// own reads as a score.
+    ///
+    /// Says *entries*, not *findings still excused*, and the difference is
+    /// deliberate. This page does not walk anything, so it counts what the
+    /// committed file holds — and an entry that no longer occurs is a line in
+    /// that file which excuses nothing. `config explain` runs a check and can
+    /// tell the two apart; this cannot, and must not claim to. Issue #112.
+    fn debt_against(&self, entries: usize) -> String;
     /// Where a decision is written down, before the link itself.
     fn written_down_in(&self) -> &'static str;
     /// A decision's status, when it is not `accepted`.

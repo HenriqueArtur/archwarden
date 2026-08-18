@@ -9,6 +9,8 @@
 //! The flagged list comes from a real run rather than from a second
 //! evaluation, so what it shows is what `check` reports, by construction.
 
+use std::fmt::Write as _;
+
 use archwarden_core::{
     compiled::{CompiledConfig, CompiledRule},
     finding::Finding,
@@ -52,6 +54,13 @@ pub struct DecisionExplanation<'a> {
     /// The rules implementing it, in configuration order, with what each is
     /// currently flagging. Empty is a real answer and is said out loud.
     pub rules: Vec<RuleUnderDecision<'a>>,
+    /// Accepted entries of this decision's rules that no longer occur.
+    ///
+    /// The cheerful half of the ratchet, and the reason it is here rather than
+    /// only in `check`: somebody asking about one decision is asking whether
+    /// it is being kept, and debt paid against it is the answer they hoped
+    /// for. Issue #112.
+    pub paid: usize,
 }
 
 /// One rule serving a decision, and how it is doing.
@@ -64,6 +73,12 @@ pub struct RuleUnderDecision<'a> {
     /// decision is holding, and `config explain <rule-id>` is one command away
     /// for the detail.
     pub flags: usize,
+    /// How many of those the baseline already excuses.
+    ///
+    /// Broken down per rule because the total on its own is a number nobody
+    /// can act on: two rules serving one decision are two different debts, and
+    /// only one of them is usually the one worth paying first. Issue #112.
+    pub excused: usize,
 }
 
 /// Either answer the command can give.
@@ -217,20 +232,50 @@ fn explain_decision<'a>(
         cache: None,
     });
 
-    let rules = config
+    // Read here rather than passed in: this command already opens the
+    // repository, and a decision explained without the debt against it is the
+    // half-answer issue #112 was filed about. A baseline that will not parse
+    // leaves the rest of the answer standing, on `report_standing`'s
+    // precedent -- the question asked was about a decision, not about a file.
+    let baseline = archwarden_api::baseline::Baseline::load(root)
+        .ok()
+        .flatten();
+
+    let rules: Vec<RuleUnderDecision<'a>> = config
         .rules()
         .filter(|rule| rule.decision.as_ref() == Some(&decision.id))
-        .map(|rule| RuleUnderDecision {
-            rule,
-            flags: report
+        .map(|rule| {
+            let flagged: Vec<_> = report
                 .findings
                 .iter()
                 .filter(|finding| finding.rule_id == rule.id)
-                .count(),
+                .collect();
+            RuleUnderDecision {
+                excused: baseline.as_ref().map_or(0, |baseline| {
+                    flagged
+                        .iter()
+                        .filter(|finding| baseline.accepts(finding))
+                        .count()
+                }),
+                flags: flagged.len(),
+                rule,
+            }
         })
         .collect();
 
-    DecisionExplanation { decision, rules }
+    let paid = baseline.as_ref().map_or(0, |baseline| {
+        baseline
+            .standing(&report.findings, config)
+            .by_decision
+            .get(decision.id.as_str())
+            .map_or(0, |standing| standing.gone)
+    });
+
+    DecisionExplanation {
+        decision,
+        rules,
+        paid,
+    }
 }
 
 /// The JSON envelope.
@@ -267,6 +312,14 @@ struct JsonDecision<'a> {
     link: Option<&'a str>,
     status: &'a str,
     rules: Vec<JsonRuleUnder<'a>>,
+    /// How much of what this decision's rules flag is excused by the baseline.
+    ///
+    /// The number that says whether the decision is real. `excused == the sum
+    /// of the rules' flags` is a decision that has never refused anything, and
+    /// a consumer can compute that verdict from what is here. Issue #112.
+    excused: usize,
+    /// Accepted entries of this decision's rules that no longer occur.
+    paid: usize,
 }
 
 /// One rule under a decision, as JSON.
@@ -276,6 +329,10 @@ struct JsonRuleUnder<'a> {
     kind: &'static str,
     level: &'a str,
     flags: usize,
+    /// How many of `flags` the baseline already excuses. Always present,
+    /// including as zero: a consumer comparing the two needs the field to
+    /// exist, and a repository with no baseline is a real answer of zero.
+    excused: usize,
 }
 
 /// Writes the explanation.
@@ -330,8 +387,11 @@ fn render_decision_json(explanation: &DecisionExplanation<'_>, out: &mut dyn std
                     kind: under.rule.kind.type_name(),
                     level: under.rule.level.as_str(),
                     flags: under.flags,
+                    excused: under.excused,
                 })
                 .collect(),
+            excused: explanation.rules.iter().map(|under| under.excused).sum(),
+            paid: explanation.paid,
         },
         out,
     );
@@ -374,11 +434,17 @@ fn render_decision_text(explanation: &DecisionExplanation<'_>, out: &mut dyn std
         count(explanation.rules.len(), "rule")
     );
     for under in &explanation.rules {
-        let flags = if under.flags == 0 {
+        let mut flags = if under.flags == 0 {
             "flags nothing".to_owned()
         } else {
             format!("flags {}", count(under.flags, "path"))
         };
+        // Beside the count rather than under it: "flags 68 paths" and "68 of
+        // them are excused" are one fact, and a reader who stops at the first
+        // half has been told this rule is doing something it is not.
+        if under.excused > 0 {
+            let _ = write!(flags, ", {} excused", under.excused);
+        }
         let _ = writeln!(
             out,
             "    [{}] {} ({}) — {flags}",
@@ -391,11 +457,46 @@ fn render_decision_text(explanation: &DecisionExplanation<'_>, out: &mut dyn std
     // The half a document cannot answer: not what was decided, but whether it
     // is still being kept.
     let total: usize = explanation.rules.iter().map(|under| under.flags).sum();
-    let _ = if total == 0 {
-        writeln!(out, "\n  Nothing in this repository breaks it.")
-    } else {
-        writeln!(out, "\n  {} currently breaks it.", count(total, "path"))
+    let excused: usize = explanation.rules.iter().map(|under| under.excused).sum();
+
+    let _ = match (total, excused) {
+        (0, _) => writeln!(out, "\n  Nothing in this repository breaks it."),
+        // Every path it flags is already accepted. The decision is written
+        // down, implemented, and has never refused a single change -- which
+        // reads as *kept* on every surface that stops at the rule list, and is
+        // the failure issue #112 was filed about.
+        (total, excused) if excused == total => writeln!(
+            out,
+            "\n  {} {} it, and the baseline excuses {}.\n  \
+             It has never refused anything.",
+            count(total, "path"),
+            if total == 1 { "breaks" } else { "break" },
+            if total == 1 { "it" } else { "all of them" },
+        ),
+        (total, 0) => writeln!(out, "\n  {} currently breaks it.", count(total, "path")),
+        (total, excused) => writeln!(
+            out,
+            "\n  {} {} it: {excused} excused by the baseline, {} not.",
+            count(total, "path"),
+            if total == 1 { "breaks" } else { "break" },
+            total - excused,
+        ),
     };
+
+    // Last, because it is the only good news here and the reader should leave
+    // on it when there is any.
+    if explanation.paid > 0 {
+        let _ = writeln!(
+            out,
+            "  {} no longer {} — run `archwarden baseline` to update.",
+            count(explanation.paid, "accepted entry"),
+            if explanation.paid == 1 {
+                "occurs"
+            } else {
+                "occur"
+            },
+        );
+    }
 }
 
 fn render_json(explanation: &Explanation<'_>, out: &mut dyn std::io::Write) {
@@ -668,6 +769,148 @@ mod tests {
             text.contains("flags"),
             "the rules under it report what they are flagging: {text}"
         );
+    }
+
+    /// A baseline accepting everything the decision's rules flag.
+    ///
+    /// Written into the tree the harness builds, because that is where
+    /// `Baseline::load` looks — the same file a repository commits.
+    fn excusing_everything() -> (&'static str, String) {
+        (
+            ".archwarden/baseline.json",
+            serde_json::json!({
+                "version": 0,
+                "accepted": [
+                    { "rule": "usecase-name", "path": "src/user/create-client.use-case.ts", "note": "" },
+                ],
+            })
+            .to_string(),
+        )
+    }
+
+    fn with_baseline(files: &[(&str, &str)], baseline: &(&str, String)) -> Vec<(String, String)> {
+        let mut entries: Vec<(String, String)> = files
+            .iter()
+            .map(|(path, body)| ((*path).to_owned(), (*body).to_owned()))
+            .collect();
+        entries.push((baseline.0.to_owned(), baseline.1.clone()));
+        entries
+    }
+
+    fn rendered_owned(
+        entries: &[(String, String)],
+        config: &CompiledConfig,
+        wanted: &str,
+        format: crate::report::Format,
+    ) -> Result<String, String> {
+        let borrowed: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|(path, body)| (path.as_str(), body.as_str()))
+            .collect();
+        rendered(&borrowed, config, wanted, format)
+    }
+
+    /// Issue #112. A decision can be accepted, be named by two rules, and be
+    /// one this repository has never kept — because everything it flags is in
+    /// the baseline. Both halves already existed and had never been joined.
+    #[test]
+    fn a_decision_whose_debt_is_all_excused_says_it_has_never_refused_anything() {
+        let entries = with_baseline(&FILES, &excusing_everything());
+        let text = rendered_owned(&entries, &decided(), "ADR-014", crate::report::Format::Text)
+            .expect("explains");
+
+        assert!(
+            text.contains("the baseline excuses it"),
+            "the debt is named rather than counted as a violation: {text}"
+        );
+        assert!(
+            text.contains("has never refused anything"),
+            "and the verdict is said out loud: {text}"
+        );
+    }
+
+    /// The same numbers without a baseline: nothing is excused, and the
+    /// verdict does not fire on a decision that is genuinely being broken.
+    #[test]
+    fn a_decision_with_no_baseline_is_not_accused_of_being_on_paper() {
+        let text =
+            rendered(&FILES, &decided(), "ADR-014", crate::report::Format::Text).expect("explains");
+
+        assert!(!text.contains("excused"), "{text}");
+        assert!(!text.contains("never refused anything"), "{text}");
+        assert!(text.contains("currently breaks it"), "{text}");
+    }
+
+    /// And the rule lines carry their own share, because "87 excused" over two
+    /// rules is a number nobody can act on until it is broken down.
+    #[test]
+    fn each_rule_says_how_much_of_the_debt_it_carries() {
+        let entries = with_baseline(&FILES, &excusing_everything());
+        let text = rendered_owned(&entries, &decided(), "ADR-014", crate::report::Format::Text)
+            .expect("explains");
+
+        assert!(
+            text.contains("usecase-name") && text.contains("1 excused"),
+            "{text}"
+        );
+    }
+
+    /// The cheerful half, and the reason it is here at all: somebody asking
+    /// about a decision is asking whether it is being kept, and debt paid
+    /// against it is the answer they hoped for.
+    #[test]
+    fn a_decision_says_when_debt_against_it_was_paid() {
+        let baseline = (
+            ".archwarden/baseline.json",
+            serde_json::json!({
+                "version": 0,
+                "accepted": [
+                    { "rule": "usecase-name", "path": "src/user/create-client.use-case.ts",
+                      "note": "" },
+                    { "rule": "usecase-name", "path": "src/user/gone.use-case.ts", "note": "" },
+                ],
+            })
+            .to_string(),
+        );
+        let entries = with_baseline(&FILES, &baseline);
+        let text = rendered_owned(&entries, &decided(), "ADR-014", crate::report::Format::Text)
+            .expect("explains");
+
+        assert!(
+            text.contains("1 accepted entry no longer occurs"),
+            "the entry for a file that is gone is named: {text}"
+        );
+    }
+
+    /// And a decision with nothing paid says nothing, rather than printing a
+    /// zero on every run for every decision.
+    #[test]
+    fn a_decision_with_nothing_paid_says_nothing_about_it() {
+        let entries = with_baseline(&FILES, &excusing_everything());
+        let text = rendered_owned(&entries, &decided(), "ADR-014", crate::report::Format::Text)
+            .expect("explains");
+
+        assert!(!text.contains("no longer occur"), "{text}");
+    }
+
+    /// The JSON half carries both numbers per rule and the decision's own
+    /// standing, so a consumer can compute the same verdict."""
+    #[test]
+    fn the_decision_json_carries_the_excused_debt() {
+        let entries = with_baseline(&FILES, &excusing_everything());
+        let json = rendered_owned(&entries, &decided(), "ADR-014", crate::report::Format::Json)
+            .expect("explains");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+        let shape = parsed["rules"]
+            .as_array()
+            .expect("rules")
+            .iter()
+            .find(|rule| rule["id"] == "usecase-name")
+            .expect("the rule that fires");
+        assert_eq!(shape["excused"], 1);
+        assert_eq!(parsed["excused"], 1);
+        assert_eq!(parsed["paid"], 0);
     }
 
     /// The JSON half, versioned like the rule shape and distinguishable from
