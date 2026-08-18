@@ -299,6 +299,12 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         view,
         reasons,
         elapsed,
+        // Printed by `report_standing`, after this and after the `--html`
+        // note, which is where a reader of the text format has always found
+        // it. The JSON format carries the same number inside the document
+        // instead. Named rather than elided so a field added to `Rendered`
+        // still fails to compile here.
+        standing: _,
     } = *rendered;
 
     if let Some(breakdown) = view.breakdown() {
@@ -401,7 +407,7 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         render_unresolved_imports(&report.imports.unresolved_imports, out);
     }
 
-    let summary = Summary::of(report, view, elapsed);
+    let summary = Summary::of(rendered);
     let _ = write!(
         out,
         "{} {}, {} {}",
@@ -1387,6 +1393,7 @@ mod tests {
                 view: &View::everything(report),
                 reasons,
                 elapsed: TOOK,
+                standing: None,
             },
             format,
             &mut out,
@@ -1404,6 +1411,7 @@ mod tests {
                 view: &View::everything(report),
                 reasons: &Reasons::default(),
                 elapsed: TOOK,
+                standing: None,
             },
             format,
             &mut out,
@@ -1431,6 +1439,7 @@ mod tests {
                 view,
                 reasons: &Reasons::default(),
                 elapsed,
+                standing: None,
             },
             format,
             &mut out,

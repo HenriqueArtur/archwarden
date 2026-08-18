@@ -26,12 +26,11 @@ impl Renderer for Json {
             report,
             view,
             reasons,
-            elapsed,
             ..
         } = *rendered;
         let envelope = JsonReport {
             version: REPORT_VERSION,
-            summary: Summary::of(report, view, elapsed),
+            summary: Summary::of(rendered),
             findings: view.breakdown().is_none().then(|| {
                 view.findings()
                     .iter()
@@ -314,6 +313,7 @@ mod tests {
                 view,
                 reasons: &Reasons::default(),
                 elapsed: TOOK,
+                standing: None,
             },
             &mut out,
         );
@@ -329,6 +329,7 @@ mod tests {
                 view: &View::everything(report),
                 reasons: &Reasons::default(),
                 elapsed,
+                standing: None,
             },
             &mut out,
         );
@@ -348,6 +349,7 @@ mod tests {
                 view: &View::everything(report),
                 reasons,
                 elapsed: TOOK,
+                standing: None,
             },
             &mut out,
         );

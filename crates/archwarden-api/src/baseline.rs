@@ -99,7 +99,13 @@ pub struct Baseline {
 }
 
 /// How a run's findings compare to what was accepted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+///
+/// Serialisable because the JSON report carries it under `summary.baseline`.
+/// Both numbers travel, including a zero `gone`: the text format leaves a zero
+/// out because a human reading `0 no longer occur` on every run only wonders
+/// why it is there, and a consumer branching on the ratchet needs the field to
+/// exist. Issue #110.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize)]
 pub struct Standing {
     /// How many accepted entries this run still matched.
     pub accepted: usize,

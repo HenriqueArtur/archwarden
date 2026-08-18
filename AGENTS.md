@@ -56,6 +56,10 @@ alike, and never suppress either.
 
 Every command takes `--format json`, which is versioned and stable. Use it.
 
+Under `--format json`, **stdout is the document and nothing else**. Notes about
+side artefacts go to stderr, so `JSON.parse` of stdout is always safe. In the
+text format they stay where a reader expects them, beside the report.
+
 ### `describe <path>` — what applies here
 
 ```bash
@@ -294,6 +298,17 @@ how many are accepted:
 0 errors, 0 warnings · 3778 files, 1034 directories · 593ms
 78 accepted, 12 no longer occur — run `archwarden baseline` to update
 ```
+
+In JSON the same two numbers are in the document, under `summary.baseline`,
+and the key is absent when the repository has no baseline at all:
+
+```json
+"baseline": { "accepted": 78, "gone": 12 }
+```
+
+`gone` is the one to read. Accepted entries that no longer occur are debt that
+has actually been paid — and a stale entry is one that could hide a violation
+that came back.
 
 **Do not add to it.** Writing `archwarden baseline` accepts every finding in the
 repository, which silently forgives whatever you just broke. It is a decision
