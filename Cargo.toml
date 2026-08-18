@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*", "xtask"]
 
 [workspace.package]
-version = "0.24.1"
+version = "0.25.0"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT OR Apache-2.0"
@@ -17,15 +17,15 @@ authors = ["Henrique Artur"]
 [workspace.dependencies]
 
 # --- internal ---------------------------------------------------------------
-archwarden-api = { path = "crates/archwarden-api", version = "0.24.1" }
-archwarden-cache = { path = "crates/archwarden-cache", version = "0.24.1" }
-archwarden-config = { path = "crates/archwarden-config", version = "0.24.1" }
-archwarden-core = { path = "crates/archwarden-core", version = "0.24.1" }
-archwarden-engine = { path = "crates/archwarden-engine", version = "0.24.1" }
-archwarden-mcp = { path = "crates/archwarden-mcp", version = "0.24.1" }
-archwarden-parser = { path = "crates/archwarden-parser", version = "0.24.1" }
-archwarden-resolver = { path = "crates/archwarden-resolver", version = "0.24.1" }
-archwarden-rules = { path = "crates/archwarden-rules", version = "0.24.1" }
+archwarden-api = { path = "crates/archwarden-api", version = "0.25.0" }
+archwarden-cache = { path = "crates/archwarden-cache", version = "0.25.0" }
+archwarden-config = { path = "crates/archwarden-config", version = "0.25.0" }
+archwarden-core = { path = "crates/archwarden-core", version = "0.25.0" }
+archwarden-engine = { path = "crates/archwarden-engine", version = "0.25.0" }
+archwarden-mcp = { path = "crates/archwarden-mcp", version = "0.25.0" }
+archwarden-parser = { path = "crates/archwarden-parser", version = "0.25.0" }
+archwarden-resolver = { path = "crates/archwarden-resolver", version = "0.25.0" }
+archwarden-rules = { path = "crates/archwarden-rules", version = "0.25.0" }
 
 # --- serialisation ----------------------------------------------------------
 serde = { version = "1.0.229", features = ["derive"] }
