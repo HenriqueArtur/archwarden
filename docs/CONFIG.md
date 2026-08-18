@@ -361,9 +361,10 @@ what every rule written before 0.21 does.
 - `config explain` takes a decision id as well as a rule id, and answers the
   question people actually ask — not *what does this rule do* but *why is this
   like this*, plus the half a document cannot answer: whether it is still being
-  kept;
+  kept, and **how much of it the baseline still excuses**;
 - the HTML page leads with the architecture as decisions rather than as a rule
-  table;
+  table, each one carrying the debt the baseline holds against it;
+- `baseline --dry-run` names the decision a new entry would be debt against;
 - MCP's `check_write` names the decision a refusal breaks.
 
 Not a place to restate what the rule enforces. A prose restatement of a check is

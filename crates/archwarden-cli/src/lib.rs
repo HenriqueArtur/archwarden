@@ -1085,7 +1085,7 @@ fn write_baseline(
     let path = merged.root.join(crate::baseline::BASELINE_PATH);
 
     if dry_run {
-        return report_baseline_changes(&merged.root, &path, &baseline, output);
+        return report_baseline_changes(&merged.root, &path, &baseline, &compiled, output);
     }
 
     if let Err(message) = baseline.write(&merged.root) {
@@ -1131,10 +1131,30 @@ fn write_baseline(
 /// Exits clean whatever it finds. `check` is the gate, and it already fails on
 /// a finding no baseline accepts; this answers "what would regenerating do",
 /// which is a review question rather than a build one.
+/// The decision a rule implements, when it names one.
+///
+/// `None` for every rule written before 0.21 and for every rule whose author
+/// has not said — which `config doctor` reports as `rule-without-a-decision`
+/// and this stays silent about, because a line saying "against nothing" would
+/// be noise on exactly the configurations that have the least to gain here.
+fn decision_behind<'a>(
+    config: &'a archwarden_core::compiled::CompiledConfig,
+    rule_id: &str,
+) -> Option<&'a archwarden_core::compiled::CompiledDecision> {
+    let named = config
+        .rules()
+        .find(|rule| rule.id.as_str() == rule_id)?
+        .decision
+        .as_ref()?;
+
+    config.decisions().find(|decision| &decision.id == named)
+}
+
 fn report_baseline_changes(
     root: &Utf8Path,
     path: &Utf8Path,
     next: &crate::baseline::Baseline,
+    config: &archwarden_core::compiled::CompiledConfig,
     output: &mut Output<'_>,
 ) -> Exit {
     let committed = match crate::baseline::Baseline::load(root) {
@@ -1198,6 +1218,19 @@ fn report_baseline_changes(
             "  + {} {} — {}",
             entry.rule, entry.path, entry.note
         );
+        // Under the addition and only the addition. A reviewer reading `+
+        // entity-shape` has to know by heart which decision that rule serves,
+        // and a reviewer who has to know it by heart is one who approves it.
+        // The removals are the cheerful half and already read well; a second
+        // line under each of them would double the good news to say nothing
+        // new. Issue #113.
+        if let Some(decision) = decision_behind(config, &entry.rule) {
+            let _ = writeln!(
+                output.out,
+                "      against {} — {}",
+                decision.id, decision.title
+            );
+        }
     }
 
     let _ = writeln!(
@@ -2001,7 +2034,14 @@ fn agent_guide(
         }
     };
 
-    let guide = archwarden_api::guide::guide(&compiled, scope.as_ref(), kinds);
+    // The digest describes the architecture as declared, and the one thing it
+    // could never say is how much of it this repository still excuses. The
+    // baseline is a committed file: reading it costs no walk, and a broken one
+    // costs the count rather than the answer. Issue #112.
+    let baseline = archwarden_api::baseline::Baseline::load(&merged.root)
+        .ok()
+        .flatten();
+    let guide = archwarden_api::guide::guide(&compiled, scope.as_ref(), kinds, baseline.as_ref());
     // The flag wins over the config; the config over English. A repository
     // decides this once, and one run may want the other.
     let language = language.unwrap_or_else(|| crate::phrases::Language::of(merged.config.language));
@@ -2146,7 +2186,7 @@ fn check(
     // `--format json` it travels *inside* the document. Issue #110.
     let standing = baseline
         .as_ref()
-        .map(|baseline| baseline.standing(&outcome.findings));
+        .map(|baseline| baseline.standing(&outcome.findings, &compiled));
 
     crate::report::render(
         &crate::report::Rendered {
@@ -2155,7 +2195,7 @@ fn check(
             view: &presented.view,
             reasons: &crate::report::Reasons::of(&compiled),
             elapsed: started.elapsed(),
-            standing,
+            standing: standing.clone(),
         },
         options.format,
         output.out,
@@ -2191,7 +2231,7 @@ fn check(
     // The prose form, for somebody at a terminal. `--format json` said it
     // inside the document, under `summary.baseline`, and saying it twice would
     // be the trailing text again.
-    if let Some(standing) = standing
+    if let Some(standing) = &standing
         && options.format == crate::report::Format::Text
     {
         report_standing(standing, output.out);
@@ -2219,7 +2259,7 @@ fn check(
 /// `summary.baseline`. Two renderings of one fact rather than one rendering on
 /// two streams: a document that ends and then keeps writing is not a document,
 /// which is what issue #110 was filed about.
-fn report_standing(standing: archwarden_api::baseline::Standing, out: &mut dyn std::io::Write) {
+fn report_standing(standing: &archwarden_api::baseline::Standing, out: &mut dyn std::io::Write) {
     let _ = write!(out, "{} accepted", standing.accepted);
 
     if standing.gone > 0 {
@@ -3784,11 +3824,74 @@ mod tests {
         // And it wrote nothing: the committed file still accepts only the one.
         let on_disk = std::fs::read_to_string(root.join(crate::baseline::BASELINE_PATH))
             .expect("the baseline is still there");
+
         assert!(on_disk.contains("src/order/handlers"), "{on_disk}");
         assert!(
             !on_disk.contains("src/billing/handlers"),
             "a dry run that wrote would be the bug it exists to prevent: {on_disk}"
         );
+        drop(guard);
+    }
+
+    /// Issue #113. A reviewer reading `+ entity-shape src/billing/handlers`
+    /// has to know by heart which decision that rule serves — and a reviewer
+    /// who has to know it by heart is a reviewer who approves it. Naming the
+    /// decision is what turns a diff line into a sentence somebody answers for.
+    #[test]
+    fn a_dry_run_names_the_decision_the_debt_is_added_against() {
+        let decided = r#"{"version":0,
+            "decisions":[{"id":"ADR-014","title":"entities are flat"}],
+            "rules":[{
+              "type":"structure","id":"entity-shape","level":"error",
+              "decision":"ADR-014",
+              "roots":["src/*"],"allowed_subfolders":["types"]}]}"#;
+
+        let (guard, accepted) = run_in(
+            &[("arch.config.json", decided), ("src/order/types/a.ts", "")],
+            &["baseline"],
+        );
+        assert_eq!(accepted.exit, Exit::Clean);
+        let root = Utf8PathBuf::from_path_buf(guard.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+
+        std::fs::create_dir_all(root.join("src/billing/handlers")).expect("create dirs");
+        std::fs::write(root.join("src/billing/handlers/b.ts"), "").expect("write");
+        let dry = run_at(&root, &["baseline", "--dry-run"]);
+
+        assert!(
+            dry.out.contains("against ADR-014 — entities are flat"),
+            "the addition says what it is debt against: {}",
+            dry.out
+        );
+        drop(guard);
+    }
+
+    /// A rule that names no decision adds debt against nothing, and the line
+    /// stays exactly as it was. Every configuration written before 0.21 is
+    /// this one, and none of them should grow a line saying so.
+    #[test]
+    fn a_dry_run_says_nothing_extra_when_a_rule_serves_no_decision() {
+        let structure = r#"{"version":0,"rules":[{
+            "type":"structure","id":"entity-shape","level":"error",
+            "roots":["src/*"],"allowed_subfolders":["types"]}]}"#;
+
+        let (guard, accepted) = run_in(
+            &[
+                ("arch.config.json", structure),
+                ("src/order/types/a.ts", ""),
+            ],
+            &["baseline"],
+        );
+        assert_eq!(accepted.exit, Exit::Clean);
+        let root = Utf8PathBuf::from_path_buf(guard.path().canonicalize().expect("canonicalise"))
+            .expect("temp path is UTF-8");
+
+        std::fs::create_dir_all(root.join("src/billing/handlers")).expect("create dirs");
+        std::fs::write(root.join("src/billing/handlers/b.ts"), "").expect("write");
+        let dry = run_at(&root, &["baseline", "--dry-run"]);
+
+        assert!(dry.out.contains("+ entity-shape"), "{}", dry.out);
+        assert!(!dry.out.contains("against"), "{}", dry.out);
         drop(guard);
     }
 

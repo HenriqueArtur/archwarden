@@ -81,6 +81,19 @@ pub struct GuideDecision<'a> {
     /// enforces is a thing to know about an architecture, and `config doctor`
     /// is what calls it debt.
     pub rules: Vec<&'a str>,
+    /// How many findings the baseline excuses against this decision's rules.
+    ///
+    /// `None` when no baseline was consulted, which is a different fact from a
+    /// baseline that excuses nothing — the distinction `summary.imports`
+    /// already draws for resolution.
+    ///
+    /// Counted off the file rather than off a run: this digest describes the
+    /// architecture as declared and does not walk anything, and how much debt
+    /// a decision carries is a property of what was committed. What that debt
+    /// is *doing today* is `config explain`'s answer, and it costs a check.
+    /// Issue #112.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub excused: Option<usize>,
 }
 
 /// One rule, as the digest carries it.
@@ -173,6 +186,7 @@ pub fn guide<'a>(
     config: &'a CompiledConfig,
     scope: Option<&'a RepoRelPath>,
     kinds: &'a [String],
+    baseline: Option<&crate::baseline::Baseline>,
 ) -> Guide<'a> {
     let rules: Vec<GuideRule<'a>> = covered(config, scope, kinds).collect();
 
@@ -180,7 +194,7 @@ pub fn guide<'a>(
         version: GUIDE_VERSION,
         scope: scope.map(RepoRelPath::as_str),
         kinds: kinds.iter().map(String::as_str).collect(),
-        decisions: decisions_of(config, &rules),
+        decisions: decisions_of(config, &rules, baseline),
         rules,
     }
 }
@@ -196,7 +210,10 @@ pub fn guide<'a>(
 fn decisions_of<'a>(
     config: &'a CompiledConfig,
     covered: &[GuideRule<'a>],
+    baseline: Option<&crate::baseline::Baseline>,
 ) -> Vec<GuideDecision<'a>> {
+    let excused_by_rule = baseline.map(crate::baseline::Baseline::excused_by_rule);
+
     config
         .decisions()
         .filter_map(|decision| {
@@ -215,6 +232,17 @@ fn decisions_of<'a>(
                 why: decision.why.as_deref(),
                 link: decision.link.as_deref(),
                 status: decision.status.as_str(),
+                // Every rule the *config* names, not only the ones this digest
+                // is scoped to: the debt a decision carries is not narrowed by
+                // asking about one directory, and a number that shrank with
+                // the question would be read as progress.
+                excused: excused_by_rule.as_ref().map(|excused| {
+                    config
+                        .rules()
+                        .filter(|rule| rule.decision.as_ref() == Some(&decision.id))
+                        .filter_map(|rule| excused.get(rule.id.as_str()))
+                        .sum()
+                }),
                 rules: serving,
             })
         })
@@ -770,7 +798,7 @@ mod tests {
     /// headings around them are a surface's choice.
     fn sentences(config: &CompiledConfig, scope: Option<&RepoRelPath>, kinds: &[&str]) -> String {
         let owned: Vec<String> = kinds.iter().map(|k| (*k).to_owned()).collect();
-        guide(config, scope, &owned)
+        guide(config, scope, &owned, None)
             .rules
             .iter()
             .flat_map(|rule| {
@@ -788,7 +816,7 @@ mod tests {
 
     /// The digest as a value, which is what every surface serialises.
     fn as_json(config: &CompiledConfig, scope: Option<&RepoRelPath>) -> serde_json::Value {
-        serde_json::to_value(guide(config, scope, &[])).expect("serialises")
+        serde_json::to_value(guide(config, scope, &[], None)).expect("serialises")
     }
 
     /// The digest is what an agent has instead of the config, so a rule it
@@ -1162,7 +1190,7 @@ mod tests {
         let config = config(vec![rule("wide", None, &["packages/**"], naming())]);
         let scope = path("packages/domain");
 
-        assert_eq!(guide(&config, Some(&scope), &[]).rules.len(), 1);
+        assert_eq!(guide(&config, Some(&scope), &[], None).rules.len(), 1);
     }
 
     /// And one that lives *inside* it, which is the other direction a user
@@ -1177,7 +1205,7 @@ mod tests {
         )]);
         let scope = path("packages/domain");
 
-        assert_eq!(guide(&config, Some(&scope), &[]).rules.len(), 1);
+        assert_eq!(guide(&config, Some(&scope), &[], None).rules.len(), 1);
     }
 
     /// A rule that can never fire under the scope is left out -- that is the
@@ -1190,7 +1218,7 @@ mod tests {
         ]);
 
         let scope = path("packages/domain");
-        let built = guide(&config, Some(&scope), &[]);
+        let built = guide(&config, Some(&scope), &[], None);
         let ids: Vec<_> = built.rules.iter().map(|r| r.id).collect();
         assert_eq!(ids, ["here"]);
     }
@@ -1203,7 +1231,7 @@ mod tests {
             rule("elsewhere", None, &["apps/web/**"], naming()),
         ]);
 
-        assert_eq!(guide(&config, None, &[]).rules.len(), 2);
+        assert_eq!(guide(&config, None, &[], None).rules.len(), 2);
     }
 
     /// A scope of the repository root keeps everything, which is what
@@ -1217,7 +1245,7 @@ mod tests {
         let root = path(".");
 
         assert!(root.is_root());
-        assert_eq!(guide(&config, Some(&root), &[]).rules.len(), 2);
+        assert_eq!(guide(&config, Some(&root), &[], None).rules.len(), 2);
     }
 
     /// A structure rule may constrain only the warn list, or only filenames.
@@ -1455,8 +1483,97 @@ mod tests {
         );
     }
 
+    /// Issue #112. The digest describes the architecture as declared, and the
+    /// one thing it could never say is how much of it this repository still
+    /// excuses. Counted off the committed file, because this walks nothing.
+    #[test]
+    fn a_decision_carries_the_debt_the_baseline_holds_against_it() {
+        let mut serving = rule("shape", None, &["src/*"], naming());
+        serving.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+        let mut also = rule("second", None, &["src/*"], naming());
+        also.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+        let mut elsewhere = rule("other", None, &["src/*"], naming());
+        elsewhere.decision = Some(DecisionId::new("ADR-031").expect("valid"));
+
+        let config = config(vec![serving, also, elsewhere]).with_decisions(vec![
+            CompiledDecision {
+                id: DecisionId::new("ADR-014").expect("valid"),
+                title: "Carries debt".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Accepted,
+            },
+            CompiledDecision {
+                id: DecisionId::new("ADR-031").expect("valid"),
+                title: "Carries none".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Accepted,
+            },
+        ]);
+
+        let baseline: crate::baseline::Baseline = serde_json::from_value(serde_json::json!({
+            "version": 0,
+            "accepted": [
+                { "rule": "shape", "path": "src/a", "note": "" },
+                { "rule": "shape", "path": "src/b", "note": "" },
+                { "rule": "second", "path": "src/c", "note": "" },
+                { "rule": "unrelated", "path": "src/d", "note": "" },
+            ],
+        }))
+        .expect("a baseline");
+
+        let digest = guide(&config, None, &[], Some(&baseline));
+        let carrying = digest
+            .decisions
+            .iter()
+            .find(|decision| decision.id == "ADR-014")
+            .expect("the decision with debt");
+        let clean = digest
+            .decisions
+            .iter()
+            .find(|decision| decision.id == "ADR-031")
+            .expect("the decision without");
+
+        assert_eq!(
+            carrying.excused,
+            Some(3),
+            "both its rules are summed, and a rule serving nobody is not"
+        );
+        assert_eq!(
+            clean.excused,
+            Some(0),
+            "a decision with no debt says zero rather than nothing: the \
+             baseline was consulted and the answer is none"
+        );
+    }
+
+    /// And a digest built without one says nothing about debt, which is a
+    /// different fact from a baseline that excuses nothing.
+    #[test]
+    fn a_digest_with_no_baseline_omits_the_debt() {
+        let mut serving = rule("shape", None, &["src/*"], naming());
+        serving.decision = Some(DecisionId::new("ADR-014").expect("valid"));
+
+        let json = as_json(
+            &config(vec![serving]).with_decisions(vec![CompiledDecision {
+                id: DecisionId::new("ADR-014").expect("valid"),
+                title: "Unmeasured".to_owned(),
+                why: None,
+                link: None,
+                status: DecisionStatus::Accepted,
+            }]),
+            None,
+        );
+
+        assert!(
+            json["decisions"][0].get("excused").is_none(),
+            "absent, not zero: {json}"
+        );
+    }
+
     /// A config with no decisions omits the key, which is every config written
-    /// before 0.21 and the shape their committed guides already have.
+    /// before 0.21 and the shape their committed guides already have."""
     #[test]
     fn a_guide_with_no_decisions_omits_the_key() {
         let json = as_json(
@@ -1584,7 +1701,7 @@ mod tests {
             ),
         ]);
 
-        let built = guide(&config, None, &[]);
+        let built = guide(&config, None, &[], None);
         for entry in &built.rules {
             assert!(
                 !entry.requires.is_empty(),
@@ -1764,7 +1881,7 @@ mod tests {
             rule("second", None, &["src/*"], naming()),
             rule("first", None, &["src/*"], naming()),
         ]);
-        let digest = guide(&config, None, &[]);
+        let digest = guide(&config, None, &[], None);
         let ids: Vec<&str> = digest.rules.iter().map(|rule| rule.id).collect();
 
         assert_eq!(ids, ["second", "first"], "config order, not alphabetical");

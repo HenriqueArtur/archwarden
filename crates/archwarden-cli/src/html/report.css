@@ -198,11 +198,19 @@ code, .mono { font-family: var(--font-code); font-size: 0.9em; }
   padding-left: 12px;
   margin: 10px 0 0;
 }
-.decision .link, .decision .enforced {
+.decision .link, .decision .enforced, .decision .excused {
   grid-column: 1 / -1;
   font-size: 13px;
   color: var(--ink-soft);
   margin: 6px 0 0;
+}
+/* Debt this repository still excuses against the decision. Drawn in the same
+   colour accepted findings wear everywhere else in this report, because it is
+   the same thing counted from the other end: a decision whose rules report
+   nothing and whose debt is all here has never been kept. Issue #112. */
+.decision .excused {
+  color: var(--accepted);
+  font-variant-numeric: tabular-nums;
 }
 /* The one state on this page worth stopping at: a choice with a name that
    nothing keeps. Drawn like accepted debt elsewhere in the report, because
