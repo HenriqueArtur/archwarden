@@ -198,8 +198,15 @@ fn superseded_but_still_enforced(config: &CompiledConfig, concerns: &mut Vec<Con
             rule_id: None,
             path: None,
             message: format!(
-                "decision `{}` is superseded, and {} still {} it: {}",
+                "decision `{}` is superseded{}, and {} still {} it: {}",
                 decision.id,
+                // Naming the replacement is what makes this actionable, and it
+                // is only possible now that supersession is an edge rather
+                // than a flag. Issue #115.
+                match decision.superseded_by.first() {
+                    Some(by) => format!(" by `{by}`"),
+                    None => String::new(),
+                },
                 count(serving.len(), "rule"),
                 if serving.len() == 1 {
                     "enforces"
@@ -208,10 +215,16 @@ fn superseded_but_still_enforced(config: &CompiledConfig, concerns: &mut Vec<Con
                 },
                 list(&serving),
             ),
-            fix: "either the decision still holds, and its status is wrong, or \
-                  it does not, and those rules are enforcing a choice this \
-                  project has replaced"
-                .to_owned(),
+            fix: match decision.superseded_by.first() {
+                Some(by) => format!(
+                    "point those rules at `{by}`, or the config renamed a \
+                     decision rather than replacing it"
+                ),
+                None => "either the decision still holds, and its status is \
+                         wrong, or it does not, and those rules are enforcing \
+                         a choice this project has replaced"
+                    .to_owned(),
+            },
         });
     }
 }
@@ -1773,6 +1786,9 @@ mod tests {
             why: None,
             link: None,
             status,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         }
     }
 
@@ -1842,6 +1858,91 @@ mod tests {
                 .all(|c| c.code != "rule-without-a-decision"),
             "{:?}",
             examine(&complete)
+        );
+    }
+
+    /// Issue #115. Now that supersession is an edge, this check can name what
+    /// replaced the decision — and that is what turns it from a contradiction
+    /// into an instruction.
+    ///
+    /// A second check was written for this and deleted: *"the new decision has
+    /// no rules while the old one still does"* fires under exactly the
+    /// condition this one does, so it was one mistake reported in two voices.
+    /// One check, saying more, is the version that survives.
+    #[test]
+    fn a_supersession_the_rules_did_not_follow_names_what_replaced_it() {
+        let config = config(vec![serving("old-rule", "ADR-009")]).with_decisions(vec![
+            CompiledDecision {
+                id: DecisionId::new("ADR-009").expect("valid"),
+                title: "the old way".to_owned(),
+                why: None,
+                link: None,
+                status: archwarden_core::compiled::DecisionStatus::Superseded,
+                supersedes: Vec::new(),
+                superseded_by: vec![DecisionId::new("ADR-031").expect("valid")],
+                alternatives: Vec::new(),
+            },
+            CompiledDecision {
+                id: DecisionId::new("ADR-031").expect("valid"),
+                title: "the new way".to_owned(),
+                why: None,
+                link: None,
+                status: archwarden_core::compiled::DecisionStatus::Accepted,
+                supersedes: vec![DecisionId::new("ADR-009").expect("valid")],
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
+            },
+        ]);
+
+        let found = examine(&config)
+            .into_iter()
+            .find(|c| c.code == "superseded-decision-still-enforced")
+            .expect("the renamed decision is reported");
+
+        assert!(
+            found.message.contains("superseded by `ADR-031`"),
+            "not just that it was replaced, but by what: {found:?}"
+        );
+        assert!(found.message.contains("old-rule"), "{found:?}");
+        assert!(
+            found.fix.contains("point those rules at `ADR-031`"),
+            "and the fix is an instruction rather than a dilemma: {found:?}"
+        );
+    }
+
+    /// And it goes quiet the moment the rules follow, which is what finishing
+    /// the replacement means.
+    #[test]
+    fn a_supersession_the_rules_followed_is_not_reported() {
+        let config = config(vec![serving("new-rule", "ADR-031")]).with_decisions(vec![
+            CompiledDecision {
+                id: DecisionId::new("ADR-009").expect("valid"),
+                title: "the old way".to_owned(),
+                why: None,
+                link: None,
+                status: archwarden_core::compiled::DecisionStatus::Superseded,
+                supersedes: Vec::new(),
+                superseded_by: vec![DecisionId::new("ADR-031").expect("valid")],
+                alternatives: Vec::new(),
+            },
+            CompiledDecision {
+                id: DecisionId::new("ADR-031").expect("valid"),
+                title: "the new way".to_owned(),
+                why: None,
+                link: None,
+                status: archwarden_core::compiled::DecisionStatus::Accepted,
+                supersedes: vec![DecisionId::new("ADR-009").expect("valid")],
+                superseded_by: Vec::new(),
+                alternatives: Vec::new(),
+            },
+        ]);
+
+        assert!(
+            examine(&config)
+                .iter()
+                .all(|c| c.code != "superseded-decision-still-enforced"),
+            "{:?}",
+            examine(&config)
         );
     }
 

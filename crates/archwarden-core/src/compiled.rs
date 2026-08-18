@@ -590,7 +590,56 @@ pub struct CompiledDecision {
     /// reference would push people to omit it.
     pub link: Option<String>,
     /// Whether it still holds.
+    ///
+    /// Inferred rather than only read: a decision another one supersedes is
+    /// superseded, and a config that wrote `accepted` there is refused where
+    /// it compiles. Issue #115.
     pub status: DecisionStatus,
+    /// The decisions this one replaced, in the order they were named.
+    pub supersedes: Vec<DecisionId>,
+    /// The decisions that replaced this one.
+    ///
+    /// Computed from everyone else's `supersedes`, never written: the new
+    /// decision knows what it replaces, and the old one does not have to be
+    /// edited to be replaced. Decision 26's foreign key, one level over.
+    pub superseded_by: Vec<DecisionId>,
+    /// What was considered and rejected, in the order it was written.
+    ///
+    /// The half of an ADR that stops the losing option being proposed again,
+    /// and the half a rule can never carry: a rule says what is refused, and
+    /// this says what was *weighed* and why it lost. Issue #114.
+    pub alternatives: Vec<CompiledAlternative>,
+}
+
+/// One option a decision considered and did not take.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompiledAlternative {
+    /// The option, named as the team named it.
+    pub option: String,
+    /// Why it lost. Never empty: an option with no argument against it is a
+    /// name nobody can disagree with, and the argument is the whole point.
+    pub why_not: String,
+    /// The rule that refuses this option today, when one does.
+    ///
+    /// A reference to a rule the author already wrote, never a rule generated
+    /// from here. `baseline` keys on rule ids, and an id derived from this
+    /// prose would orphan accepted debt the day somebody reworded the
+    /// sentence. `None` means the option is written down and nothing stops
+    /// anybody taking it — which is a true and useful thing for a page to say.
+    pub refused_by: Option<RuleId>,
+}
+
+impl CompiledDecision {
+    /// The option this rule is what refuses, when this decision named it.
+    ///
+    /// Scanned rather than indexed: a decision has a handful of alternatives
+    /// and this is asked once per finding that already carries a decision.
+    #[must_use]
+    pub fn refusal_by(&self, rule: &RuleId) -> Option<&CompiledAlternative> {
+        self.alternatives
+            .iter()
+            .find(|alternative| alternative.refused_by.as_ref() == Some(rule))
+    }
 }
 
 /// Whether a decision still holds.
@@ -627,6 +676,17 @@ impl DecisionStatus {
     #[must_use]
     pub fn is_accepted(self) -> bool {
         matches!(self, Self::Accepted)
+    }
+
+    /// Whether this decision has been replaced.
+    ///
+    /// The one status that is checked: a superseded decision whose rules still
+    /// fire is a config saying two things at once. Issue #115 made it
+    /// inferrable from an edge, so this is asked of far more decisions than it
+    /// used to be.
+    #[must_use]
+    pub fn is_superseded(self) -> bool {
+        matches!(self, Self::Superseded)
     }
 }
 
@@ -1196,6 +1256,9 @@ mod tests {
             why: None,
             link: None,
             status,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         }
     }
 
@@ -1314,6 +1377,55 @@ mod tests {
             config.decision(named).map(|d| d.status),
             Some(DecisionStatus::Accepted)
         );
+    }
+    /// Issue #114. A rule refuses at most one rejected option, and the lookup
+    /// is what puts the sentence *"this was already tried"* under a finding.
+    #[test]
+    fn a_decision_knows_which_option_a_rule_refuses() {
+        let decision = CompiledDecision {
+            id: DecisionId::new("ADR-031").expect("valid"),
+            title: "the new way".to_owned(),
+            why: None,
+            link: None,
+            status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: vec![
+                CompiledAlternative {
+                    option: "an HTTP client in the domain".to_owned(),
+                    why_not: "a consumer would inherit our transport".to_owned(),
+                    refused_by: Some(RuleId::new("domain-forbids-http").expect("valid")),
+                },
+                CompiledAlternative {
+                    option: "a shared kernel".to_owned(),
+                    why_not: "it becomes the place everything goes".to_owned(),
+                    refused_by: None,
+                },
+            ],
+        };
+
+        assert_eq!(
+            decision
+                .refusal_by(&RuleId::new("domain-forbids-http").expect("valid"))
+                .map(|alternative| alternative.option.as_str()),
+            Some("an HTTP client in the domain")
+        );
+        assert!(
+            decision
+                .refusal_by(&RuleId::new("some-other-rule").expect("valid"))
+                .is_none(),
+            "a rule that refuses no rejected option gets the block it always got"
+        );
+    }
+
+    /// The one status that is checked, and the reason it is not decoration: a
+    /// superseded decision whose rules still fire is a config saying two
+    /// things at once.
+    #[test]
+    fn a_status_says_whether_it_was_replaced() {
+        assert!(DecisionStatus::Superseded.is_superseded());
+        assert!(!DecisionStatus::Accepted.is_superseded());
+        assert!(!DecisionStatus::Proposed.is_superseded());
     }
 }
 

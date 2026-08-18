@@ -537,6 +537,9 @@ mod tests {
             why: Some("it is published, and a consumer must not inherit our client".to_owned()),
             link: Some("docs/adr/014.md".to_owned()),
             status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         }
     }
 

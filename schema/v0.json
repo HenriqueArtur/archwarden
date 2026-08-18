@@ -275,8 +275,26 @@
           ]
         },
         "status": {
-          "description": "Whether it still holds.\n\nNot decoration, and the reason this field exists: a `superseded`\ndecision whose rules still fire is a config saying two things at once,\nand `config doctor` reports it as an error. See\n[`DecisionStatus`].",
-          "$ref": "#/$defs/DecisionStatus"
+          "description": "Whether it still holds.\n\nNot decoration, and the reason this field exists: a `superseded`\ndecision whose rules still fire is a config saying two things at once,\nand `config doctor` reports it as an error. See\n[`DecisionStatus`].\n\nOptional so *unset* can be told from *explicitly accepted*, which is\nwhat lets a decision another one supersedes be refused for calling\nitself accepted rather than silently overridden. Absent means\n`accepted`, as it always did. Issue #115.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DecisionStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "supersedes": {
+          "description": "The decisions this one replaces.\n\nWritten on the **new** decision, which is where the author already is:\nthe old one does not have to be edited to be replaced, there is no\nsecond list to keep in step, and the reverse — what replaced this — is\ncomputed. Decision 26's argument for `rule.decision`, one level over.\n\nA decision named here is `superseded`, and does not repeat it. Naming\na decision the config does not declare, naming itself, or closing a\ncycle are all refused where the config compiles. Issue #115.",
+          "$ref": "#/$defs/OneOrMany2"
+        },
+        "alternatives": {
+          "description": "What was considered and rejected, and why it lost.\n\nThe half of an ADR that stops the losing option being proposed again —\nby the next person, or by an agent that reads the rules, complies, and\nhelpfully suggests the thing that was already tried. A rule says what is\nrefused; this says what was *weighed*. Issue #114.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Alternative"
+          }
         }
       },
       "additionalProperties": false,
@@ -308,6 +326,56 @@
           "const": "superseded"
         }
       ]
+    },
+    "OneOrMany2": {
+      "description": "One `T`, or several.\n\nSerialises back to whichever shape it was written in, so a config that\nround-trips through archwarden does not gain array brackets it never had.",
+      "anyOf": [
+        {
+          "description": "A single value, written bare.",
+          "$ref": "#/$defs/DecisionId"
+        },
+        {
+          "description": "Several values, written as an array.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/DecisionId"
+          }
+        }
+      ]
+    },
+    "Alternative": {
+      "description": "One option a decision considered and did not take.\n\n# It points at a rule; it does not become one\n\n`refused_by` names a rule the author already wrote. It was measured the\nother way first: a generated refusal needs a rule id, `baseline` keys on\nrule ids, and every way of deriving one is unstable — a slug of `option`\nbreaks when the sentence is reworded, an index breaks when the list is\nreordered. Either way, accepted debt is orphaned in silence.\n\nWhat the reference buys is the page's most honest line: an alternative with\na rule is mechanically refused, one without it is written down and nothing\nstops anybody taking it, and the two are told apart by whether the field is\nfilled.",
+      "type": "object",
+      "properties": {
+        "option": {
+          "description": "The option, named as the team named it.",
+          "type": "string"
+        },
+        "why_not": {
+          "description": "Why it lost.\n\nRequired. An option with no argument against it is a name nobody can\ndisagree with, and the argument is the whole reason to write the option\ndown — the same shape `archwarden-allow` takes, where a marker with no\nreason is not a marker.",
+          "type": "string"
+        },
+        "refused_by": {
+          "description": "The rule that refuses this option today, when one does.\n\nRefused at compile if no rule has that id, where a rule naming an\nundeclared module already is. Whether that rule also names this\ndecision is left to the author: a constraint there would be a field\ndecided before anybody asked for one.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RuleId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "option",
+        "why_not"
+      ]
+    },
+    "RuleId": {
+      "description": "A rule's stable identifier, unique across a config and its presets.",
+      "type": "string"
     },
     "Module": {
       "description": "A named group of rules.\n\nA module is a label, not a scope: it exists so a finding can say\n`[domain] packages/domain/src/user/wrong-folder`. Each rule still carries\nits own scope.",
@@ -670,7 +738,7 @@
             },
             "only_import_from_modules": {
               "description": "Modules whose files may be imported, and no others.\n\n`only_import_from` with the paths written for you, the way\n`forbid_module` is for `forbid_import_from`.",
-              "$ref": "#/$defs/OneOrMany2"
+              "$ref": "#/$defs/OneOrMany3"
             },
             "from_kind": {
               "description": "The sort of module the importers are, instead of naming each one.\n\n`from_kind: \"app\"` selects every module that said `kind: \"app\"`, so the\nseventh assembly is governed because it exists rather than because\nsomebody remembered to add it. Issue #76.",
@@ -689,7 +757,7 @@
             },
             "forbid_module": {
               "description": "Modules whose files may not be imported, instead of the globs they are.\n\nFolded into `forbid_import_from` when the config compiles, so nothing\ndownstream knows the difference — but the config says `infrastructure`\nwhere it used to repeat that module's paths. Issue #74.",
-              "$ref": "#/$defs/OneOrMany2"
+              "$ref": "#/$defs/OneOrMany3"
             },
             "must_import_from": {
               "description": "Globs matched against the resolved import path. If none of the file's\nimports match, the file is illegal.",
@@ -705,7 +773,7 @@
             },
             "forbid_reaching_modules": {
               "description": "Modules that may not be reached, instead of the globs they are.\n\nWhat `forbid_module` is to `forbid_import_from`. Folded into\n`forbid_reaching` when the config compiles, and refused alongside it on\none rule for the same reason: two ways to fill one set is a rule whose\nauthor has to be told which one won.",
-              "$ref": "#/$defs/OneOrMany2"
+              "$ref": "#/$defs/OneOrMany3"
             },
             "except": {
               "description": "Exceptions, also matched against the resolved path.\n\nApplies to `forbid_import_from` and to `forbid_reaching` alike: both\nname destinations, and \"may not reach `packages/db`, except\n`packages/db/types`\" is one sentence rather than two fields.",
@@ -1441,10 +1509,6 @@
         }
       ]
     },
-    "RuleId": {
-      "description": "A rule's stable identifier, unique across a config and its presets.",
-      "type": "string"
-    },
     "MustExport": {
       "description": "The export a `naming` rule requires.",
       "type": "object",
@@ -1482,7 +1546,7 @@
         "name"
       ]
     },
-    "OneOrMany2": {
+    "OneOrMany3": {
       "description": "One `T`, or several.\n\nSerialises back to whichever shape it was written in, so a config that\nround-trips through archwarden does not gain array brackets it never had.",
       "anyOf": [
         {

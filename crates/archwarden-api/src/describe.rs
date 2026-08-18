@@ -64,12 +64,36 @@ pub fn describe_decision(
     decision: &archwarden_core::compiled::CompiledDecision,
     indent: &str,
 ) -> String {
+    describe_decision_refusing(decision, indent, None)
+}
+
+/// The same block, naming the option this rule is what refuses.
+///
+/// The sentence no rule id can produce: not *"you broke rule 7"* but *"this
+/// was already tried, and it lost for this reason"*. It is issue #46's
+/// argument one level up — an agent that knows the reason and not what was
+/// already refused proposes the refused thing, helpfully, every time.
+///
+/// `None` for every rule that refuses no rejected option, which is every rule
+/// in every configuration written before issue #114.
+#[must_use]
+pub fn describe_decision_refusing(
+    decision: &archwarden_core::compiled::CompiledDecision,
+    indent: &str,
+    refuses: Option<&archwarden_core::compiled::CompiledAlternative>,
+) -> String {
     use std::fmt::Write as _;
 
-    let status = if decision.status.is_accepted() {
-        String::new()
-    } else {
-        format!(" ({})", decision.status)
+    // A replaced decision says *what replaced it*, because a reader told to
+    // stop trusting one needs to be told where to go instead -- the one thing
+    // the flag alone could never say. Issue #115.
+    let status = match (
+        decision.status.is_accepted(),
+        decision.superseded_by.first(),
+    ) {
+        (true, _) => String::new(),
+        (false, Some(by)) => format!(" (superseded by {by})"),
+        (false, None) => format!(" ({})", decision.status),
     };
 
     let mut block = format!(
@@ -81,6 +105,15 @@ pub fn describe_decision(
     }
     if let Some(link) = &decision.link {
         let _ = writeln!(block, "{indent}  written down in {link}");
+    }
+    // Last, and closest to the finding it is about: the reader has just been
+    // told what is wrong, and this is what they were going to propose instead.
+    if let Some(refused) = refuses {
+        let _ = writeln!(
+            block,
+            "{indent}`{}` was considered and rejected:\n{indent}  {}",
+            refused.option, refused.why_not
+        );
     }
     block
 }
@@ -1425,6 +1458,9 @@ mod tests {
             why: Some("it is published".to_owned()),
             link: Some("docs/adr/014.md".to_owned()),
             status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         };
 
         assert_eq!(
@@ -1435,8 +1471,94 @@ mod tests {
         );
     }
 
+    /// Issue #114. The sentence no rule id can produce: not *"you broke rule
+    /// 7"* but *"this was already tried, and it lost for this reason"*. It is
+    /// #46's argument one level up — an agent that knows the reason and not
+    /// what was already refused will propose the refused thing, helpfully.
+    #[test]
+    fn a_decision_block_says_what_was_considered_and_rejected() {
+        let decision = CompiledDecision {
+            id: DecisionId::new("ADR-014").expect("valid"),
+            title: "The domain does not know about transport".to_owned(),
+            why: None,
+            link: None,
+            status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: vec![archwarden_core::compiled::CompiledAlternative {
+                option: "TypeORM in the domain".to_owned(),
+                why_not: "the schema starts dictating the model".to_owned(),
+                refused_by: Some(
+                    archwarden_core::ids::RuleId::new("no-orm-in-domain").expect("valid"),
+                ),
+            }],
+        };
+        let refused = decision
+            .refusal_by(&archwarden_core::ids::RuleId::new("no-orm-in-domain").expect("valid"))
+            .expect("the rule refuses an option");
+
+        assert_eq!(
+            describe_decision_refusing(&decision, "  ", Some(refused)),
+            "  decision: ADR-014 — The domain does not know about transport\n\
+             \x20 `TypeORM in the domain` was considered and rejected:\n\
+             \x20   the schema starts dictating the model\n"
+        );
+    }
+
+    /// And a rule that refuses nothing gets the block it always got, which is
+    /// every rule in every configuration written before this.
+    #[test]
+    fn a_rule_that_refuses_no_option_gets_the_block_unchanged() {
+        let decision = CompiledDecision {
+            id: DecisionId::new("ADR-014").expect("valid"),
+            title: "A wall".to_owned(),
+            why: None,
+            link: None,
+            status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: vec![archwarden_core::compiled::CompiledAlternative {
+                option: "the other way".to_owned(),
+                why_not: "it lost".to_owned(),
+                refused_by: Some(
+                    archwarden_core::ids::RuleId::new("some-other-rule").expect("valid"),
+                ),
+            }],
+        };
+
+        assert_eq!(
+            decision.refusal_by(&archwarden_core::ids::RuleId::new("unrelated").expect("valid")),
+            None
+        );
+        assert_eq!(
+            describe_decision(&decision, ""),
+            "decision: ADR-014 — A wall\n"
+        );
+    }
+
+    /// Issue #115. A reader told to stop trusting a decision needs to be told
+    /// where to go instead, and that is the one thing the flag could not say.
+    #[test]
+    fn a_superseded_decision_says_what_replaced_it() {
+        let replaced = CompiledDecision {
+            id: DecisionId::new("ADR-009").expect("valid"),
+            title: "The old way".to_owned(),
+            why: None,
+            link: None,
+            status: DecisionStatus::Superseded,
+            supersedes: Vec::new(),
+            superseded_by: vec![DecisionId::new("ADR-031").expect("valid")],
+            alternatives: Vec::new(),
+        };
+
+        assert_eq!(
+            describe_decision(&replaced, ""),
+            "decision: ADR-009 (superseded by ADR-031) — The old way\n"
+        );
+    }
+
     /// A decision whose prose is all in the linked document, and one with no
-    /// link at all. Both are legitimate and the block shrinks to fit.
+    /// link at all. Both are legitimate and the block shrinks to fit."""
     #[test]
     fn a_decision_block_omits_what_the_decision_did_not_say() {
         let bare = CompiledDecision {
@@ -1445,6 +1567,9 @@ mod tests {
             why: None,
             link: None,
             status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         };
 
         assert_eq!(describe_decision(&bare, ""), "decision: ADR-1 — A wall\n");
@@ -1462,6 +1587,9 @@ mod tests {
                     why: None,
                     link: None,
                     status,
+                    supersedes: Vec::new(),
+                    superseded_by: Vec::new(),
+                    alternatives: Vec::new(),
                 },
                 "",
             )
@@ -1496,6 +1624,9 @@ mod tests {
             why: Some("it is published, and a consumer must not inherit our client".to_owned()),
             link: Some("docs/adr/014.md".to_owned()),
             status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
         }]);
 
         let decision = &as_json(&config, &a_path("src/user"))["rules"][0]["decision"];

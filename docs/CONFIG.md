@@ -365,11 +365,46 @@ what every rule written before 0.21 does.
 - the HTML page leads with the architecture as decisions rather than as a rule
   table, each one carrying the debt the baseline holds against it;
 - `baseline --dry-run` names the decision a new entry would be debt against;
+- a denial, a finding and `describe` all say when the write is an option the
+  decision already **weighed and rejected**, and why it lost;
 - MCP's `check_write` names the decision a refusal breaks.
 
 Not a place to restate what the rule enforces. A prose restatement of a check is
 a second source of truth going stale — the decision explains the *choice*, and
 the rules remain the only statement of what is enforced.
+
+### What was rejected, and what replaced it
+
+```json
+{ "id": "ADR-031",
+  "title": "the domain does not know about transport",
+  "supersedes": "ADR-009",
+  "alternatives": [
+    { "option": "an HTTP client in the domain",
+      "why_not": "a consumer would inherit our transport",
+      "refused_by": "domain-forbids-http" },
+    { "option": "a shared kernel",
+      "why_not": "it becomes the place everything goes" }
+  ] }
+```
+
+**`alternatives` is the half that stops the losing option being proposed
+again** — by the next person, or by an agent that reads the rules, complies,
+and helpfully suggests the thing that was already tried. `why_not` is required:
+an option with no argument against it is a name nobody can disagree with.
+
+**`refused_by` points at a rule you already wrote.** It never generates one.
+`baseline` keys on rule ids, and an id derived from this prose would orphan
+accepted debt the day somebody reworded the sentence. What the reference buys
+is the honest distinction every surface then draws: an option with a rule is
+mechanically refused, and one without it is written down while nothing stops
+anybody taking it.
+
+**`supersedes` is written on the new decision**, and the reverse is computed.
+The decision it names *is* superseded — its own `status` is not repeated, and
+writing `accepted` there is refused where the config compiles. A cycle, or a
+decision superseding itself, is refused for the same reason: a chain with no
+end is one every surface would walk forever.
 
 #### `status`, which is not decoration
 
