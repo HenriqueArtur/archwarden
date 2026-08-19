@@ -28,6 +28,7 @@ jobs:
   lint:
     name: 🎨 format, clippy, docs
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -45,6 +46,7 @@ jobs:
   test:
     name: 🧪 tests
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -62,6 +64,7 @@ jobs:
   coverage:
     name: 📊 coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -135,6 +138,7 @@ jobs:
   supply-chain:
     name: ⚖️ licences and advisories
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -147,6 +151,7 @@ jobs:
   hygiene:
     name: 🧹 unused deps and typos
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -159,6 +164,7 @@ jobs:
   distribution:
     name: 📦 the install routes
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # The release workflow cannot be run on a pull request, but the pieces it
     # depends on can: the shim that decides which archive to download, and the
     # script that writes checksums into the formula. Both fail on a stranger's
@@ -177,6 +183,7 @@ jobs:
   future-rust:
     name: 🔮 latest stable (advisory)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Early warning that a future rustc breaks us. Never blocks a merge: the
     # pinned toolchain is what we actually ship.
     continue-on-error: true
@@ -191,6 +198,7 @@ jobs:
   differential:
     name: 🔬 differential vs dependency-cruiser
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Tier 3 in docs/TESTING.md, and here rather than on a schedule.
     #
     # It was a nightly. It failed every night for at least six days with

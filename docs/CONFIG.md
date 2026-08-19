@@ -400,6 +400,44 @@ is the honest distinction every surface then draws: an option with a rule is
 mechanically refused, and one without it is written down while nothing stops
 anybody taking it.
 
+### The document archwarden writes and you edit
+
+```
+$ archwarden decisions
+  + .archwarden/decisions/ADR-031.md
+
+wrote 1 document, updated 0. The region between the `archwarden:yours`
+markers was kept.
+```
+
+A decision's reasoning is three paragraphs, and JSON has no comments. This is
+where they go — **not a second owner, but a rendering with a hand-written
+region**. Everything the config knows is generated: the title, the `why`, the
+status and the chain, what was rejected, and the rules that keep it. One marked
+region belongs to whoever opens the file, and regenerating never rewrites it.
+
+```markdown
+<!-- archwarden:yours -->
+
+## Context
+
+Three services shared the order model and each one stored it its own way.
+
+<!-- archwarden:end -->
+```
+
+Nothing moves out of the config. `title` is still the sentence a denial says
+out loud and `why` is still what travels beside a finding — the document
+renders both. What the region adds is the space the config never had.
+
+They live in `.archwarden/decisions/`, beside `baseline.json` and outside the
+gitignored `cache/`, because writing into a `docs/adr/` a team maintains by
+hand is how a `--write` overwrites the wrong ADR.
+
+**A document that falls behind is `config doctor`'s to report**, at `warning`,
+as `decision-document-out-of-date`. Not a gate: a team adopting this
+incrementally should not get a red build because a file needs regenerating.
+
 **`supersedes` is written on the new decision**, and the reverse is computed.
 The decision it names *is* superseded — its own `status` is not repeated, and
 writing `accepted` there is refused where the config compiles. A cycle, or a

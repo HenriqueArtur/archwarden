@@ -288,6 +288,50 @@ fn count(n: usize, noun: &str) -> String {
 /// paths are unaccepted. This is where the missing second step is named, with
 /// the command to run. At `warning`, like every check that came before the
 /// level existed. Issue #102.
+/// A decision document that no longer matches the config it came from.
+///
+/// The generated half of `.archwarden/decisions/<id>.md` is a rendering, and a
+/// rendering that has fallen behind is a file telling a reader something the
+/// config no longer says. Advice rather than a gate, deliberately: a team
+/// adopting this incrementally must not get a red build because a document
+/// needs regenerating, and `doctor` is where advice about the configuration
+/// already lives. Issue #116.
+///
+/// Silent when no document exists at all. Not having started is not drift.
+fn decision_documents_out_of_date(
+    root: &Utf8Path,
+    config: &CompiledConfig,
+    concerns: &mut Vec<Concern>,
+) {
+    let changes = crate::decisions::changes(root, config);
+    if changes.updated.is_empty() {
+        return;
+    }
+
+    let stale: Vec<String> = changes
+        .updated
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+
+    concerns.push(Concern {
+        code: "decision-document-out-of-date",
+        level: Level::Warning,
+        rule_id: None,
+        path: None,
+        message: format!(
+            "{} no longer {} the config {} came from: {}",
+            count(stale.len(), "decision document"),
+            if stale.len() == 1 { "matches" } else { "match" },
+            if stale.len() == 1 { "it" } else { "they" },
+            list(&stale),
+        ),
+        fix: "run `archwarden decisions` -- what you wrote between the \
+              `archwarden:yours` markers is kept"
+            .to_owned(),
+    });
+}
+
 fn frozen_with_nothing_accepted(
     rule: &CompiledRule,
     engine: &dyn archwarden_core::traits::RuleEngine,
@@ -629,6 +673,8 @@ pub fn examine_repository(
     let baseline = archwarden_api::baseline::Baseline::load(root)
         .ok()
         .flatten();
+
+    decision_documents_out_of_date(root, config, &mut concerns);
 
     for (rule, engine) in config.rules().zip(archwarden_rules::engines_for(config)) {
         frozen_with_nothing_accepted(

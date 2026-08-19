@@ -333,6 +333,11 @@ Do not propose it again. `config explain <decision-id>` lists every rejected
 option, and says which ones a rule actually refuses and which are only written
 down.
 
+**`.archwarden/decisions/*.md` is generated.** Everything outside the
+`archwarden:yours` markers comes from `arch.config.json` and will be
+overwritten — change the config, then run `archwarden decisions`. Inside the
+markers is a person's prose; never rewrite it.
+
 **Do not add to a decision's debt.** If your change would put a new entry under
 one, `archwarden baseline --dry-run` names it:
 
