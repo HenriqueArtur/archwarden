@@ -117,12 +117,7 @@ pub(crate) fn run(mode: Mode) -> Result<(), String> {
     let sysroot = PathBuf::from(rustc(&["--print", "sysroot"])?.trim());
 
     let linker_dir = bundled_linker_dir(&sysroot, triple);
-    if !linker_dir.join("ld.lld").exists() {
-        return Err(format!(
-            "this toolchain carries no bundled linker at {}",
-            linker_dir.display()
-        ));
-    }
+    check_linker_present(&linker_dir)?;
 
     let block = snippet(&linker_dir, triple);
     match mode {
@@ -131,8 +126,49 @@ pub(crate) fn run(mode: Mode) -> Result<(), String> {
             println!("# add that to ~/.cargo/config.toml, or run `cargo xtask linker --write`");
             Ok(())
         }
-        Mode::Write => write_block(&block, triple),
+        Mode::Write => write_block(&cargo_home(|name| std::env::var_os(name))?, &block, triple),
     }
+}
+
+/// Refuses a toolchain with no bundled linker, rather than writing flags that
+/// point at nothing and fail later with a message about the linker.
+fn check_linker_present(linker_dir: &Path) -> Result<(), String> {
+    if linker_dir.join("ld.lld").exists() {
+        Ok(())
+    } else {
+        Err(format!(
+            "this toolchain carries no bundled linker at {}",
+            linker_dir.display()
+        ))
+    }
+}
+
+/// Where cargo keeps its global config.
+///
+/// `CARGO_HOME` wins, then `HOME/.cargo`. Taking the reader as an argument so
+/// the choice between them is testable without touching the process
+/// environment, which a parallel test suite shares.
+fn cargo_home(var: impl Fn(&str) -> Option<std::ffi::OsString>) -> Result<PathBuf, String> {
+    if let Some(home) = var("CARGO_HOME") {
+        return Ok(PathBuf::from(home));
+    }
+    var("HOME")
+        .map(|home| PathBuf::from(home).join(".cargo"))
+        .ok_or_else(|| "neither CARGO_HOME nor HOME is set".to_owned())
+}
+
+/// The file's new contents, with the block on the end.
+///
+/// Pure, because what goes in the file is the part worth asserting and the
+/// writing is not. A blank line separates the block from whatever was there,
+/// and a file that did not end in a newline gets one first.
+fn appended(existing: &str, block: &str) -> String {
+    let separator = if existing.is_empty() || existing.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    format!("{existing}{separator}\n{block}")
 }
 
 /// Runs `rustc` and returns what it said.
@@ -150,13 +186,8 @@ fn rustc(args: &[&str]) -> Result<String, String> {
     })
 }
 
-/// Appends the block to the user's global cargo config.
-fn write_block(block: &str, triple: &str) -> Result<(), String> {
-    let home = std::env::var_os("CARGO_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
-        .ok_or_else(|| "neither CARGO_HOME nor HOME is set".to_owned())?;
-
+/// Appends the block to the cargo config in `home`.
+fn write_block(home: &Path, block: &str, triple: &str) -> Result<(), String> {
     let path = home.join("config.toml");
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
 
@@ -167,15 +198,9 @@ fn write_block(block: &str, triple: &str) -> Result<(), String> {
         ));
     }
 
-    std::fs::create_dir_all(&home)
+    std::fs::create_dir_all(home)
         .map_err(|error| format!("could not create {}: {error}", home.display()))?;
-
-    let separator = if existing.is_empty() || existing.ends_with('\n') {
-        ""
-    } else {
-        "\n"
-    };
-    std::fs::write(&path, format!("{existing}{separator}\n{block}"))
+    std::fs::write(&path, appended(&existing, block))
         .map_err(|error| format!("could not write {}: {error}", path.display()))?;
 
     println!("wrote the [target.{triple}] block to {}", path.display());
@@ -264,6 +289,84 @@ mod tests {
             !already_configured("", "aarch64-unknown-linux-gnu"),
             "an empty file has none"
         );
+    }
+
+    /// A toolchain with no bundled linker is refused here rather than at link
+    /// time. Writing the flags anyway produces a `-B` pointing at nothing, and
+    /// the failure then arrives as a message about the linker, in a build the
+    /// user did not connect to this command.
+    #[test]
+    fn a_toolchain_with_no_bundled_linker_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        let refusal = check_linker_present(dir.path()).expect_err("no ld.lld there");
+        assert!(refusal.contains("no bundled linker"), "{refusal}");
+
+        std::fs::write(dir.path().join("ld.lld"), b"").expect("write");
+        assert!(
+            check_linker_present(dir.path()).is_ok(),
+            "and present is accepted"
+        );
+    }
+
+    /// `CARGO_HOME` wins over `HOME`, and neither is refused rather than
+    /// guessed -- a guess would write into a directory the user did not name.
+    #[test]
+    fn cargo_home_prefers_its_own_variable_and_refuses_neither() {
+        let both = |name: &str| match name {
+            "CARGO_HOME" => Some(std::ffi::OsString::from("/explicit")),
+            "HOME" => Some(std::ffi::OsString::from("/home/someone")),
+            _ => None,
+        };
+        assert_eq!(cargo_home(both).expect("explicit"), Path::new("/explicit"));
+
+        let home_only =
+            |name: &str| (name == "HOME").then(|| std::ffi::OsString::from("/home/someone"));
+        assert_eq!(
+            cargo_home(home_only).expect("derived"),
+            Path::new("/home/someone/.cargo"),
+        );
+
+        assert!(cargo_home(|_| None).is_err(), "neither set is a refusal");
+    }
+
+    /// What lands in the file. A blank line before the block, and a newline
+    /// first when the file did not end in one -- otherwise the section header
+    /// would continue somebody else's last line and cargo would not see it.
+    #[test]
+    fn the_block_is_appended_with_a_blank_line_before_it() {
+        assert_eq!(appended("", "[target.x]\n"), "\n[target.x]\n");
+        assert_eq!(
+            appended("[alias]\nb = \"build\"\n", "[target.x]\n"),
+            "[alias]\nb = \"build\"\n\n[target.x]\n",
+        );
+        assert_eq!(
+            appended("[alias]\nb = \"build\"", "[target.x]\n"),
+            "[alias]\nb = \"build\"\n\n[target.x]\n",
+            "a file with no trailing newline gets one before the header",
+        );
+    }
+
+    /// The write itself, and the refusal that stops a second one.
+    #[test]
+    fn writing_twice_is_refused_rather_than_done() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let block = snippet(Path::new("/gcc-ld"), "aarch64-unknown-linux-gnu");
+
+        write_block(dir.path(), &block, "aarch64-unknown-linux-gnu").expect("first write");
+        let written = std::fs::read_to_string(dir.path().join("config.toml")).expect("read");
+        assert!(
+            written.contains("[target.aarch64-unknown-linux-gnu]"),
+            "{written}"
+        );
+        assert!(written.contains("fuse-ld=lld"), "{written}");
+
+        let refusal = write_block(dir.path(), &block, "aarch64-unknown-linux-gnu")
+            .expect_err("a second section would be ignored by cargo");
+        assert!(refusal.contains("already has"), "{refusal}");
+
+        let after = std::fs::read_to_string(dir.path().join("config.toml")).expect("read");
+        assert_eq!(after, written, "and the refusal left the file alone");
     }
 
     #[test]

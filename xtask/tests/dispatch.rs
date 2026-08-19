@@ -61,6 +61,31 @@ fn a_known_task_runs_and_reports_what_it_found() {
     );
 }
 
+/// `linker` reaches the toolchain and prints flags that name it.
+///
+/// Read-only, which is why it belongs here: without `--write` it touches no
+/// file. It is also the only way to observe that the task runs `rustc` at all
+/// -- a `rustc` that returned nothing would leave no host triple to name, and
+/// a `run` that returned `Ok(())` without doing anything would print nothing.
+/// Mutation testing asked for both.
+#[test]
+fn the_linker_task_prints_flags_for_this_machine() {
+    let output = xtask().arg("linker").output().expect("runs");
+
+    assert!(output.status.success(), "`linker` failed");
+
+    let printed = String::from_utf8(output.stdout).expect("UTF-8");
+    assert!(printed.contains("[target."), "it names a target: {printed}");
+    assert!(
+        printed.contains("fuse-ld=lld"),
+        "and asks for the bundled linker: {printed}"
+    );
+    assert!(
+        printed.contains("gcc-ld"),
+        "by the path the toolchain keeps it at: {printed}"
+    );
+}
+
 /// A flag a task does not understand is refused rather than ignored.
 ///
 /// `clean` is safe to ask this of: the argument is rejected before anything is
