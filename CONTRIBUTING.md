@@ -26,6 +26,28 @@ cargo build
 compiler on first build and every contributor compiles with the same one.
 There is no separate MSRV job because there is no second version in play.
 
+### A faster linker, which you already have
+
+```bash
+cargo xtask linker            # prints the flags
+cargo xtask linker --write    # appends them to ~/.cargo/config.toml
+```
+
+Measured on this workspace, relinking the binary after touching one file:
+**6.47s** with the default GNU linker, **1.02s** with `rust-lld`. That is the
+step every `cargo build` ends with, and `cargo nextest run` links one test
+binary per crate.
+
+Nothing has to be installed — `rust-lld` ships inside the toolchain
+`rust-toolchain.toml` already pins. It is not in a committed `.cargo/config.toml`
+because the flag needs an absolute path carrying your sysroot and host triple,
+and neither is the same on two machines. `cargo xtask linker` works them out
+for yours.
+
+It writes to **your** cargo config, not the repository's, so it changes nothing
+for anyone else and nothing in CI. CI builds cold, where compiling dominates
+and linking is a small fraction; this is a local-development win only.
+
 ### When the disk fills up
 
 ```bash
