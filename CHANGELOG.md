@@ -31,7 +31,31 @@ and every rule behave exactly as they did in 0.28.0.
   work could start. It is a map, not a copy — every section points at the file
   that owns the answer.
 
+- **`cargo xtask linker`**, which points cargo at the `rust-lld` already inside
+  the pinned toolchain. Measured, relinking the binary after touching one file:
+  **6.47 s** with the default GNU linker, **1.02 s** with this. `--print` is the
+  default and `--write` appends to the user's own `~/.cargo/config.toml`; the
+  repository's config is untouched, so nothing changes for anyone else or for
+  CI. See `CONTRIBUTING.md`.
+
 ### Changed
+
+- **Six files that held several responsibilities each are now directories.**
+  `cli/lib.rs` (5121 lines) was the clap surface, the dispatch and forty
+  handlers; `config/compile.rs` was seven things, a quarter of it the error
+  enum; `config/rule.rs` was the only place in the project where rule kinds
+  were *not* one file each, which `archwarden-rules/` has always been.
+  `cli/doctor.rs`, `cli/verify.rs` and `cli/report.rs` were catalogues.
+
+  No behaviour change anywhere: the test count is identical either side of
+  every one of them, and `cargo xtask check-schema` reports no drift — which is
+  the check that matters for `rule.rs`, whose `#[serde]` and `#[schemars]`
+  attributes generate the published schema.
+
+  The test modules stayed put, and that is the honest result rather than a
+  shortfall. Measured across all six, between 55% and 100% of each file's tests
+  go through its entry point rather than the functions the split moved. They
+  test the entry point, so they live with it.
 
 - **The dev profile emits line tables instead of full debug info.** Measured on
   a cold `cargo nextest run --workspace --all-features`: **89.0 s and 3.0 GB**
