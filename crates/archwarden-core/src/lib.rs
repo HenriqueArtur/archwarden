@@ -32,6 +32,7 @@
 // every intra-doc link in *this* scope, so a `[`FileFacts`]` written inside
 // `facts` would fail to resolve.
 pub mod compiled;
+pub mod date;
 pub mod docs;
 pub mod facts;
 pub mod finding;

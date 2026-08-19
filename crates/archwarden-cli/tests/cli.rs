@@ -1976,6 +1976,97 @@ fn a_config_with_no_decisions_writes_no_documents() {
     assert!(!dir.path().join(".archwarden/decisions").exists());
 }
 
+/// Issue #117, end to end: a date a file wrote down, compared against the day
+/// the run was given. `metadata` could record a removal date since 0.24 and
+/// nothing compared it to anything — the difference between a migration and a
+/// wish.
+#[test]
+fn a_deadline_is_measured_against_the_day_the_run_was_given() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"metadata","id":"experiments-expire","level":"error",
+                 "why":"an experiment with no end is a feature nobody decided to keep",
+                 "roots":["src/**"],"require":["remove-by"],"deadline":["remove-by"]}]}"#,
+        ),
+        (
+            "src/payments/beta-checkout.ts",
+            "// archwarden-remove-by: 2026-12-01
+export const beta = () => 1;
+",
+        ),
+    ]);
+
+    // Before the date, it holds — and the same repository, the same config.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--as-of", "2026-11-30"])
+        .assert()
+        .success();
+
+    // The day itself is met, not missed: a rule that fired here would fire a
+    // day early for everybody.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--as-of", "2026-12-01"])
+        .assert()
+        .success();
+
+    // And after it, with how long ago — a deadline that slipped yesterday and
+    // one that slipped a year ago are different conversations.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--as-of", "2027-01-15"])
+        .assert()
+        .code(1)
+        .stdout(contains("`remove-by` was `2026-12-01`, 45 days ago"))
+        .stdout(contains("why: an experiment with no end"));
+}
+
+/// A value that is not a date is its own finding rather than a guess.
+/// `01/12/2026` read leniently is eleven months from where it was meant to be.
+#[test]
+fn a_deadline_that_is_not_a_date_says_so() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"metadata","id":"experiments-expire","level":"error",
+                 "roots":["src/**"],"deadline":["remove-by"]}]}"#,
+        ),
+        (
+            "src/a.ts",
+            "// archwarden-remove-by: 01/12/2026
+export const a = 1;
+",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--as-of", "2027-01-15"])
+        .assert()
+        .code(1)
+        .stdout(contains(
+            "`remove-by` is `01/12/2026`, which is not a date — write `YYYY-MM-DD`",
+        ));
+}
+
+/// And the flag itself is refused before the walk, for the same reason: a
+/// lenient `--as-of` would answer confidently for the wrong day.
+#[test]
+fn an_as_of_that_is_not_a_date_is_refused_before_the_run() {
+    let dir = repo(&[("arch.config.json", r#"{"version":0,"rules":[]}"#)]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--as-of", "next tuesday"])
+        .assert()
+        .code(2)
+        .stderr(contains("is not a date; write it as `YYYY-MM-DD`"));
+}
+
 /// Findings at error level exit 1, which is what a CI gate branches on.
 #[test]
 fn a_repository_with_errors_exits_one() {

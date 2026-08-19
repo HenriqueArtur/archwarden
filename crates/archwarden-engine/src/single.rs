@@ -59,6 +59,21 @@ pub struct Single {
     pub unresolved_imports: Vec<String>,
 }
 
+impl Single {
+    /// The answer for a file no rule was asked about.
+    ///
+    /// An ignored path is not checked at all, exactly as in a full run: a hook
+    /// that enforced rules `check` would not is worse than no hook.
+    fn nothing(path: &RepoRelPath) -> Self {
+        Self {
+            path: path.clone(),
+            findings: Vec::new(),
+            skipped: Vec::new(),
+            unresolved_imports: Vec::new(),
+        }
+    }
+}
+
 /// One rule that applies but was not evaluated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Skipped {
@@ -180,12 +195,7 @@ fn check(
     // An ignored path is not checked at all, exactly as in a full run. A hook
     // that enforced rules `check` would not is worse than no hook.
     if config.is_ignored(path) {
-        return Single {
-            path: path.clone(),
-            findings,
-            skipped,
-            unresolved_imports,
-        };
+        return Single::nothing(path);
     }
 
     findings.extend(directory_findings(root, &engines, path));
@@ -204,7 +214,6 @@ fn check(
     let narrowed_by_imports = applicable
         .iter()
         .any(|(index, _)| rules.get(*index).is_some_and(|rule| rule.imports.is_some()));
-
     // Asked only of the rules that will actually be evaluated. A rule that
     // reads the graph is refused below whatever this command reads, so parsing
     // for it buys an answer nobody receives -- and `unresolved_imports` means
@@ -325,6 +334,9 @@ fn check(
             // `Reason::NeedsRepository`, rather than handed `None` and left to
             // report the silence that means "no cycles".
             graph: None,
+            // The hook judges one file the way `check` judges all of them, so
+            // a deadline is measured here too, against today.
+            as_of: archwarden_core::date::Date::today(),
         }));
     }
 

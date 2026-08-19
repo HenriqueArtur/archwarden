@@ -157,8 +157,9 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     require,
                     one_of,
                     equals,
+                    deadline,
                 } => Box::new(metadata::MetadataEngine::build(
-                    rule, require, one_of, equals,
+                    rule, require, one_of, equals, deadline,
                 )),
                 CompiledRuleKind::Pair {
                     file_pattern,

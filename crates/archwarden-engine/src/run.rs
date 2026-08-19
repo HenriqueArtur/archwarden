@@ -141,6 +141,12 @@ pub struct Run<'a> {
     pub tree: &'a RepoTree,
     /// The cache, when there is one. A run without it is correct and slower.
     pub cache: Option<&'a mut Cache>,
+    /// The day this run answers for.
+    ///
+    /// Threaded to every rule through `FileContext::as_of` rather than read
+    /// from a clock, so two machines given the same date give the same answer.
+    /// Only `metadata.deadline` asks. Issue #117.
+    pub as_of: archwarden_core::date::Date,
 }
 
 /// Whether any rule in this configuration has to look inside a file.
@@ -234,6 +240,7 @@ pub fn check(run: Run<'_>) -> Report {
         config,
         tree,
         mut cache,
+        as_of,
     } = run;
     let engines = archwarden_rules::engines_for(config);
 
@@ -524,6 +531,7 @@ pub fn check(run: Run<'_>) -> Report {
                     // lookup and no disk.
                     exists: Exists::new(&|candidate| tree.contains_file(candidate)),
                     graph: None,
+                    as_of,
                 }));
             }
 
@@ -620,6 +628,7 @@ pub fn check(run: Run<'_>) -> Report {
                     siblings: sibling_lists.get(held.siblings).map_or(&[], Vec::as_slice),
                     exists: Exists::new(&|candidate| tree.contains_file(candidate)),
                     graph: Some(&graph),
+                    as_of,
                 }));
             }
         }
@@ -985,6 +994,7 @@ mod tests {
             config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         drop(guard);
         report
@@ -1266,6 +1276,7 @@ mod tests {
                 config: &config,
                 tree: &tree,
                 cache: Some(&mut cache),
+                as_of: archwarden_core::date::Date::EPOCH,
             });
             cache.flush().expect("flushes");
             report
@@ -1281,6 +1292,7 @@ mod tests {
                 config: &config,
                 tree: &tree,
                 cache: Some(&mut cache),
+                as_of: archwarden_core::date::Date::EPOCH,
             })
         };
 
@@ -1334,6 +1346,7 @@ mod tests {
                 config: &config,
                 tree: &tree,
                 cache: Some(&mut cache),
+                as_of: archwarden_core::date::Date::EPOCH,
             });
             cache.flush().expect("flushes");
             report
@@ -1384,6 +1397,7 @@ mod tests {
                 config: &config,
                 tree: &tree,
                 cache: Some(&mut cache),
+                as_of: archwarden_core::date::Date::EPOCH,
             });
             cache.flush().expect("flushes");
             report
@@ -1620,6 +1634,7 @@ mod tests {
             config: &config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         drop(guard);
 
@@ -1663,6 +1678,7 @@ mod tests {
             config: &config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         drop(guard);
 
@@ -1698,6 +1714,7 @@ mod tests {
             config: &config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         drop(guard);
 
@@ -1739,6 +1756,7 @@ mod tests {
             config: &config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         drop(guard);
 
@@ -1775,6 +1793,7 @@ mod tests {
             config: &config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         drop(guard);
 
@@ -1835,6 +1854,7 @@ mod tests {
             config: &config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         drop(guard);
 
@@ -1867,6 +1887,7 @@ mod tests {
             config: &config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         drop(guard);
 
@@ -2143,6 +2164,7 @@ mod tests {
             config: &config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         drop(guard);
 
@@ -2511,6 +2533,7 @@ mod tests {
             config: &config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         drop(guard);
 
@@ -2610,6 +2633,7 @@ mod narrowing_tests {
             config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::today(),
         })
     }
 

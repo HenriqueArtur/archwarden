@@ -226,6 +226,11 @@ fn cycles() -> CompiledConfig {
     )
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "a list of benchmark registrations; splitting it would move the \
+              registrations somewhere the list no longer reads as one"
+)]
 fn benchmarks(criterion: &mut Criterion) {
     for files in SIZES {
         let repository = build(files);
@@ -248,6 +253,7 @@ fn benchmarks(criterion: &mut Criterion) {
                         config: &repository.config,
                         tree: &repository.tree,
                         cache: None,
+                        as_of: archwarden_core::date::Date::EPOCH,
                     })
                 });
             },
@@ -262,6 +268,7 @@ fn benchmarks(criterion: &mut Criterion) {
             config: &repository.config,
             tree: &repository.tree,
             cache: Some(&mut cache),
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         cache.flush().expect("flushes");
 
@@ -275,6 +282,7 @@ fn benchmarks(criterion: &mut Criterion) {
                         config: &repository.config,
                         tree: &repository.tree,
                         cache: Some(&mut cache),
+                        as_of: archwarden_core::date::Date::EPOCH,
                     })
                 });
             },
@@ -292,6 +300,7 @@ fn benchmarks(criterion: &mut Criterion) {
             config: &resolving_config,
             tree: &repository.tree,
             cache: Some(&mut resolving_cache),
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         resolving_cache.flush().expect("flushes");
 
@@ -305,6 +314,7 @@ fn benchmarks(criterion: &mut Criterion) {
                         config: &resolving_config,
                         tree: &repository.tree,
                         cache: Some(&mut resolving_cache),
+                        as_of: archwarden_core::date::Date::EPOCH,
                     })
                 });
             },
@@ -321,6 +331,7 @@ fn benchmarks(criterion: &mut Criterion) {
             config: &cycles_config,
             tree: &repository.tree,
             cache: Some(&mut cycles_cache),
+            as_of: archwarden_core::date::Date::EPOCH,
         });
         cycles_cache.flush().expect("flushes");
 
@@ -334,6 +345,7 @@ fn benchmarks(criterion: &mut Criterion) {
                         config: &cycles_config,
                         tree: &repository.tree,
                         cache: Some(&mut cycles_cache),
+                        as_of: archwarden_core::date::Date::EPOCH,
                     })
                 });
             },

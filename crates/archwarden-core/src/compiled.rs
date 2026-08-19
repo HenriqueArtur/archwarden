@@ -273,6 +273,12 @@ pub enum CompiledRuleKind {
         one_of: Vec<(String, Vec<String>)>,
         /// A key whose value must equal this template, rendered from the path.
         equals: Vec<(String, String)>,
+        /// Keys whose value is an ISO date that must not have passed.
+        ///
+        /// Compared against the run's day, never a clock: a rule that read the
+        /// time would answer differently in CI than on a laptop, which is the
+        /// determinism decision 28 defended. Issue #117.
+        deadline: Vec<String>,
     },
     /// Files matching a pattern must call a symbol.
     CallObligation {

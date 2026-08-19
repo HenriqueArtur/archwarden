@@ -510,6 +510,29 @@ pub enum Observed {
         /// The key that was written in the wrong place.
         key: String,
     },
+    /// A key the rule reads as a date does not hold one.
+    ///
+    /// Its own finding rather than a guess. `01/12/2026` read leniently is
+    /// eleven months from where it was meant to be, and a deadline that fires
+    /// on the wrong day is worse than one that does not fire.
+    MetadataNotADate {
+        /// The key.
+        key: String,
+        /// What was written there.
+        found: String,
+    },
+    /// A date the file wrote down has passed.
+    ///
+    /// Measured against the day the *run* was given, never a clock, so two
+    /// machines answering for the same day agree. Issue #117.
+    MetadataDeadlinePassed {
+        /// The key.
+        key: String,
+        /// The date it held.
+        was: String,
+        /// How many days ago that was, for the run's day.
+        days: i64,
+    },
     /// The header declares the same key more than once.
     ///
     /// Two claims about one thing. Picking a winner in silence would make

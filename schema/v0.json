@@ -1483,6 +1483,10 @@
                 "type": "string"
               }
             },
+            "deadline": {
+              "description": "Keys whose value is a date that must not have passed.\n\n`ISO YYYY-MM-DD`, and nothing else: a value that is not one is its own\nfinding rather than a guess. Guessing which of two numbers is the month\nis how a deadline lands eleven months from where it was meant to.\n\n```json\n{ \"require\": [\"remove-by\"], \"deadline\": [\"remove-by\"] }\n```\n\nThe day compared against is the **run's**, not the clock's: `check`\ndefaults it to today in UTC and `--as-of` pins it, so two machines\ngiven the same date give the same answer. That is what keeps decision\n28's determinism while adding the one question that needs to know what\nday it is.\n\nA passed deadline fires at this rule's own `level`, like every other\nfinding here. Whoever writes the deadline chooses: `error` if they mean\nit, `warning` while a migration is still running.\n\nIt does not require the key. An absent one stays `require`'s to report,\nexactly as `one_of` already decides it. Issue #117.",
+              "$ref": "#/$defs/OneOrMany"
+            },
             "when_importing": {
               "description": "Narrow this rule to the files that import something. See decision 25.",
               "$ref": "#/$defs/OneOrMany"

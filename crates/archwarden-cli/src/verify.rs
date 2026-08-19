@@ -135,7 +135,10 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
             require,
             one_of,
             equals,
-        } => a_file_declaring_the_wrong_thing(rule, engine, tree, require, one_of, equals),
+            deadline,
+        } => {
+            a_file_declaring_the_wrong_thing(rule, engine, tree, require, one_of, equals, deadline)
+        }
         // Both are file-existence questions, which is the easiest kind to
         // plant: one file that should not be there, and one that should.
         CompiledRuleKind::Frozen => a_file_added_to_a_freeze(rule, engine, tree),
@@ -225,6 +228,7 @@ fn a_file_declaring_the_wrong_thing(
     require: &[String],
     one_of: &[(String, Vec<String>)],
     equals: &[(String, String)],
+    deadline: &[String],
 ) -> Verdict {
     let Some(covered) = tree
         .directories()
@@ -258,6 +262,14 @@ fn a_file_declaring_the_wrong_thing(
         planted = true;
     }
 
+    // A deadline is planted as a date already past. The probe is asked about
+    // a fixed day, so this is the one plant that needs no invention at all:
+    // 1970 is before every run.
+    for key in deadline {
+        facts.metadata.push(claim(key, "1970-01-01"));
+        planted = true;
+    }
+
     let on = if planted {
         format!("`{covered}` with a header this rule refuses")
     } else if require.is_empty() {
@@ -278,6 +290,10 @@ fn a_file_declaring_the_wrong_thing(
         siblings: &[],
         exists: Exists::none(),
         graph: None,
+        // The probe asks whether the rule bites *now*, so it answers for
+        // today. A deadline planted in 1970 is past on every run there
+        // has ever been.
+        as_of: archwarden_core::date::Date::today(),
     });
 
     if findings.is_empty() {
@@ -335,6 +351,10 @@ fn a_document_with_no_block(
         siblings: &[],
         exists: Exists::none(),
         graph: None,
+        // The probe asks whether the rule bites *now*, so it answers for
+        // today. A deadline planted in 1970 is past on every run there
+        // has ever been.
+        as_of: archwarden_core::date::Date::today(),
     });
 
     let on = format!("`{covered}` with no frontmatter block");
@@ -378,6 +398,10 @@ fn a_file_with_no_companion(
         siblings: &[],
         exists: Exists::none(),
         graph: None,
+        // The probe asks whether the rule bites *now*, so it answers for
+        // today. A deadline planted in 1970 is past on every run there
+        // has ever been.
+        as_of: archwarden_core::date::Date::today(),
     });
 
     let on = format!("`{covered}` with its companion missing");
@@ -606,6 +630,10 @@ fn a_file_with_no_spec(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &Repo
         siblings: std::slice::from_ref(&name),
         exists: Exists::none(),
         graph: None,
+        // The probe asks whether the rule bites *now*, so it answers for
+        // today. A deadline planted in 1970 is past on every run there
+        // has ever been.
+        as_of: archwarden_core::date::Date::today(),
     });
 
     let on = format!("`{lonely}` with no spec beside it");
@@ -651,6 +679,10 @@ fn a_file_added_to_a_freeze(
         siblings: std::slice::from_ref(&name),
         exists: Exists::none(),
         graph: None,
+        // The probe asks whether the rule bites *now*, so it answers for
+        // today. A deadline planted in 1970 is past on every run there
+        // has ever been.
+        as_of: archwarden_core::date::Date::today(),
     });
 
     let on = format!("`{added}`, a file added under the freeze");
@@ -692,6 +724,10 @@ fn a_file_with_no_counterpart(
         // Nothing exists, so the counterpart certainly does not.
         exists: Exists::none(),
         graph: None,
+        // The probe asks whether the rule bites *now*, so it answers for
+        // today. A deadline planted in 1970 is past on every run there
+        // has ever been.
+        as_of: archwarden_core::date::Date::today(),
     });
 
     let on = format!("`{covered}`, whose counterpart is not on disk");
@@ -786,6 +822,10 @@ fn a_file_of_the_wrong_shape(
         siblings: std::slice::from_ref(&name),
         exists: Exists::none(),
         graph: None,
+        // The probe asks whether the rule bites *now*, so it answers for
+        // today. A deadline planted in 1970 is past on every run there
+        // has ever been.
+        as_of: archwarden_core::date::Date::today(),
     });
 
     let on = format!("`{probe}` with {broke}");
@@ -856,6 +896,10 @@ fn crossed_boundary(
         siblings: &[],
         exists: Exists::none(),
         graph: None,
+        // The probe asks whether the rule bites *now*, so it answers for
+        // today. A deadline planted in 1970 is past on every run there
+        // has ever been.
+        as_of: archwarden_core::date::Date::today(),
     });
 
     if findings.is_empty() {
@@ -1131,6 +1175,7 @@ mod tests {
                 .iter()
                 .map(|(key, template)| ((*key).to_owned(), (*template).to_owned()))
                 .collect(),
+            deadline: Vec::new(),
         }
     }
 

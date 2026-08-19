@@ -456,6 +456,7 @@ mod tests {
             siblings: &[],
             exists: Exists::none(),
             graph: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         })
     }
 
@@ -655,6 +656,7 @@ mod tests {
             siblings: &[],
             exists: Exists::none(),
             graph: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
 
         assert!(findings.is_empty());

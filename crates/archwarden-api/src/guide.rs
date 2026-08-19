@@ -566,6 +566,7 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             require,
             one_of,
             equals,
+            deadline,
         } => {
             let mut lines = vec![
                 "claims go as `// archwarden-<key>: value` above the first statement".to_owned(),
@@ -583,6 +584,11 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             }
             for (key, template) in equals {
                 lines.push(format!("`{key}` equal to `{template}`"));
+            }
+            for key in deadline {
+                lines.push(format!(
+                    "`{key}` is a date `YYYY-MM-DD` that has not passed"
+                ));
             }
             lines
         }
@@ -917,6 +923,7 @@ mod tests {
                     vec!["stable".to_owned(), "experimental".to_owned()],
                 )],
                 equals: vec![("module".to_owned(), "{{raw(dirname)}}".to_owned())],
+                deadline: vec!["remove-by".to_owned()],
             },
         )]);
 
@@ -948,6 +955,7 @@ mod tests {
                 require: vec!["owner".to_owned()],
                 one_of: Vec::new(),
                 equals: Vec::new(),
+                deadline: Vec::new(),
             },
         )]);
 
@@ -1211,6 +1219,7 @@ mod tests {
                 require: Vec::new(),
                 one_of: Vec::new(),
                 equals: Vec::new(),
+                deadline: Vec::new(),
             },
         ];
 

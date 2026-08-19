@@ -2396,6 +2396,30 @@ pub struct MetadataRule {
     /// `{{kebab(dirname)}}` is spelled the same way here as there.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub equals: std::collections::BTreeMap<String, String>,
+    /// Keys whose value is a date that must not have passed.
+    ///
+    /// `ISO YYYY-MM-DD`, and nothing else: a value that is not one is its own
+    /// finding rather than a guess. Guessing which of two numbers is the month
+    /// is how a deadline lands eleven months from where it was meant to.
+    ///
+    /// ```json
+    /// { "require": ["remove-by"], "deadline": ["remove-by"] }
+    /// ```
+    ///
+    /// The day compared against is the **run's**, not the clock's: `check`
+    /// defaults it to today in UTC and `--as-of` pins it, so two machines
+    /// given the same date give the same answer. That is what keeps decision
+    /// 28's determinism while adding the one question that needs to know what
+    /// day it is.
+    ///
+    /// A passed deadline fires at this rule's own `level`, like every other
+    /// finding here. Whoever writes the deadline chooses: `error` if they mean
+    /// it, `warning` while a migration is still running.
+    ///
+    /// It does not require the key. An absent one stays `require`'s to report,
+    /// exactly as `one_of` already decides it. Issue #117.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub deadline: Patterns,
     /// Narrow this rule to the files that import something. See decision 25.
     #[serde(default, skip_serializing_if = "Patterns::is_empty")]
     pub when_importing: Patterns,

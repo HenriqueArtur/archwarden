@@ -251,6 +251,18 @@ pub fn describe_observed(observed: &Observed) -> String {
         }
         // The sentence has to say where the marker *is*, because the reader is
         // looking at a file that contains the word they are told is missing.
+        Observed::MetadataNotADate { key, found } => {
+            format!("`{key}` is `{found}`, which is not a date — write `YYYY-MM-DD`")
+        }
+        // The number of days, not just "expired": a deadline that slipped
+        // yesterday and one that slipped a year ago are different
+        // conversations, and the reader is about to have one of them.
+        Observed::MetadataDeadlinePassed { key, was, days } => {
+            format!(
+                "`{key}` was `{was}`, {days} {} ago",
+                if *days == 1 { "day" } else { "days" }
+            )
+        }
         Observed::MetadataOutsideHeader { key } => {
             format!("declares `{key}` below the first statement, where it is not read")
         }
@@ -925,6 +937,29 @@ mod tests {
     #[test]
     fn a_metadata_fault_reads_as_a_sentence() {
         let cases = [
+            (
+                Observed::MetadataNotADate {
+                    key: "remove-by".to_owned(),
+                    found: "01/12/2026".to_owned(),
+                },
+                "`remove-by` is `01/12/2026`, which is not a date — write `YYYY-MM-DD`",
+            ),
+            (
+                Observed::MetadataDeadlinePassed {
+                    key: "remove-by".to_owned(),
+                    was: "2026-12-01".to_owned(),
+                    days: 45,
+                },
+                "`remove-by` was `2026-12-01`, 45 days ago",
+            ),
+            (
+                Observed::MetadataDeadlinePassed {
+                    key: "remove-by".to_owned(),
+                    was: "2026-12-01".to_owned(),
+                    days: 1,
+                },
+                "1 day ago",
+            ),
             (
                 Observed::MetadataMissing {
                     key: "owner".to_owned(),
