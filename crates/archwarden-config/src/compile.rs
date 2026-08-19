@@ -1146,6 +1146,11 @@ fn compile_rule(
                     Ok((reachable_key(&id, key)?, template.clone()))
                 })
                 .collect::<Result<_, CompileError>>()?,
+            deadline: r
+                .deadline
+                .iter()
+                .map(|key| reachable_key(&id, key))
+                .collect::<Result<_, CompileError>>()?,
         },
 
         Rule::Frozen(_) => CompiledRuleKind::Frozen,
@@ -2447,6 +2452,7 @@ mod tests {
             require,
             one_of,
             equals,
+            deadline,
         } = &compiled.rules().next().expect("one rule").kind
         else {
             panic!("expected a metadata rule");
@@ -2463,6 +2469,40 @@ mod tests {
         assert_eq!(
             equals,
             &[("module".to_owned(), "{{raw(dirname)}}".to_owned())]
+        );
+        assert!(deadline.is_empty(), "the rule asked for no dates");
+    }
+
+    /// Issue #117. A key whose value is a date the run compares against.
+    #[test]
+    fn a_metadata_rule_can_name_a_key_that_holds_a_deadline() {
+        let compiled = compile_json(
+            r#"{"version":0,"rules":[{"type":"metadata","id":"experiments-expire","level":"error",
+                 "roots":"src/**","require":["remove-by"],"deadline":["remove-by"]}]}"#,
+        )
+        .expect("compiles");
+
+        let CompiledRuleKind::Metadata { deadline, .. } =
+            &compiled.rules().next().expect("one rule").kind
+        else {
+            panic!("expected a metadata rule");
+        };
+        assert_eq!(deadline, &["remove-by".to_owned()]);
+    }
+
+    /// And a key no comment could spell is refused here too, on the same terms
+    /// every other metadata key is.
+    #[test]
+    fn a_deadline_on_an_unreachable_key_is_refused() {
+        let error = compile_json(
+            r#"{"version":0,"rules":[{"type":"metadata","id":"r","level":"error",
+                 "roots":"src/**","deadline":["allow"]}]}"#,
+        )
+        .expect_err("should refuse");
+
+        assert!(
+            matches!(error, CompileError::UnreachableMetadataKey { .. }),
+            "got {error:?}"
         );
     }
 

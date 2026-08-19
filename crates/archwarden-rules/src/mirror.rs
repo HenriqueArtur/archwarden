@@ -259,6 +259,7 @@ mod tests {
             siblings: &[],
             exists: Exists::new(&predicate),
             graph: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         })
     }
 

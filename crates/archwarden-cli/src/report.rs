@@ -309,6 +309,10 @@ fn render_text(rendered: &Rendered<'_>, out: &mut dyn std::io::Write) {
         // instead. Named rather than elided so a field added to `Rendered`
         // still fails to compile here.
         standing: _,
+        // The text format does not print it. A human at a terminal ran the
+        // command a moment ago and knows what day it is; the JSON carries it
+        // because a report read a week later does not.
+        as_of: _,
     } = *rendered;
 
     if let Some(breakdown) = view.breakdown() {
@@ -1398,6 +1402,7 @@ mod tests {
                 reasons,
                 elapsed: TOOK,
                 standing: None,
+                as_of: archwarden_core::date::Date::EPOCH,
             },
             format,
             &mut out,
@@ -1416,6 +1421,7 @@ mod tests {
                 reasons: &Reasons::default(),
                 elapsed: TOOK,
                 standing: None,
+                as_of: archwarden_core::date::Date::EPOCH,
             },
             format,
             &mut out,
@@ -1444,6 +1450,7 @@ mod tests {
                 reasons: &Reasons::default(),
                 elapsed,
                 standing: None,
+                as_of: archwarden_core::date::Date::EPOCH,
             },
             format,
             &mut out,

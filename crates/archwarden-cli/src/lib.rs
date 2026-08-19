@@ -253,6 +253,21 @@ pub enum Command {
         /// not mean deleting a committed file.
         #[arg(long)]
         no_baseline: bool,
+
+        /// The day to answer for, as `YYYY-MM-DD`. Defaults to today, in UTC.
+        ///
+        /// Only `metadata.deadline` reads it, and it is a flag rather than a
+        /// clock so two machines given the same date give the same answer —
+        /// the determinism decision 28 defended when it refused to read `git`.
+        ///
+        /// It is also the warning window, with no field for one: a second,
+        /// non-gating run that asks about the future says what is about to
+        /// break.
+        ///
+        ///   archwarden check                     # the gate
+        ///   archwarden check --as-of 2026-09-02  # what breaks in a fortnight
+        #[arg(long, value_name = "DATE")]
+        as_of: Option<String>,
     },
 
     /// Say what the rules require of a path, which need not exist yet.
@@ -687,6 +702,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
             changed,
             no_baseline,
             by,
+            as_of,
             ..
         } => check(
             cli.location(),
@@ -703,6 +719,7 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
                 level: *level,
                 no_baseline: *no_baseline,
                 by: *by,
+                as_of: as_of.as_deref(),
             },
             output,
         ),
@@ -1096,6 +1113,7 @@ fn write_baseline(
         compiled: &compiled,
         tree: &tree,
         cache: archwarden_api::CachePolicy::Use,
+        as_of: archwarden_core::date::Date::today(),
     });
 
     // Said out loud here too. This used to discard the flush failure with
@@ -2172,6 +2190,7 @@ struct CheckOptions<'a> {
     level: Option<LevelFilter>,
     no_baseline: bool,
     by: Option<By>,
+    as_of: Option<&'a str>,
 }
 
 #[allow(
@@ -2243,6 +2262,25 @@ fn check(
         }
     };
 
+    // Refused before the walk, so a date nobody can read costs a message
+    // rather than a run. A lenient parser here would be the worst outcome the
+    // feature has: `01/12/2026` read as a date puts the deadline eleven months
+    // from where it was meant to be.
+    let as_of = match options
+        .as_of
+        .map(|written| (written, archwarden_core::date::Date::parse(written)))
+    {
+        None => archwarden_core::date::Date::today(),
+        Some((_, Some(date))) => date,
+        Some((written, None)) => {
+            let _ = writeln!(
+                output.err,
+                "`--as-of {written}` is not a date; write it as `YYYY-MM-DD`"
+            );
+            return Exit::ConfigProblem;
+        }
+    };
+
     let tree = match walked(&merged.root, working_directory, &compiled, output) {
         Ok(tree) => tree,
         Err(exit) => return exit,
@@ -2257,6 +2295,7 @@ fn check(
         } else {
             archwarden_api::CachePolicy::Use
         },
+        as_of,
     });
 
     // A cache that would not open, or would not persist, costs the next run
@@ -2302,6 +2341,7 @@ fn check(
             reasons: &crate::report::Reasons::of(&compiled),
             elapsed: started.elapsed(),
             standing: standing.clone(),
+            as_of,
         },
         options.format,
         output.out,

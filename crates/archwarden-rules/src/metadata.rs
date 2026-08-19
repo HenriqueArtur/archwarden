@@ -48,6 +48,7 @@ pub struct MetadataEngine {
     require: Vec<String>,
     one_of: Vec<(String, Vec<String>)>,
     equals: Vec<(String, String)>,
+    deadline: Vec<String>,
 }
 
 impl MetadataEngine {
@@ -60,12 +61,13 @@ impl MetadataEngine {
             require,
             one_of,
             equals,
+            deadline,
         } = &rule.kind
         else {
             return None;
         };
 
-        Some(Self::build(rule, require, one_of, equals))
+        Some(Self::build(rule, require, one_of, equals, deadline))
     }
 
     /// Builds an engine from a rule whose kind is already known.
@@ -74,6 +76,7 @@ impl MetadataEngine {
         require: &[String],
         one_of: &[(String, Vec<String>)],
         equals: &[(String, String)],
+        deadline: &[String],
     ) -> Self {
         Self {
             id: rule.id.clone(),
@@ -83,6 +86,7 @@ impl MetadataEngine {
             require: require.to_vec(),
             one_of: one_of.to_vec(),
             equals: equals.to_vec(),
+            deadline: deadline.to_vec(),
         }
     }
 
@@ -143,6 +147,7 @@ impl MetadataEngine {
             .map(String::as_str)
             .chain(self.one_of.iter().map(|(key, _)| key.as_str()))
             .chain(self.equals.iter().map(|(key, _)| key.as_str()))
+            .chain(self.deadline.iter().map(String::as_str))
             .filter(|key| seen.insert(*key))
             .collect()
     }
@@ -155,7 +160,12 @@ impl MetadataEngine {
     /// single value to judge, so the questions about its value are not asked:
     /// two findings for one edit is noise, and the second would have to pick a
     /// value to be about.
-    fn faults(&self, path: &RepoRelPath, facts: &FileFacts) -> Vec<(Observed, Option<Span>)> {
+    fn faults(
+        &self,
+        path: &RepoRelPath,
+        facts: &FileFacts,
+        as_of: archwarden_core::date::Date,
+    ) -> Vec<(Observed, Option<Span>)> {
         let mut declared: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         let mut below: BTreeMap<&str, Span> = BTreeMap::new();
 
@@ -233,6 +243,15 @@ impl MetadataEngine {
             }
         }
 
+        // Dates last, because the two questions before it are about whether
+        // there *is* a value: a key declared twice has no single date to be
+        // due, and one written below the header is not read at all.
+        for key in &self.deadline {
+            if let Some(written) = value(key) {
+                faults.extend(overdue(key, written, as_of));
+            }
+        }
+
         for (key, template) in &self.equals {
             let (Some(written), Some(wanted)) = (value(key), Self::rendered(template, path)) else {
                 continue;
@@ -251,6 +270,42 @@ impl MetadataEngine {
 
         faults
     }
+}
+
+/// What a key that should hold a date says, when it does not hold one or holds
+/// one that has passed.
+///
+/// Its own function rather than a fourth arm inside `faults`: the three passes
+/// above ask whether a value *is settled*, and this one asks what the value
+/// means. Splitting on that line is what keeps each readable.
+fn overdue(
+    key: &str,
+    written: &str,
+    as_of: archwarden_core::date::Date,
+) -> Option<(Observed, Option<Span>)> {
+    let Some(due) = archwarden_core::date::Date::parse(written) else {
+        return Some((
+            Observed::MetadataNotADate {
+                key: key.to_owned(),
+                found: written.to_owned(),
+            },
+            None,
+        ));
+    };
+
+    // The day it falls due is met, not missed. A rule that fired on the date
+    // itself would fire a day early for everybody.
+    let days = as_of.days_since(due);
+    (days > 0).then(|| {
+        (
+            Observed::MetadataDeadlinePassed {
+                key: key.to_owned(),
+                was: due.to_string(),
+                days,
+            },
+            None,
+        )
+    })
 }
 
 impl RuleEngine for MetadataEngine {
@@ -284,7 +339,7 @@ impl RuleEngine for MetadataEngine {
             return Vec::new();
         };
 
-        self.faults(ctx.path, facts)
+        self.faults(ctx.path, facts, ctx.as_of)
             .into_iter()
             .map(|(observed, span)| self.finding(ctx.path, observed, span))
             .collect()
@@ -315,6 +370,27 @@ mod tests {
         values.iter().map(|s| (*s).to_owned()).collect()
     }
 
+    fn deadline_engine(deadline: &[&str]) -> MetadataEngine {
+        let rule = CompiledRule {
+            id: RuleId::new("experiments-expire").expect("valid id"),
+            module: None,
+            why: None,
+            module_why: None,
+            decision: None,
+            imports: None,
+            level: Level::Error,
+            scope: Scope::compile(["src/payments/**"]).expect("valid scope"),
+            kind: CompiledRuleKind::Metadata {
+                require: Vec::new(),
+                one_of: Vec::new(),
+                equals: Vec::new(),
+                deadline: owned(deadline),
+            },
+        };
+
+        MetadataEngine::from_rule(&rule).expect("is a metadata rule")
+    }
+
     fn engine(
         require: &[&str],
         one_of: &[(&str, &[&str])],
@@ -339,6 +415,7 @@ mod tests {
                     .iter()
                     .map(|(key, template)| ((*key).to_owned(), (*template).to_owned()))
                     .collect(),
+                deadline: Vec::new(),
             },
         };
 
@@ -378,6 +455,7 @@ mod tests {
             siblings: &[],
             exists: Exists::none(),
             graph: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         })
     }
 
@@ -596,6 +674,96 @@ mod tests {
         assert!(check(&engine, &facts).is_empty());
     }
 
+    fn on(day: &str, engine: &MetadataEngine, facts: &FileFacts) -> Vec<Observed> {
+        engine
+            .check_file(FileContext {
+                path: &facts.path,
+                facts: Some(facts),
+                docs: None,
+                siblings: &[],
+                exists: Exists::none(),
+                graph: None,
+                as_of: archwarden_core::date::Date::parse(day).expect("a date"),
+            })
+            .into_iter()
+            .map(|finding| finding.observed)
+            .collect()
+    }
+
+    /// Issue #117. `metadata` could record a removal date and nothing compared
+    /// it to anything — the difference between a migration and a wish.
+    #[test]
+    fn a_deadline_that_has_passed_is_reported_with_how_long_ago() {
+        let engine = deadline_engine(&["remove-by"]);
+        let facts = header(&[("remove-by", "2026-12-01")]);
+
+        assert_eq!(
+            on("2027-01-15", &engine, &facts),
+            [Observed::MetadataDeadlinePassed {
+                key: "remove-by".to_owned(),
+                was: "2026-12-01".to_owned(),
+                days: 45,
+            }]
+        );
+    }
+
+    /// The day it falls due is not yet past. A deadline of *today* is met, and
+    /// a rule that fired on it would fire a day early for everybody.
+    #[test]
+    fn a_deadline_is_met_on_the_day_itself_and_before_it() {
+        let engine = deadline_engine(&["remove-by"]);
+        let facts = header(&[("remove-by", "2026-12-01")]);
+
+        assert!(
+            on("2026-12-01", &engine, &facts).is_empty(),
+            "the day itself"
+        );
+        assert!(on("2026-11-30", &engine, &facts).is_empty(), "and before");
+        assert_eq!(on("2026-12-02", &engine, &facts).len(), 1, "and after");
+    }
+
+    /// A value that is not a date is its own finding rather than a guess.
+    /// `01/12/2026` read as a date would put the deadline eleven months out.
+    #[test]
+    fn a_value_that_is_not_a_date_says_so_rather_than_being_guessed_at() {
+        let engine = deadline_engine(&["remove-by"]);
+
+        assert_eq!(
+            on(
+                "2027-01-15",
+                &engine,
+                &header(&[("remove-by", "01/12/2026")])
+            ),
+            [Observed::MetadataNotADate {
+                key: "remove-by".to_owned(),
+                found: "01/12/2026".to_owned(),
+            }]
+        );
+    }
+
+    /// A key nobody declared is `require`'s to report, exactly as `one_of`
+    /// already decides it: two findings for one edit is noise.
+    #[test]
+    fn a_deadline_says_nothing_about_a_key_that_is_not_there() {
+        assert!(on("2027-01-15", &deadline_engine(&["remove-by"]), &header(&[])).is_empty());
+    }
+
+    /// And a doubled key is not judged, for the reason a doubled key is never
+    /// judged: which of the two dates would be the deadline is exactly what
+    /// has not been settled.
+    #[test]
+    fn a_doubled_deadline_is_not_compared_to_anything() {
+        let facts = header(&[("remove-by", "2020-01-01"), ("remove-by", "2030-01-01")]);
+
+        assert_eq!(
+            on("2027-01-15", &deadline_engine(&["remove-by"]), &facts),
+            [Observed::MetadataDeclaredTwice {
+                key: "remove-by".to_owned(),
+                found: owned(&["2020-01-01", "2030-01-01"]),
+            }]
+        );
+    }
+
     /// Without facts nobody opened the file, and the run counts that.
     /// Reporting a missing key here would be accusing a file nobody read.
     #[test]
@@ -610,6 +778,7 @@ mod tests {
             siblings: &[],
             exists: Exists::none(),
             graph: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
 
         assert!(findings.is_empty());
@@ -698,6 +867,7 @@ mod tests {
                 require: owned(&["owner"]),
                 one_of: Vec::new(),
                 equals: Vec::new(),
+                deadline: Vec::new(),
             },
         };
 

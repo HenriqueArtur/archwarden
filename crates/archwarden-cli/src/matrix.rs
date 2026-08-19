@@ -363,6 +363,7 @@ mod tests {
             config: &config,
             tree: &tree,
             cache: None,
+            as_of: archwarden_core::date::Date::today(),
         });
 
         let matrix = Matrix::of(&config, &tree, &report.findings);

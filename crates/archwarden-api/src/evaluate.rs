@@ -75,6 +75,12 @@ pub struct Evaluation<'a> {
     pub tree: &'a RepoTree,
     /// Whether the cache may be used.
     pub cache: CachePolicy,
+    /// The day this run answers for.
+    ///
+    /// Threaded to every rule through `FileContext::as_of` rather than read
+    /// from a clock, so two machines given the same date give the same answer.
+    /// Only `metadata.deadline` asks. Issue #117.
+    pub as_of: archwarden_core::date::Date,
 }
 
 /// What evaluating produced.
@@ -117,6 +123,7 @@ pub fn evaluate(input: &Evaluation<'_>) -> Evaluated {
         config: input.compiled,
         tree: input.tree,
         cache: cache.as_mut(),
+        as_of: input.as_of,
     });
 
     if let Some(cache) = cache.as_mut() {
@@ -191,6 +198,7 @@ mod tests {
             compiled: &prepared.compiled,
             tree: &tree,
             cache,
+            as_of: archwarden_core::date::Date::EPOCH,
         })
     }
 

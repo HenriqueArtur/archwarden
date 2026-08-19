@@ -535,6 +535,7 @@ mod tests {
                     siblings: &siblings,
                     exists: Exists::none(),
                     graph: None,
+                    as_of: archwarden_core::date::Date::EPOCH,
                 })
             })
             .collect()
@@ -1079,6 +1080,7 @@ mod tests {
                 siblings: &[],
                 exists: Exists::none(),
                 graph: None,
+                as_of: archwarden_core::date::Date::EPOCH,
             })
         };
 
@@ -1260,6 +1262,7 @@ mod tests {
             siblings: &owned(&["create.ts"]),
             exists: Exists::new(&there),
             graph: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
 
         assert!(
@@ -1286,6 +1289,7 @@ mod tests {
             siblings: &owned(&["create.ts"]),
             exists: Exists::new(&elsewhere),
             graph: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
 
         assert_eq!(findings.len(), 1, "`spec/` was never named: {findings:?}");
@@ -1307,6 +1311,7 @@ mod tests {
             siblings: &owned(&["create.ts"]),
             exists: Exists::new(&deeper),
             graph: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
 
         assert_eq!(findings.len(), 1, "{findings:?}");
@@ -1326,6 +1331,7 @@ mod tests {
             siblings: &owned(&["create.ts"]),
             exists: Exists::new(&anywhere),
             graph: None,
+            as_of: archwarden_core::date::Date::EPOCH,
         });
 
         assert_eq!(

@@ -333,6 +333,11 @@ Do not propose it again. `config explain <decision-id>` lists every rejected
 option, and says which ones a rule actually refuses and which are only written
 down.
 
+**A deadline is measured against the run's day, not the clock.** `check
+--as-of YYYY-MM-DD` answers for any day, and `summary.as_of` says which one a
+report answered for. If you need to know what is about to expire, ask about the
+future rather than waiting for it to break.
+
 **`.archwarden/decisions/*.md` is generated.** Everything outside the
 `archwarden:yours` markers comes from `arch.config.json` and will be
 overwritten — change the config, then run `archwarden decisions`. Inside the

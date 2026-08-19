@@ -250,6 +250,8 @@ pub struct Rendered<'a> {
     /// brace is trailing text, and it is what issue #110 was filed about. The
     /// text format still prints its own sentence, from the same number.
     pub standing: Option<crate::baseline::Standing>,
+    /// The day this run answered for, carried into `summary.as_of`.
+    pub as_of: archwarden_core::date::Date,
 }
 
 /// One check nobody could make.
@@ -320,6 +322,13 @@ pub struct Summary {
     /// boundary rule ran" from "every import resolved".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub imports: Option<Imports>,
+    /// The day this run answered for.
+    ///
+    /// Always present. A report read a week later is not reproducible unless
+    /// it says which day it was answered for — a deadline finding is a fact
+    /// about a date, and without this a consumer cannot tell a report that is
+    /// stale from a repository that regressed. Issue #117.
+    pub as_of: String,
     /// How this run stands against the baseline. Absent when there is none.
     ///
     /// In the document rather than on a line after it, which is what issue
@@ -388,6 +397,7 @@ impl Summary {
             view,
             elapsed,
             ref standing,
+            as_of,
             ..
         } = *rendered;
 
@@ -411,6 +421,7 @@ impl Summary {
             duration_ms: elapsed.as_millis(),
             hidden: view.hidden(),
             by_rule: view.breakdown().map(breakdown_as_map),
+            as_of: as_of.to_string(),
             baseline: standing.clone(),
             imports: (report.imports.total() > 0).then_some(Imports {
                 in_repo: report.imports.in_repo,

@@ -314,6 +314,7 @@ mod tests {
                 reasons: &Reasons::default(),
                 elapsed: TOOK,
                 standing: None,
+                as_of: archwarden_core::date::Date::EPOCH,
             },
             &mut out,
         );
@@ -330,6 +331,7 @@ mod tests {
                 reasons: &Reasons::default(),
                 elapsed,
                 standing: None,
+                as_of: archwarden_core::date::Date::EPOCH,
             },
             &mut out,
         );
@@ -350,6 +352,7 @@ mod tests {
                 reasons,
                 elapsed: TOOK,
                 standing: None,
+                as_of: archwarden_core::date::Date::EPOCH,
             },
             &mut out,
         );

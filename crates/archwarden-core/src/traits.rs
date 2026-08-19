@@ -111,6 +111,19 @@ pub struct FileContext<'a> {
     /// sees one file — refuses such a rule and says so, rather than letting it
     /// pass quietly.
     pub graph: Option<&'a crate::graph::ImportGraph>,
+    /// The day this run is answering for.
+    ///
+    /// Supplied by the caller like `siblings` and `exists`, and for the same
+    /// reason: a rule never reads a clock, so two machines given the same date
+    /// give the same answer. That is the determinism decision 28 defended when
+    /// it refused to read `git`, kept while adding the one question that needs
+    /// to know what day it is.
+    ///
+    /// `check` defaults it to today in UTC and `--as-of` pins it. A surface
+    /// with no run behind it passes [`Date::EPOCH`](crate::date::Date::EPOCH),
+    /// which is a real date rather than a placeholder — nothing has to handle
+    /// an absent one. Issue #117.
+    pub as_of: crate::date::Date,
 }
 
 /// Which facts a rule needs read out of a file, if any.
@@ -439,6 +452,7 @@ mod tests {
             siblings: &[],
             exists: Exists::none(),
             graph: Some(&graph),
+            as_of: crate::date::Date::EPOCH,
         };
 
         assert!(
@@ -482,6 +496,7 @@ mod tests {
             siblings: &[],
             exists: Exists::none(),
             graph: None,
+            as_of: crate::date::Date::EPOCH,
         });
 
         let demanded = &findings
@@ -556,6 +571,7 @@ mod tests {
                     siblings: &[],
                     exists: Exists::none(),
                     graph: None,
+                    as_of: crate::date::Date::EPOCH,
                 })
                 .is_empty()
         );
@@ -650,6 +666,7 @@ mod tests {
                     siblings: &[],
                     exists: Exists::none(),
                     graph: None,
+                    as_of: crate::date::Date::EPOCH,
                 })
                 .is_empty()
         );
@@ -708,6 +725,7 @@ mod tests {
                     siblings: &[],
                     exists: Exists::none(),
                     graph: None,
+                    as_of: crate::date::Date::EPOCH,
                 })
                 .is_empty()
         );
@@ -730,6 +748,7 @@ mod tests {
             siblings: &siblings,
             exists: Exists::none(),
             graph: None,
+            as_of: crate::date::Date::EPOCH,
         };
 
         assert_eq!(ctx.siblings.len(), 2);

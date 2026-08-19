@@ -1595,6 +1595,64 @@ absent one, and `equals` can tie a value to the path. `{{raw(dirname)}}` is the
 only group an agreement may name, defined exactly as it is there, and the
 transforms come along — `{{kebab(dirname)}}` is spelled the same way here.
 
+### A deadline, and the day is an input
+
+```json
+{ "type": "metadata", "id": "experiments-expire", "level": "error",
+  "roots": ["src/**"],
+  "require": ["remove-by"],
+  "deadline": ["remove-by"],
+  "why": "an experiment with no end is a feature nobody decided to keep" }
+```
+
+```ts
+// archwarden-remove-by: 2026-12-01
+```
+
+```
+$ archwarden check --as-of 2027-01-15
+error   src/payments/beta-checkout.ts
+        [*] experiments-expire — `remove-by` was `2026-12-01`, 45 days ago
+```
+
+**The day comes from the run, not from a clock.** `--as-of` defaults to today
+in UTC, so two machines given the same date give the same answer — the
+determinism decision 28 defended when it refused to read `git`. It is in
+`summary.as_of` for the same reason: a report read a week later is a fact about
+a date.
+
+The date is **UTC**, and the cost is stated rather than hidden: somebody in
+UTC-8 late in the evening is already on tomorrow's date here. `--as-of` is how
+they say otherwise.
+
+**ISO `YYYY-MM-DD`, and nothing else.** A value that is not one is its own
+finding. Guessing which of two numbers is the month is how a deadline lands
+eleven months from where it was meant to.
+
+**The day it falls due is met, not missed.** A rule that fired on the date
+itself would fire a day early for everybody.
+
+**It fires at the rule's own `level`**, like every other finding here. Whoever
+writes the deadline chooses: `error` if they mean it, `warning` while a
+migration is still running.
+
+> **`baseline` is the wrong door for a passed deadline.** Accepting one excuses
+> it for ever, which is the opposite of what a deadline is. The doors that work
+> are fixing it, moving the date in a reviewed diff, or `archwarden-allow` with
+> a reason.
+
+**There is no warning window, because `--as-of` already is one.** A second,
+non-gating run answers *"what breaks in a fortnight?"* with no field to
+configure:
+
+```bash
+archwarden check                            # the gate
+archwarden check --as-of 2026-09-02 || true # what is about to break
+```
+
+Computing that date in a shell is not portable — `date -d` is GNU and not
+macOS — so write it out, or use whatever your CI already has.
+
 ### What it never asks
 
 **Whether a value is true.** `archwarden-owner: payments-team` is a claim the

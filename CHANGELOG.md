@@ -17,6 +17,67 @@ saying so.
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-08-19
+
+Time, added without losing the determinism decision 28 defended.
+**No existing configuration reports anything new.**
+
+### Added
+
+- **`metadata.deadline`, a date that must not have passed** (#117). Issue #104
+  named the sentence — *"an experimental export carries a removal date"* — and
+  shipped half of it: a file could record the date since 0.24 and **nothing
+  compared it to anything**. That is the difference between a migration and a
+  wish.
+
+  ```json
+  { "type": "metadata", "id": "experiments-expire", "level": "error",
+    "roots": ["src/**"],
+    "require": ["remove-by"],
+    "deadline": ["remove-by"] }
+  ```
+
+  ```
+  $ archwarden check --as-of 2027-01-15
+  error   src/payments/beta-checkout.ts
+          [*] experiments-expire — `remove-by` was `2026-12-01`, 45 days ago
+  ```
+
+- **`check --as-of <DATE>`**, defaulting to today in UTC. The day is an
+  **input** rather than a clock reading, so two machines given the same date
+  give the same answer — which is the determinism decision 28 protected when it
+  refused to read `git`, kept while adding the one question that needs to know
+  what day it is. A date the flag cannot read is refused before the walk.
+
+- **`summary.as_of`** in `--format json`, always present. A report read a week
+  later is a fact about a date, and without this a consumer cannot tell a stale
+  report from a repository that regressed.
+
+### Reasoning
+
+Three things decided with measurement rather than taste, recorded on #117.
+
+**No date dependency.** ISO `YYYY-MM-DD` with leading zeros already sorts
+correctly as text, and "today" is the civil-from-days arithmetic — about twenty
+lines with no table and no locale. The workspace carries 69 direct dependencies
+behind a hand-curated licence allowlist; pulling a tree in to subtract two
+numbers would have been the heavy choice.
+
+**A passed deadline fires at the rule's own `level`**, like every other finding
+here. The issue said `error`; that would have made this the only finding in
+archwarden that ignores the level its rule declares. `level` is required on
+every rule, so whoever writes the deadline already chooses.
+
+**No warning window, because `--as-of` already is one.** A second, non-gating
+run answers *"what breaks in a fortnight?"* with no field to configure.
+`RULES.md` writes the shell line out, because computing that date portably is
+not obvious — `date -d` is GNU and not macOS.
+
+**And the door to watch, stated in `RULES.md`:** `baseline` is the wrong answer
+for a passed deadline. Accepting one excuses it for ever, which is the opposite
+of what a deadline is.
+
+
 ## [0.27.0] — 2026-08-19
 
 The decision as a document, and a workflow that fails instead of hanging.
@@ -2306,7 +2367,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.27.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.0...HEAD
+[0.28.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.1...v0.25.0

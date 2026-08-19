@@ -163,6 +163,7 @@ pub fn explain<'a>(
         config,
         tree,
         cache: None,
+        as_of: archwarden_core::date::Date::today(),
     });
     let flags = report
         .findings
@@ -230,6 +231,7 @@ fn explain_decision<'a>(
         config,
         tree,
         cache: None,
+        as_of: archwarden_core::date::Date::today(),
     });
 
     // Read here rather than passed in: this command already opens the
