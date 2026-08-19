@@ -335,8 +335,11 @@ one and not the others ships a lie:
 ### When to write a decision
 
 Add an entry when the change locks the project into something, or deliberately
-declines something a reasonable person would expect. New entries go at the top;
-the next number is 17. The format is context, decision, alternatives weighed,
+declines something a reasonable person would expect. New entries go at the top,
+and the next number is one past the highest already there — read the top of
+`docs/DECISIONS.md` rather than trusting a number written here, which is how
+this sentence came to name a number thirteen behind reality. The format is
+context, decision, alternatives weighed,
 consequences — and the alternatives section is the load-bearing one, because
 its job is to stop the same argument being had again in a year.
 
