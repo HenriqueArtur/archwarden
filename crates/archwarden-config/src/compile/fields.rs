@@ -182,7 +182,14 @@ pub(super) fn spec_dirs(rule: &RuleId, spec: &SpecPairRule) -> Result<Vec<String
     Ok(names)
 }
 
-/// they meant would be worse than saying so.
+/// A `spec_markers` entry, refused if it is empty or carries a dot of its own.
+///
+/// The leading dot is optional -- `.spec` and `spec` are the same marker, and
+/// accepting both spares the author a refusal about punctuation. What is not
+/// optional is that a marker names one segment: a spec is
+/// `<stem>.<marker>.<extension>`, so a marker holding a dot would silently
+/// change how many segments the name has, and guessing which one they meant
+/// would be worse than saying so.
 pub(super) fn spec_markers(
     rule: &RuleId,
     spec: &SpecPairRule,
@@ -323,4 +330,110 @@ pub(super) fn check_template(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::one_or_many::OneOrMany;
+    use crate::rule::SpecPairRule;
+    use archwarden_core::level::Level;
+
+    fn id() -> RuleId {
+        RuleId::new("r").expect("valid id")
+    }
+
+    /// The whole of `require`: a name survives unchanged, and that is the
+    /// contract a `presence` rule is built on. Asserted here rather than only
+    /// through a refusal test, because a function that accepted a name and
+    /// returned something else would pass a test that only checks what it
+    /// refuses.
+    #[test]
+    fn a_require_entry_is_a_name_and_survives_as_one() {
+        assert_eq!(require_name(&id(), "DOC.md").expect("a name"), "DOC.md");
+        assert_eq!(
+            require_name(&id(), "README").expect("a name"),
+            "README",
+            "an extension is not required of it"
+        );
+    }
+
+    /// Both separators, each on its own: a rule answers for one directory, and
+    /// an entry reaching into a subdirectory would make it answer for two.
+    ///
+    /// Windows spells it `\\` and the config is written by hand on both, so
+    /// neither separator may be the only one checked -- a test naming just one
+    /// passes while the other silently reaches further than the rule says.
+    #[test]
+    fn a_require_entry_that_reaches_into_a_subdirectory_is_refused() {
+        assert!(
+            require_name(&id(), "docs/DOC.md").is_err(),
+            "the posix separator"
+        );
+        assert!(
+            require_name(&id(), "docs\\DOC.md").is_err(),
+            "and the windows one"
+        );
+    }
+
+    fn spec_with_markers(markers: &[&str]) -> SpecPairRule {
+        SpecPairRule {
+            id: id(),
+            level: Level::Error,
+            why: None,
+            decision: None,
+            roots: OneOrMany::One("src/*".to_owned()),
+            subfolders: OneOrMany::One(".".to_owned()),
+            spec_markers: OneOrMany::Many(markers.iter().map(|m| (*m).to_owned()).collect()),
+            spec_dirs: OneOrMany::Many(Vec::new()),
+            ignore_files: OneOrMany::Many(Vec::new()),
+            require_non_empty_spec: false,
+            skip_type_only: false,
+            when_importing: OneOrMany::Many(Vec::new()),
+            when_importing_packages: Vec::new(),
+        }
+    }
+
+    /// The marker the author wrote is the marker the rule gets, with the
+    /// optional leading dot removed. `.spec` and `spec` are one marker.
+    #[test]
+    fn a_spec_marker_keeps_its_word_and_loses_its_leading_dots() {
+        assert_eq!(
+            spec_markers(&id(), &spec_with_markers(&["spec", "test"])).expect("valid"),
+            vec!["spec".to_owned(), "test".to_owned()],
+        );
+        assert_eq!(
+            spec_markers(&id(), &spec_with_markers(&[".spec"])).expect("valid"),
+            vec!["spec".to_owned()],
+            "the leading dot is optional and is not part of the marker"
+        );
+        assert!(
+            spec_markers(&id(), &spec_with_markers(&[]))
+                .expect("valid")
+                .is_empty(),
+            "naming none is not an error here; the default is applied elsewhere"
+        );
+    }
+
+    /// Empty and dotted are refused, each on its own.
+    ///
+    /// A spec is `<stem>.<marker>.<extension>`. An empty marker would ask for
+    /// `user..ts` and a dotted one would change how many segments the name
+    /// has -- and a rule matching a filename nobody writes reports nothing,
+    /// which is indistinguishable from a repository that satisfies it.
+    #[test]
+    fn a_spec_marker_that_is_empty_or_carries_a_dot_is_refused() {
+        assert!(
+            spec_markers(&id(), &spec_with_markers(&["."])).is_err(),
+            "a lone dot trims to nothing"
+        );
+        assert!(
+            spec_markers(&id(), &spec_with_markers(&[""])).is_err(),
+            "and so does an empty string"
+        );
+        assert!(
+            spec_markers(&id(), &spec_with_markers(&["spec.unit"])).is_err(),
+            "a marker holding a dot is two segments pretending to be one"
+        );
+    }
 }
