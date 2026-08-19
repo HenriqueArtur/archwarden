@@ -26,7 +26,8 @@ pub struct FrontmatterRule {
     pub id: RuleId,
     /// Severity.
     pub level: Level,
-    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    /// Why this rule exists, in the author's words. The same field, with the same
+    /// meaning, is on every rule kind.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// The decision this rule implements, when it implements a declared one.

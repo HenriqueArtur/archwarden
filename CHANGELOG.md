@@ -57,6 +57,13 @@ and every rule behave exactly as they did in 0.28.0.
   go through its entry point rather than the functions the split moved. They
   test the entry point, so they live with it.
 
+- **Three `why` descriptions in `schema/v0.json` no longer point at a Rust
+  type.** They read *"See [`StructureRule::why`]"* — a rustdoc link, which
+  `schemars` copies verbatim into the published schema, which an editor then
+  shows to somebody writing `arch.config.json` who has no `StructureRule` to
+  look at. They now say the same thing in words that mean something to that
+  reader. No field, type or validation changed.
+
 - **The dev profile emits line tables instead of full debug info.** Measured on
   a cold `cargo nextest run --workspace --all-features`: **89.0 s and 3.0 GB**
   before, **75.8 s and 1.9 GB** after, with the same 2006 tests passing. What

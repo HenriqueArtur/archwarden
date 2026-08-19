@@ -1028,7 +1028,7 @@
               "$ref": "#/$defs/Level"
             },
             "why": {
-              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "description": "Why this rule exists, in the author's words. The same field, with the same\nmeaning, is on every rule kind.",
               "type": [
                 "string",
                 "null"
@@ -1094,7 +1094,7 @@
               "$ref": "#/$defs/Level"
             },
             "why": {
-              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "description": "Why this rule exists, in the author's words. The same field, with the same\nmeaning, is on every rule kind.",
               "type": [
                 "string",
                 "null"
@@ -1162,7 +1162,7 @@
               "$ref": "#/$defs/Level"
             },
             "why": {
-              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "description": "Why this rule exists, in the author's words. The same field, with the same\nmeaning, is on every rule kind.",
               "type": [
                 "string",
                 "null"
