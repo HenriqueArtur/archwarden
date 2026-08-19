@@ -14,6 +14,7 @@ pub mod changed;
 pub use archwarden_api::{baseline, filter};
 
 pub mod coverage;
+pub mod decisions;
 pub mod describe;
 pub mod diagnostic;
 pub mod doctor;
@@ -447,6 +448,22 @@ pub enum Command {
         dry_run: bool,
     },
 
+    /// Write the decision documents, one per declared decision.
+    ///
+    /// Writes `.archwarden/decisions/<id>.md`, which is meant to be committed.
+    /// Everything the config knows is generated; one marked region in each
+    /// file belongs to whoever opens it, and regenerating never rewrites that.
+    ///
+    /// This is not two owners. The config stays the truth for what is
+    /// enforced, and the document is a rendering of it with room for the three
+    /// paragraphs JSON has no place for. `config doctor` reports a document
+    /// that no longer matches the config it came from. Issue #116.
+    Decisions {
+        /// Say what writing would change, and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Inspect the configuration itself.
     Config {
         /// Which config command to run.
@@ -644,6 +661,13 @@ impl Output<'_> {
 /// Never returns an error: every failure is rendered to `output.err` and
 /// reported as an [`Exit`], because a linter's exit code is its primary
 /// interface and a stray `Err` bubbling to `main` would bypass it.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one arm per subcommand, each a call; splitting it would put the \
+              arms somewhere the exhaustive match no longer names them, which \
+              is the property that makes a command added without a dispatch \
+              fail to build"
+)]
 pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> Exit {
     match &cli.command {
         Command::Check {
@@ -705,6 +729,9 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
         Command::Init => init(working_directory, output),
         Command::Baseline { dry_run } => {
             write_baseline(cli.location(), working_directory, *dry_run, output)
+        }
+        Command::Decisions { dry_run } => {
+            write_decisions(cli.location(), working_directory, *dry_run, output)
         }
         Command::Impact {
             path,
@@ -1131,6 +1158,85 @@ fn write_baseline(
 /// Exits clean whatever it finds. `check` is the gate, and it already fails on
 /// a finding no baseline accepts; this answers "what would regenerating do",
 /// which is a review question rather than a build one.
+/// Writes one document per declared decision, or says what would change.
+///
+/// Exits clean whatever it finds, including under `--dry-run`. A document that
+/// needs regenerating is not a violation of anything — it is a file out of
+/// step with the config, which `config doctor` reports as advice. A team
+/// adopting this incrementally must not get a red build for it. Issue #116.
+fn write_decisions(
+    location: Location<'_>,
+    working_directory: &Utf8Path,
+    dry_run: bool,
+    output: &mut Output<'_>,
+) -> Exit {
+    let Ok((merged, compiled)) = prepare(location, working_directory, output) else {
+        return Exit::ConfigProblem;
+    };
+
+    if compiled.decisions().count() == 0 {
+        let _ = writeln!(
+            output.out,
+            "this configuration declares no decisions, so there is nothing to write."
+        );
+        return Exit::Clean;
+    }
+
+    let changes = crate::decisions::changes(&merged.root, &compiled);
+    if changes.is_empty() {
+        let _ = writeln!(
+            output.out,
+            "{} is up to date: {} {} unchanged. Nothing was written.",
+            crate::decisions::DECISIONS_DIR,
+            changes.unchanged.len(),
+            plural(changes.unchanged.len(), "document is", "documents are"),
+        );
+        return Exit::Clean;
+    }
+
+    for path in &changes.created {
+        let _ = writeln!(output.out, "  + {path}");
+    }
+    for path in &changes.updated {
+        let _ = writeln!(output.out, "  ~ {path}");
+    }
+
+    if dry_run {
+        let _ = writeln!(
+            output.out,
+            "\n{} {} would be written, {} updated. Nothing was written.",
+            changes.created.len(),
+            plural(changes.created.len(), "document", "documents"),
+            changes.updated.len(),
+        );
+        return Exit::Clean;
+    }
+
+    for document in crate::decisions::documents(&merged.root, &compiled) {
+        let path = merged.root.join(&document.path);
+        if let Some(parent) = path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            let _ = writeln!(output.err, "cannot create {parent}: {error}");
+            return Exit::ConfigProblem;
+        }
+        if let Err(error) = std::fs::write(&path, &document.body) {
+            let _ = writeln!(output.err, "cannot write {path}: {error}");
+            return Exit::ConfigProblem;
+        }
+    }
+
+    let _ = writeln!(
+        output.out,
+        "\nwrote {} {}, updated {}. The region between the `archwarden:yours` \
+         markers was kept.",
+        changes.created.len(),
+        plural(changes.created.len(), "document", "documents"),
+        changes.updated.len(),
+    );
+    Exit::Clean
+}
+
 /// The decision a rule implements, when it names one.
 ///
 /// `None` for every rule written before 0.21 and for every rule whose author

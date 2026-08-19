@@ -1854,6 +1854,128 @@ fn the_debt_a_decision_carries_is_named_on_every_surface() {
         ));
 }
 
+/// Issue #116, end to end: the document archwarden writes, the region it never
+/// rewrites, and the drift `config doctor` reports when the config moves on.
+///
+/// Asserted as one sequence because the value is in the three agreeing, and no
+/// unit test spans a command, a hand edit, and the doctor.
+#[test]
+fn a_decision_document_is_written_kept_and_reported_when_it_falls_behind() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,
+            "decisions":[{"id":"ADR-031","title":"the domain does not know about transport",
+                          "why":"it is published",
+                          "alternatives":[{"option":"an HTTP client in the domain",
+                                           "why_not":"a consumer would inherit our transport"}]}],
+            "rules":[]}"#,
+    )]);
+
+    // 1. It writes one document per decision, and says so.
+    archwarden()
+        .current_dir(dir.path())
+        .arg("decisions")
+        .assert()
+        .success()
+        .stdout(contains(".archwarden/decisions/ADR-031.md"))
+        .stdout(contains("wrote 1 document"));
+
+    let path = dir.path().join(".archwarden/decisions/ADR-031.md");
+    let written = std::fs::read_to_string(&path).expect("the document is there");
+    assert!(
+        written.contains("# the domain does not know about transport"),
+        "{written}"
+    );
+    assert!(written.contains("> it is published"), "{written}");
+    assert!(
+        written.contains("- **an HTTP client in the domain** (nothing refuses it)"),
+        "{written}"
+    );
+
+    // 2. Running it again changes nothing, which is what makes it safe to
+    //    leave in a script.
+    archwarden()
+        .current_dir(dir.path())
+        .arg("decisions")
+        .assert()
+        .success()
+        .stdout(contains("up to date"));
+
+    // 3. What a person writes between the markers survives a regeneration.
+    let edited = written.replace(
+        "## Context",
+        "## Context\n\nThree services shared the order model.",
+    );
+    std::fs::write(&path, edited).expect("write");
+    archwarden()
+        .current_dir(dir.path())
+        .arg("decisions")
+        .assert()
+        .success();
+    let again = std::fs::read_to_string(&path).expect("still there");
+    assert!(
+        again.contains("Three services shared the order model."),
+        "regenerating must never eat what a person wrote: {again}"
+    );
+
+    // 4. And when the config moves on, the doctor says so — as advice, with a
+    //    clean exit, because a document needing regeneration is not a
+    //    violation of anything.
+    std::fs::write(
+        dir.path().join("arch.config.json"),
+        r#"{"version":0,
+            "decisions":[{"id":"ADR-031","title":"a different title now"}],
+            "rules":[]}"#,
+    )
+    .expect("write");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["config", "doctor"])
+        .assert()
+        .code(0)
+        .stdout(contains("decision-document-out-of-date"))
+        .stdout(contains("archwarden decisions"));
+}
+
+/// And `--dry-run` says what would change and writes nothing, the shape
+/// `baseline --dry-run` already has.
+#[test]
+fn a_decisions_dry_run_writes_nothing() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,"decisions":[{"id":"ADR-1","title":"a wall"}],"rules":[]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["decisions", "--dry-run"])
+        .assert()
+        .success()
+        .stdout(contains("Nothing was written."));
+
+    assert!(
+        !dir.path().join(".archwarden/decisions/ADR-1.md").exists(),
+        "a dry run that wrote would be the bug it exists to prevent"
+    );
+}
+
+/// A configuration with no decisions is every configuration written before
+/// 0.21, and the command says so rather than writing an empty directory.
+#[test]
+fn a_config_with_no_decisions_writes_no_documents() {
+    let dir = repo(&[("arch.config.json", r#"{"version":0,"rules":[]}"#)]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("decisions")
+        .assert()
+        .success()
+        .stdout(contains("declares no decisions"));
+
+    assert!(!dir.path().join(".archwarden/decisions").exists());
+}
+
 /// Findings at error level exit 1, which is what a CI gate branches on.
 #[test]
 fn a_repository_with_errors_exits_one() {

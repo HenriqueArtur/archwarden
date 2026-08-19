@@ -17,6 +17,63 @@ saying so.
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-08-19
+
+The decision as a document, and a workflow that fails instead of hanging.
+**No existing configuration reports anything new, and nothing moves out of the
+config.**
+
+### Added
+
+- **`archwarden decisions`, the document archwarden writes and you edit**
+  (#116). A decision's reasoning is three paragraphs, and JSON has no comments
+  (decision 5). `why` is one string and `link` points somewhere archwarden
+  cannot read, so a team either wrote a sentence where a page was needed or
+  kept the real ADR where nothing joined it to the rules.
+
+  ```
+  $ archwarden decisions
+    + .archwarden/decisions/ADR-031.md
+
+  wrote 1 document, updated 0. The region between the `archwarden:yours`
+  markers was kept.
+  ```
+
+  **Not two owners — one owner and a rendering with a hand-written region.**
+  Everything the config knows is generated; one marked region belongs to
+  whoever opens the file and survives every regeneration. It is the shape
+  `schema/v0.json` and `check-schema` already use.
+
+  **Nothing left the config.** The question the issue held open — whether the
+  long `why` moves out — dissolved while designing the generator: there is no
+  duplication if the generated half *contains* the `why`. The region is for
+  what the config cannot carry, which is new space rather than moved space, so
+  an existing config is untouched.
+
+  `--dry-run` says what would change and writes nothing, the shape
+  `baseline --dry-run` already has. Both exit clean.
+
+- **`decision-document-out-of-date`** in `config doctor`, at `warning`. A
+  document that has fallen behind is a file telling a reader something the
+  config no longer says — advice, not a gate: a team adopting this
+  incrementally must not get a red build because a file needs regenerating.
+
+- **Every CI and release job has a `timeout-minutes`** (#121). Cutting v0.26.0
+  produced a release where four binaries built in about two minutes each and
+  the fifth sat **21 minutes** in `apt-get install musl-tools` — that runner's
+  mirror, not this repository. With no timeout anywhere, GitHub's default let
+  it sit for six hours, silently, with the release blocked.
+
+  Fifteen minutes on every job, ten on the two publish jobs, chosen from six
+  runs of measurements: the slowest job that exists is coverage at **57
+  seconds**, and there is no mutants job in CI at all — those run in the
+  pre-push hook. A timeout does not make apt faster; it turns twenty-one
+  minutes of silence into a red job with a re-run button.
+
+  No automatic retry, on `RELEASING.md`'s own argument about 0.9.1: two runs
+  publishing one version is the failure that document spends a page on.
+
+
 ## [0.26.0] — 2026-08-18
 
 The two fields an ADR has and a decision did not: the options that lost, and
@@ -2249,7 +2306,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.26.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.27.0...HEAD
+[0.27.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.25.0...v0.26.0
 [0.25.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.1...v0.25.0
 [0.24.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.24.0...v0.24.1
