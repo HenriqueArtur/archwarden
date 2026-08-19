@@ -4049,3 +4049,51 @@ fn the_hook_and_check_agree_about_a_rule_narrowed_by_imports() {
         .success()
         .stdout(contains("permissionDecision"));
 }
+
+/// The blind-spots section is what the run could not decide, and it appears
+/// only when there is something to say.
+#[test]
+fn the_blind_spots_section_appears_only_when_the_run_missed_something() {
+    let clean = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{"type":"structure","id":"shape","level":"error",
+                "roots":"src/*","allowed_subfolders":["calcs"]}]}"#,
+        ),
+        ("src/a/calcs/x.ts", "export const x = 1;\n"),
+    ]);
+    let page = clean.path().join("clean.html");
+    archwarden()
+        .current_dir(clean.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        .success();
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(
+        !html.contains("nobody could make"),
+        "nothing was missed, so nothing is claimed: {html}"
+    );
+
+    // A boundary rule over a language with no front-end: the import cannot be
+    // read, so the check cannot be made, and the page has to say so.
+    let blind = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{"type":"import-boundary","id":"b","level":"error",
+                "from":"src/**","forbid_import_from":["vendor/**"]}]}"#,
+        ),
+        ("src/a.py", "import vendor.thing\n"),
+        ("vendor/thing.py", "x = 1\n"),
+    ]);
+    let page = blind.path().join("blind.html");
+    archwarden()
+        .current_dir(blind.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        .success();
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(
+        html.contains("What this run did not decide"),
+        "a skipped check is named: {html}"
+    );
+}
