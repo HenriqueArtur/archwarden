@@ -219,6 +219,7 @@ pub(super) fn compile_rule(
             file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
             symbol: r.must_call.symbol.clone(),
             imported_from: r.must_call.imported_from.clone(),
+            with_options: r.must_call.with_options.pairs(),
         },
     };
 

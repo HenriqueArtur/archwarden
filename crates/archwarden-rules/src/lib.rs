@@ -208,11 +208,13 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     file_pattern,
                     symbol,
                     imported_from,
+                    with_options,
                 } => Box::new(call_obligation::CallObligationEngine::build(
                     rule,
                     file_pattern,
                     symbol,
                     imported_from,
+                    with_options,
                 )),
             }
         })
@@ -292,6 +294,7 @@ mod tests {
             file_pattern: Pattern::compile(r"^route\\.post\\.ts$").expect("valid"),
             symbol: "Event.save".to_owned(),
             imported_from: "@org/domain/event".to_owned(),
+            with_options: Vec::new(),
         }
     }
 

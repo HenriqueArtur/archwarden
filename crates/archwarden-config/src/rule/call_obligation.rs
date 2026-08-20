@@ -77,4 +77,121 @@ pub struct MustCall {
     /// The module the symbol must be imported from, which disambiguates
     /// same-named functions from different packages.
     pub imported_from: String,
+    /// Options the call must carry, when the call alone is not the statement.
+    ///
+    /// See [`WithOptions`]. Leave it out and the rule is exactly what it was:
+    /// the symbol is imported and called, and what it is given is not asked
+    /// about.
+    #[serde(default, skip_serializing_if = "WithOptions::is_empty")]
+    pub with_options: WithOptions,
+}
+
+/// The options a required call must carry.
+///
+/// An options bag is how TypeScript spells the argument whose presence changes
+/// what a call does. `FactoryMockDependencies(ENV, { PAY_IN_MEMORY: "all" })`
+/// and `FactoryMockDependencies()` are the same callee at the same arity and
+/// opposite meanings -- one runs against in-memory twins, the other starts a
+/// container -- and nothing in the file says which. Issue #164.
+///
+/// Two spellings, because presence and value are different questions:
+///
+/// ```json
+/// "with_options": ["PAY_IN_MEMORY"]
+/// "with_options": { "PAY_IN_MEMORY": "all" }
+/// ```
+///
+/// A list asks only that the key be there, which is the case this was built
+/// for: the value never varies, and a rule made to name one would be naming a
+/// thing it does not care about. A map asks for the value too, rendered as
+/// written -- `"all"`, `false`, `3`.
+///
+/// A sequence and a map are told apart by their JSON type before any field is
+/// read, so this is not the kind of untagged union that reports "data did not
+/// match any variant" at the wrong line.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum WithOptions {
+    /// Keys that must be present, whatever they hold.
+    Present(Vec<String>),
+    /// Keys that must be present holding exactly this.
+    Holding(std::collections::BTreeMap<String, String>),
+}
+
+impl WithOptions {
+    /// Whether the rule asks for no options at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Present(keys) => keys.is_empty(),
+            Self::Holding(pairs) => pairs.is_empty(),
+        }
+    }
+
+    /// The pairs as the engine wants them: a key, and a value when one is
+    /// asked for.
+    #[must_use]
+    pub fn pairs(&self) -> Vec<(String, Option<String>)> {
+        match self {
+            Self::Present(keys) => keys.iter().map(|key| (key.clone(), None)).collect(),
+            Self::Holding(pairs) => pairs
+                .iter()
+                .map(|(key, value)| (key.clone(), Some(value.clone())))
+                .collect(),
+        }
+    }
+}
+
+impl Default for WithOptions {
+    fn default() -> Self {
+        Self::Present(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A rule that asks for no options serialises without the field, so a
+    /// config written back out is the config that was read. Every rule
+    /// authored before #164 is this case, and a `"with_options": []` appearing
+    /// in all of them would be a diff nobody asked for.
+    #[test]
+    fn an_empty_ask_is_left_out_of_the_serialised_rule() {
+        let bare = MustCall {
+            symbol: "factory".to_owned(),
+            imported_from: "m".to_owned(),
+            with_options: WithOptions::default(),
+        };
+        assert!(bare.with_options.is_empty());
+        assert_eq!(
+            serde_json::to_string(&bare).expect("serialises"),
+            r#"{"symbol":"factory","imported_from":"m"}"#
+        );
+
+        let asking = MustCall {
+            with_options: WithOptions::Present(vec!["PAY_IN_MEMORY".to_owned()]),
+            ..bare
+        };
+        assert!(!asking.with_options.is_empty());
+        assert_eq!(
+            serde_json::to_string(&asking).expect("serialises"),
+            r#"{"symbol":"factory","imported_from":"m","with_options":["PAY_IN_MEMORY"]}"#
+        );
+    }
+
+    /// And an empty map is empty too -- the same statement in the other
+    /// spelling, which `is_empty` has to answer the same way.
+    #[test]
+    fn an_empty_map_asks_for_nothing_either() {
+        assert!(WithOptions::Holding(std::collections::BTreeMap::new()).is_empty());
+        assert!(
+            !WithOptions::Holding(
+                [("PAY_IN_MEMORY".to_owned(), "all".to_owned())]
+                    .into_iter()
+                    .collect()
+            )
+            .is_empty()
+        );
+    }
 }

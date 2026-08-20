@@ -501,8 +501,70 @@ pub struct CallFact {
     /// a translation catalogue, and a feature flag key, and a job name.
     #[serde(default)]
     pub arguments: Vec<Option<String>>,
+    /// The keys of every object literal the call was given, in source order.
+    ///
+    /// An options bag is how TypeScript spells the argument whose presence
+    /// changes what a call does -- `factory(ENV, { PAY_IN_MEMORY: "all" })`
+    /// and `factory()` are the same callee at the same arity with opposite
+    /// meanings, and [`CallFact::arguments`] cannot reach the difference.
+    /// Issue #164.
+    ///
+    /// Every bag, not only one: which position an options object sits in is a
+    /// detail of the callee's signature, and a rule asking whether an option
+    /// was passed does not want to count arguments to find out.
+    ///
+    /// Top-level keys only. `{ db: { inMemory: true } }` records `db` and
+    /// stops -- flattening it would invent the spelling `db.inMemory`, which
+    /// is not in the source, on the same terms as a template with an
+    /// interpolation in it.
+    #[serde(default)]
+    pub options: Vec<CallOption>,
     /// Where it appears in the source.
     pub span: Span,
+}
+
+/// One key of an object literal passed to a call.
+///
+/// Presence and value are separate questions and a rule may want either. For
+/// the case this was built for the value never varies and what matters is
+/// whether the key is there at all, so a rule asking "passes this option"
+/// must not have to name a value it does not care about.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CallOption {
+    /// The key as written. A computed key (`{ [name]: 1 }`) is not one --
+    /// there is no name in the source to record.
+    pub key: String,
+    /// The literal it holds, rendered as written: `"all"`, `false`, `3`.
+    ///
+    /// `None` for anything the reader cannot see at the call site -- a
+    /// variable, an expression, a nested object, a function. Absent rather
+    /// than guessed, exactly as an argument that is not a literal is.
+    ///
+    /// A string `"false"` and a boolean `false` both render as `false`. The
+    /// collapse is deliberate: no rule this format serves wants to tell them
+    /// apart, and a type tag in the fact would be a second grammar in the JSON
+    /// contract for a distinction nobody asks about.
+    pub value: Option<String>,
+}
+
+impl CallOption {
+    /// A key whose value is not something the reader can see.
+    #[must_use]
+    pub fn present(key: &str) -> Self {
+        Self {
+            key: key.to_owned(),
+            value: None,
+        }
+    }
+
+    /// A key holding a literal.
+    #[must_use]
+    pub fn holding(key: &str, value: &str) -> Self {
+        Self {
+            key: key.to_owned(),
+            value: Some(value.to_owned()),
+        }
+    }
 }
 
 /// An `archwarden-allow` marker, as written in a comment.
@@ -812,6 +874,31 @@ impl FileFacts {
 
 #[cfg(test)]
 mod tests {
+    /// The two shapes a recorded option can take, said once here so the
+    /// distinction has a home. `None` means the value is not something the
+    /// reader can see at the call site -- a variable, an expression, a nested
+    /// bag -- which is the opposite of what `None` means on a rule's
+    /// [`RequiredOption`], where it means "any value will do".
+    ///
+    /// [`RequiredOption`]: crate::finding::RequiredOption
+    #[test]
+    fn an_option_records_a_literal_or_nothing() {
+        assert_eq!(
+            CallOption::holding("PAY_IN_MEMORY", "all"),
+            CallOption {
+                key: "PAY_IN_MEMORY".to_owned(),
+                value: Some("all".to_owned()),
+            }
+        );
+        assert_eq!(
+            CallOption::present("db"),
+            CallOption {
+                key: "db".to_owned(),
+                value: None,
+            }
+        );
+    }
+
     use super::*;
 
     fn path() -> RepoRelPath {
@@ -837,6 +924,7 @@ mod tests {
         });
         facts.calls.push(CallFact {
             arguments: Vec::new(),
+            options: Vec::new(),
             callee: "f".to_owned(),
             span: Span::new(40, 50),
         });
@@ -855,6 +943,7 @@ mod tests {
         let mut facts = FileFacts::unparsed(path(), ContentHash::of(b""));
         facts.calls.push(CallFact {
             arguments: Vec::new(),
+            options: Vec::new(),
             callee: "f".to_owned(),
             span: Span::new(u32::MAX - 1, u32::MAX),
         });
@@ -1237,6 +1326,7 @@ mod tests {
         });
         facts.calls.push(CallFact {
             arguments: Vec::new(),
+            options: Vec::new(),
             callee: "Event.save".to_owned(),
             span: Span::new(40, 52),
         });

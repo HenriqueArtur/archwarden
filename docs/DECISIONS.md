@@ -17,6 +17,56 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 33 — Object keys are top-level, and Rust has no options bag
+Status: accepted.
+Context: issue #164, raised by a repository that found the problem the
+expensive way. `FactoryMockDependencies(ENV, { PAY_IN_MEMORY: "all" })` and
+`FactoryMockDependencies()` are the same callee at the same arity and opposite
+meanings — one runs against in-memory twins, the other starts a Postgres
+container. Of 215 files in a suite that was supposed to be entirely in-memory,
+five were not, and the only evidence was a run that took longer than it should.
+`CallFact::arguments` records string literals *by position*, so it cannot reach
+a difference that lives in an object key.
+
+Two questions had to be settled while adding the fact, and both are about where
+to stop.
+
+**How deep.** `{ db: { inMemory: true } }` could record `db.inMemory`, and that
+spelling is not in the source. Decision: top-level keys only, with a literal
+value where the value is a literal and nothing where it is not — the same line
+`arguments` already draws about a template with an interpolation in it. A
+nested bag records its key and stops. Going deeper is a second grammar and can
+be a second decision if a repository ever needs it.
+
+**Whether Rust answers this at all.** Decision 31 said a language gets the
+facts its own grammar has, not a translation of another's. Rust has no options
+bag: the nearest thing is a struct literal, which is a *typed construction with
+a name* rather than an argument shape — `Config { retries: 3 }` names a type
+the compiler already checks, and passing it is not the same act as spreading an
+untyped bag into a call. Decision: the Rust front-end records no options.
+
+Alternatives:
+- **Flatten nested keys into dotted paths.** Reaches more cases and invents a
+  spelling nobody wrote, which is how a rule reports an edge that does not
+  exist.
+- **Record struct-literal fields as `options` in Rust.** A rule written for
+  TypeScript would then half-work on Rust without saying so — the failure mode
+  decision 31 exists to prevent. A Rust rule about a struct literal should be
+  its own thing, named for what it is.
+- **Positional arguments only, and tell people to close the door by import.**
+  The reporter's own workaround, and they named the cost themselves: forbidding
+  the container-capable module from those specs is *a coarser statement than
+  the one they mean*.
+
+Consequences: `CallFact` gains `options`, which is a cache format bump
+(decision 3) — every repository re-parses once on upgrade. A rule that asks for
+options costs nothing extra: the keys are collected in the same walk that
+already collects the arguments. And presence is separable from value on both
+sides, so `with_options: ["PAY_IN_MEMORY"]` never has to name a value it does
+not care about.
+
+---
+
 ### 32 — The Rust front-end reads a CST, because the markers are in the comments
 Status: accepted.
 Context: issue #134. Decision 6 put the parser behind a trait so the front-end

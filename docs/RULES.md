@@ -1142,6 +1142,52 @@ symbol source.
   exactly.
 - `must_call.imported_from` — the module the symbol must be imported from.
   This disambiguates same-named functions from different packages.
+- `must_call.with_options` — options the call must be given. Optional; without
+  it the rule is exactly what it was.
+
+**When the call alone is not the statement**:
+
+```ts
+// this one runs against in-memory twins
+DEP = await FactoryMockDependencies(ENV_VAR_MOCK, { PAY_IN_MEMORY: "all" });
+
+// this one starts a Postgres container, and nothing says so
+DEP = await FactoryMockDependencies();
+```
+
+Same callee, same arity, opposite meaning. An options bag is how TypeScript
+spells the argument whose presence changes what a call does, and the content is
+an object key rather than a string in a position.
+
+```json
+"must_call": {
+  "symbol": "FactoryMockDependencies",
+  "imported_from": "../test/factories",
+  "with_options": ["PAY_IN_MEMORY"]
+}
+```
+
+A **list** asks only that the key be there, whatever it holds. A **map** asks
+for the value too:
+
+```json
+"with_options": { "PAY_IN_MEMORY": "all" }
+```
+
+Presence and value are separate questions on purpose. Where the value never
+varies, a rule made to name one would be naming something it does not care
+about.
+
+One call has to carry all of them — `factory({ a })` beside `factory({ b })` is
+two calls, and the rule is a sentence about one. A value the reader cannot see
+at the call site (a variable, an expression) does not satisfy a rule that names
+one: the fact records it as absent rather than guessed, and treating absent as
+a match would pass a call archwarden cannot read.
+
+Top-level keys only. `{ db: { inMemory: true } }` is `db` and no value —
+`db.inMemory` is a spelling the source does not contain. **Rust records no
+options at all**: its nearest thing is a struct literal, which is a typed
+construction rather than an argument shape. Decision 33.
 
 **How the check works**:
 

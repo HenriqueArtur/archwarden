@@ -1027,6 +1027,7 @@ mod tests {
         let call = describe_expectation(&Expectation::RequiredCall {
             symbol: "Event.save".to_owned(),
             imported_from: "@org/domain".to_owned(),
+            with_options: Vec::new(),
         });
         assert!(call.contains("Event.save"), "{call}");
         assert!(call.contains("@org/domain"), "{call}");

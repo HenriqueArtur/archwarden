@@ -13,7 +13,9 @@
 use std::collections::HashMap;
 
 use archwarden_core::{
-    facts::{CallFact, ExportFact, ExportKind, ExportTags, FileFacts, ImportFact, Span},
+    facts::{
+        CallFact, CallOption, ExportFact, ExportKind, ExportTags, FileFacts, ImportFact, Span,
+    },
     hash::ContentHash,
     path::RepoRelPath,
     traits::Parser as ParserTrait,
@@ -962,6 +964,7 @@ impl<'a> Visit<'a> for CallCollector {
             self.calls.push(CallFact {
                 callee,
                 arguments: literal_arguments(call),
+                options: option_keys(call),
                 span: span_of(call.span),
             });
         }
@@ -993,6 +996,54 @@ fn literal_arguments(call: &oxc_ast::ast::CallExpression<'_>) -> Vec<Option<Stri
             _ => None,
         })
         .collect()
+}
+
+/// The keys of every object literal the call was given, in source order.
+///
+/// Every bag rather than one at a known position: which argument an options
+/// object sits in is a detail of the callee's signature, and issue #164 is
+/// about whether an option was passed at all.
+///
+/// A computed key is a name that is not in the source and a spread is a bag
+/// whose keys are somewhere else; both are skipped rather than guessed. Values
+/// go no deeper than a literal -- `{ db: { inMemory: true } }` records `db`
+/// with no value, because `db.inMemory` is a spelling this would be inventing.
+fn option_keys(call: &oxc_ast::ast::CallExpression<'_>) -> Vec<CallOption> {
+    use oxc_ast::ast::{Argument, ObjectPropertyKind};
+
+    let mut keys = Vec::new();
+    for argument in &call.arguments {
+        let Argument::ObjectExpression(object) = argument else {
+            continue;
+        };
+        for property in &object.properties {
+            let ObjectPropertyKind::ObjectProperty(property) = property else {
+                continue;
+            };
+            let Some(key) = property.key.static_name() else {
+                continue;
+            };
+            keys.push(CallOption {
+                key: key.to_string(),
+                value: literal_text(&property.value),
+            });
+        }
+    }
+    keys
+}
+
+/// A literal rendered as written, for anything the reader can see.
+fn literal_text(expression: &Expression<'_>) -> Option<String> {
+    match expression {
+        Expression::StringLiteral(literal) => Some(literal.value.to_string()),
+        Expression::BooleanLiteral(literal) => Some(literal.value.to_string()),
+        Expression::NumericLiteral(literal) => Some(literal.raw_str().to_string()),
+        Expression::TemplateLiteral(template) if template.expressions.is_empty() => template
+            .quasis
+            .first()
+            .map(|quasi| quasi.value.raw.to_string()),
+        _ => None,
+    }
 }
 
 /// Renders a callee as a dotted path, when it is one.
@@ -1067,6 +1118,57 @@ mod tests {
              nobody wrote"
         );
         assert!(arguments[4].is_empty());
+    }
+
+    /// Issue #164. An options bag is how TypeScript spells the argument whose
+    /// presence changes what a call does, and the content is a key rather than
+    /// a string in a position -- so `arguments` cannot reach it. Reported by a
+    /// repository whose in-memory and containerised test setups are the same
+    /// callee at the same arity.
+    #[test]
+    fn a_calls_object_keys_are_carried_with_their_literal_values() {
+        let facts = parse(
+            "a.ts",
+            "factory(ENV, { PAY_IN_MEMORY: 'all', cache: false, retries: 3 });\n             factory({ strict: true }, { late: 1 });\n             factory({ [computed]: 1, spread: 2, ...rest });\n             factory({ plain: `all`, interpolated: `x${y}` });\n             factory({ nested: { inMemory: true } });\n             factory(ENV);\n",
+        );
+
+        let options: Vec<&[CallOption]> =
+            facts.calls.iter().map(|c| c.options.as_slice()).collect();
+
+        assert_eq!(
+            options[0],
+            [
+                CallOption::holding("PAY_IN_MEMORY", "all"),
+                CallOption::holding("cache", "false"),
+                CallOption::holding("retries", "3"),
+            ]
+        );
+        // Every bag the call was given, not only the last: which position an
+        // options object sits in is a detail of the callee's signature, and a
+        // rule asking "does it pass this option" does not want to count.
+        assert_eq!(
+            options[1],
+            [
+                CallOption::holding("strict", "true"),
+                CallOption::holding("late", "1"),
+            ]
+        );
+        // A computed key is a name nobody wrote, and a spread is a bag whose
+        // keys are somewhere else. Both absent rather than guessed.
+        assert_eq!(options[2], [CallOption::holding("spread", "2")]);
+        // A template is a string when there is nothing in it, and absent when
+        // there is -- the same line `literal_arguments` draws.
+        assert_eq!(
+            options[3],
+            [
+                CallOption::holding("plain", "all"),
+                CallOption::present("interpolated"),
+            ]
+        );
+        // Top-level only. Flattening `{ db: { inMemory: true } }` would invent
+        // a spelling -- `db.inMemory` -- that the source does not contain.
+        assert_eq!(options[4], [CallOption::present("nested")]);
+        assert!(options[5].is_empty(), "no bag, no keys");
     }
 
     fn tags_of(facts: &FileFacts, name: &str) -> ExportTags {

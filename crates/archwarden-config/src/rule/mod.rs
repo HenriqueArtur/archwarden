@@ -280,7 +280,7 @@ mod spec_pair;
 mod structure;
 
 pub use call_matches_export::CallMatchesExportRule;
-pub use call_obligation::{CallObligationRule, MustCall};
+pub use call_obligation::{CallObligationRule, MustCall, WithOptions};
 pub use frontmatter::FrontmatterRule;
 pub use import_boundary::ImportBoundaryRule;
 

@@ -292,6 +292,11 @@ pub enum CompiledRuleKind {
         symbol: String,
         /// The module the symbol must come from.
         imported_from: String,
+        /// Options the call must carry.
+        ///
+        /// A key with `None` asks only that it be there. Empty means the rule
+        /// does not ask, which is what every rule written before #164 does.
+        with_options: Vec<(String, Option<String>)>,
     },
     /// Two vocabularies that have to agree: every name called here is
     /// declared there, and every name declared there is called.
@@ -1208,6 +1213,7 @@ mod tests {
                 file_pattern: Pattern::compile("^x$").expect("valid"),
                 symbol: "Event.save".to_owned(),
                 imported_from: "@org/domain".to_owned(),
+                with_options: Vec::new(),
             },
         ];
 

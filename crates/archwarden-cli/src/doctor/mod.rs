@@ -1850,6 +1850,7 @@ mod tests {
                     file_pattern: Pattern::compile(r"^route\.post\.ts$").expect("valid"),
                     symbol: "Event.save".to_owned(),
                     imported_from: "@org/domain/event".to_owned(),
+                    with_options: Vec::new(),
                 },
             )]),
         );
@@ -1870,6 +1871,7 @@ mod tests {
                     file_pattern: Pattern::compile(r"^route\.post\.ts$").expect("valid"),
                     symbol: "Event.save".to_owned(),
                     imported_from: module.to_owned(),
+                    with_options: Vec::new(),
                 },
             )])
         };
@@ -1909,6 +1911,7 @@ mod tests {
                     file_pattern: Pattern::compile(r"^route\.(post|put)\.ts$").expect("valid"),
                     symbol: "Event.save".to_owned(),
                     imported_from: "@org/domain/event".to_owned(),
+                    with_options: Vec::new(),
                 },
             )]),
         );

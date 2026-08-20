@@ -287,6 +287,10 @@ pub enum Expectation {
         symbol: String,
         /// The module the symbol must be imported from.
         imported_from: String,
+        /// Options the call must be given, when the call alone is not the
+        /// statement the rule is making.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        with_options: Vec<RequiredOption>,
     },
 }
 
@@ -654,6 +658,19 @@ pub enum Observed {
         /// The callee that was looked for.
         symbol: String,
     },
+    /// The symbol is called, and not with the option the rule asks for.
+    ///
+    /// Separate from [`Observed::RequiredCallMissing`] because it sends the
+    /// reader somewhere else entirely: the call site exists and is a few
+    /// characters short, rather than being absent.
+    RequiredCallOptionMissing {
+        /// The callee that was found.
+        symbol: String,
+        /// The option key that was looked for.
+        option: String,
+        /// The value it had to hold, when the rule named one.
+        value: Option<String>,
+    },
     /// The symbol is not even imported, so it certainly is not called.
     RequiredImportForCallMissing {
         /// The callee that was looked for.
@@ -661,6 +678,23 @@ pub enum Observed {
         /// The module it should come from.
         module: String,
     },
+}
+
+/// An option a required call has to carry.
+///
+/// `value: None` means **any value, as long as the key is there** -- which is
+/// the opposite of what `None` means on [`facts::CallOption`], where it holds
+/// a value the reader cannot see. The shapes are the same and the questions
+/// are not, so they are separate types on purpose.
+///
+/// [`facts::CallOption`]: crate::facts::CallOption
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredOption {
+    /// The key as the rule spells it.
+    pub key: String,
+    /// The literal it has to hold, or `None` for any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
 }
 
 /// One rule's verdict on one file.

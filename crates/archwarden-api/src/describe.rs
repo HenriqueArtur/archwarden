@@ -329,6 +329,18 @@ pub fn describe_observed(observed: &Observed) -> String {
         Observed::RequiredCallMissing { symbol } => {
             format!("`{symbol}` is imported but never called")
         }
+        // The call site exists and is a few characters short, which is a
+        // different place to send the reader than a missing call.
+        Observed::RequiredCallOptionMissing {
+            symbol,
+            option,
+            value,
+        } => match value {
+            Some(value) => {
+                format!("`{symbol}` is called without `{option}: {value}`")
+            }
+            None => format!("`{symbol}` is called without `{option}`"),
+        },
         Observed::RequiredImportForCallMissing { symbol, module } => {
             format!("`{symbol}` is not imported from `{module}`")
         }

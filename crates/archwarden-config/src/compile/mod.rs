@@ -192,6 +192,41 @@ mod tests {
         );
     }
 
+    /// Issue #164. Two spellings, told apart by their JSON type before any
+    /// field is read: a list asks only that the key be there, a map asks for
+    /// the value too. Presence and value are separate questions, and a rule
+    /// that only wants presence must not have to name a value.
+    #[test]
+    fn with_options_compiles_from_either_spelling() {
+        let pairs = |json: &str| {
+            let config = compile_json(&format!(
+                r#"{{"version":0,"rules":[{{"type":"call-obligation","id":"specs",
+                    "level":"error","roots":["tests"],"file_pattern":"\\.spec\\.ts$",
+                    "must_call":{{"symbol":"factory","imported_from":"m",
+                                "with_options":{json}}}}}]}}"#
+            ))
+            .expect("compiles");
+
+            match &config.rules().next().expect("one rule").kind {
+                CompiledRuleKind::CallObligation { with_options, .. } => with_options.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+
+        assert_eq!(
+            pairs(r#"["PAY_IN_MEMORY"]"#),
+            [("PAY_IN_MEMORY".to_owned(), None)]
+        );
+        assert_eq!(
+            pairs(r#"{"PAY_IN_MEMORY":"all"}"#),
+            [("PAY_IN_MEMORY".to_owned(), Some("all".to_owned()))]
+        );
+        // And a rule that does not ask carries nothing, which is what every
+        // rule written before this field does.
+        assert!(pairs("[]").is_empty());
+        assert!(pairs("{}").is_empty());
+    }
+
     /// Naming one language does not turn on the other.
     ///
     /// Separate assertions per language, because the lowering is one line each

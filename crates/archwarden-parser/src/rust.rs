@@ -307,6 +307,7 @@ fn calls(syntax: &SyntaxNode) -> Vec<CallFact> {
                 return Some(CallFact {
                     callee: callee.syntax().text().to_string(),
                     arguments: literal_arguments(call.arg_list().as_ref()),
+                    options: Vec::new(),
                     span: span_of(&node),
                 });
             }
@@ -315,6 +316,13 @@ fn calls(syntax: &SyntaxNode) -> Vec<CallFact> {
             Some(CallFact {
                 callee: method.name_ref()?.text().to_string(),
                 arguments: literal_arguments(method.arg_list().as_ref()),
+                // Empty, and deliberately. Rust has no options bag: the
+                // nearest thing is a struct literal, which is a typed
+                // construction with a name rather than an argument shape.
+                // Recording its fields as `options` would be a different fact
+                // wearing the same name, and a rule written for TypeScript
+                // would half-work here without saying so. Decision 33.
+                options: Vec::new(),
                 span: span_of(&node),
             })
         })

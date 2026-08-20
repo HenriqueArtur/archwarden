@@ -1701,12 +1701,35 @@
         "imported_from": {
           "description": "The module the symbol must be imported from, which disambiguates\nsame-named functions from different packages.",
           "type": "string"
+        },
+        "with_options": {
+          "description": "Options the call must carry, when the call alone is not the statement.\n\nSee [`WithOptions`]. Leave it out and the rule is exactly what it was:\nthe symbol is imported and called, and what it is given is not asked\nabout.",
+          "$ref": "#/$defs/WithOptions"
         }
       },
       "additionalProperties": false,
       "required": [
         "symbol",
         "imported_from"
+      ]
+    },
+    "WithOptions": {
+      "description": "The options a required call must carry.\n\nAn options bag is how TypeScript spells the argument whose presence changes\nwhat a call does. `FactoryMockDependencies(ENV, { PAY_IN_MEMORY: \"all\" })`\nand `FactoryMockDependencies()` are the same callee at the same arity and\nopposite meanings -- one runs against in-memory twins, the other starts a\ncontainer -- and nothing in the file says which. Issue #164.\n\nTwo spellings, because presence and value are different questions:\n\n```json\n\"with_options\": [\"PAY_IN_MEMORY\"]\n\"with_options\": { \"PAY_IN_MEMORY\": \"all\" }\n```\n\nA list asks only that the key be there, which is the case this was built\nfor: the value never varies, and a rule made to name one would be naming a\nthing it does not care about. A map asks for the value too, rendered as\nwritten -- `\"all\"`, `false`, `3`.\n\nA sequence and a map are told apart by their JSON type before any field is\nread, so this is not the kind of untagged union that reports \"data did not\nmatch any variant\" at the wrong line.",
+      "anyOf": [
+        {
+          "description": "Keys that must be present, whatever they hold.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Keys that must be present holding exactly this.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
       ]
     },
     "PassthroughForm": {

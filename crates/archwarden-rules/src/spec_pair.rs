@@ -1311,6 +1311,7 @@ mod tests {
                 .iter()
                 .map(|callee| CallFact {
                     arguments: Vec::new(),
+                    options: Vec::new(),
                     callee: (*callee).to_owned(),
                     span: Span::new(0, 1),
                 })

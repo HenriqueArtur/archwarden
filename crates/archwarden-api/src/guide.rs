@@ -715,11 +715,41 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             file_pattern,
             symbol,
             imported_from,
-        } => vec![format!(
-            "files matching `{}` must call `{symbol}`, imported from `{imported_from}`",
-            file_pattern.as_str()
-        )],
+            with_options,
+        } => {
+            // One sentence about one call: appending rather than adding a
+            // line, which would read as a second obligation.
+            vec![format!(
+                "files matching `{}` must call `{symbol}`, imported from \
+                 `{imported_from}`{}",
+                file_pattern.as_str(),
+                passing(
+                    with_options
+                        .iter()
+                        .map(|(key, value)| (key, value.as_ref()))
+                )
+            )]
+        }
     }
+}
+
+/// The clause naming the options a call has to carry, or nothing.
+///
+/// Shared by the two sentences that say it -- the guide's and the report's --
+/// because a rule worded one way in the instructions and another in the
+/// failure is a rule read twice. Issue #164.
+pub fn passing<'a>(options: impl Iterator<Item = (&'a String, Option<&'a String>)>) -> String {
+    let named: Vec<String> = options
+        .map(|(key, value)| match value {
+            Some(value) => format!("`{key}: {value}`"),
+            None => format!("`{key}`"),
+        })
+        .collect();
+
+    if named.is_empty() {
+        return String::new();
+    }
+    format!(", passing {}", named.join(" and "))
 }
 
 fn declared_as(kind: &KindFilter) -> String {
@@ -1231,6 +1261,7 @@ mod tests {
                 file_pattern: Pattern::compile(r"^route\.ts$").expect("valid pattern"),
                 symbol: "Event.save".to_owned(),
                 imported_from: "@org/events".to_owned(),
+                with_options: Vec::new(),
             },
             CompiledRuleKind::ExportShape(archwarden_core::compiled::ExportShape {
                 forbid_default: true,
@@ -1763,6 +1794,34 @@ mod tests {
     }
 
     /// Every rule kind states its requirement, because a guide that quietly
+    /// Issue #164. An agent reads the guide before it writes, so a call whose
+    /// options are missing from the sentence is a call it writes wrong -- and
+    /// the same clause is what the failure says, because a rule worded one way
+    /// in the instructions and another in the report is a rule read twice.
+    #[test]
+    fn a_call_obligations_options_are_in_the_sentence() {
+        let config = config(vec![rule(
+            "specs-run-in-memory",
+            None,
+            &["tests"],
+            CompiledRuleKind::CallObligation {
+                file_pattern: Pattern::compile(r"\.api\.spec\.ts$").expect("valid"),
+                symbol: "FactoryMockDependencies".to_owned(),
+                imported_from: "../test/factories".to_owned(),
+                with_options: vec![
+                    ("PAY_IN_MEMORY".to_owned(), None),
+                    ("strict".to_owned(), Some("true".to_owned())),
+                ],
+            },
+        )]);
+
+        let markdown = sentences(&config, None, &[]);
+        assert!(
+            markdown.contains("passing `PAY_IN_MEMORY` and `strict: true`"),
+            "{markdown}"
+        );
+    }
+
     /// omitted one would teach an incomplete rule set.
     #[test]
     fn every_rule_kind_states_its_requirement() {
@@ -1818,6 +1877,7 @@ mod tests {
                     file_pattern: Pattern::compile(r"^route\.post\.ts$").expect("valid"),
                     symbol: "Event.save".to_owned(),
                     imported_from: "@org/domain/event".to_owned(),
+                    with_options: Vec::new(),
                 },
             ),
         ]);
