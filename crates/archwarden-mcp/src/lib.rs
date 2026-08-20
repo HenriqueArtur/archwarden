@@ -442,10 +442,21 @@ fn call(
     };
 
     let answer = match name {
-        "describe" => serde_json::to_value(describe::envelope(
-            &repo_relative,
-            &describe::describe(&prepared.compiled, &repo_relative),
-        )),
+        "describe" => {
+            let applies = describe::describe(&prepared.compiled, &repo_relative);
+            // The decisions no rule brought. An agent asking what governs a
+            // path it is about to write gets the ones nothing can check, which
+            // are the ones it cannot discover any other way -- there is no
+            // gate that will tell it later. Issue #161.
+            let brought: Vec<_> = applies
+                .iter()
+                .filter_map(|entry| entry.decision.map(|decision| &decision.id))
+                .collect();
+            let governing =
+                describe::decisions_governing(&prepared.compiled, &repo_relative, &brought);
+
+            serde_json::to_value(describe::envelope(&repo_relative, &applies, &governing))
+        }
         "scaffold" => serde_json::to_value(scaffold::envelope(
             &repo_relative,
             &scaffold::scaffold(&prepared.compiled, &repo_relative),
@@ -457,6 +468,24 @@ fn call(
             else {
                 return tool_error(id, "`check_write` needs a `content`");
             };
+            // The decisions governing this path, carried beside the verdict
+            // rather than folded into it. `AGENT-INTEGRATION.md` calls this
+            // tool "the one that earns it" because it turns a reactive denial
+            // into a question asked before writing -- and a decision nothing
+            // can check is the one thing an agent cannot discover any other
+            // way, because no gate will tell it later. It is context, so it
+            // never changes `refused`. Issues #160 and #161.
+            let applies = archwarden_api::describe::describe(&prepared.compiled, &repo_relative);
+            let brought: Vec<_> = applies
+                .iter()
+                .filter_map(|entry| entry.decision.map(|decision| &decision.id))
+                .collect();
+            let governing = archwarden_api::describe::decisions_governing(
+                &prepared.compiled,
+                &repo_relative,
+                &brought,
+            );
+
             Ok(judged(
                 &archwarden_api::single::check(
                     &prepared.merged.root,
@@ -465,6 +494,7 @@ fn call(
                     Some(content),
                 ),
                 &archwarden_api::render::Reasons::of(&prepared.compiled),
+                &governing,
             ))
         }
         other => {
@@ -528,7 +558,11 @@ fn configurable(id: &Value, arguments: Option<&Value>) -> Value {
 /// pass?* wants a yes or a no, and the findings are why. Progress is reported
 /// separately and never refuses, exactly as the hook reports it — a write
 /// supplying one of a directory's required files is fixing it, not breaking it.
-fn judged(checked: &single::Checked, reasons: &archwarden_api::render::Reasons) -> Value {
+fn judged(
+    checked: &single::Checked,
+    reasons: &archwarden_api::render::Reasons,
+    governing: &[&archwarden_core::compiled::CompiledDecision],
+) -> Value {
     let mut value = json!({
         "refused": checked.refuses(),
         "path": checked.single.path,
@@ -575,6 +609,29 @@ fn judged(checked: &single::Checked, reasons: &archwarden_api::render::Reasons) 
         && let Some(map) = value.as_object_mut()
     {
         map.insert("decisions".to_owned(), json!(decisions));
+    }
+
+    // Context, never a verdict: decisions that govern the path and that no
+    // rule keeps, so nothing here can pass or fail and `refused` is untouched.
+    // Omitted when there are none, so a repository that has adopted neither
+    // field gets the object it always got.
+    if !governing.is_empty()
+        && let Some(map) = value.as_object_mut()
+    {
+        map.insert(
+            "governing_decisions".to_owned(),
+            json!(
+                governing
+                    .iter()
+                    .map(|decision| json!({
+                        "id": decision.id.as_str(),
+                        "title": decision.title,
+                        "why_not_enforceable": decision.why_not_enforceable,
+                        "link": decision.link,
+                    }))
+                    .collect::<Vec<_>>()
+            ),
+        );
     }
     value
 }

@@ -213,6 +213,8 @@ mod tests {
 
     fn decision(alternatives: Vec<CompiledAlternative>) -> CompiledDecision {
         CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-031").expect("valid"),
             title: "The domain does not know about transport".to_owned(),
             why: Some(
@@ -374,6 +376,8 @@ mod tests {
     #[test]
     fn a_decision_that_says_less_writes_less() {
         let bare = CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-1").expect("valid"),
             title: "A wall".to_owned(),
             why: None,

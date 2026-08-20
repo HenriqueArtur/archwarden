@@ -891,6 +891,8 @@ mod tests {
         ]);
 
         let adr = archwarden_core::compiled::CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: archwarden_core::ids::DecisionId::new("ADR-014").expect("valid"),
             title: "The domain does not know about transport".to_owned(),
             why: Some("it is published".to_owned()),

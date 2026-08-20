@@ -3,6 +3,8 @@
 use archwarden_core::{compiled::CompiledConfig, level::Level};
 use camino::Utf8Path;
 
+use archwarden_engine::walk::RepoTree;
+
 use super::Concern;
 use super::config::list;
 
@@ -153,6 +155,12 @@ pub(super) fn superseded_but_still_enforced(config: &CompiledConfig, concerns: &
 pub(super) fn decision_nobody_enforces(config: &CompiledConfig, concerns: &mut Vec<Concern>) {
     let orphaned: Vec<String> = config
         .decisions()
+        // A decision that said no rule can keep it is not one somebody forgot
+        // to enforce. Reporting it anyway is what made a repository declaring
+        // everything it decided carry a permanent warning per unenforceable
+        // decision -- and a warning that never goes away is paid for by the
+        // concerns that *are* actionable. Issue #160.
+        .filter(|decision| decision.why_not_enforceable.is_none())
         .filter(|decision| {
             !config
                 .rules()
@@ -244,4 +252,98 @@ pub(super) fn decision_documents_out_of_date(
               `archwarden:yours` markers is kept"
             .to_owned(),
     });
+}
+
+/// A decision claiming no rule can keep it, kept by a rule.
+///
+/// The claim made checkable, which is what stops `why_not_enforceable` from
+/// being documentation. #160 argues that a written-out claim *"is a sentence
+/// the next reader can disagree with — and sometimes they will, and a rule
+/// will follow"*. If that is the outcome worth designing for, the config
+/// should notice when it arrives: what is there now is a rule keeping a
+/// decision that says nothing can.
+///
+/// An error rather than a warning, on the same terms as a `superseded`
+/// decision whose rules still fire: the config is saying two things at once,
+/// and neither can be acted on until somebody says which.
+pub(super) fn unenforceable_but_a_rule_keeps_it(
+    config: &CompiledConfig,
+    concerns: &mut Vec<Concern>,
+) {
+    for decision in config.decisions() {
+        if decision.why_not_enforceable.is_none() {
+            continue;
+        }
+
+        let keepers: Vec<String> = config
+            .rules()
+            .filter(|rule| rule.decision.as_ref() == Some(&decision.id))
+            .map(|rule| rule.id.to_string())
+            .collect();
+
+        if keepers.is_empty() {
+            continue;
+        }
+
+        concerns.push(Concern {
+            code: "unenforceable-but-a-rule-keeps-it",
+            level: Level::Error,
+            rule_id: None,
+            path: None,
+            message: format!(
+                "decision `{}` says no rule can keep it, and {} does: {}",
+                decision.id,
+                if keepers.len() == 1 { "one" } else { "some" },
+                list(&keepers),
+            ),
+            fix: "drop `enforcement` and `why_not_enforceable` -- the rule is \
+                  the better answer, and the reason it could not be enforced \
+                  has stopped being true"
+                .to_owned(),
+        });
+    }
+}
+
+/// A decision whose scope reaches no directory in the repository.
+///
+/// What #74 gave a module, one level over: a scope matching nothing is a
+/// decision about a place that no longer exists, and it will reach nobody
+/// through `describe` while looking like it does.
+///
+/// A warning rather than an error, unlike a rule's empty scope. A rule with no
+/// files enforces nothing and that is a hole; a decision with no files is
+/// still written down and still true — what it has lost is the way it arrives
+/// unprompted, which is worth saying and not worth failing a build over.
+pub(super) fn decision_scope_matches_nothing(
+    config: &CompiledConfig,
+    tree: &RepoTree,
+    concerns: &mut Vec<Concern>,
+) {
+    for decision in config.decisions() {
+        let Some(scope) = &decision.scope else {
+            continue;
+        };
+        if tree
+            .directories()
+            .any(|(path, _)| scope.matches_dir(path.as_path()))
+        {
+            continue;
+        }
+
+        concerns.push(Concern {
+            code: "decision-scope-matches-nothing",
+            level: Level::Warning,
+            rule_id: None,
+            path: None,
+            message: format!(
+                "decision `{}` has a `scope` that matches no directory here, \
+                 so `describe` will never bring it to anybody",
+                decision.id,
+            ),
+            fix: "point it at paths that exist, or drop the scope -- a decision \
+                  with none is still declared and still reaches whoever asks \
+                  for it by id"
+                .to_owned(),
+        });
+    }
 }

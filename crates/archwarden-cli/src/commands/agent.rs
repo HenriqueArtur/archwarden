@@ -314,7 +314,8 @@ pub(crate) fn describe_many(
         .into_iter()
         .map(|path| {
             let applies = archwarden_api::describe::describe(compiled, &path);
-            (path, applies)
+            let governing = crate::describe::governing(compiled, &path, &applies);
+            (path, applies, governing)
         })
         .collect();
 

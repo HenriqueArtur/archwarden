@@ -46,7 +46,39 @@ pub(super) fn compile_decisions(
                 .cloned()
                 .unwrap_or_default();
 
+            let unenforceable = decision.enforcement == Some(crate::config::Enforcement::None);
+            let reason = decision.why_not_enforceable.as_deref().map(str::trim);
+            let why_not_enforceable = match (unenforceable, reason.filter(|r| !r.is_empty())) {
+                (true, Some(reason)) => Some(reason.to_owned()),
+                (true, None) => {
+                    return Err(CompileError::UnenforceableWithNoReason {
+                        decision: decision.id.clone(),
+                    });
+                }
+                (false, Some(_)) => {
+                    return Err(CompileError::ReasonWithNoClaim {
+                        decision: decision.id.clone(),
+                    });
+                }
+                (false, None) => None,
+            };
+
+            let scope = if decision.scope.is_empty() {
+                None
+            } else {
+                Some(
+                    archwarden_core::scope::Scope::compile(decision.scope.iter()).map_err(
+                        |source| CompileError::DecisionScope {
+                            decision: decision.id.clone(),
+                            source,
+                        },
+                    )?,
+                )
+            };
+
             Ok(archwarden_core::compiled::CompiledDecision {
+                why_not_enforceable,
+                scope,
                 id: decision.id.clone(),
                 title: decision.title.clone(),
                 why: decision.why.clone(),

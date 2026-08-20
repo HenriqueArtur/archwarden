@@ -646,6 +646,8 @@ mod tests {
         .deciding([(
             "usecase-name",
             archwarden_core::compiled::CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: archwarden_core::ids::DecisionId::new("ADR-014").expect("valid"),
                 title: "The domain does not know about transport".to_owned(),
                 why: Some("it is published, and a consumer must not inherit our client".to_owned()),
@@ -725,6 +727,8 @@ mod tests {
         let reasons = crate::report::Reasons::default().deciding([(
             "usecase-name",
             archwarden_core::compiled::CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: archwarden_core::ids::DecisionId::new("ADR-014").expect("valid"),
                 title: "The domain does not know about transport".to_owned(),
                 why: None,
@@ -814,6 +818,8 @@ mod tests {
         crate::report::Reasons::default().deciding([(
             "usecase-name",
             archwarden_core::compiled::CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: archwarden_core::ids::DecisionId::new("ADR-014").expect("valid"),
                 title: "A wall".to_owned(),
                 why: None,

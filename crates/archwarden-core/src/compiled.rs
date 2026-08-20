@@ -622,7 +622,10 @@ pub struct ExportShape {
 ///
 /// Issue #100: a rule id in a denial is a thing to satisfy; a decision with a
 /// link is a thing to understand or to argue with.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `PartialEq` and not `Eq`: a compiled `Scope` holds built `GlobSet`s, which
+/// have no meaningful total equality. Nothing compares two decisions for
+/// identity; the derive is here because the tests compare fields.
+#[derive(Debug, Clone)]
 pub struct CompiledDecision {
     /// The reference, such as `ADR-014`.
     pub id: DecisionId,
@@ -654,6 +657,18 @@ pub struct CompiledDecision {
     /// and the half a rule can never carry: a rule says what is refused, and
     /// this says what was *weighed* and why it lost. Issue #114.
     pub alternatives: Vec<CompiledAlternative>,
+    /// Why no rule can keep this, when the author claimed none can.
+    ///
+    /// `Some` is the claim and its argument together: the wire format refuses
+    /// the claim without one, so a compiled decision carrying this is one
+    /// somebody wrote a reason for. Issue #160.
+    pub why_not_enforceable: Option<String>,
+    /// Where it applies, compiled.
+    ///
+    /// Empty is a decision that says nothing about where — which is every
+    /// decision written before #161 and every one whose author left it out.
+    /// `describe` then finds it through the rules that name it, or not at all.
+    pub scope: Option<Scope>,
 }
 
 /// One option a decision considered and did not take.
@@ -1324,6 +1339,8 @@ mod tests {
     }
     fn decision(id: &str, status: DecisionStatus) -> CompiledDecision {
         CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new(id).expect("valid id"),
             title: "The domain does not know about transport".to_owned(),
             why: None,
@@ -1376,9 +1393,10 @@ mod tests {
                 .map(|d| d.title.as_str()),
             Some("The domain does not know about transport")
         );
-        assert_eq!(
-            config.decision(&DecisionId::new("ADR-041").expect("valid")),
-            None
+        assert!(
+            config
+                .decision(&DecisionId::new("ADR-041").expect("valid"))
+                .is_none()
         );
     }
 
@@ -1394,9 +1412,10 @@ mod tests {
         );
 
         assert_eq!(config.decisions().count(), 0);
-        assert_eq!(
-            config.decision(&DecisionId::new("ADR-014").expect("valid")),
-            None
+        assert!(
+            config
+                .decision(&DecisionId::new("ADR-014").expect("valid"))
+                .is_none()
         );
     }
 
@@ -1456,6 +1475,8 @@ mod tests {
     #[test]
     fn a_decision_knows_which_option_a_rule_refuses() {
         let decision = CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-031").expect("valid"),
             title: "the new way".to_owned(),
             why: None,

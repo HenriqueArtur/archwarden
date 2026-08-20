@@ -190,6 +190,60 @@ pub struct Decision {
     /// refused; this says what was *weighed*. Issue #114.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub alternatives: Vec<Alternative>,
+    /// Whether any rule can keep this decision.
+    ///
+    /// `config doctor` reports a decision no rule implements, because a
+    /// decision written down and unenforced is usually one somebody meant to
+    /// enforce. Some are not: *"Pub/Sub is the message broker"*,
+    /// *"money amounts are decimal, never float"* — real decisions, written
+    /// down, and not a shape any rule here can hold.
+    ///
+    /// Without this the config punishes a repository for declaring everything
+    /// it decided, and the honest way to keep it quiet is to leave decisions
+    /// out — which is the opposite of what the feature is for. Issue #160.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enforcement: Option<Enforcement>,
+    /// Why no rule can keep it, when `enforcement` says none can.
+    ///
+    /// Required with that claim, and refused without it. `Alternative::why_not`
+    /// makes the same argument and it is the same argument: *"an option with
+    /// no argument against it is a name nobody can disagree with"*. Unenforced
+    /// with no reason is the button everybody presses, and it makes the config
+    /// quieter and less true at once.
+    ///
+    /// A claim, not a note. `doctor` reports a decision that carries this and
+    /// *does* have a rule, because then the sentence is wrong and the config
+    /// says two things. Issue #160.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why_not_enforceable: Option<String>,
+    /// Where this decision applies, as directory globs.
+    ///
+    /// The same shape as [`Module::scope`], for the same reason #74 gave it to
+    /// a module: without it the decision is only a label, and nothing can bring
+    /// it to the person standing in the paths it governs.
+    ///
+    /// An enforced decision already has an implicit scope through the roots of
+    /// the rules that name it. This is what an *unenforced* one has instead —
+    /// which is why it matters most for the decisions `enforcement: "none"`
+    /// describes: there is no gate that will catch their violation later, so
+    /// arriving unprompted is the only way they arrive at all. Issue #161.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub scope: OneOrMany<String>,
+}
+
+/// Whether a decision is one any rule can keep.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum Enforcement {
+    /// No rule can express this decision, and `why_not_enforceable` says why.
+    ///
+    /// One variant, deliberately. The absent case already means "a rule should
+    /// keep this", which is what `decision-nobody-enforces` reports on, so a
+    /// second spelling of the default would be two ways to say one thing. A
+    /// value naming *how* it is enforced would be a third source of truth
+    /// beside the rule and its `decision` link.
+    None,
 }
 
 /// One option a decision considered and did not take.
@@ -878,6 +932,9 @@ mod decision_tests {
     #[test]
     fn a_decision_can_be_built_in_code() {
         let decision = Decision {
+            enforcement: None,
+            scope: crate::one_or_many::OneOrMany::Many(Vec::new()),
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-9").expect("valid"),
             title: "built".to_owned(),
             why: None,

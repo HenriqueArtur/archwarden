@@ -1457,6 +1457,8 @@ mod tests {
 
         let json = as_json(
             &config(vec![sealed, helper, loose]).with_decisions(vec![CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-014").expect("valid"),
                 title: "The domain does not know about transport".to_owned(),
                 why: Some("it is published".to_owned()),
@@ -1554,6 +1556,8 @@ mod tests {
         let json = as_json(
             &config(vec![rule("shape", None, &["src/*"], naming())]).with_decisions(vec![
                 CompiledDecision {
+                    scope: None,
+                    why_not_enforceable: None,
                     id: DecisionId::new("ADR-020").expect("valid"),
                     title: "Nobody enforces this".to_owned(),
                     why: None,
@@ -1589,6 +1593,8 @@ mod tests {
 
         let config = config(vec![serving, also, elsewhere]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-014").expect("valid"),
                 title: "Carries debt".to_owned(),
                 why: None,
@@ -1599,6 +1605,8 @@ mod tests {
                 alternatives: Vec::new(),
             },
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-031").expect("valid"),
                 title: "Carries none".to_owned(),
                 why: None,
@@ -1655,6 +1663,8 @@ mod tests {
 
         let json = as_json(
             &config(vec![serving]).with_decisions(vec![CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-014").expect("valid"),
                 title: "Unmeasured".to_owned(),
                 why: None,
@@ -1702,6 +1712,8 @@ mod tests {
         let json = as_json(
             &config(vec![here, elsewhere]).with_decisions(vec![
                 CompiledDecision {
+                    scope: None,
+                    why_not_enforceable: None,
                     id: DecisionId::new("ADR-014").expect("valid"),
                     title: "reached".to_owned(),
                     why: None,
@@ -1712,6 +1724,8 @@ mod tests {
                     alternatives: Vec::new(),
                 },
                 CompiledDecision {
+                    scope: None,
+                    why_not_enforceable: None,
                     id: DecisionId::new("ADR-020").expect("valid"),
                     title: "not reached".to_owned(),
                     why: None,

@@ -456,6 +456,59 @@ check here and the reason the field exists.
 `proposed` is reported by nothing. A decision under trial with rules already
 running is how one is trialled.
 
+#### `enforcement: "none"` — the decisions no rule can keep
+
+Most of what a team decides is not checkable. "We review schema changes with
+the data team", "errors are values at the boundary and exceptions inside" — a
+parser sees none of it, and a config that can only hold the checkable half
+holds the smaller half.
+
+```json
+{
+  "id": "ADR-023",
+  "title": "Pub/Sub is the message broker",
+  "enforcement": "none",
+  "why_not_enforceable": "the broker is chosen in infrastructure, not in code",
+  "scope": ["packages/queue/**"]
+}
+```
+
+The claim does two things. `config doctor` stops reporting the decision under
+`decision-nobody-enforces` — it is not an orphan, it is a decision that
+declares its own limits. And `describe` prints it under **"decisions that
+govern it, with no rule to keep them"**, which is how it reaches the agent
+about to write there.
+
+`why_not_enforceable` is **required** with the claim, and refused without it.
+Half of the pair is worse than neither: `enforcement: "none"` alone is a way to
+switch the orphan report off one decision at a time, and the reason is the part
+a reader actually needs. A reason with no claim is refused too — the decision
+would explain why it cannot be enforced while never saying it is not.
+
+A rule pointing at a decision that claims unenforceability is an **error** in
+`config doctor`: the config is saying two things at once, and only the author
+knows which is stale.
+
+#### `scope` — where a decision applies
+
+Without it a decision governs the repository, which for most is right. With it
+the decision is about a place:
+
+```json
+{ "id": "ADR-023", "title": "Pub/Sub is the message broker",
+  "scope": ["packages/queue/**", "services/worker/**"] }
+```
+
+The same globs a rule's scope takes. It changes one thing and it is the point
+of the field: `describe packages/queue/worker.ts` brings this decision
+unprompted, and `describe packages/ui/button.tsx` does not. A decision that
+reaches everybody about everything reaches nobody.
+
+A scope matching no directory is a **warning** — `decision-scope-matches-nothing`
+— not an error, on different terms from a rule's empty scope. A rule with no
+files enforces nothing and that is a hole; a decision with no files is still
+written down and still true. What it has lost is the way it arrives unprompted.
+
 #### Presets ship decisions
 
 `extends` folds them the way it folds rules: concatenated, presets first. Two

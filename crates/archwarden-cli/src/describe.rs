@@ -18,13 +18,17 @@ use archwarden_core::path::RepoRelPath;
 pub fn render(
     path: &RepoRelPath,
     applies: &[Applies<'_>],
+    governing: &[&archwarden_core::compiled::CompiledDecision],
     format: crate::report::Format,
     out: &mut dyn std::io::Write,
 ) {
     match format {
-        crate::report::Format::Text => render_text(path, applies, out),
+        crate::report::Format::Text => render_text(path, applies, governing, out),
         crate::report::Format::Json => {
-            write_json(&archwarden_api::describe::envelope(path, applies), out);
+            write_json(
+                &archwarden_api::describe::envelope(path, applies, governing),
+                out,
+            );
         }
     }
 }
@@ -37,7 +41,11 @@ pub fn render(
 /// got asking one path at a time.
 pub fn render_many(
     scope: &str,
-    answers: &[(RepoRelPath, Vec<Applies<'_>>)],
+    answers: &[(
+        RepoRelPath,
+        Vec<Applies<'_>>,
+        Vec<&archwarden_core::compiled::CompiledDecision>,
+    )],
     format: crate::report::Format,
     out: &mut dyn std::io::Write,
 ) {
@@ -50,6 +58,24 @@ pub fn render_many(
             );
         }
     }
+}
+
+/// The decisions governing a path that no rule brought.
+///
+/// Extracted because both `describe` surfaces want it and the shape is easy to
+/// get subtly wrong: a decision a rule already named must not appear twice,
+/// once under the rule and once on its own. Issue #161.
+pub(crate) fn governing<'a>(
+    compiled: &'a archwarden_core::compiled::CompiledConfig,
+    path: &archwarden_core::path::RepoRelPath,
+    applies: &[archwarden_api::describe::Applies<'_>],
+) -> Vec<&'a archwarden_core::compiled::CompiledDecision> {
+    let brought: Vec<_> = applies
+        .iter()
+        .filter_map(|entry| entry.decision.map(|decision| &decision.id))
+        .collect();
+
+    archwarden_api::describe::decisions_governing(compiled, path, &brought)
 }
 
 /// Serialises one of the shared envelopes.
@@ -67,9 +93,40 @@ fn write_json(envelope: &impl serde::Serialize, out: &mut dyn std::io::Write) {
     }
 }
 
+/// The decisions that govern a path with no rule behind them.
+///
+/// Printed after the rules and named as what they are. A reader scanning for
+/// what to *do* finds the rules first; this block is what governs and will not
+/// be checked, which is a different sentence and has to read as one.
+fn render_governing(
+    governing: &[&archwarden_core::compiled::CompiledDecision],
+    out: &mut dyn std::io::Write,
+) {
+    if governing.is_empty() {
+        return;
+    }
+
+    let _ = writeln!(out);
+    let _ = writeln!(out, "Decisions that govern it, with no rule to keep them:");
+    for decision in governing {
+        let _ = writeln!(out);
+        let _ = writeln!(out, "  {} — {}", decision.id, decision.title);
+        if let Some(reason) = &decision.why_not_enforceable {
+            let _ = writeln!(out, "    nothing can check this: {reason}");
+        }
+        if let Some(link) = &decision.link {
+            let _ = writeln!(out, "    written down at: {link}");
+        }
+    }
+}
+
 fn render_many_text(
     scope: &str,
-    answers: &[(RepoRelPath, Vec<Applies<'_>>)],
+    answers: &[(
+        RepoRelPath,
+        Vec<Applies<'_>>,
+        Vec<&archwarden_core::compiled::CompiledDecision>,
+    )],
     out: &mut dyn std::io::Write,
 ) {
     // A glob that matched nothing is said out loud. An empty list would read
@@ -81,14 +138,14 @@ fn render_many_text(
 
     let width = answers
         .iter()
-        .map(|(path, _)| path.as_str().len())
+        .map(|(path, _, _)| path.as_str().len())
         .max()
         .unwrap_or(0);
 
     let _ = writeln!(out, "Rules that apply under `{scope}`:\n");
 
     let mut distinct: Vec<&str> = Vec::new();
-    for (path, applies) in answers {
+    for (path, applies, _) in answers {
         let ids: Vec<&str> = applies.iter().map(|entry| entry.rule.id.as_str()).collect();
         for id in &ids {
             if !distinct.contains(id) {
@@ -115,12 +172,22 @@ fn render_many_text(
     );
 }
 
-fn render_text(path: &RepoRelPath, applies: &[Applies<'_>], out: &mut dyn std::io::Write) {
+fn render_text(
+    path: &RepoRelPath,
+    applies: &[Applies<'_>],
+    governing: &[&archwarden_core::compiled::CompiledDecision],
+    out: &mut dyn std::io::Write,
+) {
     // Said plainly rather than left as an empty list. "No rule applies" is a
     // useful answer for an agent deciding whether to ask again, and an empty
     // response reads like the command failed.
+    if applies.is_empty() && governing.is_empty() {
+        let _ = writeln!(out, "No rule applies to `{path}`.");
+        return;
+    }
     if applies.is_empty() {
         let _ = writeln!(out, "No rule applies to `{path}`.");
+        render_governing(governing, out);
         return;
     }
 
@@ -165,6 +232,8 @@ fn render_text(path: &RepoRelPath, applies: &[Applies<'_>], out: &mut dyn std::i
             );
         }
     }
+
+    render_governing(governing, out);
 }
 
 #[cfg(test)]
@@ -245,12 +314,18 @@ mod tests {
         format: crate::report::Format,
     ) -> String {
         let mut out = Vec::new();
-        render(target, &describe(config, target), format, &mut out);
+        let applies = describe(config, target);
+        let governing = governing(config, target, &applies);
+        render(target, &applies, &governing, format, &mut out);
         String::from_utf8(out).expect("output is UTF-8")
     }
 
     fn rendered_many(
-        answers: &[(RepoRelPath, Vec<Applies<'_>>)],
+        answers: &[(
+            RepoRelPath,
+            Vec<Applies<'_>>,
+            Vec<&archwarden_core::compiled::CompiledDecision>,
+        )],
         format: crate::report::Format,
     ) -> String {
         let mut out = Vec::new();
@@ -327,6 +402,8 @@ mod tests {
 
         let text = rendered(
             &config(vec![governed]).with_decisions(vec![CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-014").expect("valid"),
                 title: "The registry resolves by name".to_owned(),
                 why: None,
@@ -352,6 +429,87 @@ mod tests {
         assert!(decision < why && why < expectation, "{text}");
     }
 
+    /// A decision fixture for the governing block below.
+    fn adr(id: &str, title: &str, scope: Option<&[&str]>) -> CompiledDecision {
+        CompiledDecision {
+            scope: scope.map(|s| Scope::compile(s.iter().copied()).expect("valid scope")),
+            why_not_enforceable: Some("no parser sees a design review".to_owned()),
+            id: DecisionId::new(id).expect("valid"),
+            title: title.to_owned(),
+            why: None,
+            link: Some("docs/adr/023.md".to_owned()),
+            status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
+        }
+    }
+
+    /// Issues #160 and #161 together, in the surface they exist for. A
+    /// decision no rule can keep still governs a path, and `describe` is the
+    /// only way it reaches the agent about to write there -- printed as what
+    /// it is, under a heading that does not read as something to fix.
+    #[test]
+    fn a_decision_with_no_rule_behind_it_is_still_printed() {
+        let text = rendered(
+            &config(vec![rule("usecase-name", None, &["src/*"], naming())]).with_decisions(vec![
+                adr(
+                    "ADR-023",
+                    "Pub/Sub is the message broker",
+                    Some(&["src/**"]),
+                ),
+                adr("ADR-030", "Somewhere else entirely", Some(&["packages/**"])),
+            ]),
+            &path("src/user/create-client.use-case.ts"),
+            crate::report::Format::Text,
+        );
+
+        assert!(
+            text.contains("Decisions that govern it, with no rule to keep them:"),
+            "{text}"
+        );
+        assert!(
+            text.contains("ADR-023 — Pub/Sub is the message broker"),
+            "{text}"
+        );
+        assert!(
+            text.contains("nothing can check this: no parser sees a design review"),
+            "{text}"
+        );
+        assert!(text.contains("docs/adr/023.md"), "{text}");
+        // Scoped elsewhere, so it governs somewhere that is not here.
+        assert!(!text.contains("ADR-030"), "{text}");
+        // And after the rules, which are what the reader came to act on.
+        let rules = text.find("usecase-name").expect("the rule is printed");
+        let govern = text.find("Decisions that govern").expect("and the block");
+        assert!(rules < govern, "{text}");
+    }
+
+    /// The half that is easy to get wrong: a decision a rule already brought
+    /// must not be printed twice, once under its rule and once as though
+    /// nothing keeps it.
+    #[test]
+    fn a_decision_a_rule_already_named_is_not_repeated() {
+        let mut governed = rule("usecase-name", None, &["src/*"], naming());
+        governed.decision = Some(DecisionId::new("ADR-023").expect("valid"));
+
+        let text = rendered(
+            &config(vec![governed]).with_decisions(vec![adr(
+                "ADR-023",
+                "Pub/Sub is the message broker",
+                Some(&["src/**"]),
+            )]),
+            &path("src/user/create-client.use-case.ts"),
+            crate::report::Format::Text,
+        );
+
+        assert!(text.contains("decision: ADR-023"), "{text}");
+        assert!(
+            !text.contains("Decisions that govern it, with no rule to keep them:"),
+            "printed twice: {text}"
+        );
+    }
+
     /// The renderer hands back the shared envelope's bytes rather than
     /// assembling a shape of its own, so `describe --format json` and an MCP
     /// tool cannot answer the same question differently.
@@ -372,6 +530,7 @@ mod tests {
         let envelope = serde_json::to_value(archwarden_api::describe::envelope(
             &target,
             &describe(&config, &target),
+            &[],
         ))
         .expect("serialises");
 
@@ -391,7 +550,8 @@ mod tests {
             .map(|p| {
                 let path = path(p);
                 let applies = describe(&config, &path);
-                (path, applies)
+                let governing = governing(&config, &path, &applies);
+                (path, applies, governing)
             })
             .collect();
 
@@ -414,7 +574,7 @@ mod tests {
     fn a_path_with_no_rules_still_has_a_line() {
         let config = config(vec![rule("shape", None, &["src/*"], structure())]);
         let path = path("packages/other");
-        let answers = vec![(path.clone(), describe(&config, &path))];
+        let answers = vec![(path.clone(), describe(&config, &path), Vec::new())];
 
         let text = rendered_many(&answers, crate::report::Format::Text);
 
@@ -442,7 +602,7 @@ mod tests {
             structure(),
         )]);
         let path = path("packages/domain/src/invoice");
-        let answers = vec![(path.clone(), describe(&config, &path))];
+        let answers = vec![(path.clone(), describe(&config, &path), Vec::new())];
 
         let parsed: serde_json::Value =
             serde_json::from_str(&rendered_many(&answers, crate::report::Format::Json))

@@ -543,6 +543,8 @@ mod tests {
 
     fn adr(id: &str) -> CompiledDecision {
         CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new(id).expect("valid id"),
             title: "The domain does not know about transport".to_owned(),
             why: Some("it is published, and a consumer must not inherit our client".to_owned()),
@@ -582,9 +584,10 @@ mod tests {
         assert_eq!(found.title, "The domain does not know about transport");
         assert_eq!(found.link.as_deref(), Some("docs/adr/014.md"));
 
-        assert_eq!(
-            reasons.decision_of_rule(&RuleId::new("spec").expect("valid")),
-            None,
+        assert!(
+            reasons
+                .decision_of_rule(&RuleId::new("spec").expect("valid"))
+                .is_none(),
             "a rule that names no decision has none, and that is not an error"
         );
     }
@@ -599,9 +602,15 @@ mod tests {
             vec![adr("ADR-014")],
         ));
 
+        // By id: a compiled decision holds a built `Scope` and so has no
+        // equality, exactly as `CompiledRule` has none for the same reason.
         assert_eq!(
-            reasons.decision_of_rule(&RuleId::new("shape").expect("valid")),
-            reasons.decision_of_rule(&RuleId::new("sealed").expect("valid"))
+            reasons
+                .decision_of_rule(&RuleId::new("shape").expect("valid"))
+                .map(|decision| decision.id.as_str()),
+            reasons
+                .decision_of_rule(&RuleId::new("sealed").expect("valid"))
+                .map(|decision| decision.id.as_str())
         );
     }
 
@@ -625,9 +634,10 @@ mod tests {
     fn a_config_with_no_decisions_answers_none() {
         let reasons = Reasons::of(&config(vec![rule("shape", Some("because"))], Vec::new()));
 
-        assert_eq!(
-            reasons.decision_of_rule(&RuleId::new("shape").expect("valid")),
-            None
+        assert!(
+            reasons
+                .decision_of_rule(&RuleId::new("shape").expect("valid"))
+                .is_none()
         );
         assert_eq!(reasons.decisions().count(), 0);
         assert_eq!(

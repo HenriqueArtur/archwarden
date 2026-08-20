@@ -81,6 +81,7 @@ pub fn examine(config: &CompiledConfig) -> Vec<Concern> {
     superseded_but_still_enforced(config, &mut concerns);
 
     decision_nobody_enforces(config, &mut concerns);
+    unenforceable_but_a_rule_keeps_it(config, &mut concerns);
 
     for rule in config.rules() {
         unreachable_scope(config, rule, &mut concerns);
@@ -106,8 +107,9 @@ use config::{
     walk_scope_with_boundaries,
 };
 use decisions::{
-    decision_documents_out_of_date, decision_nobody_enforces, decisions_left_unsaid,
-    reasons_left_unsaid, superseded_but_still_enforced,
+    decision_documents_out_of_date, decision_nobody_enforces, decision_scope_matches_nothing,
+    decisions_left_unsaid, reasons_left_unsaid, superseded_but_still_enforced,
+    unenforceable_but_a_rule_keeps_it,
 };
 use repository::{
     module_nobody_references, module_scope_matches_nothing, module_wearing_no_kind,
@@ -135,6 +137,10 @@ pub fn examine_repository(
     for module in config.modules() {
         module_scope_matches_nothing(module, tree, &mut concerns);
     }
+    // Outside the loop above: a decision's scope is nothing to do with a
+    // module, and a repository declaring decisions and no modules is the
+    // ordinary case for one adopting them first.
+    decision_scope_matches_nothing(config, tree, &mut concerns);
 
     let baseline = archwarden_api::baseline::Baseline::load(root)
         .ok()
@@ -904,6 +910,8 @@ mod tests {
     /// A decision, for the checks below.
     fn adr(id: &str, status: DecisionStatus) -> CompiledDecision {
         CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new(id).expect("valid id"),
             title: "A wall".to_owned(),
             why: None,
@@ -996,6 +1004,8 @@ mod tests {
     fn a_supersession_the_rules_did_not_follow_names_what_replaced_it() {
         let config = config(vec![serving("old-rule", "ADR-009")]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-009").expect("valid"),
                 title: "the old way".to_owned(),
                 why: None,
@@ -1006,6 +1016,8 @@ mod tests {
                 alternatives: Vec::new(),
             },
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-031").expect("valid"),
                 title: "the new way".to_owned(),
                 why: None,
@@ -1039,6 +1051,8 @@ mod tests {
     fn a_supersession_the_rules_followed_is_not_reported() {
         let config = config(vec![serving("new-rule", "ADR-031")]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-009").expect("valid"),
                 title: "the old way".to_owned(),
                 why: None,
@@ -1049,6 +1063,8 @@ mod tests {
                 alternatives: Vec::new(),
             },
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-031").expect("valid"),
                 title: "the new way".to_owned(),
                 why: None,
@@ -1140,6 +1156,79 @@ mod tests {
             concerns
                 .iter()
                 .any(|c| c.message.contains("1 decision is declared")),
+            "{concerns:?}"
+        );
+    }
+
+    /// The claim and a rule, said at once. Issue #160: a decision carrying
+    /// `why_not_enforceable` is asserting that no rule *can* keep it, and a
+    /// rule pointing at it says the opposite. One of the two is stale and only
+    /// the author knows which.
+    #[test]
+    fn a_decision_claiming_nothing_can_keep_it_while_a_rule_does_is_reported() {
+        let mut unenforceable = adr("ADR-014", DecisionStatus::Accepted);
+        unenforceable.why_not_enforceable = Some("it is about tone in reviews".to_owned());
+
+        let contradictory = config(vec![serving("shape", "ADR-014")]).with_decisions(vec![
+            unenforceable,
+            adr("ADR-020", DecisionStatus::Accepted),
+        ]);
+
+        let concerns = examine(&contradictory);
+        let found = concerns
+            .iter()
+            .find(|c| c.code == "unenforceable-but-a-rule-keeps-it")
+            .unwrap_or_else(|| panic!("{concerns:?}"));
+
+        assert_eq!(found.level, Level::Error, "{found:?}");
+        assert!(found.message.contains("ADR-014"), "{found:?}");
+        assert!(
+            found.message.contains("shape"),
+            "the rule is named: {found:?}"
+        );
+    }
+
+    /// The half of that check that is easy to lose: it must be the rules
+    /// pointing at *this* decision that are counted. A config where every
+    /// decision has rules and only one claims unenforceability would report
+    /// every time if the match were dropped.
+    #[test]
+    fn a_rule_serving_a_different_decision_does_not_trigger_the_claim() {
+        let mut unenforceable = adr("ADR-014", DecisionStatus::Accepted);
+        unenforceable.why_not_enforceable = Some("it is about tone in reviews".to_owned());
+
+        let unrelated = config(vec![serving("shape", "ADR-020")]).with_decisions(vec![
+            unenforceable,
+            adr("ADR-020", DecisionStatus::Accepted),
+        ]);
+
+        let concerns = examine(&unrelated);
+        assert!(
+            concerns
+                .iter()
+                .all(|c| c.code != "unenforceable-but-a-rule-keeps-it"),
+            "{concerns:?}"
+        );
+    }
+
+    /// And the claim on its own is the whole point of #160 -- it is how a
+    /// decision stops being nagged about by `decision-nobody-enforces`.
+    #[test]
+    fn the_claim_silences_the_orphan_report_and_says_nothing_else() {
+        let mut unenforceable = adr("ADR-020", DecisionStatus::Accepted);
+        unenforceable.why_not_enforceable = Some("no parser sees a code review".to_owned());
+
+        let declared = config(vec![serving("shape", "ADR-014")]).with_decisions(vec![
+            adr("ADR-014", DecisionStatus::Accepted),
+            unenforceable,
+        ]);
+
+        let concerns = examine(&declared);
+        assert!(
+            concerns.iter().all(|c| {
+                c.code != "decision-nobody-enforces"
+                    && c.code != "unenforceable-but-a-rule-keeps-it"
+            }),
             "{concerns:?}"
         );
     }
@@ -1825,6 +1914,38 @@ mod tests {
         );
 
         assert!(!codes.contains(&"symbol-never-imported"), "{codes:?}");
+    }
+
+    /// Issue #161. What #74 gave a module, one level over: a scoped decision
+    /// whose paths are gone reaches nobody through `describe` while still
+    /// reading in the config as though it governs something.
+    #[test]
+    fn a_decision_scoped_to_nowhere_is_reported() {
+        let (guard, root) = tree_at(&[("src/user/thing.ts", "export class Thing {}")]);
+        let mut moved = adr("ADR-014", DecisionStatus::Accepted);
+        moved.scope = Some(Scope::compile(["packages/gone/**"]).expect("valid scope"));
+        let mut present = adr("ADR-020", DecisionStatus::Accepted);
+        present.scope = Some(Scope::compile(["src/**"]).expect("valid scope"));
+
+        let config = config(vec![serving("shape", "ADR-014")]).with_decisions(vec![
+            moved,
+            present,
+            adr("ADR-021", DecisionStatus::Accepted),
+        ]);
+        let tree = archwarden_engine::walk::walk(&root, &config).expect("walks");
+        let concerns = examine_repository(&root, &config, &tree);
+        drop(guard);
+
+        let found: Vec<_> = concerns
+            .iter()
+            .filter(|c| c.code == "decision-scope-matches-nothing")
+            .collect();
+
+        assert_eq!(found.len(), 1, "{concerns:?}");
+        assert!(found[0].message.contains("ADR-014"), "{found:?}");
+        // A warning, not an error: the decision is still written down and
+        // still true. What it lost is the way it arrives unprompted.
+        assert_eq!(found[0].level, Level::Warning, "{found:?}");
     }
 
     /// Decision 9: a default export's name does not bind the importer, so a

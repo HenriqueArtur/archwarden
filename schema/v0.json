@@ -300,6 +300,28 @@
           "items": {
             "$ref": "#/$defs/Alternative"
           }
+        },
+        "enforcement": {
+          "description": "Whether any rule can keep this decision.\n\n`config doctor` reports a decision no rule implements, because a\ndecision written down and unenforced is usually one somebody meant to\nenforce. Some are not: *\"Pub/Sub is the message broker\"*,\n*\"money amounts are decimal, never float\"* — real decisions, written\ndown, and not a shape any rule here can hold.\n\nWithout this the config punishes a repository for declaring everything\nit decided, and the honest way to keep it quiet is to leave decisions\nout — which is the opposite of what the feature is for. Issue #160.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Enforcement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "why_not_enforceable": {
+          "description": "Why no rule can keep it, when `enforcement` says none can.\n\nRequired with that claim, and refused without it. `Alternative::why_not`\nmakes the same argument and it is the same argument: *\"an option with\nno argument against it is a name nobody can disagree with\"*. Unenforced\nwith no reason is the button everybody presses, and it makes the config\nquieter and less true at once.\n\nA claim, not a note. `doctor` reports a decision that carries this and\n*does* have a rule, because then the sentence is wrong and the config\nsays two things. Issue #160.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "description": "Where this decision applies, as directory globs.\n\nThe same shape as [`Module::scope`], for the same reason #74 gave it to\na module: without it the decision is only a label, and nothing can bring\nit to the person standing in the paths it governs.\n\nAn enforced decision already has an implicit scope through the roots of\nthe rules that name it. This is what an *unenforced* one has instead —\nwhich is why it matters most for the decisions `enforcement: \"none\"`\ndescribes: there is no gate that will catch their violation later, so\narriving unprompted is the only way they arrive at all. Issue #161.",
+          "$ref": "#/$defs/OneOrMany"
         }
       },
       "additionalProperties": false,
@@ -381,6 +403,16 @@
     "RuleId": {
       "description": "A rule's stable identifier, unique across a config and its presets.",
       "type": "string"
+    },
+    "Enforcement": {
+      "description": "Whether a decision is one any rule can keep.",
+      "oneOf": [
+        {
+          "description": "No rule can express this decision, and `why_not_enforceable` says why.\n\nOne variant, deliberately. The absent case already means \"a rule should\nkeep this\", which is what `decision-nobody-enforces` reports on, so a\nsecond spelling of the default would be two ways to say one thing. A\nvalue naming *how* it is enforced would be a third source of truth\nbeside the rule and its `decision` link.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
     },
     "Module": {
       "description": "A named group of rules.\n\nA module is a label, not a scope: it exists so a finding can say\n`[domain] packages/domain/src/user/wrong-folder`. Each rule still carries\nits own scope.",
