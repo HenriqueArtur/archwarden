@@ -82,10 +82,23 @@ impl CallObligationEngine {
     ///
     /// `Event.save` is called through the binding `Event`, so that is what the
     /// import has to provide. A bare `saveEvent` is its own root.
+    /// The name an import has to bind for the symbol to be reachable.
+    ///
+    /// `Event.save` needs `Event`, and `Event::save` needs `Event` too: the
+    /// separator is the language's, and a rule names its symbol the way its own
+    /// language spells it. Splitting on `.` alone read the whole of
+    /// `Audit::record` as the root, so a Rust file importing `Audit` and
+    /// calling `Audit::record` was reported for importing neither -- which the
+    /// first end-to-end run of the Rust front-end found.
+    ///
+    /// `::` is tried first because `.` never appears before it in a path a rule
+    /// would name, and trying `.` first would cut `a.b::c` in the wrong place.
     fn root(&self) -> &str {
-        self.symbol
-            .split_once('.')
-            .map_or(self.symbol.as_str(), |(root, _)| root)
+        let symbol = self.symbol.as_str();
+        symbol
+            .split_once("::")
+            .or_else(|| symbol.split_once('.'))
+            .map_or(symbol, |(root, _)| root)
     }
 
     /// Whether the file imports the symbol from the module the rule names.
@@ -208,6 +221,37 @@ mod tests {
     use archwarden_core::traits::Exists;
 
     use super::*;
+
+    /// The root of a symbol is the name an import binds, in either language's
+    /// spelling.
+    ///
+    /// Found by running the Rust front-end end to end: a file importing
+    /// `Audit` and calling `Audit::record` was reported for importing neither,
+    /// because splitting on `.` alone made the whole of `Audit::record` the
+    /// root. Both separators are asserted, and so is a bare name -- a symbol
+    /// with no separator is its own root, and an implementation that always
+    /// split would return the empty string for it.
+    #[test]
+    fn a_symbols_root_is_read_in_either_languages_spelling() {
+        let root_of = |symbol: &str| {
+            CallObligationEngine {
+                id: RuleId::new("r").expect("valid id"),
+                module: None,
+                level: Level::Error,
+                scope: Scope::compile(["**"]).expect("valid scope"),
+                file_pattern: Pattern::compile(".*").expect("valid pattern"),
+                symbol: symbol.to_owned(),
+                imported_from: "x".to_owned(),
+            }
+            .root()
+            .to_owned()
+        };
+
+        assert_eq!(root_of("Event.save"), "Event", "the JavaScript separator");
+        assert_eq!(root_of("Audit::record"), "Audit", "and the Rust one");
+        assert_eq!(root_of("record"), "record", "a bare name is its own root");
+        assert_eq!(root_of("a::b::c"), "a", "the first segment, not the last");
+    }
     use archwarden_core::{
         facts::{CallFact, ImportFact, Span},
         hash::ContentHash,

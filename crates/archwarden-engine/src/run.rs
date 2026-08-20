@@ -16,7 +16,7 @@ use archwarden_core::{
     finding::Finding,
     hash::ContentHash,
     level::Level,
-    path::{FileClass, RepoRelPath},
+    path::{FileClass, Language, RepoRelPath},
     traits::{Exists, FactsNeeded, FileContext, Parser as _},
 };
 use camino::Utf8Path;
@@ -382,7 +382,8 @@ pub fn check(run: Run<'_>) -> Report {
             // graph is being built it is opened anyway, if it is source: its
             // imports are edges, and a loop is made of edges from files whose
             // own scope has nothing to do with the rule that reports it.
-            let feeds_graph = building_graph && reads_as_code(file.class, config.languages());
+            let feeds_graph =
+                building_graph && reads_as_code(&file.name, file.class, config.languages());
             // `narrowing_here` is the third reason to open a file nothing
             // appears to govern. A directory rule's `applies_to` answers
             // `false` for every file by design, so `wanted_by` is empty for one
@@ -416,7 +417,7 @@ pub fn check(run: Run<'_>) -> Report {
                 None
             };
 
-            let mut facts = if reads_as_code(file.class, config.languages())
+            let mut facts = if reads_as_code(&file.name, file.class, config.languages())
                 && (feeds_graph
                     || !narrowing_here.is_empty()
                     || wanted_by.iter().any(|(index, engine)| {
@@ -825,7 +826,19 @@ fn read_docs(
 /// JS/TS always. Astro only when the configuration asked for it -- and when it
 /// did not, the file produces no facts, which `yields` then turns into a
 /// counted, named skip rather than a silent pass. Issue #13.
-fn reads_as_code(class: FileClass, languages: archwarden_core::compiled::Languages) -> bool {
+fn reads_as_code(
+    name: &str,
+    class: FileClass,
+    languages: archwarden_core::compiled::Languages,
+) -> bool {
+    // Rust is asked for, on the same terms as Astro. A repository with a
+    // `src-tauri/` beside its `src/` has `.rs` files whose author never asked
+    // archwarden to have an opinion about them, and reading one anyway would
+    // hold it to rules written for the other half of the repository.
+    if matches!(FileClass::language(name), Some(Language::Rust)) {
+        return languages.rust;
+    }
+
     match class {
         FileClass::Source => true,
         FileClass::Embedded => languages.astro,
@@ -899,9 +912,19 @@ pub fn facts_from(path: &RepoRelPath, source: &str) -> Result<FileFacts, String>
 /// answers "what kind of file is this" from the name alone, and asking a second
 /// time here is where the two would drift.
 fn parse(path: &RepoRelPath, source: &str, content: ContentHash) -> Result<FileFacts, String> {
-    let class = path.file_name().map_or(FileClass::Other, FileClass::of);
+    let name = path.file_name().unwrap_or_default();
 
-    match class {
+    // By language where one is named, by class otherwise. `FileClass` answers
+    // "can anything here read it"; which front-end reads it is a finer question
+    // now that `Source` holds two languages.
+    if matches!(FileClass::language(name), Some(Language::Rust)) {
+        // Infallible: `ra_ap_syntax` answers a malformed file with a tree and
+        // an error list, so a file mid-edit still yields what it carried.
+        // Decision 32.
+        return Ok(archwarden_parser::rust::parse(path, source, content));
+    }
+
+    match FileClass::of(name) {
         FileClass::Embedded => archwarden_parser::astro::parse(path, source, content),
         _ => archwarden_parser::oxc::OxcParser.parse(path, source, content),
     }
