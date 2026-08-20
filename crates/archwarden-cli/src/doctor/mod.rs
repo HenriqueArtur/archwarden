@@ -647,6 +647,54 @@ mod tests {
         );
     }
 
+    /// Issue #168, the half found by reading `verify-rules` output. It refuses
+    /// a chokepoint with no callee and says *"`config doctor` reports a rule
+    /// that constrains nothing"* — and `doctor` said `No concerns`. A promise
+    /// one command makes about another has to be kept by the other.
+    ///
+    /// `chokepoint` is the second kind whose fields are all optional, which is
+    /// what this check was written for.
+    #[test]
+    fn a_chokepoint_guarding_no_callee_constrains_nothing() {
+        let toothless = config(vec![rule(
+            "guards-nothing",
+            &["src/*"],
+            CompiledRuleKind::Chokepoint {
+                callee: Vec::new(),
+                only_in: Scope::compile(["src/config/**"]).expect("valid scope"),
+            },
+        )]);
+
+        let concerns = examine(&toothless);
+        let found = concerns
+            .iter()
+            .find(|c| c.code == "rule-constrains-nothing")
+            .unwrap_or_else(|| panic!("{concerns:?}"));
+        assert_eq!(
+            found.rule_id.as_ref().map(RuleId::as_str),
+            Some("guards-nothing")
+        );
+
+        // One callee is enough. An empty `only_in` is *not* the same thing --
+        // it is the rule "nobody here may", which is a constraint.
+        let guarding = config(vec![rule(
+            "the-domain-is-testable",
+            &["src/*"],
+            CompiledRuleKind::Chokepoint {
+                callee: vec!["Date.now".to_owned()],
+                only_in: Scope::compile(std::iter::empty::<&str>()).expect("valid scope"),
+            },
+        )]);
+
+        assert!(
+            examine(&guarding)
+                .iter()
+                .all(|c| c.code != "rule-constrains-nothing"),
+            "{:?}",
+            examine(&guarding)
+        );
+    }
+
     /// Each of the three fields on its own is something to enforce, and an
     /// empty `allowed_subfolders` counts — after issue #40 it is the rule
     /// "no subfolder may exist here".

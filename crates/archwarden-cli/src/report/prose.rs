@@ -356,11 +356,22 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
         Expectation::RequiredImport { patterns } => {
             format!("an import from {}", join_or(patterns, "somewhere"))
         }
-        Expectation::UsedOnlyIn { callee, only_in } => format!(
-            "no use of {} outside {}",
-            join_or(callee, "anything"),
-            join_or(only_in, "anywhere"),
-        ),
+        // An empty allowlist is a sentence of its own, not a list with a
+        // fallback word in it. `join_or(only_in, "anywhere")` read `outside
+        // anywhere`, which is the opposite of what the rule means -- and this
+        // is the string `describe`, `scaffold` and the pre-write hook all say,
+        // so an agent was being told the reverse. Issue #168.
+        Expectation::UsedOnlyIn { callee, only_in } => {
+            let guarded = join_or(callee, "anything");
+            if only_in.is_empty() {
+                format!("no use of {guarded} here at all")
+            } else {
+                format!(
+                    "no use of {guarded} outside {}",
+                    join_or(only_in, "anywhere")
+                )
+            }
+        }
         Expectation::RequiredCall {
             symbol,
             imported_from,

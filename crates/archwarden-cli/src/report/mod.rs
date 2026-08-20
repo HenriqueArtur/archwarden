@@ -814,6 +814,28 @@ mod tests {
         );
     }
 
+    /// Issue #168. An empty allowlist is how a `chokepoint` says *nobody here
+    /// may*, and it used to render as `outside anywhere` -- the opposite of
+    /// what the rule means, in the one string `describe`, `scaffold` and the
+    /// pre-write hook all say.
+    #[test]
+    fn an_empty_allowlist_says_nobody_rather_than_outside_anywhere() {
+        let nobody = describe_expectation(&Expectation::UsedOnlyIn {
+            callee: vec!["Date.now".to_owned(), "console".to_owned()],
+            only_in: Vec::new(),
+        });
+
+        assert_eq!(nobody, "no use of `Date.now` or `console` here at all");
+
+        // And a rule that does name an allowlist still reads as it did.
+        let somewhere = describe_expectation(&Expectation::UsedOnlyIn {
+            callee: vec!["process.env".to_owned()],
+            only_in: vec!["src/config/**".to_owned()],
+        });
+
+        assert_eq!(somewhere, "no use of `process.env` outside `src/config/**`");
+    }
+
     /// A rule that only names keys gets one clause, and the sentence has to
     /// say where they go — a reader who has never met the marker cannot guess
     /// its spelling from `owner`.
