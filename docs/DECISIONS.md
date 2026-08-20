@@ -17,6 +17,91 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 31 — A declaration form and a visibility are two axes, and `ExportKind` is one of them
+Status: accepted.
+Context: decision 19 named this as the thing to settle before a second *code*
+front-end, and gave the reason: an abstraction designed while looking at one
+language is designed from the thing it is meant to abstract over, and getting
+it wrong makes every later language fight it again. Issue #131 is that debt
+coming due, because Rust arrives in 0.31.
+
+`ExportKind` today is a declaration form — `function`, `arrow`, `const`,
+`let`, `var`, `class`, `type`, `interface`, `enum`, `reexport` — carried as a
+bitset (`ExportTags`, a `u16`) so one export can hold several, and filtered by
+`must_export.kind` through `KindFilter::{Any, OneOf}`.
+
+It is not an internal detail. `ExportKind::ALL` is the closed vocabulary a
+config is validated against, and `compile/fields.rs` renders it into the error
+a user reads when `must_export.kind` names something unknown.
+
+**Rust has two axes where JavaScript has one.** Visibility — `pub`,
+`pub(crate)`, `pub(super)`, `pub(in path)` — is orthogonal to form —
+`fn`, `struct`, `enum`, `trait`, `type`, `const`, `static`, `mod`, `macro`.
+`pub fn` and `pub(crate) fn` are the same form and different exports;
+`pub fn` and `pub struct` are the same export and different forms.
+
+Decision, in three parts.
+
+**Visibility becomes a field of its own on `ExportFact`, not a variant of
+`ExportKind`.** A set that mixed the two would make `OneOf([function, pub])`
+sayable and meaningless, and `KindFilter::accepts` is an intersection test — it
+cannot express "this form *and* that visibility" over one set.
+
+JavaScript has one visibility and it is public: a symbol is exported or it is
+not, and a symbol that is not produces no `ExportFact` at all. Rust keeps that
+rule — an item with no `pub` is not an export and is not carried — so the field
+distinguishes only *degrees* of exported. `must_export.visibility` narrows;
+saying nothing accepts any of them, which is what every config written before
+this keeps.
+
+**`ExportKind` grows with Rust's forms under Rust's names.** `fn`, `struct`,
+`trait`, `static`, `mod`, `macro` join it; `enum`, `type` and `const` are
+already there and mean the same thing in both languages. The tag set widens
+from `u16` to `u32`.
+
+It deliberately does **not** reuse `function` for `fn` or `class` for `struct`,
+though both readings are defensible and the second is nearly idiomatic. A
+config saying `kind: ["class"]` over a Rust tree under the reused spelling
+would match every struct; under this one it matches nothing — and `doctor`
+says so, which is the whole difference. `docs/CONFIG.md` calls a rule that
+enforces nothing while looking like it enforces something the worst failure a
+linter has, and the reused spelling manufactures one every time somebody
+copies a rule between the two halves of a Tauri repository.
+
+**"Not applicable" is reported, never silent.** A `must_export.kind` naming a
+form no language in the config's `languages` can produce is a `doctor` concern
+naming both. That is what makes the previous paragraph safe: the answer to
+`kind: ["interface"]` over `.rs` is a sentence, not an empty result set.
+
+Alternatives:
+- **Grow `ExportKind` with visibility variants.** Rejected above: it makes an
+  unsatisfiable filter sayable, and the bitset cannot express the conjunction
+  the two axes need.
+- **Reuse the JavaScript spellings for Rust's forms** — `function` for `fn`,
+  `class` for `struct`, `interface` for `trait`. Rejected: it reads better and
+  it is exactly the shape of a silent false green. The overlap it buys is
+  small; `enum`, `type` and `const` are already shared, and they are shared
+  because they *are* the same thing rather than because the names collide.
+- **A per-language `ExportKind`, generic over the front-end.** Rejected as
+  decision 19 rejected generalising early: the rule engines consume one fact
+  type, and a kind parameterised by language would put a type parameter through
+  every engine, the cache and the JSON report to express something a `doctor`
+  check answers.
+- **Leave `must_export` alone and let Rust configs use `naming.file_pattern`
+  only.** Rejected: it gives up the coupling that `naming` exists for on the
+  language that arrived second, and the asymmetry would be permanent.
+
+Consequences: `ExportFact` gains one field, so the cache format bumps
+(decision 3). `must_export.visibility` is a new config key and `schema/v0.json`
+regenerates. Nothing changes for an existing configuration: every JavaScript
+export is public, and a rule that names no visibility accepts every one.
+
+The forms themselves land with the front-end that can produce them (#135),
+not here — a vocabulary nobody can satisfy would make the `doctor` check above
+fire on every config in the world.
+
+---
+
 ### 30 — A claim in a comment is a fact of its own, and the header is where it lives
 Status: accepted.
 Context: issue #104. `frontmatter` asks a **document** to declare things about
