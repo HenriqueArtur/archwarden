@@ -17,6 +17,13 @@ saying so.
 
 ## [Unreleased]
 
+## [0.28.1] — 2026-08-20
+
+A maintenance release. **No existing configuration reports anything new** — the
+binary, the config surface and every rule behave exactly as they did in 0.28.0,
+and the only thing a user of archwarden sees is three sentences in the schema
+their editor shows them.
+
 Nothing here changes what archwarden reports. The binary, the config surface
 and every rule behave exactly as they did in 0.28.0.
 
@@ -2426,7 +2433,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.1...HEAD
+[0.28.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.26.0...v0.27.0
 [0.26.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.25.0...v0.26.0
