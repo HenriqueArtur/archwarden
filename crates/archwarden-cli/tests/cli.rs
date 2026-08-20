@@ -4069,9 +4069,24 @@ fn the_blind_spots_section_appears_only_when_the_run_missed_something() {
         .assert()
         .success();
     let html = std::fs::read_to_string(&page).expect("the page was written");
+    // Each note is asserted absent on its own. A single assertion on the
+    // section heading would pass while any one of them printed a zero, which
+    // is the shape of every mutant this file has produced.
     assert!(
         !html.contains("nobody could make"),
-        "nothing was missed, so nothing is claimed: {html}"
+        "no check was skipped: {html}"
+    );
+    assert!(
+        !html.contains("could not be resolved"),
+        "every import resolved: {html}"
+    );
+    assert!(
+        !html.contains("accepted in the baseline"),
+        "nothing was accepted into a baseline: {html}"
+    );
+    assert!(
+        !html.contains("What this run did not decide"),
+        "and with no note at all the section does not render: {html}"
     );
 
     // A boundary rule over a language with no front-end: the import cannot be
@@ -4095,5 +4110,263 @@ fn the_blind_spots_section_appears_only_when_the_run_missed_something() {
     assert!(
         html.contains("What this run did not decide"),
         "a skipped check is named: {html}"
+    );
+}
+
+/// A wall exists between two declared modules, and the config for one is the
+/// smallest thing that produces it: a module's scope comes from the rules
+/// inside it, so a module declared with no rules contributes nothing and the
+/// section never renders.
+const WALLED: &str = r#"{"version":0,
+    "modules":[
+      {"id":"ui","rules":[
+        {"type":"import-boundary","id":"ui-not-domain","level":"error",
+         "from":"src/ui/**","forbid_import_from":["src/domain/**"]}]},
+      {"id":"domain","rules":[
+        {"type":"structure","id":"domain-shape","level":"error",
+         "roots":"src/domain/*","allowed_subfolders":["parts"]}]}]}"#;
+
+/// A wall nothing crosses says so; a wall something crosses counts it.
+///
+/// The two branches of `html_pressure`. A page that drew a crossed wall the
+/// same as a held one would be worse than no page, because it would look like
+/// it had checked.
+#[test]
+fn the_pressure_section_distinguishes_a_held_wall_from_a_crossed_one() {
+    let held = repo(&[
+        ("arch.config.json", WALLED),
+        ("src/ui/a.ts", "export const a = 1;\n"),
+        ("src/domain/thing/parts/x.ts", "export const x = 1;\n"),
+    ]);
+    let page = held.path().join("held.html");
+    archwarden()
+        .current_dir(held.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        .success();
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.contains("The walls under pressure"), "{html}");
+    assert!(html.contains(r#"pill quiet">holding"#), "{html}");
+    assert!(html.contains("Nothing crosses this today."), "{html}");
+    assert!(!html.contains("crossing now"), "{html}");
+
+    let crossed = repo(&[
+        ("arch.config.json", WALLED),
+        (
+            "src/ui/a.ts",
+            "import { x } from '../domain/thing/parts/x';\nexport const a = x;\n",
+        ),
+        ("src/domain/thing/parts/x.ts", "export const x = 1;\n"),
+    ]);
+    let page = crossed.path().join("crossed.html");
+    archwarden()
+        .current_dir(crossed.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        .code(1);
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.contains(r#"pill now">1 crossing now"#), "{html}");
+    assert!(!html.contains("Nothing crosses this today."), "{html}");
+}
+
+/// Past five crossings the list folds, and the count moves onto the summary
+/// line so that folding hides nothing.
+#[test]
+fn a_wall_crossed_more_than_five_times_folds_and_keeps_its_count() {
+    let import = "import { x } from '../domain/thing/parts/x';\n";
+    let mut files: Vec<(String, String)> = vec![
+        ("arch.config.json".to_owned(), WALLED.to_owned()),
+        (
+            "src/domain/thing/parts/x.ts".to_owned(),
+            "export const x = 1;\n".to_owned(),
+        ),
+    ];
+    for n in 0..6 {
+        files.push((
+            format!("src/ui/f{n}.ts"),
+            format!("{import}export const a{n} = x;\n"),
+        ));
+    }
+    let borrowed: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(path, body)| (path.as_str(), body.as_str()))
+        .collect();
+
+    let dir = repo(&borrowed);
+    let page = dir.path().join("folded.html");
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        .code(1);
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    // `<details>` alone appears in the stylesheet; the summary is the body.
+    assert!(
+        html.contains("<details><summary>6 imports"),
+        "six crossings fold, and the count survives folding: {html}"
+    );
+    assert!(html.contains(r#"pill now">6 crossing now"#), "{html}");
+}
+
+/// Five is not past five. The boundary is asserted from below as well, because
+/// `>` and `>=` render the same page for every count except this one.
+#[test]
+fn a_wall_crossed_exactly_five_times_does_not_fold() {
+    let import = "import { x } from '../domain/thing/parts/x';\n";
+    let mut files: Vec<(String, String)> = vec![
+        ("arch.config.json".to_owned(), WALLED.to_owned()),
+        (
+            "src/domain/thing/parts/x.ts".to_owned(),
+            "export const x = 1;\n".to_owned(),
+        ),
+    ];
+    for n in 0..5 {
+        files.push((
+            format!("src/ui/f{n}.ts"),
+            format!("{import}export const a{n} = x;\n"),
+        ));
+    }
+    let borrowed: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(path, body)| (path.as_str(), body.as_str()))
+        .collect();
+
+    let dir = repo(&borrowed);
+    let page = dir.path().join("five.html");
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        .code(1);
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.contains(r#"pill now">5 crossing now"#), "{html}");
+    assert!(
+        !html.contains("<details><summary>"),
+        "five crossings are still a list: {html}"
+    );
+}
+
+/// An import that resolves nowhere is a blind spot, and the page names it.
+///
+/// Separate from the skipped-check note beside it: a check nobody could make
+/// and an import nobody could place are different admissions, and a page that
+/// printed one for the other would be telling the reader the wrong thing.
+#[test]
+fn an_unresolved_import_is_named_among_the_blind_spots() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{"type":"import-boundary","id":"b","level":"error",
+                "from":"src/**","forbid_import_from":["vendor/**"]}]}"#,
+        ),
+        (
+            "src/a.ts",
+            "import { y } from './nowhere-at-all';\nexport const a = y;\n",
+        ),
+    ]);
+    let page = dir.path().join("unresolved.html");
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        .success();
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.contains("What this run did not decide"), "{html}");
+    assert!(
+        html.contains("could not be resolved"),
+        "the import nobody could place is named: {html}"
+    );
+}
+
+/// Debt accepted into a baseline is a blind spot too, and the page counts it.
+///
+/// A page that showed a green run over an accepted violation without saying
+/// how many were accepted would be the most flattering thing this tool could
+/// print, and the least true.
+#[test]
+fn what_a_baseline_accepted_is_counted_among_the_blind_spots() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{"type":"spec-pair","id":"s","level":"error",
+                "roots":"src/*","subfolders":["."]}]}"#,
+        ),
+        ("src/a/x.ts", "export const x = 1;\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("baseline")
+        .assert()
+        .success();
+
+    let page = dir.path().join("accepted.html");
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        .success();
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(html.contains("What this run did not decide"), "{html}");
+    assert!(
+        html.contains("accepted in the baseline"),
+        "the accepted debt is counted: {html}"
+    );
+}
+
+/// The map counts errors and warnings apart, and says `clean` only when there
+/// is neither.
+///
+/// Three modules and three shapes, because the branch is `errors == 0 &&
+/// warnings == 0` and one fixture cannot exercise it. `spec-pair` rather than
+/// `structure`: a module's counts are gathered from findings on its *files*,
+/// and a structure finding is about a directory, so it lands nowhere here —
+/// which is why the obvious fixture reports every module clean.
+#[test]
+fn the_map_counts_errors_and_warnings_apart() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,
+                "modules":[
+                  {"id":"strict","rules":[{"type":"spec-pair","id":"s","level":"error",
+                    "roots":"src/strict/*","subfolders":["."]}]},
+                  {"id":"lenient","rules":[{"type":"spec-pair","id":"l","level":"warning",
+                    "roots":"src/lenient/*","subfolders":["."]}]},
+                  {"id":"clean","rules":[{"type":"spec-pair","id":"c","level":"error",
+                    "roots":"src/clean/*","subfolders":["."]}]}]}"#,
+        ),
+        ("src/strict/a/x.ts", "export const x = 1;\n"),
+        ("src/lenient/a/x.ts", "export const x = 1;\n"),
+        ("src/clean/a/x.ts", "export const x = 1;\n"),
+        ("src/clean/a/x.spec.ts", "it('x', () => {});\n"),
+    ]);
+    let page = dir.path().join("map.html");
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--html", page.to_str().expect("utf-8")])
+        .assert()
+        .code(1);
+
+    let html = std::fs::read_to_string(&page).expect("the page was written");
+    assert!(
+        html.contains(r#"<span class="counts">1 file · <span class="hot">1 error</span></span>"#),
+        "an error is marked hot, and a module with no warnings says nothing \
+         about warnings: {html}"
+    );
+    assert!(
+        html.contains(r#"<span class="counts">1 file · 1 warning</span>"#),
+        "a warning is counted and is not hot: {html}"
+    );
+    assert!(
+        html.contains(r#"<span class="counts">2 files · clean</span>"#),
+        "neither is `clean`: {html}"
     );
 }
