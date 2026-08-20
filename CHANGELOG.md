@@ -17,46 +17,105 @@ saying so.
 
 ## [Unreleased]
 
-Groundwork for Rust. **No existing configuration reports
-anything new** — every check here is about a language this build still cannot
-read, and both new questions answer exactly as `FileClass::Source` did for
-every language it can.
+## [0.29.0] — 2026-08-20
+
+**archwarden reads Rust.** A `src-tauri/` beside a `src/` is one repository to
+it now, checked by one `arch.config.json`.
+
+**No existing configuration reports anything new.** Rust is opt-in: a config
+that does not name it sees `.rs` files exactly as 0.28.1 did — as a *counted,
+named skip*. Turning it on is one line.
+
+```json
+{ "version": 0, "languages": ["rust"], "rules": [ ... ] }
+```
+
+Thirteen of the fifteen rule kinds work on `.rs` immediately. The two that do
+not are `import-boundary` and `import-cycle`, and they are the two that need a
+resolver — see **What is not here** below.
 
 ### Added
 
-- **`languages: ["rust"]`**, accepted and carried. It turns nothing on yet:
-  `.rs` is still a language with no front-end, and a file of one is a *counted,
-  named skip*. The flag exists now so the switch in 0.31 is one line rather
-  than a decision taken under pressure.
+- **A Rust front-end.** `use` becomes imports, `pub` items become exports,
+  calls carry the path as written. `Event::save` is the Rust spelling of the
+  `Event.save` already recorded, so one `call-obligation` rule can be written
+  against a repository holding both languages.
 
-- **Decision 31**, which settles what an export is when the language has no
-  `export` keyword. Visibility becomes a field of its own rather than a variant
-  of `ExportKind` — a set holding both would make `OneOf([function, pub])`
-  sayable and meaningless — and Rust's declaration forms will arrive under
-  Rust's names, deliberately not reusing `function` for `fn` or `class` for
-  `struct`. The reused spelling reads better and manufactures a silent false
-  green the first time somebody copies a rule between the two halves of a Tauri
-  repository.
+  Built on `ra_ap_syntax` rather than `syn`, which decision 32 measured. The
+  deciding difference is comments: `syn` keeps `///` and discards every `//`,
+  which is where `archwarden-allow:` and `archwarden-<key>:` live. Writing the
+  scanner instead means owning a component whose failures are silent —
+  `let url = "https://example.com";` has a `//` in it, and so do raw strings,
+  char literals and nested block comments.
+
+  Reading a malformed `.rs` is not an error. The parser answers with a tree
+  *and* a list of what was wrong with it, so a file somebody is mid-edit on
+  still yields the facts it carried — and mid-edit is exactly when the
+  pre-write hook runs.
+
+- **`languages: ["rust"]`**, on the same terms `astro` already had. Carried
+  rather than assumed: a repository with a `src-tauri/` has `.rs` files whose
+  author never asked archwarden to have an opinion about them.
+
+- **`must_export.kind` accepts Rust's declaration forms** — `fn`, `struct`,
+  `trait`, `static`, `mod`, `macro` — and `enum`, `type` and `const` already
+  meant the same thing in both languages.
+
+  It deliberately does **not** accept `function` for `fn` or `class` for
+  `struct`. Decision 31: the reused spelling reads better and manufactures a
+  silent false green the first time a rule is copied between the two halves of
+  one repository. Under it, `kind: ["class"]` over a Rust tree matches every
+  struct; under this, it matches nothing.
+
+- **`Visibility` on an export**, a second axis rather than a variant: `pub`,
+  `pub(crate)`, `pub(super)`, `pub(in path)`. An item with no `pub` is not an
+  export at all, on the same terms as a declaration with no `export`. Every
+  JavaScript export is `public`, which is the only visibility that language
+  has.
+
+- **archwarden checks archwarden.** This repository now carries an
+  `arch.config.json` gated in its own CI. Four rules, every one a convention
+  held by hand until now — most sharply that
+  `crates/archwarden-rules/src/<kind>.rs` exports `<Kind>Engine`, fourteen for
+  fourteen, with nothing that would have noticed a fifteenth arriving under
+  another name.
 
 ### Changed
 
-- **`spec-pair` asks whether a language's tests sit beside the unit**, not
-  whether archwarden can read the file. The two say the same thing about a
-  JavaScript repository and stop agreeing the moment a second language arrives:
-  Rust's unit tests live in a `#[cfg(test)]` module *inside* the file, so the
-  old reading would have had every existing `spec-pair` rule demanding
-  `create_client.spec.rs` the day the front-end landed. A language that tests
-  some other way is skipped by the rule, never failed by it.
+- **The cache format is 9.** `FileFacts` changed shape, so a cache written by
+  an older archwarden is discarded rather than misread — decision 3. You lose
+  one warm cache and pay one cold run.
 
-- **A rule that wants import edges is counted as a skipped check where no
-  resolver can place them.** Decision 19 permits a language to ship a parser
-  before its resolver and requires that a boundary rule over it be a loud
-  refusal rather than a silent pass; this is that refusal, in place before the
-  parser it is about.
+- **`spec-pair` asks whether a language's tests sit beside the unit**, rather
+  than whether archwarden can read the file. The two say the same thing about
+  a JavaScript repository and stop agreeing here: Rust's unit tests live in a
+  `#[cfg(test)]` module *inside* the file, so the old reading would have had
+  every existing `spec-pair` rule demanding `create_client.spec.rs` the day
+  this landed. A language that tests some other way is **skipped** by the rule,
+  never failed by it. Teaching the rule the inline form is the next milestone.
 
-  Two tests fail the moment an extension joins the readable set without
-  answering either question, so both decisions land in the commit that adds the
-  language rather than in the release where a user finds out.
+- **`call-obligation` reads both path separators.** A rule naming
+  `Audit::record` over a file importing `Audit` was reported for importing
+  neither, because the root was split on `.` alone. Found by running the new
+  front-end end to end rather than by reasoning about it.
+
+### What is not here
+
+- **No Rust resolver**, so `import-boundary` and `import-cycle` cannot see a
+  `use`. Such a rule over `.rs` files is a **counted, named skip** rather than
+  a silent pass — decision 19 requires exactly that, because a rule reporting
+  nothing is indistinguishable from a repository that satisfies it.
+
+  Rust's module tree and Cargo workspaces are a different algorithm from
+  Node's, not a variant of it. It is the expensive half and it has not been
+  written.
+
+- **No inline-test support in `spec-pair`**, as above.
+
+- **No Tauri IPC rule.** `invoke("greet")` and `#[tauri::command] fn greet` are
+  joined by a string that no import records and no resolver can see. It is the
+  most interesting thing two languages in one repository make possible and it
+  is a milestone of its own.
 
 ## [0.28.1] — 2026-08-20
 
@@ -2474,7 +2533,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.1...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.29.0...HEAD
+[0.29.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.1...v0.29.0
 [0.28.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.27.0...v0.28.0
 [0.27.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.26.0...v0.27.0
