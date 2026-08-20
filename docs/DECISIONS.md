@@ -17,6 +17,80 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 32 — The Rust front-end reads a CST, because the markers are in the comments
+Status: accepted.
+Context: issue #134. Decision 6 put the parser behind a trait so the front-end
+could be replaced; decision 19 measured what a third one costs and said the
+parser is one function. Neither says which crate goes behind it for Rust, and
+this workspace has been burned by that choice before — the oxc crates are
+pinned with `=` because 0.x versions break often.
+
+Four things the choice has to satisfy: byte spans, because a finding carries a
+caret; no panic, because archwarden runs as a pre-commit hook and an agent
+pre-write hook where a stack trace is a worse failure than a diagnostic;
+comments, because decision 30 put `archwarden-allow:` and `archwarden-<key>:`
+in them; and a licence `deny.toml` accepts, which excludes every copyleft.
+
+Measured rather than argued. Both candidates were built and run against the
+same file.
+
+| | `syn` 2 | `ra_ap_syntax` |
+|---|---|---|
+| byte spans | yes, `byte_range()` on stable | yes |
+| malformed input | `Err` with a message | a tree *and* an error list |
+| `//` comments | **discarded** | `COMMENT 33..82`, with ranges |
+| transitive crates | 6 | 34 |
+| licences | permissive | permissive |
+
+Decision: `ra_ap_syntax`, pinned exactly.
+
+**The comments decide it.** `syn` keeps `///` — those become `#[doc]`
+attributes — and throws away every `//`, which is where the markers this
+project reads actually live. A front-end on `syn` would need a second, hand
+written pass to find them.
+
+That pass is the argument. Finding `//` in a line is trivial and finding it
+*correctly* is not: `let url = "https://example.com";` contains one, and so
+does a raw string, a char literal and a nested block comment. A scanner that
+gets those wrong reads a suppression that is not there, or misses one that is —
+in silence, which is the single failure mode this project exists to refuse.
+`ra_ap_syntax` was handed exactly that line in the spike and reported two
+comments, not three.
+
+**The error model is the second reason, and it fits better than `syn`'s.** A
+malformed `.rs` should be a *named skip*, not an exception: `ra_ap_syntax`
+returns a tree and a list of what was wrong with it, so a file that half-parses
+still yields the facts it did carry. `syn` returns `Err` and nothing else,
+which throws away the readable half of a file somebody is mid-edit on — and
+mid-edit is exactly when the pre-write hook runs.
+
+**The weight is affordable and was checked rather than assumed.** 34 crates
+against a workspace that already resolves 211, of which oxc alone is 83. Every
+licence in the added tree is MIT, Apache-2.0 or Unlicense.
+
+Alternatives:
+- **`syn` plus a hand-written comment scanner.** Rejected above: the scanner is
+  a component whose failures are silent, and it would be ours to maintain.
+  Cheaper in crates and dearer in the currency this project spends.
+- **`tree-sitter-rust`.** Error-tolerant and keeps everything, and produces an
+  untyped tree every extractor has to interpret by node kind. That is the same
+  work as `ra_ap_syntax` without the typed AST layer over it, and it adds a C
+  dependency to a workspace that has one only because `blake3` needs it for
+  SIMD — which decision 14 already pays for once, in the release matrix.
+- **Wait for `rustc`'s own parser to be published.** Not a plan with a date.
+
+Consequences: `ra_ap_syntax` is pinned with `=` on the same terms as oxc, and
+the version bump is a deliberate change rather than a `cargo update`. It
+versions fast — 0.0.x — and that is the cost this pinning is for.
+
+The dependency itself arrives with the front-end that uses it (#135), not with
+this decision. Adding it here was tried and `cargo machete` refused it, which
+is the gate working: a dependency nothing imports is one nobody can justify by
+reading the tree, and "a decision says we will use it" is not something a build
+can check.
+
+---
+
 ### 31 — A declaration form and a visibility are two axes, and `ExportKind` is one of them
 Status: accepted.
 Context: decision 19 named this as the thing to settle before a second *code*
