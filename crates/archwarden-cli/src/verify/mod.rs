@@ -962,6 +962,7 @@ mod tests {
                     kind: archwarden_core::facts::KindFilter::Any,
                     annotation: Vec::new(),
                     signature_hint: None,
+                    ignore_files: archwarden_core::glob::PathSet::default(),
                 },
             )],
         );

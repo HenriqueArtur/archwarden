@@ -126,6 +126,17 @@ pub enum CompiledRuleKind {
         annotation: Vec<String>,
         /// A signature shown by `scaffold`. Never verified.
         signature_hint: Option<String>,
+        /// Files this rule does not ask about.
+        ///
+        /// Repo-relative globs, spelled the way `spec-pair` spells them.
+        /// Separate from the top-level `ignore`, which hides a file from
+        /// *every* rule -- so a repository wanting one rule to skip a file and
+        /// another to see it had to choose. Issue #153.
+        ///
+        /// Barrels are not in here. `mod.rs` and `index.ts` are exempt by
+        /// construction, because nobody should have to declare that a module
+        /// declaration exports nothing.
+        ignore_files: PathSet,
     },
     /// Every unit file needs a spec sibling.
     SpecPair {
@@ -992,6 +1003,7 @@ mod tests {
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
             annotation: Vec::new(),
             signature_hint: None,
+            ignore_files: crate::glob::PathSet::default(),
         }
     }
 

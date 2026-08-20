@@ -2,7 +2,6 @@
   "$schema": "./schema/v0.json",
   "version": 0,
   "languages": ["rust"],
-  "ignore": ["**/lib.rs", "**/mod.rs", "**/main.rs"],
   "rules": [
     {
       "type": "structure",

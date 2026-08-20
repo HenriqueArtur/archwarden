@@ -229,6 +229,7 @@ mod tests {
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Struct)),
                 annotation: Vec::new(),
                 signature_hint: None,
+                ignore_files: archwarden_core::glob::PathSet::default(),
             },
         );
 
@@ -261,6 +262,7 @@ mod tests {
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Struct)),
                 annotation: Vec::new(),
                 signature_hint: None,
+                ignore_files: archwarden_core::glob::PathSet::default(),
             },
         );
 
@@ -303,6 +305,7 @@ mod tests {
                 ),
                 annotation: Vec::new(),
                 signature_hint: None,
+                ignore_files: archwarden_core::glob::PathSet::default(),
             },
         );
 
@@ -322,6 +325,7 @@ mod tests {
                 kind: KindFilter::Any,
                 annotation: Vec::new(),
                 signature_hint: None,
+                ignore_files: archwarden_core::glob::PathSet::default(),
             },
         );
 
@@ -407,6 +411,7 @@ mod tests {
             kind,
             annotation: Vec::new(),
             signature_hint: hint.map(str::to_owned),
+            ignore_files: archwarden_core::glob::PathSet::default(),
         }
     }
 
@@ -420,6 +425,7 @@ mod tests {
             kind: KindFilter::Any,
             annotation: Vec::new(),
             signature_hint: None,
+            ignore_files: archwarden_core::glob::PathSet::default(),
         }
     }
 

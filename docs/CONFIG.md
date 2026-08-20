@@ -790,7 +790,12 @@ rule for choosing between them. See `docs/RULES.md` for the full semantics.
 }
 ```
 
-`ignore_files` takes globs, so both an exact path and a pattern work.
+`ignore_files` takes globs, so both an exact path and a pattern work. `naming`
+takes the same field with the same meaning — and both are one rule's exemption
+rather than the walk's. The top-level `ignore` hides a file from **every** rule,
+which is the wrong tool for *this rule should not ask about that file*: a
+repository wanting a `metadata` rule to still see it had to choose between the
+two. Issue #153.
 
 `spec_markers` defaults to `["spec", "test"]` and can usually be omitted: it
 is what vitest and jest both accept. The extension is never configured — it

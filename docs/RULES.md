@@ -343,6 +343,19 @@ derivable from the filename by a case transform.
     (`export function Foo(deps: FooDeps): UseCase<FooInput, FooOutput>`)
     rather than just a name. Constraining the actual type is type checking;
     use `tsc`.
+- `ignore_files` — optional. Repo-relative globs this rule does not ask about.
+
+**Barrels are exempt, and nobody lists them.** `index.ts`, `index.tsx`,
+`index.js`, `index.jsx`, `mod.rs`, `lib.rs` and `main.rs` declare modules and
+re-export; they have no symbol of their own, and asking `mod.rs` for a `Mod` is
+asking the wrong file. The obvious Rust `file_pattern` — `^(?<name>.+)\.rs$` —
+matches every one of them, so this is built in rather than left to each config.
+
+**`ignore_files` is for everything else**, and it is one rule's exemption
+rather than the walk's. The top-level `ignore` removes a file from **every**
+rule, so a repository that wanted one `naming` rule to skip a generated file
+while a `metadata` or `structure` rule still saw it had to choose between the
+two. Spelled and matched the way `spec-pair` spells it. Issue #153.
 
 **Case transformers available in templates**: `pascal`, `camel`, `kebab`,
 `snake`, `upper`, `lower`, `raw`.

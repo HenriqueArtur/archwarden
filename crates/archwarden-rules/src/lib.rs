@@ -128,14 +128,18 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     kind,
                     annotation,
                     signature_hint,
+                    ignore_files,
                 } => Box::new(naming::NamingEngine::build(
                     rule,
-                    file_pattern,
-                    dir_pattern.as_ref(),
-                    name_template,
-                    kind,
-                    annotation,
-                    signature_hint.as_deref(),
+                    &naming::NamingFields {
+                        file_pattern,
+                        dir_pattern: dir_pattern.as_ref(),
+                        name_template,
+                        kind,
+                        annotation,
+                        signature_hint: signature_hint.as_deref(),
+                        ignore_files,
+                    },
                 )),
                 CompiledRuleKind::ImportBoundary {
                     forbid,
@@ -290,6 +294,7 @@ mod tests {
             kind: archwarden_core::facts::KindFilter::Any,
             annotation: Vec::new(),
             signature_hint: None,
+            ignore_files: archwarden_core::glob::PathSet::default(),
         }
     }
 

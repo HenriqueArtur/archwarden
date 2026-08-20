@@ -567,6 +567,7 @@ mod tests {
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
             annotation: Vec::new(),
             signature_hint: Some("(deps: Deps): UseCase".to_owned()),
+            ignore_files: archwarden_core::glob::PathSet::default(),
         }
     }
 

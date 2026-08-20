@@ -321,6 +321,7 @@ mod tests {
             kind,
             annotation: Vec::new(),
             signature_hint: hint.map(str::to_owned),
+            ignore_files: archwarden_core::glob::PathSet::default(),
         }
     }
 
@@ -365,6 +366,7 @@ mod tests {
             kind,
             annotation: annotation.iter().map(|a| (*a).to_owned()).collect(),
             signature_hint: None,
+            ignore_files: archwarden_core::glob::PathSet::default(),
         }
     }
 
