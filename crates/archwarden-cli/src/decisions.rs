@@ -103,6 +103,9 @@ pub fn render(config: &CompiledConfig, decision: &CompiledDecision, kept: Option
     if !serving.is_empty() {
         let _ = writeln!(out, "enforced_by: [{}]", serving.join(", "));
     }
+    if let Some(scope) = &decision.scope {
+        let _ = writeln!(out, "scope: [{}]", scope.patterns().join(", "));
+    }
     if let Some(link) = &decision.link {
         let _ = writeln!(out, "link: {link}");
     }
@@ -111,6 +114,17 @@ pub fn render(config: &CompiledConfig, decision: &CompiledDecision, kept: Option
     let _ = writeln!(out, "# {}\n", decision.title);
     if let Some(why) = &decision.why {
         let _ = writeln!(out, "> {why}\n");
+    }
+    // Above the human's region and in prose, not only in the frontmatter: the
+    // reader this line is for is one standing in those paths, and they are
+    // reading the document rather than parsing it.
+    if let Some(scope) = &decision.scope {
+        let paths: Vec<String> = scope
+            .patterns()
+            .iter()
+            .map(|pattern| format!("`{pattern}`"))
+            .collect();
+        let _ = writeln!(out, "Applies to {}.\n", paths.join(", "));
     }
 
     // The human's region sits here, between what the config says and the
@@ -150,10 +164,21 @@ pub fn render(config: &CompiledConfig, decision: &CompiledDecision, kept: Option
 
     let _ = writeln!(out, "## What keeps it\n");
     if serving.is_empty() {
-        let _ = writeln!(
-            out,
-            "Nothing. This decision is written down and not enforced.\n"
-        );
+        // The claim answers exactly the question this section asks, so it is
+        // the answer rather than a fourth section of its own. "Nothing" alone
+        // reads as an omission, and a decision carrying a reason has said it
+        // is not one.
+        match &decision.why_not_enforceable {
+            Some(why) => {
+                let _ = writeln!(out, "Nothing can. {}\n", sentence(why));
+            }
+            None => {
+                let _ = writeln!(
+                    out,
+                    "Nothing. This decision is written down and not enforced.\n"
+                );
+            }
+        }
     } else {
         for rule in &serving {
             let _ = writeln!(out, "- `{rule}`");
@@ -161,6 +186,25 @@ pub fn render(config: &CompiledConfig, decision: &CompiledDecision, kept: Option
         let _ = writeln!(out);
     }
 
+    out
+}
+
+/// A config field read as a sentence: first letter up, full stop at the end.
+///
+/// `why_not_enforceable` is written to be printed inline after a colon --
+/// "nothing can check this: the broker is chosen in infrastructure" -- and the
+/// same words have to stand alone here. Rewriting them by hand in the config
+/// would mean the field reads wrong in one surface or the other.
+fn sentence(why: &str) -> String {
+    let trimmed = why.trim();
+    let mut chars = trimmed.chars();
+    let mut out: String = match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => return String::new(),
+    };
+    if !out.ends_with(['.', '!', '?']) {
+        out.push('.');
+    }
     out
 }
 
@@ -209,6 +253,7 @@ mod tests {
         glob::PathSet,
         hash::ContentHash,
         ids::{DecisionId, RuleId},
+        scope::Scope,
     };
 
     fn decision(alternatives: Vec<CompiledAlternative>) -> CompiledDecision {
@@ -236,6 +281,65 @@ mod tests {
             ContentHash::of(b""),
         )
         .with_decisions(decisions)
+    }
+
+    /// Issue #165. A field added to the config and not to the renderer is
+    /// drift by construction -- decision 116 made the config the owner and the
+    /// document a rendering of it, so every repository that has run
+    /// `decisions --write` would get a stale-document concern on upgrade, and
+    /// the concern would be right.
+    #[test]
+    fn the_claim_and_the_scope_reach_the_document() {
+        let mut scoped = decision(Vec::new());
+        scoped.why_not_enforceable =
+            Some("the broker is chosen in infrastructure, not in code".to_owned());
+        scoped.scope =
+            Some(Scope::compile(["packages/queue/**", "services/worker/**"]).expect("valid scope"));
+
+        let config = config_of(vec![scoped]);
+        let page = render(&config, config.decisions().next().expect("one"), None);
+
+        // Machine-readable, next to the other fields the config owns.
+        assert!(
+            page.contains("scope: [packages/queue/**, services/worker/**]"),
+            "{page}"
+        );
+        // And in prose, because a reader standing in those paths is who the
+        // scope is for.
+        assert!(
+            page.contains("Applies to `packages/queue/**`, `services/worker/**`."),
+            "{page}"
+        );
+        // The claim answers the question "what keeps it" asks, so it is the
+        // answer rather than a fourth section: "nothing" alone reads as an
+        // omission, and this decision has declared it is not one.
+        assert!(
+            page.contains("Nothing can. The broker is chosen in infrastructure, not in code."),
+            "{page}"
+        );
+        assert!(
+            !page.contains("written down and not enforced"),
+            "the bare sentence is for a decision that has not said why: {page}"
+        );
+        // Generated, so above the human's region -- never inside it.
+        let claim = page.find("Nothing can.").expect("the claim");
+        let close = page.find(YOURS_CLOSE).expect("the marker");
+        assert!(claim > close, "{page}");
+    }
+
+    /// A decision with neither renders as it always has. The bare sentence is
+    /// the one #160 exists to stop being the only option, not one to remove.
+    #[test]
+    fn a_decision_with_neither_renders_as_before() {
+        let config = config_of(vec![decision(Vec::new())]);
+        let page = render(&config, config.decisions().next().expect("one"), None);
+
+        assert!(!page.contains("scope:"), "{page}");
+        assert!(!page.contains("Applies to"), "{page}");
+        assert!(
+            page.contains("Nothing. This decision is written down and not enforced."),
+            "{page}"
+        );
     }
 
     /// The generated half is everything the config knows, and it says out loud
