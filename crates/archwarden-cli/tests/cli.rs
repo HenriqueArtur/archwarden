@@ -1855,6 +1855,85 @@ fn the_debt_a_decision_carries_is_named_on_every_surface() {
 }
 
 /// Issue #116, end to end: the document archwarden writes, the region it never
+/// Issue #166, reported from a repository that put `config doctor` in its
+/// gate and watched it pass green for two commits with a stale decision
+/// document hanging off it.
+///
+/// A command that never fails guards nothing. Printing the word `error` and
+/// returning success is the incoherence: the word is a promise.
+#[test]
+fn config_doctor_fails_on_what_it_calls_an_error() {
+    // A decision claiming nothing can keep it, with a rule that does: the
+    // config says two things at once, which `doctor` reports as an error.
+    let contradictory = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,
+            "decisions":[{"id":"ADR-014","title":"A wall","enforcement":"none",
+                          "why_not_enforceable":"no parser sees a review"}],
+            "rules":[{"type":"presence","id":"has-a-readme","level":"error",
+                      "decision":"ADR-014",
+                      "roots":["src/*"],"require":["README.md"]}]}"#,
+        ),
+        ("src/api/README.md", "# api"),
+    ]);
+
+    archwarden()
+        .current_dir(contradictory.path())
+        .args(["config", "doctor"])
+        .assert()
+        // Two, not one: this is "your config is wrong", which is a different
+        // thing from "your code violates your config".
+        .code(2)
+        .stdout(contains("unenforceable-but-a-rule-keeps-it"));
+
+    // A warning alone is still clean, so a repository is not failed for
+    // something archwarden itself calls a warning.
+    let warned = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,
+            "decisions":[{"id":"ADR-014","title":"A wall"}],
+            "rules":[{"type":"presence","id":"has-a-readme","level":"error",
+                      "roots":["src/*"],"require":["README.md"]}]}"#,
+        ),
+        ("src/api/README.md", "# api"),
+    ]);
+
+    archwarden()
+        .current_dir(warned.path())
+        .args(["config", "doctor"])
+        .assert()
+        .success()
+        .stdout(contains("decision-nobody-enforces"));
+
+    // And `--strict` is for a gate that wants every concern to block, which
+    // is what the reporter's own pipeline meant.
+    archwarden()
+        .current_dir(warned.path())
+        .args(["config", "doctor", "--strict"])
+        .assert()
+        .code(2)
+        .stdout(contains("decision-nobody-enforces"));
+
+    // A clean config is clean either way.
+    let clean = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{"type":"presence","id":"has-a-readme",
+            "level":"error","roots":["src/*"],"require":["README.md"]}]}"#,
+        ),
+        ("src/api/README.md", "# api"),
+    ]);
+
+    archwarden()
+        .current_dir(clean.path())
+        .args(["config", "doctor", "--strict"])
+        .assert()
+        .success()
+        .stdout(contains("No concerns"));
+}
+
 /// Issue #162. The line archwarden could not say: *has this already been
 /// rejected?* -- asked by somebody who does not know the decision's id and
 /// names the option differently from whoever rejected it.

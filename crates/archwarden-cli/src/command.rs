@@ -508,10 +508,24 @@ pub enum ConfigCommand {
     ///
     /// A rule that loads and then never fires is indistinguishable from a rule
     /// that passes, which is what this exists to catch.
+    ///
+    /// Exits `2` when it reports anything at `error` level, so it can guard a
+    /// gate. It is the same `2` a broken config exits with, and for the same
+    /// reason: both mean *fix your setup*, which is a different reaction from
+    /// the `1` that means *fix your code*.
     Doctor {
         /// How to render the diagnosis.
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
+        /// Fail on warnings too.
+        ///
+        /// Every concern here is a state that only exists by oversight and
+        /// that the author fixes in one command, which is what makes them
+        /// worth blocking on. The default stops at `error` because a warning
+        /// that fails a build is a warning in name only -- this is the flag
+        /// for a repository that has decided otherwise. Issue #166.
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Prove that each rule bites: hand it a violation and see whether it

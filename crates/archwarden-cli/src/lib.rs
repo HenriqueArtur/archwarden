@@ -233,7 +233,9 @@ fn run_config(
             crate::options::run(name.as_deref(), *format, output)
         }
         ConfigCommand::Validate => validate(location, working_directory, output),
-        ConfigCommand::Doctor { format } => doctor(location, working_directory, *format, output),
+        ConfigCommand::Doctor { format, strict } => {
+            doctor(location, working_directory, *format, *strict, output)
+        }
         ConfigCommand::VerifyRules { format } => {
             verify_rules(location, working_directory, *format, output)
         }

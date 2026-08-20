@@ -642,8 +642,15 @@ Use it when a rule's scope surprises you, before deciding it is wrong.
 walked. `doctor` answers "does it mean what you think?": unreachable rules,
 regexes matching nothing, scopes pointing at paths that do not exist.
 
-`doctor` exits **0 even with findings** — they are advice about a
-configuration, not findings about code.
+`doctor` exits **2 when it reports anything at `error` level**, and `0` when it
+reports only warnings. Two rather than one, and that distinction is why both
+codes exist: everything `doctor` says is about the configuration, so it means
+*fix your setup* rather than *fix your code*.
+
+`--strict` fails on warnings too, which is what a gate that wants every concern
+to block should use. Both directions are deliberate: a command that never
+failed guarded nothing, and a warning that fails a build is a warning in name
+only.
 
 ### `config verify-rules` — does a rule actually bite?
 

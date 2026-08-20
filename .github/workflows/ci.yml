@@ -44,10 +44,16 @@ jobs:
       - run: cargo xtask check-schema
       # archwarden checks archwarden. A tool that cannot hold its own
       # ten-crate workspace is not ready for anybody else's, and until this
-      # ran the crate conventions were held by hand -- fourteen rule kinds,
-      # fourteen engines, and nothing that noticed a fifteenth arriving under
-      # another name.
+      # ran the crate conventions were held by hand -- a rule kind for every
+      # engine, and nothing that noticed a new one arriving under another
+      # name.
       - run: cargo run --quiet --bin archwarden -- check
+
+      # And the config is held to the same standard as the code. Added the day
+      # `doctor` learned to fail (issue #166) -- a repository that ships this
+      # command as a gate and does not run it as one is recommending something
+      # it has not tried.
+      - run: cargo run --quiet --bin archwarden -- config doctor --strict
 
   test:
     name: 🧪 tests

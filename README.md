@@ -146,6 +146,7 @@ npx archwarden check
 # validate the config itself
 npx archwarden config validate      # schema only, fast
 npx archwarden config doctor        # semantic: does it mean what you think?
+                                    # exits 2 on an error-level concern; --strict fails on warnings too
 
 # ---- agent-facing commands (see AGENTS.md) ----
 
