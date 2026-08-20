@@ -23,6 +23,7 @@
     "index.d.ts",
     "resolve.mjs",
     "schema",
+    "presets",
     "README.md",
     "AGENTS.md"
   ],

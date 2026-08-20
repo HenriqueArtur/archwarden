@@ -83,9 +83,13 @@ test("the main package ships exactly what its manifest promises", async () => {
       await readFile(join(out, "archwarden", "package.json"), "utf8"),
     );
 
-    // Two entries are directories; the rest are files. Reading something
-    // inside either tells us it arrived, which is the whole question.
-    const INSIDE = { bin: "bin/archwarden.mjs", schema: "schema/v0.json" };
+    // Three entries are directories; the rest are files. Reading something
+    // inside each tells us it arrived, which is the whole question.
+    const INSIDE = {
+      bin: "bin/archwarden.mjs",
+      schema: "schema/v0.json",
+      presets: "presets/rust.json",
+    };
 
     for (const entry of manifest.files) {
       const path = join(out, "archwarden", INSIDE[entry] ?? entry);
