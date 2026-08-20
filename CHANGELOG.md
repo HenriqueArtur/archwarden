@@ -92,7 +92,8 @@ resolver — see **What is not here** below.
   `#[cfg(test)]` module *inside* the file, so the old reading would have had
   every existing `spec-pair` rule demanding `create_client.spec.rs` the day
   this landed. A language that tests some other way is **skipped** by the rule,
-  never failed by it. Teaching the rule the inline form is the next milestone.
+  never failed by it. Teaching the rule the inline form is `0.30 — Rust
+  conventions`.
 
 - **`call-obligation` reads both path separators.** A rule naming
   `Audit::record` over a file importing `Audit` was reported for importing
