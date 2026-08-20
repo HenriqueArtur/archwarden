@@ -17,6 +17,144 @@ saying so.
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-08-20
+
+**The sentences the config could not hold.** Six issues raised from a
+repository using archwarden in anger, and one bug it reported. What they have
+in common: a team had a sentence about its own architecture, and there was no
+way to write it down.
+
+**Two changes make an existing, unchanged config behave differently.** Both are
+deliberate and both are listed first.
+
+### Changed
+
+- **`config doctor` now exits `2` when it reports anything at `error` level.**
+  It always exited `0`, including while printing the word `error` — so a
+  pipeline that ran it had been told about a problem and passed anyway. This
+  was reported by a repository whose gate went green for two commits with a
+  stale decision document hanging off it.
+
+  `2` rather than `1`, and that distinction is why both codes exist:
+  everything `doctor` reports is a statement about the *configuration*, so it
+  means *fix your setup* rather than *fix your code*.
+
+  **If you already run `config doctor` in CI, it can now fail.** That is the
+  point, and it is the change to read before upgrading. `--strict` fails on
+  warnings too, which is what a gate that wants every concern to block should
+  use.
+
+- **The cache format moved from 12 to 14.** `CallFact` gained the object keys
+  a call was given, and `FileFacts` gained the dotted names a file reads
+  without calling. Every repository loses one warm cache and pays one cold run
+  on upgrade; nothing else changes.
+
+- **A rendered decision document gains two fields**, so the first
+  `archwarden decisions` after upgrading rewrites every file under
+  `.archwarden/decisions/`. Without it `config doctor` would report every one
+  of them as out of date — and would be right.
+
+### Added
+
+- **A decision can say that no rule can keep it.** Most of what a team decides
+  is not checkable — *"we review schema changes with the data team"*, *"errors
+  are values at the boundary and exceptions inside"*. Writing one down used to
+  be punished: `decision-nobody-enforces` reported it as an orphan.
+
+  ```json
+  { "id": "ADR-023", "title": "Pub/Sub is the message broker",
+    "enforcement": "none",
+    "why_not_enforceable": "the broker is chosen in infrastructure, not in code",
+    "scope": ["packages/queue/**"] }
+  ```
+
+  The claim silences the orphan report and earns the decision a place in
+  `describe`, under **"decisions that govern it, with no rule to keep them"** —
+  which is how it reaches the agent about to write there, and the only
+  enforcement it will ever get. `why_not_enforceable` is required with the
+  claim and refused without it: half the pair is worse than neither.
+
+- **`scope` on a decision.** A decision that governs everything reaches
+  nobody. `describe packages/queue/worker.ts` now brings the broker decision
+  unprompted and `describe packages/ui/button.tsx` does not — on all four
+  surfaces, including the MCP `check_write` response an agent actually reads.
+
+- **`archwarden decisions find <terms>` — has this already been rejected?**
+  `config explain` ends with *"Do not propose it again."*, and it could only
+  say that to somebody who already knew the decision's id. The person about to
+  propose the losing option is, by definition, not that person, and names it
+  differently from whoever rejected it.
+
+  ```
+  $ archwarden decisions find camada unica
+  2 places mention `camada unica`:
+
+    ADR-001 — Quatro camadas, mais o System
+      alternatives[0].option  "uma única camada"
+        `camada` exact
+        `unica` exact
+  ```
+
+  It says **why** it matched — exact, a prefix, or how many characters off —
+  and never a score. Accents and case fold on both sides. Every match, in
+  declaration order, with no ranking: a false negative is the exact failure
+  `alternatives` exists to prevent, while a false positive costs two seconds of
+  reading.
+
+- **`decision-may-duplicate`,** the same question asked by `config doctor`, so
+  a duplicate is caught the moment it is written. Stricter than the command on
+  purpose: the command answers a person who will read the result, while this
+  lives in a gate.
+
+- **`decisions_find`, an MCP tool.** The surface this was really about — an
+  agent proposing an approach is exactly the party that does not know the id.
+
+- **`must_call.with_options` — an option a call has to carry.**
+
+  ```json
+  "must_call": { "symbol": "FactoryMockDependencies",
+                 "imported_from": "../test/factories",
+                 "with_options": ["PAY_IN_MEMORY"] }
+  ```
+
+  `FactoryMockDependencies(ENV, { PAY_IN_MEMORY: "all" })` and
+  `FactoryMockDependencies()` are the same callee at the same arity and
+  opposite meanings — one runs against in-memory twins, the other starts a
+  container. Reported by a repository that found five such files out of 215,
+  and only because a test run took longer than it should.
+
+  A list asks that the key be present; a map (`{ "PAY_IN_MEMORY": "all" }`)
+  asks for the value too. `scaffold` prints the options under the call, so an
+  agent writing it from that shape does not write one the rule then refuses.
+
+- **`chokepoint` — only these files may reach this.**
+
+  ```json
+  { "type": "chokepoint", "id": "the-environment-is-read-once", "level": "error",
+    "roots": ["src/*"],
+    "callee": ["process.env", "process.argv"],
+    "only_in": ["src/config/**"] }
+  ```
+
+  Every `forbid_*` in this config was about an **import**. This is about a
+  **use** — which is exactly what is left over once `import-boundary` has cut
+  every capability that arrives through a specifier. It says *"only
+  `src/config` reads the environment"*, *"only the composition root constructs
+  adapters"*, *"nobody talks to the network outside `src/http`"*.
+
+  Reads as well as calls, because `process.env` is never a call site.
+  Constructions are spelled as the source spells them (`"new PostgresRepo"`).
+  `roots` and `only_in` are separate on purpose: a test suite reads the
+  environment legitimately, so the author says where the rule looks.
+
+- **`decision-scope-matches-nothing`,** a warning for a scoped decision whose
+  paths are gone — what issue #74 gave a module, one level up.
+
+- **`unenforceable-but-a-rule-keeps-it`,** an error: a decision claiming no
+  rule can keep it, with a rule that does, is a config saying two things at
+  once.
+
+
 ## [0.31.0] — 2026-08-20
 
 **One repository, two languages, and the seam between them.** A Tauri
@@ -2657,7 +2795,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.31.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.32.0...HEAD
+[0.32.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.1...v0.29.0
