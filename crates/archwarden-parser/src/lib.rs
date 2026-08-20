@@ -11,3 +11,4 @@
 pub mod astro;
 pub mod document;
 pub mod oxc;
+pub mod rust;

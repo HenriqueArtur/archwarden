@@ -76,6 +76,17 @@ oxc_span = "=0.141.0"
 oxc_syntax = "=0.141.0"
 oxc_resolver = "11.24.2"
 
+# --- rust front-end ---------------------------------------------------------
+# rust-analyzer's syntax crate, pinned exactly for the reason oxc is: it is
+# 0.0.x and versions fast, so a bump is a deliberate change rather than
+# something `cargo update` does on a Tuesday.
+#
+# Chosen over `syn` because the markers archwarden reads live in `//` comments
+# (decision 30) and `syn` discards them -- writing the scanner instead means
+# owning a component whose failures are silent, since `let url = "https://x"`
+# has a `//` in it. Decision 32 measured both.
+ra_ap_syntax = "=0.0.310"
+
 # --- document front-end -----------------------------------------------------
 # `saphyr` is the successor and was the first candidate; it is at 0.0.11, and
 # this workspace pins oxc exactly *because* 0.x crates break often. `yaml-rust2`

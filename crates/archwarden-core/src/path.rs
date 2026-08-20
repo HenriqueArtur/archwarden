@@ -178,9 +178,26 @@ pub enum FileClass {
     Other,
 }
 
+/// A language a front-end in this build reads.
+///
+/// Closed on purpose. Two questions branch on it — where a language's tests
+/// live, and whether its imports can be placed — and both are answered by an
+/// exhaustive match, so adding a language without answering them does not
+/// compile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Language {
+    /// JavaScript and TypeScript, which are one front-end.
+    Ts,
+    /// Astro: the TypeScript module inside the `---` fence.
+    Astro,
+    /// Rust.
+    Rust,
+}
+
 impl FileClass {
     /// Extensions a front-end in this build can read.
-    const SOURCE: [&'static str; 8] = ["ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs"];
+    const SOURCE: [&'static str; 9] = ["ts", "tsx", "js", "jsx", "mts", "cts", "mjs", "cjs", "rs"];
 
     /// Extensions the document front-end can read.
     const DOCUMENT: [&'static str; 2] = ["md", "markdown"];
@@ -201,9 +218,32 @@ impl FileClass {
     /// that needs a test beside it", so a language whose tests do not live
     /// beside it would start failing that rule in every configuration that
     /// already had one.
-    const UNREADABLE_SOURCE: [&'static str; 12] = [
-        "py", "go", "rs", "rb", "java", "kt", "kts", "php", "cs", "swift", "scala", "ex",
+    const UNREADABLE_SOURCE: [&'static str; 11] = [
+        "py", "go", "rb", "java", "kt", "kts", "php", "cs", "swift", "scala", "ex",
     ];
+
+    /// Which language a file is written in, when a front-end here reads it.
+    ///
+    /// The pivot both questions below turn on. They used to match on the
+    /// extension directly and answer `false` in a catch-all arm, which cannot
+    /// tell "this language does not do that" from "nobody said" — so the
+    /// tripwire guarding them had to demand `true`, and Rust's honest answer to
+    /// both is `false`.
+    ///
+    /// Keyed on a closed enum instead, so the *compiler* refuses a language
+    /// added without an answer. That is a stronger guard than the tests were,
+    /// and they now assert the answers rather than their existence.
+    #[must_use]
+    pub fn language(name: &str) -> Option<Language> {
+        let (_, extension) = name.rsplit_once('.')?;
+
+        match extension {
+            "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" => Some(Language::Ts),
+            "astro" => Some(Language::Astro),
+            "rs" => Some(Language::Rust),
+            _ => None,
+        }
+    }
 
     /// Whether a unit of this file's language is tested by a sibling file.
     ///
@@ -213,28 +253,29 @@ impl FileClass {
     /// it", which is a claim about the language's conventions rather than
     /// about archwarden's.
     ///
-    /// JavaScript and TypeScript answer yes. Rust would answer no — its unit
-    /// tests live in a `#[cfg(test)]` module inside the file — and a language
-    /// that answers no is *skipped* by `spec-pair`, not failed by it.
-    ///
-    /// `.astro` answers yes too, and is worth stating: it is `Embedded` rather
-    /// than `Source`, and its spec is `Card.spec.ts` rather than
-    /// `Card.spec.astro` -- so the sibling exists under another extension, and
-    /// the pairing this asks about holds.
-    ///
-    /// Written as a match rather than a second list beside `SOURCE`, so a
-    /// language added to one and forgotten in the other cannot compile into a
-    /// silent answer.
+    /// A language answering no is *skipped* by `spec-pair`, never failed by it.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the arms answer different questions and happen to agree \
+                  today. Merging them into `_ => false` is what this function \
+                  exists to prevent: the exhaustive match is the guard, and a \
+                  language added without an answer has to fail to compile \
+                  rather than default to no"
+    )]
     #[must_use]
     pub fn pairs_with_sibling_spec(name: &str) -> bool {
-        let Some((_, extension)) = name.rsplit_once('.') else {
-            return false;
-        };
-
-        matches!(
-            extension,
-            "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "astro"
-        )
+        match Self::language(name) {
+            // `.astro` is `Embedded`, and the spec for `Card.astro` is
+            // `Card.spec.ts` -- the sibling exists under another extension, and
+            // the pairing this asks about holds.
+            Some(Language::Ts | Language::Astro) => true,
+            // Rust's unit tests are a `#[cfg(test)]` module inside the file.
+            // There is no sibling to look for, and demanding one would fail
+            // every Rust file in a repository that already had a `spec-pair`
+            // rule. Teaching the rule the inline form is issue #137.
+            Some(Language::Rust) => false,
+            None => false,
+        }
     }
 
     /// Whether this build can place a specifier written in this file's
@@ -252,20 +293,24 @@ impl FileClass {
     /// that crosses no boundary. Decision 19 requires the opposite: such a rule
     /// is a **loud refusal**, never a silent pass, which here means the check
     /// is counted and named rather than quietly passing.
-    ///
-    /// Exhaustive by extension for the same reason as
-    /// [`Self::pairs_with_sibling_spec`]: a language added to `SOURCE` and
-    /// forgotten here cannot compile into a silent answer.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the arms answer different questions and happen to agree \
+                  today. Merging them into `_ => false` is what this function \
+                  exists to prevent: the exhaustive match is the guard, and a \
+                  language added without an answer has to fail to compile \
+                  rather than default to no"
+    )]
     #[must_use]
     pub fn imports_can_be_resolved(name: &str) -> bool {
-        let Some((_, extension)) = name.rsplit_once('.') else {
-            return false;
-        };
-
-        matches!(
-            extension,
-            "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "astro"
-        )
+        match Self::language(name) {
+            Some(Language::Ts | Language::Astro) => true,
+            // No Rust resolver exists. Rust's module tree, `mod` declarations
+            // and Cargo workspaces are a different algorithm from Node's, not a
+            // variant of it -- decision 19 -- and it has not been written.
+            Some(Language::Rust) => false,
+            None => false,
+        }
     }
 
     /// Classifies by extension.
@@ -505,72 +550,54 @@ mod tests {
 
     /// A spec file is a source file. Whether it counts as "a spec" is a
     /// question only a rule's `spec_markers` can answer.
-    /// Every readable source extension answers the sibling-spec question.
+    /// Where each language's tests live, asserted per language.
     ///
-    /// The tripwire for decision 31's successor. `spec-pair` reads `Source` as
-    /// "a unit that needs a test beside it", and that reading is only true
-    /// while every language in `SOURCE` tests by sibling. Rust does not -- its
-    /// unit tests are a `#[cfg(test)]` module inside the file -- so moving
-    /// `rs` into `SOURCE` without teaching `spec-pair` would make every
-    /// existing `spec-pair` rule start demanding `create_client.spec.rs`.
-    ///
-    /// This fails the moment `SOURCE` grows an extension the match below does
-    /// not name, which is the commit where that decision has to be taken
-    /// rather than the release where somebody notices.
+    /// This used to demand `true` for every readable extension, which forced an
+    /// answer at a time when every answer was yes. Rust's is no, so the guard
+    /// moved into the type system: `pairs_with_sibling_spec` matches on a
+    /// closed `Language`, and a language added without an answer fails to
+    /// compile. What is left for a test is the answers themselves.
     #[test]
-    fn every_source_extension_says_whether_its_tests_sit_beside_it() {
+    fn each_language_says_where_its_tests_live() {
+        for name in ["a.ts", "a.tsx", "a.js", "a.mjs", "Card.astro"] {
+            assert!(
+                FileClass::pairs_with_sibling_spec(name),
+                "{name}: the spec is a sibling"
+            );
+        }
+        assert!(
+            !FileClass::pairs_with_sibling_spec("main.rs"),
+            "Rust tests inside the file, so `spec-pair` skips it rather than \
+             demanding `main.spec.rs`"
+        );
+    }
+
+    /// Whose imports can be placed, asserted per language.
+    #[test]
+    fn each_language_says_whether_its_imports_can_be_placed() {
+        for name in ["a.ts", "a.tsx", "Card.astro"] {
+            assert!(FileClass::imports_can_be_resolved(name), "{name}");
+        }
+        assert!(
+            !FileClass::imports_can_be_resolved("main.rs"),
+            "no Rust resolver exists, so a boundary rule over it is a counted \
+             skip rather than a silent pass"
+        );
+    }
+
+    /// Every readable source extension names a language.
+    ///
+    /// The one thing still worth asserting from the `SOURCE` list: an extension
+    /// in it that `language` does not recognise would read as a file no
+    /// front-end handles, in the class that says one does.
+    #[test]
+    fn every_source_extension_names_a_language() {
         for extension in FileClass::SOURCE {
             let name = format!("unit.{extension}");
             assert!(
-                FileClass::pairs_with_sibling_spec(&name),
-                "`{extension}` is readable source and nothing says where its \
-                 tests live. Answer it in `pairs_with_sibling_spec`: `true` if \
-                 the test is `<stem>.<marker>.{extension}` beside the file, \
-                 `false` if the language tests some other way -- and if it is \
-                 `false`, `spec-pair` skips the language rather than failing it."
+                FileClass::language(&name).is_some(),
+                "`{extension}` is readable source and names no language"
             );
-        }
-    }
-
-    /// Every readable source extension says whether its imports can be placed.
-    ///
-    /// The second tripwire, and decision 19 is what it guards. A language whose
-    /// parser lands before its resolver has facts whose every `resolved` is
-    /// `None`; a boundary rule over one of its files then sees no edges and
-    /// reports nothing, which is indistinguishable from a file that crosses
-    /// nothing. Decision 19 requires a loud refusal instead.
-    ///
-    /// So moving an extension into `SOURCE` has to answer this in the same
-    /// commit, and the answer for a language with a parser and no resolver is
-    /// `false` -- which makes the check a counted, named skip.
-    #[test]
-    fn every_source_extension_says_whether_its_imports_can_be_placed() {
-        for extension in FileClass::SOURCE {
-            let name = format!("unit.{extension}");
-            assert!(
-                FileClass::imports_can_be_resolved(&name),
-                "`{extension}` is readable source and nothing says whether a \
-                 resolver can place its specifiers. Answer it in \
-                 `imports_can_be_resolved`: `false` for a language whose parser \
-                 landed before its resolver, which makes a boundary rule over \
-                 it a counted skip rather than a silent pass."
-            );
-        }
-    }
-
-    /// A language with no front-end answers no to both questions.
-    ///
-    /// Both, because they are the two halves of decision 19 and a language
-    /// arrives at them separately: a parser makes the first `true` and a
-    /// resolver makes the second. Asserting only the classification would let
-    /// either answer default to yes for a language this build cannot read at
-    /// all, which is the loudest version of the silence both exist to refuse.
-    #[test]
-    fn a_language_nobody_reads_answers_no_to_both_questions() {
-        for name in ["main.rs", "app.py", "server.go", "Thing.java"] {
-            assert!(!FileClass::pairs_with_sibling_spec(name), "{name}");
-            assert!(!FileClass::imports_can_be_resolved(name), "{name}");
-            assert_eq!(FileClass::of(name), FileClass::UnreadableSource, "{name}");
         }
     }
 
@@ -646,14 +673,7 @@ mod tests {
     /// worst a wrong answer here does is report a check nobody could make.
     #[test]
     fn source_in_a_language_with_no_front_end_says_so() {
-        for name in [
-            "main.py",
-            "server.go",
-            "lib.rs",
-            "app.rb",
-            "Main.java",
-            "index.php",
-        ] {
+        for name in ["main.py", "server.go", "app.rb", "Main.java", "index.php"] {
             assert_eq!(FileClass::of(name), FileClass::UnreadableSource, "{name}");
         }
     }

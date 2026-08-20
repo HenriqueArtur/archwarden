@@ -2,7 +2,7 @@
 
 use archwarden_core::{
     compiled::CompiledRule,
-    facts::{ExportFact, ExportKind, ExportTags, FileFacts, ImportFact, Span},
+    facts::{ExportFact, ExportKind, ExportTags, FileFacts, ImportFact, Span, Visibility},
     hash::ContentHash,
     path::RepoRelPath,
     traits::{Exists, FileContext, RuleEngine},
@@ -56,6 +56,7 @@ pub(crate) fn a_file_of_the_wrong_shape(
     let exported = |name: Option<&str>, is_default: bool| ExportFact {
         name: name.map(ToOwned::to_owned),
         tags: ExportTags::only(ExportKind::Function),
+        visibility: Visibility::Public,
         is_default,
         reexport_from: None,
         forwards: None,

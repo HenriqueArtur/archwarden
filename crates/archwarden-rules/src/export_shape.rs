@@ -324,6 +324,7 @@ mod tests {
 
     fn exported(name: Option<&str>, tags: ExportTags, returns: Option<&str>) -> ExportFact {
         ExportFact {
+            visibility: archwarden_core::facts::Visibility::Public,
             name: name.map(ToOwned::to_owned),
             tags,
             is_default: name.is_none(),
