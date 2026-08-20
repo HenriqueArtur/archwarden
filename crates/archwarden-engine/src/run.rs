@@ -221,6 +221,61 @@ struct Deferred {
     siblings: usize,
 }
 
+/// What one file could offer one rule.
+///
+/// A struct rather than four positional bools, which clippy refuses and is
+/// right to: `looked_at(needed, true, false, true, false)` is a call nobody can
+/// read, and this predicate's whole job is to be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WasRead {
+    /// Nothing: the file did not parse, or no front-end reads it.
+    Nothing,
+    /// Imports, exports and calls are in hand.
+    Code,
+    /// Frontmatter is in hand.
+    Document,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Available {
+    /// What the file yielded. An enum rather than two flags, because a file is
+    /// of one class: the pair `(facts, docs)` had a fourth state that cannot
+    /// happen and a reader had to work out that it could not.
+    read: WasRead,
+    /// The rule wants specifiers placed, not merely read.
+    wants_edges: bool,
+    /// A resolver in this build can place this language's specifiers.
+    edges_can_be_placed: bool,
+}
+
+/// Whether a rule got the answer it came for, or is a check nobody could make.
+///
+/// A predicate rather than four lines inside the run loop, because the
+/// interesting case cannot be reached from a fixture today and would otherwise
+/// go unasserted until it could. Every readable language in this build is also
+/// resolvable, so `needs_resolution && !resolvable` is unreachable end to end —
+/// and it is the arm decision 19 is about, which is exactly why it is worth
+/// pinning here before the language that reaches it arrives.
+///
+/// Reading is not enough where a rule asks for edges. A language whose parser
+/// landed before its resolver yields facts with every `ImportFact::resolved` at
+/// `None`, so an `import-boundary` rule over one of its files sees no edges,
+/// reports nothing, and looks exactly like a file that crosses none. Decision
+/// 19 requires a loud refusal instead, and a check counted as skipped is how
+/// this stage refuses.
+fn looked_at(needed: FactsNeeded, at: Available) -> bool {
+    match needed {
+        FactsNeeded::Nothing => true,
+        FactsNeeded::Code => {
+            at.read == WasRead::Code && (!at.wants_edges || at.edges_can_be_placed)
+        }
+        FactsNeeded::Document => at.read == WasRead::Document,
+        // `FactsNeeded` is non_exhaustive; a kind added later has no front-end
+        // here yet, and "did not look" is honest for it.
+        _ => false,
+    }
+}
+
 /// Runs every rule against the walked tree.
 ///
 /// A configuration whose rules are all structural never reads a byte, cache or
@@ -499,14 +554,20 @@ pub fn check(run: Run<'_>) -> Report {
                 // anyway, and the two agreeing is what keeps a structural rule
                 // out of the count.
                 let needed = engine.needs_facts();
-                let looked = match needed {
-                    FactsNeeded::Nothing => true,
-                    FactsNeeded::Code => facts.is_some(),
-                    FactsNeeded::Document => docs.is_some(),
-                    // `FactsNeeded` is non_exhaustive; a kind added later has no
-                    // front-end here yet, and "did not look" is honest for it.
-                    _ => false,
-                };
+                let looked = looked_at(
+                    needed,
+                    Available {
+                        read: if facts.is_some() {
+                            WasRead::Code
+                        } else if docs.is_some() {
+                            WasRead::Document
+                        } else {
+                            WasRead::Nothing
+                        },
+                        wants_edges: engine.needs_resolution(),
+                        edges_can_be_placed: FileClass::imports_can_be_resolved(&file.name),
+                    },
+                );
                 if !looked && file.class.yields(needed) {
                     checks_skipped += 1;
                     skipped_checks.push((engine.id().to_string(), file.path.clone()));
@@ -857,6 +918,142 @@ pub fn worst_level(report: &Report) -> Option<Level> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rule that reads nothing is always answered.
+    #[test]
+    fn a_rule_that_needs_no_facts_never_counts_as_skipped() {
+        for read in [WasRead::Nothing, WasRead::Code, WasRead::Document] {
+            for wants_edges in [true, false] {
+                assert!(looked_at(
+                    FactsNeeded::Nothing,
+                    Available {
+                        read,
+                        wants_edges,
+                        edges_can_be_placed: false
+                    }
+                ));
+            }
+        }
+    }
+
+    /// Code facts are needed, and a file that could not be parsed is a check
+    /// nobody could make.
+    #[test]
+    fn a_code_rule_needs_facts_and_a_document_rule_needs_its_own() {
+        assert!(looked_at(
+            FactsNeeded::Code,
+            Available {
+                read: WasRead::Code,
+                wants_edges: false,
+                edges_can_be_placed: true
+            }
+        ));
+        assert!(!looked_at(
+            FactsNeeded::Code,
+            Available {
+                read: WasRead::Document,
+                wants_edges: false,
+                edges_can_be_placed: true
+            }
+        ));
+
+        assert!(looked_at(
+            FactsNeeded::Document,
+            Available {
+                read: WasRead::Document,
+                wants_edges: false,
+                edges_can_be_placed: true
+            }
+        ));
+        assert!(
+            !looked_at(
+                FactsNeeded::Document,
+                Available {
+                    read: WasRead::Code,
+                    wants_edges: false,
+                    edges_can_be_placed: true
+                }
+            ),
+            "code facts do not answer a document rule"
+        );
+    }
+
+    /// The arm decision 19 is about, and the one no fixture can reach today.
+    ///
+    /// A rule asking for edges over a language whose parser landed before its
+    /// resolver has facts and no resolved specifiers. It reports nothing, and
+    /// nothing is what a file crossing no boundary reports -- so the check is
+    /// counted rather than passed.
+    ///
+    /// All four combinations, because the condition is a disjunction: a test
+    /// naming only the failing one passes while the rule stops being asked at
+    /// all, and one naming only the passing ones passes while the refusal
+    /// never fires.
+    #[test]
+    fn a_rule_wanting_edges_is_skipped_where_no_resolver_can_place_them() {
+        assert!(
+            !looked_at(
+                FactsNeeded::Code,
+                Available {
+                    read: WasRead::Code,
+                    wants_edges: true,
+                    edges_can_be_placed: false
+                }
+            ),
+            "wants edges, language has no resolver: the check was not made"
+        );
+        assert!(
+            looked_at(
+                FactsNeeded::Code,
+                Available {
+                    read: WasRead::Code,
+                    wants_edges: true,
+                    edges_can_be_placed: true
+                }
+            ),
+            "wants edges and they can be placed"
+        );
+        assert!(
+            looked_at(
+                FactsNeeded::Code,
+                Available {
+                    read: WasRead::Code,
+                    wants_edges: false,
+                    edges_can_be_placed: false
+                }
+            ),
+            "wants no edges, so an absent resolver costs it nothing"
+        );
+        assert!(
+            looked_at(
+                FactsNeeded::Code,
+                Available {
+                    read: WasRead::Code,
+                    wants_edges: false,
+                    edges_can_be_placed: true
+                }
+            ),
+            "wants no edges and could have had them"
+        );
+    }
+
+    /// Facts are still required first: an unresolvable language whose file did
+    /// not parse is one skip, not an argument about resolvers.
+    #[test]
+    fn a_file_that_did_not_parse_is_skipped_whatever_the_rule_wanted() {
+        for needs_resolution in [true, false] {
+            for imports_resolvable in [true, false] {
+                assert!(!looked_at(
+                    FactsNeeded::Code,
+                    Available {
+                        read: WasRead::Nothing,
+                        wants_edges: needs_resolution,
+                        edges_can_be_placed: imports_resolvable
+                    }
+                ));
+            }
+        }
+    }
     use archwarden_core::{
         compiled::{CompiledRule, CompiledRuleKind, SkipDirs},
         glob::PathSet,

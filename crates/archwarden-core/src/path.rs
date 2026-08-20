@@ -237,6 +237,37 @@ impl FileClass {
         )
     }
 
+    /// Whether this build can place a specifier written in this file's
+    /// language.
+    ///
+    /// A second question `FileClass::Source` used to answer by accident.
+    /// `Source` means a front-end can *read* the file; this means a resolver
+    /// can turn what it read into a path — and decision 19 says the two arrive
+    /// separately on purpose, because the parser is one function and the
+    /// resolver is the expensive half.
+    ///
+    /// A language answering no has facts with every `ImportFact::resolved` at
+    /// `None`. An `import-boundary` or `import-cycle` rule over such a file
+    /// therefore sees no edges, reports nothing, and looks exactly like a file
+    /// that crosses no boundary. Decision 19 requires the opposite: such a rule
+    /// is a **loud refusal**, never a silent pass, which here means the check
+    /// is counted and named rather than quietly passing.
+    ///
+    /// Exhaustive by extension for the same reason as
+    /// [`Self::pairs_with_sibling_spec`]: a language added to `SOURCE` and
+    /// forgotten here cannot compile into a silent answer.
+    #[must_use]
+    pub fn imports_can_be_resolved(name: &str) -> bool {
+        let Some((_, extension)) = name.rsplit_once('.') else {
+            return false;
+        };
+
+        matches!(
+            extension,
+            "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "astro"
+        )
+    }
+
     /// Classifies by extension.
     #[must_use]
     pub fn of(name: &str) -> Self {
@@ -501,20 +532,54 @@ mod tests {
         }
     }
 
-    /// A language with no front-end is not asked the question at all.
+    /// Every readable source extension says whether its imports can be placed.
+    ///
+    /// The second tripwire, and decision 19 is what it guards. A language whose
+    /// parser lands before its resolver has facts whose every `resolved` is
+    /// `None`; a boundary rule over one of its files then sees no edges and
+    /// reports nothing, which is indistinguishable from a file that crosses
+    /// nothing. Decision 19 requires a loud refusal instead.
+    ///
+    /// So moving an extension into `SOURCE` has to answer this in the same
+    /// commit, and the answer for a language with a parser and no resolver is
+    /// `false` -- which makes the check a counted, named skip.
     #[test]
-    fn a_language_nobody_reads_pairs_with_nothing() {
+    fn every_source_extension_says_whether_its_imports_can_be_placed() {
+        for extension in FileClass::SOURCE {
+            let name = format!("unit.{extension}");
+            assert!(
+                FileClass::imports_can_be_resolved(&name),
+                "`{extension}` is readable source and nothing says whether a \
+                 resolver can place its specifiers. Answer it in \
+                 `imports_can_be_resolved`: `false` for a language whose parser \
+                 landed before its resolver, which makes a boundary rule over \
+                 it a counted skip rather than a silent pass."
+            );
+        }
+    }
+
+    /// A language with no front-end answers no to both questions.
+    ///
+    /// Both, because they are the two halves of decision 19 and a language
+    /// arrives at them separately: a parser makes the first `true` and a
+    /// resolver makes the second. Asserting only the classification would let
+    /// either answer default to yes for a language this build cannot read at
+    /// all, which is the loudest version of the silence both exist to refuse.
+    #[test]
+    fn a_language_nobody_reads_answers_no_to_both_questions() {
         for name in ["main.rs", "app.py", "server.go", "Thing.java"] {
             assert!(!FileClass::pairs_with_sibling_spec(name), "{name}");
+            assert!(!FileClass::imports_can_be_resolved(name), "{name}");
             assert_eq!(FileClass::of(name), FileClass::UnreadableSource, "{name}");
         }
     }
 
-    /// A document and a file with no extension are not units.
+    /// A document, an asset and a file with no extension are neither.
     #[test]
-    fn only_source_pairs_with_a_spec() {
+    fn only_source_pairs_with_a_spec_or_resolves_anything() {
         for name in ["DOC.md", "package.json", "logo.png", "Makefile"] {
             assert!(!FileClass::pairs_with_sibling_spec(name), "{name}");
+            assert!(!FileClass::imports_can_be_resolved(name), "{name}");
         }
     }
 
