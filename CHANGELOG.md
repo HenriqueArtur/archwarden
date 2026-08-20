@@ -17,6 +17,47 @@ saying so.
 
 ## [Unreleased]
 
+Groundwork for Rust, which arrives in 0.31. **No existing configuration reports
+anything new** — every check here is about a language this build still cannot
+read, and both new questions answer exactly as `FileClass::Source` did for
+every language it can.
+
+### Added
+
+- **`languages: ["rust"]`**, accepted and carried. It turns nothing on yet:
+  `.rs` is still a language with no front-end, and a file of one is a *counted,
+  named skip*. The flag exists now so the switch in 0.31 is one line rather
+  than a decision taken under pressure.
+
+- **Decision 31**, which settles what an export is when the language has no
+  `export` keyword. Visibility becomes a field of its own rather than a variant
+  of `ExportKind` — a set holding both would make `OneOf([function, pub])`
+  sayable and meaningless — and Rust's declaration forms will arrive under
+  Rust's names, deliberately not reusing `function` for `fn` or `class` for
+  `struct`. The reused spelling reads better and manufactures a silent false
+  green the first time somebody copies a rule between the two halves of a Tauri
+  repository.
+
+### Changed
+
+- **`spec-pair` asks whether a language's tests sit beside the unit**, not
+  whether archwarden can read the file. The two say the same thing about a
+  JavaScript repository and stop agreeing the moment a second language arrives:
+  Rust's unit tests live in a `#[cfg(test)]` module *inside* the file, so the
+  old reading would have had every existing `spec-pair` rule demanding
+  `create_client.spec.rs` the day the front-end landed. A language that tests
+  some other way is skipped by the rule, never failed by it.
+
+- **A rule that wants import edges is counted as a skipped check where no
+  resolver can place them.** Decision 19 permits a language to ship a parser
+  before its resolver and requires that a boundary rule over it be a loud
+  refusal rather than a silent pass; this is that refusal, in place before the
+  parser it is about.
+
+  Two tests fail the moment an extension joins the readable set without
+  answering either question, so both decisions land in the commit that adds the
+  language rather than in the release where a user finds out.
+
 ## [0.28.1] — 2026-08-20
 
 A maintenance release. **No existing configuration reports anything new** — the

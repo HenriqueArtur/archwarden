@@ -219,10 +219,16 @@ impl SpecPairEngine {
         if self.is_spec(name) {
             return true;
         }
-        // Only source files carry behaviour worth testing. This is what keeps
-        // the rule off `DOC.md`, `package.json` and images without anyone
-        // listing them.
-        if FileClass::of(name) != FileClass::Source {
+        // Only a language whose tests sit beside the unit is subject to this
+        // rule. That keeps it off `DOC.md`, `package.json` and images without
+        // anyone listing them -- and off a language that tests some other way,
+        // which `FileClass::Source` alone would not.
+        //
+        // The two questions read the same today and are not the same question.
+        // Rust is readable source whose unit tests live in a `#[cfg(test)]`
+        // module *inside* the file, so `class == Source` would have this rule
+        // demanding `create_client.spec.rs` the day the front-end lands.
+        if !FileClass::pairs_with_sibling_spec(name) {
             return true;
         }
         if ALWAYS_EXEMPT.contains(&name) {

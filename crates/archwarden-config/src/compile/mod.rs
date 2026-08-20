@@ -85,6 +85,7 @@ pub fn compile(merged: &MergedConfig) -> Result<CompiledConfig, CompileError> {
             .with_decisions(decisions)
             .with_languages(archwarden_core::compiled::Languages {
                 astro: config.languages.contains(&config::Language::Astro),
+                rust: config.languages.contains(&config::Language::Rust),
             })
             .with_governance(config.governance.level()),
     )
@@ -100,6 +101,45 @@ mod tests {
     use archwarden_core::facts::{ExportKind, ExportTags, KindFilter};
     use archwarden_core::ids::{DecisionId, RuleId};
     use archwarden_core::pattern::Pattern;
+
+    /// A config that names no language reads TypeScript and nothing else.
+    ///
+    /// The guarantee decision 31 rests on: `.rs` files under a repository whose
+    /// config predates Rust support are a *counted skip*, not a tree suddenly
+    /// held to rules written for the other half of it. Asserted on the compiled
+    /// value rather than through a run, because this is the flag every later
+    /// stage branches on.
+    #[test]
+    fn a_config_that_names_no_language_asks_for_neither_rust_nor_astro() {
+        let compiled = compile_json(r#"{"version":0,"rules":[]}"#).expect("compiles");
+
+        assert!(!compiled.languages().rust, "rust is opt-in");
+        assert!(!compiled.languages().astro, "and so is astro");
+    }
+
+    /// Naming one language does not turn on the other.
+    ///
+    /// Separate assertions per language, because the lowering is one line each
+    /// and a test naming both at once passes while either stops being read.
+    #[test]
+    fn each_language_is_asked_for_on_its_own() {
+        let rust =
+            compile_json(r#"{"version":0,"languages":["rust"],"rules":[]}"#).expect("compiles");
+        assert!(rust.languages().rust);
+        assert!(
+            !rust.languages().astro,
+            "asking for rust is not asking for astro"
+        );
+
+        let astro =
+            compile_json(r#"{"version":0,"languages":["astro"],"rules":[]}"#).expect("compiles");
+        assert!(astro.languages().astro);
+        assert!(!astro.languages().rust, "and the reverse");
+
+        let both = compile_json(r#"{"version":0,"languages":["rust","astro"],"rules":[]}"#)
+            .expect("compiles");
+        assert!(both.languages().rust && both.languages().astro, "or both");
+    }
 
     /// `must_exist` names one companion beside the file, literally.
     ///
