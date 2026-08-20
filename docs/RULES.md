@@ -1225,6 +1225,83 @@ instead. That is what `impact` is for.
 
 ---
 
+## 11. Call matches export
+
+**What it enforces**: every name a call asks for is declared somewhere, and
+optionally the reverse.
+
+**Scope**: the whole repository. This is the only rule answered *once* rather
+than per file or per directory, because neither half of it lives in one file.
+
+```json
+{
+  "type": "call-matches-export",
+  "id": "every-invoke-names-a-command",
+  "level": "error",
+  "roots": ["src/**"],
+  "callee": "invoke",
+  "declared_in": ["src-tauri/src/**"],
+  "attribute": "tauri::command"
+}
+```
+
+The seam a Tauri application is joined by. `invoke("save_document")` in the
+webview and `#[tauri::command] fn save_document` in the backend are the same
+edge, and **there is no import between them**: the coupling is a string on one
+side and an attribute on the other, in different languages, checked by nothing
+until somebody clicks the button. No resolver can see it, because there is
+nothing to resolve.
+
+**Deliberately not a `tauri` rule.** A framework in the engine is a framework
+the engine has to keep up with. `t("checkout.title")` against a translation
+catalogue is the same question, and so is a feature flag key or a job name.
+
+**Shape**:
+
+- `roots` — where the calls are read from.
+- `callee` — the callee whose argument names something, as written at the call
+  site.
+- `argument` — which argument holds the name, zero-based. Default `0`.
+- `declared_in` — where the declarations live.
+- `attribute` — the attribute a declaration carries to be one, written without
+  the brackets. Omitted, every named export in `declared_in` counts, which is
+  what a catalogue wants and what a command surface does not.
+- `report_uncalled` (bool, default `false`) — whether a declaration nobody
+  calls is reported.
+
+### Why one direction is off by default
+
+A call naming nothing is unambiguous: the name is not there, and a typo or a
+rename on the other side is the cause.
+
+A declaration nobody calls is not. archwarden reads the languages it has
+front-ends for, and a command called from one it does not read looks *exactly*
+like a command nobody calls. Turning `report_uncalled` on is a claim that every
+caller is in a language this build reads — true for a Tauri application whose
+frontend is TypeScript, and false the moment a shell script or a second binary
+invokes one.
+
+### An argument that is not a literal is skipped
+
+`invoke(command)` names something the reader cannot see, and reporting it as
+naming nothing would report a variable as a typo. That is the same line
+`has_opaque_import` draws about a dynamic import: what cannot be read is absent
+rather than invented.
+
+### What it costs
+
+One extra pass over facts the run already extracted, and **no resolution at
+all**. This is not a graph rule — decision 21 measures one of those at roughly
+four times a warm run — and a configuration carrying this pays none of that.
+
+Every file in either scope is parsed, though, because both halves are facts.
+
+**Cannot express**: a name built at runtime, and a declaration whose marker is
+not an attribute. `verify-rules` cannot synthesise a violation for it either: a
+violation is two files that have to disagree, in two scopes, and it says so.
+
+---
+
 ## 11. Export shape
 
 **What it enforces**: what a file exposes, with nothing said about what it is

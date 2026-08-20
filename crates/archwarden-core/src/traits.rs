@@ -34,6 +34,22 @@ pub trait Parser: Send + Sync {
     ) -> Result<FileFacts, Self::Error>;
 }
 
+/// Every file the run read, offered to a rule that asks about all of them.
+///
+/// Facts only. There is no graph here and no resolution: a rule that needs
+/// specifiers placed says [`RuleEngine::needs_graph`] instead, and pays what
+/// decision 21 measures. This carries what the front-ends already extracted.
+#[derive(Clone, Copy)]
+pub struct RepositoryContext<'a> {
+    /// Each file the run parsed, with its facts, in walk order.
+    ///
+    /// A slice rather than a map, because the rules that want this build their
+    /// own index and each wants a different one: keyed by an export's name,
+    /// by a call's argument, by an attribute. A map here would be the wrong
+    /// map for every one of them.
+    pub files: &'a [(RepoRelPath, FileFacts)],
+}
+
 /// Where an import specifier ended up.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -272,6 +288,23 @@ pub trait RuleEngine: Send + Sync {
         false
     }
 
+    /// Whether this rule is answered once, about the whole repository.
+    ///
+    /// The third shape of question, after the file and the directory. A rule
+    /// asking whether two *vocabularies* agree -- every name called here is
+    /// declared there, and every name declared there is called -- cannot be
+    /// answered from one file: the call and the declaration are in different
+    /// files, and in a Tauri repository they are in different languages.
+    ///
+    /// Distinct from [`Self::needs_graph`] on purpose, and the difference is
+    /// what it costs. A graph rule needs every specifier *resolved*, which
+    /// decision 21 measures at roughly four times a warm run. This one needs
+    /// only facts already extracted, so a configuration carrying one pays a
+    /// second pass over what it already has and no resolution at all.
+    fn needs_repository(&self) -> bool {
+        false
+    }
+
     /// Whether this rule's findings are about a directory rather than about
     /// the files in it.
     ///
@@ -298,6 +331,17 @@ pub trait RuleEngine: Send + Sync {
 
     /// Evaluates the rule against one file.
     fn check_file(&self, ctx: FileContext<'_>) -> Vec<Finding> {
+        let _ = ctx;
+        Vec::new()
+    }
+
+    /// Evaluates the rule once, against every file the run read.
+    ///
+    /// Called only when [`Self::needs_repository`] says so, and called once --
+    /// not once per file. A rule comparing two vocabularies builds its index
+    /// from the whole list and answers from it; doing that per file would
+    /// rebuild the index for every file in the repository.
+    fn check_repository(&self, ctx: RepositoryContext<'_>) -> Vec<Finding> {
         let _ = ctx;
         Vec::new()
     }
@@ -551,6 +595,7 @@ mod tests {
         let engine = engine();
         let mut facts = facts_for("packages/app/src/foo/foo.use-case.ts");
         facts.exports.push(crate::facts::ExportFact {
+            attributes: Vec::new(),
             name: Some("Foo".to_owned()),
             tags: ExportTags::only(ExportKind::Function),
             visibility: crate::facts::Visibility::Public,
@@ -699,6 +744,17 @@ mod tests {
         );
         assert!(!directory_rule.needs_resolution());
         assert!(!directory_rule.needs_graph());
+
+        // Off by default, and the default is the one that costs nothing: a run
+        // holds every file's facts to the end only when some rule says it needs
+        // them all at once, and most never do.
+        assert!(!directory_rule.needs_repository());
+        assert!(
+            directory_rule
+                .check_repository(RepositoryContext { files: &[] })
+                .is_empty(),
+            "and a rule that never asked is asked nothing"
+        );
 
         // The default, which is the safe way to be wrong: a rule that does not
         // answer this is treated as a rule about files, so `config doctor` may

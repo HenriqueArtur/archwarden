@@ -64,6 +64,7 @@ const FROM_ROOT = [
   "AGENTS.md",
   "schema/v0.json",
   "presets/rust.json",
+  "presets/tauri.json",
 ];
 
 /** Builds all six packages. Exported so a test can run it. */

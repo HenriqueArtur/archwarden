@@ -54,6 +54,7 @@ pub(crate) fn a_file_of_the_wrong_shape(
     }
 
     let exported = |name: Option<&str>, is_default: bool| ExportFact {
+        attributes: Vec::new(),
         name: name.map(ToOwned::to_owned),
         tags: ExportTags::only(ExportKind::Function),
         visibility: Visibility::Public,

@@ -17,7 +17,7 @@ use archwarden_core::{
     hash::ContentHash,
     level::Level,
     path::{FileClass, Language, RepoRelPath},
-    traits::{Exists, FactsNeeded, FileContext, Parser as _},
+    traits::{Exists, FactsNeeded, FileContext, Parser as _, RepositoryContext},
 };
 use camino::Utf8Path;
 
@@ -313,6 +313,10 @@ pub fn check(run: Run<'_>) -> Report {
     // per-file gating that keeps a scoped configuration off the disk has to be
     // suspended for this run. See `needs_graph`.
     let building_graph = engines.iter().any(|engine| engine.needs_graph());
+    // A second reason to hold every file's facts to the end. Cheaper than the
+    // graph -- no resolution -- and it is a different question: whether two
+    // vocabularies agree, which no single file can answer.
+    let asking_repository = engines.iter().any(|engine| engine.needs_repository());
     let mut edges: Vec<archwarden_core::graph::FileEdges> = Vec::new();
     let mut deferred: Vec<Deferred> = Vec::new();
     // Kept per file, and only for files that carry one, so a repository with
@@ -384,12 +388,23 @@ pub fn check(run: Run<'_>) -> Report {
             // own scope has nothing to do with the rule that reports it.
             let feeds_graph =
                 building_graph && reads_as_code(&file.name, file.class, config.languages());
+            // The same reason, for the other whole-repository question. A rule
+            // asked once about two vocabularies claims no file through
+            // `applies_to` -- writing one file cannot break an agreement whose
+            // other half is elsewhere -- so `wanted_by` is empty for every file
+            // it will read, and nothing below would open one.
+            let feeds_repository =
+                asking_repository && reads_as_code(&file.name, file.class, config.languages());
             // `narrowing_here` is the third reason to open a file nothing
             // appears to govern. A directory rule's `applies_to` answers
             // `false` for every file by design, so `wanted_by` is empty for one
             // — and its files are exactly what decides whether the directory is
             // in the population at all. Decision 25.
-            if wanted_by.is_empty() && !feeds_graph && narrowing_here.is_empty() {
+            if wanted_by.is_empty()
+                && !feeds_graph
+                && !feeds_repository
+                && narrowing_here.is_empty()
+            {
                 continue;
             }
 
@@ -419,6 +434,7 @@ pub fn check(run: Run<'_>) -> Report {
 
             let mut facts = if reads_as_code(&file.name, file.class, config.languages())
                 && (feeds_graph
+                    || feeds_repository
                     || !narrowing_here.is_empty()
                     || wanted_by.iter().any(|(index, engine)| {
                         engine.needs_facts() == FactsNeeded::Code
@@ -488,7 +504,12 @@ pub fn check(run: Run<'_>) -> Report {
 
             // Whether any rule that reads the graph wanted this file, so it can
             // be asked again once there is one.
-            let mut held = false;
+            // Held from the start when a rule asks about the whole
+            // repository. Every other reason to hold a file is discovered
+            // inside the loop below, from a rule that claims it -- and a rule
+            // answered once about two vocabularies claims none, so nothing in
+            // that loop would ever set this.
+            let mut held = asking_repository;
 
             // A directory rule asks whether *anything in here* talks to it, and
             // this is where "anything" is counted. Separate from the loop below
@@ -672,6 +693,21 @@ pub fn check(run: Run<'_>) -> Report {
     // The second half of the run, and the only part that can see more than one
     // file at a time. Everything above produced edges; this turns them into a
     // graph and asks the rules that were waiting for one.
+    if asking_repository {
+        let files: Vec<(RepoRelPath, FileFacts)> = deferred
+            .iter()
+            .filter_map(|held| {
+                held.facts
+                    .as_ref()
+                    .map(|facts| (held.path.clone(), facts.clone()))
+            })
+            .collect();
+
+        for engine in engines.iter().filter(|engine| engine.needs_repository()) {
+            findings.extend(engine.check_repository(RepositoryContext { files: &files }));
+        }
+    }
+
     if building_graph {
         let graph = archwarden_core::graph::ImportGraph::of(edges.into_iter());
 
@@ -1100,6 +1136,62 @@ mod tests {
         }
 
         (dir, root)
+    }
+
+    /// A rule answered once about the whole repository keeps files in the
+    /// walk that nothing else would have opened.
+    ///
+    /// The seam this exists for is two files that never mention each other, so
+    /// `applies_to` claims neither -- and every earlier reason to open a file
+    /// comes from a rule that claims it. Without this the run walks past both
+    /// halves and reports nothing, which is what a repository with no dangling
+    /// call also reports.
+    #[test]
+    fn a_repository_rule_opens_files_no_other_rule_claims() {
+        let (_guard, root) = tree_at(&[
+            (
+                "src/api.ts",
+                "invoke('save_document');\ninvoke('purge_document');\n",
+            ),
+            (
+                "backend/commands.rs",
+                "#[tauri::command]\npub fn save_document() {}\n",
+            ),
+        ]);
+
+        let config = config(vec![rule(
+            "ipc",
+            None,
+            &["src/**"],
+            CompiledRuleKind::CallMatchesExport {
+                callee: "invoke".to_owned(),
+                argument: 0,
+                declared_in: Scope::compile(["backend/**"]).expect("valid scope"),
+                attribute: Some("tauri::command".to_owned()),
+                report_uncalled: false,
+            },
+        )])
+        .with_languages(archwarden_core::compiled::Languages {
+            astro: false,
+            rust: true,
+        });
+
+        let tree = crate::walk::walk(&root, &config).expect("walks");
+        let report = check(Run {
+            root: &root,
+            config: &config,
+            tree: &tree,
+            cache: None,
+            as_of: archwarden_core::date::Date::EPOCH,
+        });
+
+        assert_eq!(report.findings.len(), 1, "{:?}", report.findings);
+        assert_eq!(report.findings[0].path.as_str(), "src/api.ts");
+        assert!(
+            report.files_parsed >= 2,
+            "both halves were opened: {}",
+            report.files_parsed
+        );
     }
 
     fn rule(

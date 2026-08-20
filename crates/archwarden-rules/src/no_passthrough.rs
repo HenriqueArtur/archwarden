@@ -326,6 +326,7 @@ mod tests {
 
     fn export(name: &str, tags: ExportTags, forwards: Option<&str>) -> ExportFact {
         ExportFact {
+            attributes: Vec::new(),
             visibility: archwarden_core::facts::Visibility::Public,
             name: Some(name.to_owned()),
             tags,
@@ -441,6 +442,7 @@ mod tests {
             "packages/domain/src/plan/barrel.ts",
             &[],
             vec![ExportFact {
+                attributes: Vec::new(),
                 name: Some("*".to_owned()),
                 tags: ExportTags::only(ExportKind::Reexport),
                 visibility: archwarden_core::facts::Visibility::Public,
@@ -486,6 +488,7 @@ mod tests {
             "packages/domain/src/plan/index.ts",
             &[],
             vec![ExportFact {
+                attributes: Vec::new(),
                 name: Some("*".to_owned()),
                 tags: ExportTags::only(ExportKind::Reexport),
                 visibility: archwarden_core::facts::Visibility::Public,
@@ -518,6 +521,7 @@ mod tests {
             "packages/domain/src/plan/barrel.ts",
             &[],
             vec![ExportFact {
+                attributes: Vec::new(),
                 name: Some("*".to_owned()),
                 tags: ExportTags::only(ExportKind::Reexport),
                 visibility: archwarden_core::facts::Visibility::Public,

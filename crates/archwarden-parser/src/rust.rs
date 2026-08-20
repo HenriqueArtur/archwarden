@@ -210,6 +210,7 @@ fn exports(tree: &SourceFile) -> Vec<ExportFact> {
             let visibility = visibility_of(visibility.as_ref())?;
 
             Some(ExportFact {
+                attributes: attributes_of(item.syntax()),
                 name: name.map(|n| n.text().to_string()),
                 tags: ExportTags::only(kind),
                 visibility,
@@ -238,6 +239,7 @@ fn exported_macro(node: &ast::MacroRules) -> Option<ExportFact> {
         .filter_map(|attr| attr.path())
         .any(|path| path.syntax().text() == "macro_export")
         .then(|| ExportFact {
+            attributes: attributes_of(node.syntax()),
             name: node.name().map(|n| n.text().to_string()),
             tags: ExportTags::only(ExportKind::Macro),
             visibility: Visibility::Public,
@@ -248,6 +250,29 @@ fn exported_macro(node: &ast::MacroRules) -> Option<ExportFact> {
             returns: None,
             span: span_of(node.syntax()),
         })
+}
+
+/// The attribute paths written directly on an item.
+///
+/// `#[tauri::command]` reads as `tauri::command`. Arguments are dropped --
+/// `#[serde(rename = "x")]` is `serde` -- because what a rule asks of an
+/// attribute is whether it is there, and reading inside one is a second
+/// grammar with its own ways to be wrong.
+///
+/// Direct attributes only. An attribute on the enclosing module says something
+/// about the module, and hoisting it onto every item inside would have a rule
+/// report a claim nobody wrote on the line it is reported against.
+fn attributes_of(node: &SyntaxNode) -> Vec<String> {
+    // The item's direct children rather than `HasAttrs::attrs`. `ast::Item` is
+    // an enum over every item kind and casting a node to it loses the concrete
+    // type the trait is implemented on, so the accessor comes back empty --
+    // silently, which is how the first version of this shipped an always-empty
+    // list and a rule that reported every declaration missing.
+    node.children()
+        .filter_map(ast::Attr::cast)
+        .filter_map(|attr| attr.path())
+        .map(|path| path.syntax().text().to_string())
+        .collect()
 }
 
 /// How far an item is visible, or `None` when it is not exported at all.
@@ -815,6 +840,49 @@ mod facts_tests {
 
         assert_eq!(file.exports.len(), 1, "{:?}", file.exports);
         assert_eq!(file.exports[0].name.as_deref(), Some("shown"));
+    }
+
+    /// An export carries the attributes written on it, as paths.
+    ///
+    /// The fact the Tauri seam is read from: `#[tauri::command]` is what makes
+    /// a `pub fn` a command, and nothing else in the file says so. Arguments
+    /// are dropped -- `#[serde(rename = "x")]` is `serde` -- because what a
+    /// rule asks of an attribute is whether it is there.
+    #[test]
+    fn an_export_carries_the_attributes_written_on_it() {
+        let file = facts(
+            "#[tauri::command]\n             #[allow(unused)]\n             pub fn save_document() {}\n\n             pub fn plain() {}\n\n             #[serde(rename = \"x\")]\n             pub struct Thing;\n",
+        );
+
+        assert_eq!(
+            file.exports[0].attributes,
+            vec!["tauri::command".to_owned(), "allow".to_owned()],
+            "both, in order, and the path only"
+        );
+        assert!(
+            file.exports[1].attributes.is_empty(),
+            "none is an empty list"
+        );
+        assert_eq!(
+            file.exports[2].attributes,
+            vec!["serde".to_owned()],
+            "the arguments are not part of the path"
+        );
+    }
+
+    /// An attribute on the enclosing module is not on the item.
+    ///
+    /// Hoisting it would have a rule report a claim nobody wrote on the line it
+    /// is reported against.
+    #[test]
+    fn an_attribute_on_the_module_is_not_on_what_is_inside_it() {
+        let file = facts("#[tauri::command]\npub mod outer { }\n");
+
+        assert_eq!(file.exports.len(), 1);
+        assert_eq!(
+            file.exports[0].attributes,
+            vec!["tauri::command".to_owned()]
+        );
     }
 
     /// A macro is exported by an attribute, not by `pub`.

@@ -30,6 +30,21 @@ use crate::{
 #[serde(tag = "type", rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum Expectation {
+    /// A declaration answering to the name a call asked for.
+    DeclaredName {
+        /// The name.
+        named: String,
+        /// The attribute a declaration carries to be one, when the rule names
+        /// one.
+        attribute: Option<String>,
+    },
+    /// A call naming this declaration.
+    CallNaming {
+        /// The name.
+        named: String,
+        /// The callee that would name it.
+        callee: String,
+    },
     /// Some rule must govern the file.
     ///
     /// Carries nothing, like [`NoImportCycle`](Self::NoImportCycle) and for a
@@ -280,6 +295,23 @@ pub enum Expectation {
 #[serde(tag = "type", rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum Observed {
+    /// A call named something nothing declares.
+    ///
+    /// `invoke("purge_document")` where no `#[tauri::command]` answers to that
+    /// name. A misspelling is the ordinary cause and a rename is the
+    /// interesting one: the backend moved and the frontend did not, and
+    /// nothing said so until somebody clicked.
+    CallNamesNothing {
+        /// The callee, as written.
+        callee: String,
+        /// The name it asked for.
+        named: String,
+    },
+    /// A declaration nothing calls.
+    NothingCallsIt {
+        /// The declared name.
+        named: String,
+    },
     /// The file forwards other modules and adds nothing of its own.
     Passthrough {
         /// The exports that are forwards, in source order.

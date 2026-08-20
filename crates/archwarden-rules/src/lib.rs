@@ -13,6 +13,7 @@
 //! See `docs/RULES.md`.
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
+pub mod call_matches_export;
 pub mod call_obligation;
 pub mod export_shape;
 pub mod frontmatter;
@@ -81,6 +82,20 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     except,
                     *allow_package_entrypoints,
                     *allow_partial,
+                )),
+                CompiledRuleKind::CallMatchesExport {
+                    callee,
+                    argument,
+                    declared_in,
+                    attribute,
+                    report_uncalled,
+                } => Box::new(call_matches_export::CallMatchesExportEngine::build(
+                    rule,
+                    callee,
+                    *argument,
+                    declared_in,
+                    attribute.as_deref(),
+                    *report_uncalled,
                 )),
                 CompiledRuleKind::SpecPair {
                     subfolders,

@@ -561,6 +561,7 @@ mod tests {
 
     fn export(name: &str, tags: ExportTags) -> ExportFact {
         ExportFact {
+            attributes: Vec::new(),
             visibility: archwarden_core::facts::Visibility::Public,
             name: Some(name.to_owned()),
             tags,

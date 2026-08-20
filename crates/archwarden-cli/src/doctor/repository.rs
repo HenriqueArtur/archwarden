@@ -44,6 +44,14 @@ pub(super) fn rule_evaluates_nothing(
     if engine.answers_for_directories() {
         return;
     }
+    // And so is a rule answered once about the whole repository. It claims no
+    // file through `applies_to` -- writing one file cannot break an agreement
+    // whose other half is elsewhere -- so "no file is subject to this" is its
+    // ordinary state rather than a symptom. The comment above predicted a
+    // third kind would have to answer here; this is it.
+    if engine.needs_repository() {
+        return;
+    }
     // Only when the scope did match something: a scope matching no directory
     // at all is already reported, and two concerns about one typo is noise.
     if !tree

@@ -793,6 +793,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(index, kind)| ExportFact {
+                    attributes: Vec::new(),
                     visibility: archwarden_core::facts::Visibility::Public,
                     name: Some(format!("Thing{index}")),
                     tags: ExportTags::only(*kind),

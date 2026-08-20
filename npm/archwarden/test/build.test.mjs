@@ -88,7 +88,7 @@ test("the main package ships exactly what its manifest promises", async () => {
     const INSIDE = {
       bin: "bin/archwarden.mjs",
       schema: "schema/v0.json",
-      presets: "presets/rust.json",
+      presets: "presets/tauri.json",
     };
 
     for (const entry of manifest.files) {

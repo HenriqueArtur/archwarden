@@ -687,6 +687,7 @@ fn exports(
         let exported = export_name(&entry.export_name);
 
         facts.push(ExportFact {
+            attributes: Vec::new(),
             tags: local
                 .as_ref()
                 .and_then(|name| declaration_tags.get(name).copied())
@@ -742,6 +743,7 @@ fn exports(
     // for the wrong reason.
     for entry in &record.indirect_export_entries {
         facts.push(ExportFact {
+            attributes: Vec::new(),
             name: export_name(&entry.export_name),
             tags: ExportTags::only(ExportKind::Reexport),
             visibility: archwarden_core::facts::Visibility::Public,
@@ -773,6 +775,7 @@ fn exports(
     // that file *does* add something.
     for entry in &record.star_export_entries {
         facts.push(ExportFact {
+            attributes: Vec::new(),
             name: Some("*".to_owned()),
             tags: ExportTags::only(ExportKind::Reexport),
             visibility: archwarden_core::facts::Visibility::Public,

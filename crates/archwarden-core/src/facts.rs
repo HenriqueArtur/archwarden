@@ -386,6 +386,19 @@ pub struct ExportFact {
     pub name: Option<String>,
     /// How it was declared.
     pub tags: ExportTags,
+    /// The attributes written on the declaration, as paths.
+    ///
+    /// `#[tauri::command]` is `tauri::command`; `#[test]` is `test`. Arguments
+    /// are not carried — `#[serde(rename = "x")]` is `serde` — because the
+    /// question a rule asks of an attribute is whether it is *there*, and
+    /// reading inside one is a second grammar with a second set of ways to be
+    /// wrong.
+    ///
+    /// Empty for JavaScript, which has no such thing. A decorator is a
+    /// different shape and would be a different field, since it is an
+    /// expression rather than a path.
+    #[serde(default)]
+    pub attributes: Vec<String>,
     /// How far it is visible.
     ///
     /// `Public` for every JavaScript export, which is the only visibility that
@@ -1038,6 +1051,7 @@ mod tests {
 
     fn export(name: &str, tags: ExportTags) -> ExportFact {
         ExportFact {
+            attributes: Vec::new(),
             name: Some(name.to_owned()),
             tags,
             visibility: Visibility::Public,

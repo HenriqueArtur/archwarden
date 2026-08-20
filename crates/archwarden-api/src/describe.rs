@@ -281,6 +281,10 @@ pub fn describe_observed(observed: &Observed) -> String {
             format!("`{path}` does not exist")
         }
         Observed::SpecIsEmpty { path } => format!("`{path}` contains no test cases"),
+        Observed::CallNamesNothing { callee, named } => {
+            format!("`{callee}(\"{named}\")` names something nothing declares")
+        }
+        Observed::NothingCallsIt { named } => format!("nothing names `{named}`"),
         Observed::ForbiddenImport {
             specifier,
             resolved,

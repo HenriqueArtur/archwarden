@@ -54,6 +54,7 @@ pub(crate) fn a_file_with_no_spec(
 
     let mut facts = FileFacts::unparsed(lonely.clone(), ContentHash::of(PROBE.as_bytes()));
     facts.exports.push(ExportFact {
+        attributes: Vec::new(),
         name: Some("Probe".to_owned()),
         tags: ExportTags::only(ExportKind::Function),
         visibility: Visibility::Public,

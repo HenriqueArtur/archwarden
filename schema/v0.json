@@ -937,6 +937,93 @@
           ]
         },
         {
+          "description": "Every name a call asks for is declared somewhere.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. The same field, with the\nsame meaning, is on every rule kind.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "decision": {
+              "description": "The decision this rule implements.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DecisionId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "roots": {
+              "description": "Where the calls are read from.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "callee": {
+              "description": "The callee whose argument names something, e.g. `invoke`.",
+              "type": "string"
+            },
+            "argument": {
+              "description": "Which argument holds the name. Zero-based; the first by default,\nbecause every framework that does this puts it first.",
+              "type": "integer",
+              "format": "uint",
+              "minimum": 0,
+              "default": 0
+            },
+            "declared_in": {
+              "description": "Where the declarations live.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "attribute": {
+              "description": "The attribute a declaration carries to be one, e.g. `tauri::command`.\n\nWritten without the brackets. Omitted, every named export in\n`declared_in` counts — which is what a translation catalogue wants and\nwhat a command surface does not.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "report_uncalled": {
+              "description": "Whether a declaration nobody calls is reported.\n\nOff by default, and the asymmetry is deliberate. A call naming nothing\nis unambiguous. A declaration nobody calls is not: archwarden reads the\nlanguages it has front-ends for, and a command called from one it does\nnot read looks exactly like a command nobody calls.",
+              "type": "boolean",
+              "default": false
+            },
+            "when_importing": {
+              "description": "Narrow the rule to files importing these.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "Narrow the rule to files importing these packages.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "call-matches-export"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots",
+            "callee",
+            "declared_in"
+          ]
+        },
+        {
           "description": "A file whose whole content is forwarding another module.",
           "type": "object",
           "properties": {

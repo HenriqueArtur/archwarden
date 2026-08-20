@@ -284,6 +284,13 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
                     .join(", ")
             )
         }
+        Expectation::DeclaredName { named, attribute } => attribute.as_ref().map_or_else(
+            || format!("a declaration named `{named}`"),
+            |held| format!("a declaration named `{named}`, carrying `#[{held}]`"),
+        ),
+        Expectation::CallNaming { named, callee } => {
+            format!("a `{callee}` naming `{named}` somewhere in scope")
+        }
         Expectation::RequiredSibling {
             path,
             non_empty_spec,
