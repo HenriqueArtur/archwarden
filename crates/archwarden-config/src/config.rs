@@ -487,6 +487,23 @@ pub enum Language {
     Rust,
 }
 
+impl Language {
+    /// The name as it is written in a config.
+    ///
+    /// Lives here rather than at the call site because the enum is
+    /// `#[non_exhaustive]`: a match in another crate needs a wildcard arm and
+    /// would print a list quietly missing a new language. This one is
+    /// exhaustive, so adding a variant fails to build until somebody names it.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ts => "ts",
+            Self::Astro => "astro",
+            Self::Rust => "rust",
+        }
+    }
+}
+
 fn default_languages() -> Vec<Language> {
     vec![Language::Ts]
 }
@@ -563,6 +580,29 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
+    /// The name `config validate` prints is the name a config can be written
+    /// with. Issue #158 made these visible: a language a preset turned on is
+    /// reported back, and reporting a spelling nobody can type would send the
+    /// reader to write something the parser then refuses.
+    ///
+    /// Asserted by round-tripping through serde rather than by repeating the
+    /// literals, so the two cannot drift while both still look right.
+    #[test]
+    fn the_name_a_language_prints_is_the_name_a_config_writes() {
+        for language in [Language::Ts, Language::Astro, Language::Rust] {
+            let written = language.as_str();
+            let read: Language = serde_json::from_str(&format!("\"{written}\""))
+                .unwrap_or_else(|error| panic!("`{written}` is not a language: {error}"));
+
+            assert_eq!(read, language, "`{written}` reads back as something else");
+        }
+
+        // And they are distinct, which a constant returned for every variant
+        // would not be.
+        assert_eq!(Language::Ts.as_str(), "ts");
+        assert_ne!(Language::Rust.as_str(), Language::Astro.as_str());
+    }
+
     use super::*;
 
     /// The same protection as on the rules, at the top level and in every

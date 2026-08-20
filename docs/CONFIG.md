@@ -1041,21 +1041,34 @@ milestone exists for: every `invoke("...")` in `src/` names a
 }
 ```
 
-**`languages` has to be in your config, not only in the preset.** A preset
-declaring it is currently ignored — `languages` is neither concatenated nor
-taken from the preset — and every rule in it comes back as a *skipped check*
-with a note saying the file was not read. That is honest and it is a step
-nobody can infer, which is why it is written here. Issue #158.
+**The preset turns the language on for you.** Extending it is the whole
+instruction; there is no second line to remember. Until 0.33 there was, and
+forgetting it produced a clean green run with a skip note — the failure
+`docs/CONFIG.md` calls the worst a linter has, arriving on adoption day. Issue
+#158, decision 35.
 
 **Merging.**
 
 - Arrays (`modules`, `rules`, `decisions`, `ignore`, `extends`) are concatenated.
-- Scalars (`root`, `version`) — the local config wins over any preset.
+- `languages` is **unioned** across the whole chain. It is a set, and extending
+  a Rust preset and an Astro one means both — there is no way to spell a
+  conflict between two members. A preset cannot know whether your repository
+  has any `.astro`, but a preset whose every rule is about `.rs` knows exactly
+  what it needs.
+- Scalars (`root`, `version`, `governance`) — the local config wins over any
+  preset, and a preset may not set the last two at all.
 - A preset declaring `root` is an error. A preset cannot know your repo
   layout, and silently relocating every glob in the config is not something
   a shared package should be able to do.
 - Rule `id` collisions are an error caught by the doctor. So are decision `id`
   collisions, and an id that is a rule in one file and a decision in another.
+
+**Declining a language a preset turned on.** There is no field for it, and
+there does not need to be: a language costs nothing on its own, because a file
+is only parsed when some rule's scope reaches it. `disable` the preset's rules
+and the union stays while nothing is read. `config validate` prints
+`reads: rust, ts` whenever a preset is involved, so what a preset turned on is
+visible rather than inferred from a run getting slower.
 
 **Removing an inherited rule.** A top-level `disable` list drops rules that
 came from a preset:

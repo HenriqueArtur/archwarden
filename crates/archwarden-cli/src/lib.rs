@@ -848,6 +848,39 @@ mod tests {
         assert!(result.out.contains("presets/base.json"), "{}", result.out);
     }
 
+    /// Issue #158. A preset that turns a language on turns on *reading files*,
+    /// which is a cost the adopter should be able to see rather than infer
+    /// from a run getting slower.
+    #[test]
+    fn a_preset_that_turns_a_language_on_says_so() {
+        let (_guard, result) = run_in(
+            &[
+                (
+                    "presets/rust.json",
+                    r#"{"version":0,"languages":["rust"],"rules":[
+                        {"type":"structure","id":"from-preset","level":"error","roots":"p/*"}]}"#,
+                ),
+                (
+                    "arch.config.json",
+                    r#"{"version":0,"extends":"./presets/rust.json","rules":[]}"#,
+                ),
+            ],
+            &["config", "validate"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean);
+        // Both: the union, not the preset's half of it. Sorted, so reordering
+        // `extends` does not reword the line.
+        assert!(result.out.contains("reads: rust, ts"), "{}", result.out);
+    }
+
+    /// And a config with no presets is not told what it just wrote.
+    #[test]
+    fn a_config_with_no_presets_is_not_told_what_it_reads() {
+        let (_guard, result) = run_in(&[("arch.config.json", MINIMAL)], &["config", "validate"]);
+        assert!(!result.out.contains("reads:"), "{}", result.out);
+    }
+
     /// A config with no presets says nothing about them, rather than printing
     /// an empty section.
     #[test]

@@ -17,6 +17,63 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 35 — A preset may turn a language on, and `disable` is the way back off
+Status: accepted.
+Context: issue #158, found writing the Rust preset. A preset declaring
+`"languages": ["rust"]` did not take: `languages` was read from the entry
+config alone, so the local default `["ts"]` won and every rule in the preset
+was reported as a **counted skip**.
+
+The failure is the one decision 31 exists to name, arriving through the front
+door. A preset exists so somebody can adopt a set of conventions without
+knowing them; a Rust preset that requires the adopter to *also* write
+`"languages": ["rust"]` has a step nobody can infer, and getting it wrong
+produces a clean green run with a note. `docs/CONFIG.md` calls a rule that
+enforces nothing while looking like it enforces something the worst failure a
+linter has, and this manufactured one on adoption day. Measured on the
+published 0.32.0: `0 errors, 0 warnings, 2 skipped`, against a file that
+violates two of the preset's rules.
+
+Decision: `languages` is unioned across the whole `extends` chain, like the
+lists and unlike the other scalars.
+
+The reasoning it replaces was not wrong, it was one-sided. A preset cannot know
+whether the project including it has any `.astro` — that is why `governance`
+and `root` stay with the entry config. But a preset whose every rule is about
+`.rs` knows exactly what it needs, and the two cases are not the same.
+
+**Nothing new spells "off".** The open question was whether an adopter needs a
+way to decline a language a preset turns on, since `disable` drops rules by id
+and had no equivalent. It turns out `disable` is already the answer: a language
+costs nothing on its own, because a file is only parsed when some rule's scope
+reaches it. Disabling the preset's rules leaves the union in place and reads no
+files — measured at four milliseconds and zero files parsed. A second field
+would have been a second way to say what one already says.
+
+**The union is announced.** A preset that turns a language on turns on
+*reading files*, and `docs/RULES.md` is careful about which rules open one at
+all. `config validate` now prints `reads: rust, ts` whenever a preset is
+involved, so the cost is visible rather than inferred from a run getting
+slower. Not printed for a config with no presets: that would be telling
+somebody what they just wrote.
+
+Alternatives:
+- **Leave it, and document the extra line.** A documented step that a green run
+  does not enforce is a step people skip, and the skipping is invisible.
+- **Let a preset *propose* a language, confirmed locally.** Honest, and it is
+  the same extra step wearing a ceremony.
+- **Infer the language from the rules in the preset.** Removes the field from
+  the preset entirely, and makes `languages` mean two different things
+  depending on where it is written -- the kind of implicitness this format has
+  refused elsewhere.
+
+Consequences: a repository extending a preset that names a language starts
+reading those files on upgrade, and rules that were skipped begin to fire. That
+is the bug being fixed rather than a regression, and `baseline` is the answer
+for anyone not paying that debt today.
+
+---
+
 ### 34 — A read is a fact of its own, deduplicated by name
 Status: accepted.
 Context: issue #118 asks for *"only `src/config` reads the environment"*, and
