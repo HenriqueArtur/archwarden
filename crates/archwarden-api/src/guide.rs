@@ -711,15 +711,51 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             lines
         }
 
+        CompiledRuleKind::Chokepoint { callee, only_in } => vec![format!(
+            "only files under {} may call {}",
+            join(only_in.patterns()),
+            join(callee),
+        )],
+
         CompiledRuleKind::CallObligation {
             file_pattern,
             symbol,
             imported_from,
-        } => vec![format!(
-            "files matching `{}` must call `{symbol}`, imported from `{imported_from}`",
-            file_pattern.as_str()
-        )],
+            with_options,
+        } => {
+            // One sentence about one call: appending rather than adding a
+            // line, which would read as a second obligation.
+            vec![format!(
+                "files matching `{}` must call `{symbol}`, imported from \
+                 `{imported_from}`{}",
+                file_pattern.as_str(),
+                passing(
+                    with_options
+                        .iter()
+                        .map(|(key, value)| (key, value.as_ref()))
+                )
+            )]
+        }
     }
+}
+
+/// The clause naming the options a call has to carry, or nothing.
+///
+/// Shared by the two sentences that say it -- the guide's and the report's --
+/// because a rule worded one way in the instructions and another in the
+/// failure is a rule read twice. Issue #164.
+pub fn passing<'a>(options: impl Iterator<Item = (&'a String, Option<&'a String>)>) -> String {
+    let named: Vec<String> = options
+        .map(|(key, value)| match value {
+            Some(value) => format!("`{key}: {value}`"),
+            None => format!("`{key}`"),
+        })
+        .collect();
+
+    if named.is_empty() {
+        return String::new();
+    }
+    format!(", passing {}", named.join(" and "))
 }
 
 fn declared_as(kind: &KindFilter) -> String {
@@ -1231,6 +1267,7 @@ mod tests {
                 file_pattern: Pattern::compile(r"^route\.ts$").expect("valid pattern"),
                 symbol: "Event.save".to_owned(),
                 imported_from: "@org/events".to_owned(),
+                with_options: Vec::new(),
             },
             CompiledRuleKind::ExportShape(archwarden_core::compiled::ExportShape {
                 forbid_default: true,
@@ -1457,6 +1494,8 @@ mod tests {
 
         let json = as_json(
             &config(vec![sealed, helper, loose]).with_decisions(vec![CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-014").expect("valid"),
                 title: "The domain does not know about transport".to_owned(),
                 why: Some("it is published".to_owned()),
@@ -1554,6 +1593,8 @@ mod tests {
         let json = as_json(
             &config(vec![rule("shape", None, &["src/*"], naming())]).with_decisions(vec![
                 CompiledDecision {
+                    scope: None,
+                    why_not_enforceable: None,
                     id: DecisionId::new("ADR-020").expect("valid"),
                     title: "Nobody enforces this".to_owned(),
                     why: None,
@@ -1589,6 +1630,8 @@ mod tests {
 
         let config = config(vec![serving, also, elsewhere]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-014").expect("valid"),
                 title: "Carries debt".to_owned(),
                 why: None,
@@ -1599,6 +1642,8 @@ mod tests {
                 alternatives: Vec::new(),
             },
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-031").expect("valid"),
                 title: "Carries none".to_owned(),
                 why: None,
@@ -1655,6 +1700,8 @@ mod tests {
 
         let json = as_json(
             &config(vec![serving]).with_decisions(vec![CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-014").expect("valid"),
                 title: "Unmeasured".to_owned(),
                 why: None,
@@ -1702,6 +1749,8 @@ mod tests {
         let json = as_json(
             &config(vec![here, elsewhere]).with_decisions(vec![
                 CompiledDecision {
+                    scope: None,
+                    why_not_enforceable: None,
                     id: DecisionId::new("ADR-014").expect("valid"),
                     title: "reached".to_owned(),
                     why: None,
@@ -1712,6 +1761,8 @@ mod tests {
                     alternatives: Vec::new(),
                 },
                 CompiledDecision {
+                    scope: None,
+                    why_not_enforceable: None,
                     id: DecisionId::new("ADR-020").expect("valid"),
                     title: "not reached".to_owned(),
                     why: None,
@@ -1749,6 +1800,59 @@ mod tests {
     }
 
     /// Every rule kind states its requirement, because a guide that quietly
+    /// Issue #118. The guide is what an agent reads before it writes, and a
+    /// chokepoint is a rule it cannot infer from the file in front of it --
+    /// nothing in `src/orders` says that `src/config` is the one place that
+    /// reads the environment.
+    #[test]
+    fn a_chokepoint_names_the_capability_and_the_one_place_for_it() {
+        let config = config(vec![rule(
+            "the-environment-is-read-once",
+            None,
+            &["src/*"],
+            CompiledRuleKind::Chokepoint {
+                callee: vec!["process.env".to_owned(), "process.argv".to_owned()],
+                only_in: Scope::compile(["src/config/**"]).expect("valid scope"),
+            },
+        )]);
+
+        let markdown = sentences(&config, None, &[]);
+        assert!(
+            markdown.contains("only files under `src/config/**` may call"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("process.env"), "{markdown}");
+        assert!(markdown.contains("process.argv"), "{markdown}");
+    }
+
+    /// Issue #164. An agent reads the guide before it writes, so a call whose
+    /// options are missing from the sentence is a call it writes wrong -- and
+    /// the same clause is what the failure says, because a rule worded one way
+    /// in the instructions and another in the report is a rule read twice.
+    #[test]
+    fn a_call_obligations_options_are_in_the_sentence() {
+        let config = config(vec![rule(
+            "specs-run-in-memory",
+            None,
+            &["tests"],
+            CompiledRuleKind::CallObligation {
+                file_pattern: Pattern::compile(r"\.api\.spec\.ts$").expect("valid"),
+                symbol: "FactoryMockDependencies".to_owned(),
+                imported_from: "../test/factories".to_owned(),
+                with_options: vec![
+                    ("PAY_IN_MEMORY".to_owned(), None),
+                    ("strict".to_owned(), Some("true".to_owned())),
+                ],
+            },
+        )]);
+
+        let markdown = sentences(&config, None, &[]);
+        assert!(
+            markdown.contains("passing `PAY_IN_MEMORY` and `strict: true`"),
+            "{markdown}"
+        );
+    }
+
     /// omitted one would teach an incomplete rule set.
     #[test]
     fn every_rule_kind_states_its_requirement() {
@@ -1804,6 +1908,7 @@ mod tests {
                     file_pattern: Pattern::compile(r"^route\.post\.ts$").expect("valid"),
                     symbol: "Event.save".to_owned(),
                     imported_from: "@org/domain/event".to_owned(),
+                    with_options: Vec::new(),
                 },
             ),
         ]);

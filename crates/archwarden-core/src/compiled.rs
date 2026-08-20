@@ -292,6 +292,30 @@ pub enum CompiledRuleKind {
         symbol: String,
         /// The module the symbol must come from.
         imported_from: String,
+        /// Options the call must carry.
+        ///
+        /// A key with `None` asks only that it be there. Empty means the rule
+        /// does not ask, which is what every rule written before #164 does.
+        with_options: Vec<(String, Option<String>)>,
+    },
+    /// A capability that may only be reached from one place.
+    ///
+    /// Every `forbid_*` field in the config is about an import. This is about
+    /// a *call*, which is what is left over once `import-boundary` has cut
+    /// every capability that arrives through a specifier: `process.env`,
+    /// `Date.now`, `fetch`, `localStorage`, and the project's own symbols
+    /// reached through an object imported legitimately somewhere else. Those
+    /// have no edge in the graph to cut. Issue #118.
+    ///
+    /// An allowlist and no forbid direction. `only_in` is the one that does
+    /// not decay -- a new file outside the chokepoint is reported the day it
+    /// is written, where a `forbid` list would have to be extended by whoever
+    /// added the thing it should have forbidden.
+    Chokepoint {
+        /// The callees, as they appear at a call site.
+        callee: Vec<String>,
+        /// The files allowed to reach them.
+        only_in: Scope,
     },
     /// Two vocabularies that have to agree: every name called here is
     /// declared there, and every name declared there is called.
@@ -353,6 +377,7 @@ impl CompiledRuleKind {
             Self::NoPassthrough { .. } => "no-passthrough",
             Self::ImportBoundary { .. } => "import-boundary",
             Self::ImportCycle { .. } => "import-cycle",
+            Self::Chokepoint { .. } => "chokepoint",
             Self::Presence { .. } => "presence",
             Self::Pair { .. } => "pair",
             Self::Frontmatter { .. } => "frontmatter",
@@ -398,6 +423,7 @@ impl CompiledRuleKind {
             | Self::Naming { .. }
             | Self::ImportBoundary { .. }
             | Self::ImportCycle { .. }
+            | Self::Chokepoint { .. }
             | Self::CallObligation { .. }
             | Self::NoPassthrough { .. }
             // Every one of its three claims is about the exports, which is
@@ -622,7 +648,10 @@ pub struct ExportShape {
 ///
 /// Issue #100: a rule id in a denial is a thing to satisfy; a decision with a
 /// link is a thing to understand or to argue with.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `PartialEq` and not `Eq`: a compiled `Scope` holds built `GlobSet`s, which
+/// have no meaningful total equality. Nothing compares two decisions for
+/// identity; the derive is here because the tests compare fields.
+#[derive(Debug, Clone)]
 pub struct CompiledDecision {
     /// The reference, such as `ADR-014`.
     pub id: DecisionId,
@@ -654,6 +683,18 @@ pub struct CompiledDecision {
     /// and the half a rule can never carry: a rule says what is refused, and
     /// this says what was *weighed* and why it lost. Issue #114.
     pub alternatives: Vec<CompiledAlternative>,
+    /// Why no rule can keep this, when the author claimed none can.
+    ///
+    /// `Some` is the claim and its argument together: the wire format refuses
+    /// the claim without one, so a compiled decision carrying this is one
+    /// somebody wrote a reason for. Issue #160.
+    pub why_not_enforceable: Option<String>,
+    /// Where it applies, compiled.
+    ///
+    /// Empty is a decision that says nothing about where — which is every
+    /// decision written before #161 and every one whose author left it out.
+    /// `describe` then finds it through the rules that name it, or not at all.
+    pub scope: Option<Scope>,
 }
 
 /// One option a decision considered and did not take.
@@ -1193,6 +1234,7 @@ mod tests {
                 file_pattern: Pattern::compile("^x$").expect("valid"),
                 symbol: "Event.save".to_owned(),
                 imported_from: "@org/domain".to_owned(),
+                with_options: Vec::new(),
             },
         ];
 
@@ -1324,6 +1366,8 @@ mod tests {
     }
     fn decision(id: &str, status: DecisionStatus) -> CompiledDecision {
         CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new(id).expect("valid id"),
             title: "The domain does not know about transport".to_owned(),
             why: None,
@@ -1376,9 +1420,10 @@ mod tests {
                 .map(|d| d.title.as_str()),
             Some("The domain does not know about transport")
         );
-        assert_eq!(
-            config.decision(&DecisionId::new("ADR-041").expect("valid")),
-            None
+        assert!(
+            config
+                .decision(&DecisionId::new("ADR-041").expect("valid"))
+                .is_none()
         );
     }
 
@@ -1394,9 +1439,10 @@ mod tests {
         );
 
         assert_eq!(config.decisions().count(), 0);
-        assert_eq!(
-            config.decision(&DecisionId::new("ADR-014").expect("valid")),
-            None
+        assert!(
+            config
+                .decision(&DecisionId::new("ADR-014").expect("valid"))
+                .is_none()
         );
     }
 
@@ -1456,6 +1502,8 @@ mod tests {
     #[test]
     fn a_decision_knows_which_option_a_rule_refuses() {
         let decision = CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-031").expect("valid"),
             title: "the new way".to_owned(),
             why: None,
@@ -1516,6 +1564,7 @@ mod import_filter_tests {
             content_hash: ContentHash::of(b"x"),
             exports: Vec::new(),
             calls: Vec::new(),
+            reads: Vec::new(),
             imports: specifiers
                 .iter()
                 .map(|(specifier, resolved)| ImportFact {

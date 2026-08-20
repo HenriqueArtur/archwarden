@@ -198,3 +198,76 @@ pub(crate) fn probe_import(specifier: String, resolved: Option<RepoRelPath>) -> 
         span: Span::new(0, 1),
     }
 }
+
+/// A file this rule covers, outside the chokepoint, calling what it guards.
+///
+/// Plantable where `forbid_reaching` is not: a breach is one file with one
+/// call in it, not a chain that has to resolve against a second file.
+///
+/// The probe has to sit in a directory the rule covers and `only_in` does
+/// *not*. A repository whose whole scope is inside the chokepoint has nowhere
+/// to put one -- and that is a rule `config doctor` should be reporting rather
+/// than a failure of this probe, so it is named as unverified with the reason.
+pub(crate) fn a_call_from_outside_the_chokepoint(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+    callee: &[String],
+    only_in: &archwarden_core::scope::Scope,
+) -> Verdict {
+    let Some(guarded) = callee.first() else {
+        return Verdict::Unverified {
+            why: "the rule guards no callee, so there is nothing to break -- \
+                  `config doctor` reports a rule that constrains nothing"
+                .to_owned(),
+        };
+    };
+
+    let outside = tree
+        .directories()
+        .map(|(path, _)| path)
+        .filter(|path| rule.scope.matches_dir(path.as_path()))
+        .find(|path| !only_in.matches_dir(path.as_path()));
+
+    let Some(directory) = outside else {
+        return Verdict::Unverified {
+            why: format!(
+                "every directory this rule covers is inside `{}`, so there is \
+                 nowhere outside the chokepoint to plant a call",
+                only_in.patterns().join("`, `")
+            ),
+        };
+    };
+
+    let name = format!("{PROBE}.ts");
+    let Ok(probe) = directory.join(&name) else {
+        return Verdict::Unverified {
+            why: format!("`{directory}` cannot hold a probe file"),
+        };
+    };
+
+    let mut facts = FileFacts::unparsed(probe.clone(), ContentHash::of(PROBE.as_bytes()));
+    facts.calls.push(archwarden_core::facts::CallFact {
+        callee: guarded.clone(),
+        arguments: Vec::new(),
+        options: Vec::new(),
+        span: Span::new(0, 1),
+    });
+
+    let findings = engine.check_file(FileContext {
+        path: &probe,
+        facts: Some(&facts),
+        docs: None,
+        siblings: std::slice::from_ref(&name),
+        exists: Exists::none(),
+        graph: None,
+        as_of: archwarden_core::date::Date::today(),
+    });
+
+    let on = format!("`{probe}` calling `{guarded}`");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
+    }
+}

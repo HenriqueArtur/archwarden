@@ -661,6 +661,7 @@ mod tests {
                 file_pattern: Pattern::compile("^x$").expect("valid"),
                 symbol: "Event.save".to_owned(),
                 imported_from: "@org/domain".to_owned(),
+                with_options: Vec::new(),
             },
         );
 

@@ -117,6 +117,116 @@ mod tests {
         assert!(!compiled.languages().astro, "and so is astro");
     }
 
+    /// Issue #160. The claim is a pair -- `enforcement: "none"` and the reason
+    /// no rule can keep it -- and half of it is worse than neither. A decision
+    /// silencing `decision-nobody-enforces` without saying why is how the
+    /// report gets turned off one decision at a time.
+    #[test]
+    fn a_decision_claiming_unenforceability_must_say_why() {
+        let error = compile_json(
+            r#"{"version":0,"rules":[],"decisions":[
+                {"id":"ADR-014","title":"A wall","enforcement":"none"}]}"#,
+        )
+        .expect_err("refused");
+
+        assert!(
+            matches!(error, CompileError::UnenforceableWithNoReason { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// And a reason of nothing but whitespace is the same omission wearing a
+    /// string. `"why_not_enforceable": " "` would otherwise compile into a
+    /// reason `describe` prints as an empty line.
+    #[test]
+    fn a_blank_reason_is_no_reason() {
+        for blank in ["", "   ", "\\n\\t "] {
+            let error = compile_json(&format!(
+                r#"{{"version":0,"rules":[],"decisions":[
+                    {{"id":"ADR-014","title":"A wall","enforcement":"none",
+                      "why_not_enforceable":"{blank}"}}]}}"#
+            ))
+            .expect_err("refused");
+
+            assert!(
+                matches!(error, CompileError::UnenforceableWithNoReason { .. }),
+                "{blank:?}: {error:?}"
+            );
+        }
+    }
+
+    /// The other direction. A reason with no claim is a decision explaining
+    /// why it cannot be enforced while never saying it is not -- so the
+    /// sentence reaches `describe` and the orphan report still fires.
+    #[test]
+    fn a_reason_with_no_claim_is_refused() {
+        let error = compile_json(
+            r#"{"version":0,"rules":[],"decisions":[
+                {"id":"ADR-014","title":"A wall",
+                 "why_not_enforceable":"no parser sees a review"}]}"#,
+        )
+        .expect_err("refused");
+
+        assert!(
+            matches!(error, CompileError::ReasonWithNoClaim { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// And the pair together compiles, with the reason trimmed -- it is
+    /// printed inline after a colon, where a trailing newline would break the
+    /// line it lands on.
+    #[test]
+    fn the_claim_and_its_reason_compile_together() {
+        let config = compile_json(
+            r#"{"version":0,"rules":[],"decisions":[
+                {"id":"ADR-014","title":"A wall","enforcement":"none",
+                 "why_not_enforceable":"  no parser sees a review\n"}]}"#,
+        )
+        .expect("compiles");
+
+        let decision = config.decisions().next().expect("one decision");
+        assert_eq!(
+            decision.why_not_enforceable.as_deref(),
+            Some("no parser sees a review")
+        );
+    }
+
+    /// Issue #164. Two spellings, told apart by their JSON type before any
+    /// field is read: a list asks only that the key be there, a map asks for
+    /// the value too. Presence and value are separate questions, and a rule
+    /// that only wants presence must not have to name a value.
+    #[test]
+    fn with_options_compiles_from_either_spelling() {
+        let pairs = |json: &str| {
+            let config = compile_json(&format!(
+                r#"{{"version":0,"rules":[{{"type":"call-obligation","id":"specs",
+                    "level":"error","roots":["tests"],"file_pattern":"\\.spec\\.ts$",
+                    "must_call":{{"symbol":"factory","imported_from":"m",
+                                "with_options":{json}}}}}]}}"#
+            ))
+            .expect("compiles");
+
+            match &config.rules().next().expect("one rule").kind {
+                CompiledRuleKind::CallObligation { with_options, .. } => with_options.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+
+        assert_eq!(
+            pairs(r#"["PAY_IN_MEMORY"]"#),
+            [("PAY_IN_MEMORY".to_owned(), None)]
+        );
+        assert_eq!(
+            pairs(r#"{"PAY_IN_MEMORY":"all"}"#),
+            [("PAY_IN_MEMORY".to_owned(), Some("all".to_owned()))]
+        );
+        // And a rule that does not ask carries nothing, which is what every
+        // rule written before this field does.
+        assert!(pairs("[]").is_empty());
+        assert!(pairs("{}").is_empty());
+    }
+
     /// Naming one language does not turn on the other.
     ///
     /// Separate assertions per language, because the lowering is one line each

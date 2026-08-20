@@ -937,6 +937,8 @@ mod tests {
 
         config(vec![serving]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-009").expect("valid"),
                 title: "The old way".to_owned(),
                 why: None,
@@ -947,6 +949,8 @@ mod tests {
                 alternatives: Vec::new(),
             },
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-031").expect("valid"),
                 title: "The domain does not know about transport".to_owned(),
                 why: None,
@@ -1076,6 +1080,8 @@ mod tests {
     fn the_page_says_when_nothing_enforces_a_decision() {
         let config = config(vec![rule("shape", None, &["src/*"], naming())]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-020").expect("valid"),
                 title: "Nobody enforces this".to_owned(),
                 why: None,
@@ -1122,6 +1128,8 @@ mod tests {
     fn the_page_translates_a_status_and_the_digest_does_not() {
         let config = config(vec![rule("shape", None, &["src/*"], naming())]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-020").expect("valid"),
                 title: "Substituída".to_owned(),
                 why: None,
@@ -1184,6 +1192,8 @@ mod tests {
     fn a_decision_nothing_enforces_says_nothing_out_loud() {
         let config = config(vec![rule("shape", None, &["src/*"], naming())]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-020").expect("valid"),
                 title: "Nobody enforces this".to_owned(),
                 why: None,
@@ -1226,6 +1236,8 @@ mod tests {
         let superseded =
             config(vec![rule("shape", None, &["src/*"], naming())]).with_decisions(vec![
                 CompiledDecision {
+                    scope: None,
+                    why_not_enforceable: None,
                     id: DecisionId::new("ADR-020").expect("valid"),
                     title: "Replaced".to_owned(),
                     why: None,
@@ -1248,6 +1260,8 @@ mod tests {
         sealed.decision = Some(DecisionId::new("ADR-014").expect("valid"));
 
         config(vec![sealed]).with_decisions(vec![CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-014").expect("valid"),
             title: "The domain does not know about transport".to_owned(),
             why: Some("it is published, and a consumer must not inherit our client".to_owned()),
@@ -1298,6 +1312,7 @@ mod tests {
                         file_pattern: Pattern::compile("^x$").expect("valid"),
                         symbol: "Event.save".to_owned(),
                         imported_from: "@org/domain/event".to_owned(),
+                        with_options: Vec::new(),
                     },
                 ),
             ]),

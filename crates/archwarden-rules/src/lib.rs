@@ -15,6 +15,7 @@
 // Modules document themselves with `//!`; see the note in archwarden-core.
 pub mod call_matches_export;
 pub mod call_obligation;
+pub mod chokepoint;
 pub mod export_shape;
 pub mod frontmatter;
 pub mod frozen;
@@ -204,15 +205,20 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                 CompiledRuleKind::ExportShape(shape) => {
                     Box::new(export_shape::ExportShapeEngine::build(rule, shape))
                 }
+                CompiledRuleKind::Chokepoint { callee, only_in } => {
+                    Box::new(chokepoint::ChokepointEngine::build(rule, callee, only_in))
+                }
                 CompiledRuleKind::CallObligation {
                     file_pattern,
                     symbol,
                     imported_from,
+                    with_options,
                 } => Box::new(call_obligation::CallObligationEngine::build(
                     rule,
                     file_pattern,
                     symbol,
                     imported_from,
+                    with_options,
                 )),
             }
         })
@@ -292,6 +298,7 @@ mod tests {
             file_pattern: Pattern::compile(r"^route\\.post\\.ts$").expect("valid"),
             symbol: "Event.save".to_owned(),
             imported_from: "@org/domain/event".to_owned(),
+            with_options: Vec::new(),
         }
     }
 

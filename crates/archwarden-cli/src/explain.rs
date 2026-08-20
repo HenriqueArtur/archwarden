@@ -757,6 +757,8 @@ mod tests {
         shape.decision = Some(DecisionId::new("ADR-014").expect("valid"));
 
         config(vec![named, shape]).with_decisions(vec![CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-014").expect("valid"),
             title: "The registry resolves use cases by name".to_owned(),
             why: Some("the loader reads the directory and imports by filename".to_owned()),
@@ -899,6 +901,8 @@ mod tests {
 
         config(vec![named]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-009").expect("valid"),
                 title: "The old way".to_owned(),
                 why: None,
@@ -909,6 +913,8 @@ mod tests {
                 alternatives: Vec::new(),
             },
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-031").expect("valid"),
                 title: "The registry resolves use cases by name".to_owned(),
                 why: None,
@@ -1104,6 +1110,8 @@ mod tests {
 
         let config = config(vec![mine, theirs, loose]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-014").expect("valid"),
                 title: "mine".to_owned(),
                 why: None,
@@ -1114,6 +1122,8 @@ mod tests {
                 alternatives: Vec::new(),
             },
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-020").expect("valid"),
                 title: "theirs".to_owned(),
                 why: None,
@@ -1167,6 +1177,8 @@ mod tests {
         let mut clean_rule = rule("nothing-to-say", &["docs/*"], structure());
         clean_rule.decision = Some(DecisionId::new("ADR-014").expect("valid"));
         let clean = config(vec![clean_rule]).with_decisions(vec![CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-014").expect("valid"),
             title: "kept".to_owned(),
             why: None,
@@ -1203,6 +1215,8 @@ mod tests {
     fn explaining_a_decision_nothing_serves_says_nothing_serves_it() {
         let config = config(vec![rule("usecase-name", &["src/*"], naming())]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-020").expect("valid"),
                 title: "Nobody enforces this".to_owned(),
                 why: None,
@@ -1232,6 +1246,8 @@ mod tests {
         let mut named = rule("usecase-name", &["src/*"], naming());
         named.decision = Some(DecisionId::new("ADR-014").expect("valid"));
         let config = config(vec![named]).with_decisions(vec![CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-014").expect("valid"),
             title: "Replaced".to_owned(),
             why: None,
@@ -1526,6 +1542,8 @@ mod tests {
         let error = rendered(
             &FILES,
             &config(Vec::new()).with_decisions(vec![CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-1").expect("valid"),
                 title: "t".to_owned(),
                 why: None,

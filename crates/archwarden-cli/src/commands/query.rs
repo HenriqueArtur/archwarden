@@ -78,7 +78,8 @@ pub(crate) fn describe(
     };
 
     let applies = archwarden_api::describe::describe(&compiled, &path);
-    crate::describe::render(&path, &applies, format, output.out);
+    let governing = crate::describe::governing(&compiled, &path, &applies);
+    crate::describe::render(&path, &applies, &governing, format, output.out);
     Exit::Clean
 }
 

@@ -1062,6 +1062,7 @@ mod tests {
                         file_pattern: Pattern::compile(r"^data\.json$").expect("valid pattern"),
                         symbol: "Event.save".to_owned(),
                         imported_from: "@org/domain/event".to_owned(),
+                        with_options: Vec::new(),
                     },
                 )],
                 &[],

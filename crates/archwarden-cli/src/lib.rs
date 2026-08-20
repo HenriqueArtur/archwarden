@@ -133,9 +133,22 @@ pub fn run(cli: &Cli, working_directory: &Utf8Path, output: &mut Output<'_>) -> 
         Command::Baseline { dry_run } => {
             write_baseline(cli.location(), working_directory, *dry_run, output)
         }
-        Command::Decisions { dry_run } => {
-            write_decisions(cli.location(), working_directory, *dry_run, output)
-        }
+        // `--dry-run` is about writing, and `find` writes nothing, so it has
+        // nothing to say here.
+        Command::Decisions {
+            dry_run: _,
+            command: Some(DecisionsCommand::Find { terms, format }),
+        } => crate::commands::find::find_decisions(
+            cli.location(),
+            working_directory,
+            terms,
+            *format,
+            output,
+        ),
+        Command::Decisions {
+            dry_run,
+            command: None,
+        } => write_decisions(cli.location(), working_directory, *dry_run, output),
         Command::Impact {
             path,
             to,
@@ -220,7 +233,9 @@ fn run_config(
             crate::options::run(name.as_deref(), *format, output)
         }
         ConfigCommand::Validate => validate(location, working_directory, output),
-        ConfigCommand::Doctor { format } => doctor(location, working_directory, *format, output),
+        ConfigCommand::Doctor { format, strict } => {
+            doctor(location, working_directory, *format, *strict, output)
+        }
         ConfigCommand::VerifyRules { format } => {
             verify_rules(location, working_directory, *format, output)
         }

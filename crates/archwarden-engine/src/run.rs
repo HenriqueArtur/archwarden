@@ -1494,6 +1494,7 @@ mod tests {
                         .expect("valid pattern"),
                     symbol: "Event.save".to_owned(),
                     imported_from: "@org/domain/event".to_owned(),
+                    with_options: Vec::new(),
                 },
             )]),
         );
@@ -1520,6 +1521,7 @@ mod tests {
                         .expect("valid pattern"),
                     symbol: "Event.save".to_owned(),
                     imported_from: "@org/domain/event".to_owned(),
+                    with_options: Vec::new(),
                 },
             )]),
         );
@@ -1553,6 +1555,7 @@ mod tests {
                         .expect("valid pattern"),
                     symbol: "Event.save".to_owned(),
                     imported_from: "@org/domain/event".to_owned(),
+                    with_options: Vec::new(),
                 },
             )]),
         );

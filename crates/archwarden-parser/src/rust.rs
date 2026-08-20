@@ -62,6 +62,12 @@ pub fn parse(path: &RepoRelPath, source: &str, content_hash: ContentHash) -> Fil
         imports: imports(&tree),
         exports: exports(&tree),
         calls: calls(syntax),
+        // Empty, and on decision 33's terms. Rust has no ambient capability
+        // reached through a property: `std::env::var` is a path to a function
+        // and is recorded as a call when it is called, while a `use` of it is
+        // an import that `import-boundary` already cuts. The gap `chokepoint`
+        // fills does not exist here.
+        reads: Vec::new(),
         allowances,
         metadata,
         // Rust has no `import(name)`. The nearest thing is a `use` a macro
@@ -307,6 +313,7 @@ fn calls(syntax: &SyntaxNode) -> Vec<CallFact> {
                 return Some(CallFact {
                     callee: callee.syntax().text().to_string(),
                     arguments: literal_arguments(call.arg_list().as_ref()),
+                    options: Vec::new(),
                     span: span_of(&node),
                 });
             }
@@ -315,6 +322,13 @@ fn calls(syntax: &SyntaxNode) -> Vec<CallFact> {
             Some(CallFact {
                 callee: method.name_ref()?.text().to_string(),
                 arguments: literal_arguments(method.arg_list().as_ref()),
+                // Empty, and deliberately. Rust has no options bag: the
+                // nearest thing is a struct literal, which is a typed
+                // construction with a name rather than an argument shape.
+                // Recording its fields as `options` would be a different fact
+                // wearing the same name, and a rule written for TypeScript
+                // would half-work here without saying so. Decision 33.
+                options: Vec::new(),
                 span: span_of(&node),
             })
         })

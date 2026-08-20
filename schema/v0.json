@@ -300,6 +300,28 @@
           "items": {
             "$ref": "#/$defs/Alternative"
           }
+        },
+        "enforcement": {
+          "description": "Whether any rule can keep this decision.\n\n`config doctor` reports a decision no rule implements, because a\ndecision written down and unenforced is usually one somebody meant to\nenforce. Some are not: *\"Pub/Sub is the message broker\"*,\n*\"money amounts are decimal, never float\"* — real decisions, written\ndown, and not a shape any rule here can hold.\n\nWithout this the config punishes a repository for declaring everything\nit decided, and the honest way to keep it quiet is to leave decisions\nout — which is the opposite of what the feature is for. Issue #160.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Enforcement"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "why_not_enforceable": {
+          "description": "Why no rule can keep it, when `enforcement` says none can.\n\nRequired with that claim, and refused without it. `Alternative::why_not`\nmakes the same argument and it is the same argument: *\"an option with\nno argument against it is a name nobody can disagree with\"*. Unenforced\nwith no reason is the button everybody presses, and it makes the config\nquieter and less true at once.\n\nA claim, not a note. `doctor` reports a decision that carries this and\n*does* have a rule, because then the sentence is wrong and the config\nsays two things. Issue #160.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "description": "Where this decision applies, as directory globs.\n\nThe same shape as [`Module::scope`], for the same reason #74 gave it to\na module: without it the decision is only a label, and nothing can bring\nit to the person standing in the paths it governs.\n\nAn enforced decision already has an implicit scope through the roots of\nthe rules that name it. This is what an *unenforced* one has instead —\nwhich is why it matters most for the decisions `enforcement: \"none\"`\ndescribes: there is no gate that will catch their violation later, so\narriving unprompted is the only way they arrive at all. Issue #161.",
+          "$ref": "#/$defs/OneOrMany"
         }
       },
       "additionalProperties": false,
@@ -381,6 +403,16 @@
     "RuleId": {
       "description": "A rule's stable identifier, unique across a config and its presets.",
       "type": "string"
+    },
+    "Enforcement": {
+      "description": "Whether a decision is one any rule can keep.",
+      "oneOf": [
+        {
+          "description": "No rule can express this decision, and `why_not_enforceable` says why.\n\nOne variant, deliberately. The absent case already means \"a rule should\nkeep this\", which is what `decision-nobody-enforces` reports on, so a\nsecond spelling of the default would be two ways to say one thing. A\nvalue naming *how* it is enforced would be a third source of truth\nbeside the rule and its `decision` link.",
+          "type": "string",
+          "const": "none"
+        }
+      ]
     },
     "Module": {
       "description": "A named group of rules.\n\nA module is a label, not a scope: it exists so a finding can say\n`[domain] packages/domain/src/user/wrong-folder`. Each rule still carries\nits own scope.",
@@ -1524,6 +1556,77 @@
           ]
         },
         {
+          "description": "A capability only these files may reach.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "decision": {
+              "description": "The decision this rule implements, when it implements a declared one.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DecisionId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "callee": {
+              "description": "The callees this rule guards, as they appear at a call site.\n\nMatched exactly, or as a prefix at a dot: `process.env` guards\n`process.env` and `process.env.DATABASE_URL`, and does not guard\n`processing.env`. That is a change of dialect from `call-obligation`,\nwhich matches its symbol exactly -- and it is the right one here,\nbecause a chokepoint is about a capability rather than about one\nfunction, and `process.env.DATABASE_URL` is recorded as written.\n\nA construction is spelled the way the source spells it:\n`\"new PostgresRepo\"`. It is not a call and does not answer to\n`PostgresRepo`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "roots": {
+              "description": "Directory globs this rule governs.\n\nSeparate from [`only_in`](Self::only_in), and the separation is the\npoint: `roots` is the population the question is asked of, `only_in` is\nthe answer that is allowed. A test suite reads `process.env`\nlegitimately, so a chokepoint that governed the whole repository by\ndefault would report the tests on its first run -- and a rule whose\nfirst run is wrong is one nobody keeps.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "only_in": {
+              "description": "The files allowed to reach them.\n\nAn allowlist, and there is no `forbid` direction. `only_in` is the one\nthat does not decay -- the argument #75 already made for\n`only_import_from`: a new file outside the chokepoint is reported the\nday it is written, where a forbid list has to be extended by whoever\nadded the thing it should have forbidden.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands*. See\n[`ImportCycleRule::when_importing`].",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "chokepoint"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots",
+            "only_in"
+          ]
+        },
+        {
           "description": "What a file's header declares about itself.",
           "type": "object",
           "properties": {
@@ -1669,12 +1772,35 @@
         "imported_from": {
           "description": "The module the symbol must be imported from, which disambiguates\nsame-named functions from different packages.",
           "type": "string"
+        },
+        "with_options": {
+          "description": "Options the call must carry, when the call alone is not the statement.\n\nSee [`WithOptions`]. Leave it out and the rule is exactly what it was:\nthe symbol is imported and called, and what it is given is not asked\nabout.",
+          "$ref": "#/$defs/WithOptions"
         }
       },
       "additionalProperties": false,
       "required": [
         "symbol",
         "imported_from"
+      ]
+    },
+    "WithOptions": {
+      "description": "The options a required call must carry.\n\nAn options bag is how TypeScript spells the argument whose presence changes\nwhat a call does. `FactoryMockDependencies(ENV, { PAY_IN_MEMORY: \"all\" })`\nand `FactoryMockDependencies()` are the same callee at the same arity and\nopposite meanings -- one runs against in-memory twins, the other starts a\ncontainer -- and nothing in the file says which. Issue #164.\n\nTwo spellings, because presence and value are different questions:\n\n```json\n\"with_options\": [\"PAY_IN_MEMORY\"]\n\"with_options\": { \"PAY_IN_MEMORY\": \"all\" }\n```\n\nA list asks only that the key be there, which is the case this was built\nfor: the value never varies, and a rule made to name one would be naming a\nthing it does not care about. A map asks for the value too, rendered as\nwritten -- `\"all\"`, `false`, `3`.\n\nA sequence and a map are told apart by their JSON type before any field is\nread, so this is not the kind of untagged union that reports \"data did not\nmatch any variant\" at the wrong line.",
+      "anyOf": [
+        {
+          "description": "Keys that must be present, whatever they hold.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "description": "Keys that must be present holding exactly this.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
       ]
     },
     "PassthroughForm": {

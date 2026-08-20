@@ -215,10 +215,19 @@ pub(super) fn compile_rule(
             })
         }
 
+        Rule::Chokepoint(r) => CompiledRuleKind::Chokepoint {
+            callee: r.callee.clone(),
+            only_in: Scope::compile(r.only_in.iter()).map_err(|source| CompileError::Scope {
+                rule: id.clone(),
+                source,
+            })?,
+        },
+
         Rule::CallObligation(r) => CompiledRuleKind::CallObligation {
             file_pattern: pattern(&id, "file_pattern", &r.file_pattern)?,
             symbol: r.must_call.symbol.clone(),
             imported_from: r.must_call.imported_from.clone(),
+            with_options: r.must_call.with_options.pairs(),
         },
     };
 

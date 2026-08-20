@@ -14,7 +14,7 @@
 
 use archwarden_core::{
     compiled::{CompiledRule, CompiledRuleKind},
-    facts::FileFacts,
+    facts::{CallFact, FileFacts},
     finding::{Expectation, Finding, Observed},
     ids::{ModuleId, RuleId},
     level::Level,
@@ -34,6 +34,7 @@ pub struct CallObligationEngine {
     file_pattern: Pattern,
     symbol: String,
     imported_from: String,
+    with_options: Vec<(String, Option<String>)>,
 }
 
 impl CallObligationEngine {
@@ -46,12 +47,19 @@ impl CallObligationEngine {
             file_pattern,
             symbol,
             imported_from,
+            with_options,
         } = &rule.kind
         else {
             return None;
         };
 
-        Some(Self::build(rule, file_pattern, symbol, imported_from))
+        Some(Self::build(
+            rule,
+            file_pattern,
+            symbol,
+            imported_from,
+            with_options,
+        ))
     }
 
     /// Builds an engine from a rule whose kind is already known.
@@ -66,6 +74,7 @@ impl CallObligationEngine {
         file_pattern: &Pattern,
         symbol: &str,
         imported_from: &str,
+        with_options: &[(String, Option<String>)],
     ) -> Self {
         Self {
             id: rule.id.clone(),
@@ -75,6 +84,7 @@ impl CallObligationEngine {
             file_pattern: file_pattern.clone(),
             symbol: symbol.to_owned(),
             imported_from: imported_from.to_owned(),
+            with_options: with_options.to_vec(),
         }
     }
 
@@ -128,10 +138,72 @@ impl CallObligationEngine {
         facts.calls.iter().any(|call| call.callee == self.symbol)
     }
 
+    /// The first option the rule asks for that no single call carries.
+    ///
+    /// One call has to carry all of them. Two calls each carrying half is two
+    /// calls, and the rule is a sentence about one -- `factory({ a })` beside
+    /// `factory({ b })` is exactly the mixed suite issue #164 is about.
+    ///
+    /// A value the reader cannot see does not satisfy a rule that names one.
+    /// The fact records it as absent rather than guessed, and treating absent
+    /// as a match would have the rule pass on a call it cannot read.
+    fn option_no_call_carries(&self, facts: &FileFacts) -> Option<&(String, Option<String>)> {
+        let satisfying = |call: &&CallFact| {
+            call.callee == self.symbol
+                && self.with_options.iter().all(|(key, wanted)| {
+                    call.options.iter().any(|option| {
+                        option.key == *key
+                            && match wanted {
+                                Some(value) => option.value.as_deref() == Some(value.as_str()),
+                                None => true,
+                            }
+                    })
+                })
+        };
+
+        if facts.calls.iter().any(|call| satisfying(&call)) {
+            return None;
+        }
+
+        // Nothing satisfies the whole set, so name the first one missing from
+        // the call that came closest -- the reader has one call site to look
+        // at and one key to add.
+        let closest = facts
+            .calls
+            .iter()
+            .filter(|call| call.callee == self.symbol)
+            .max_by_key(|call| {
+                self.with_options
+                    .iter()
+                    .filter(|(key, _)| call.options.iter().any(|option| option.key == *key))
+                    .count()
+            });
+
+        self.with_options.iter().find(|(key, wanted)| {
+            !closest.is_some_and(|call| {
+                call.options.iter().any(|option| {
+                    option.key == *key
+                        && match wanted {
+                            Some(value) => option.value.as_deref() == Some(value.as_str()),
+                            None => true,
+                        }
+                })
+            })
+        })
+    }
+
     fn expectation(&self) -> Expectation {
         Expectation::RequiredCall {
             symbol: self.symbol.clone(),
             imported_from: self.imported_from.clone(),
+            with_options: self
+                .with_options
+                .iter()
+                .map(|(key, value)| archwarden_core::finding::RequiredOption {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
         }
     }
 
@@ -196,7 +268,20 @@ impl RuleEngine for CallObligationEngine {
         }
 
         if self.calls_the_symbol(facts) {
-            return Vec::new();
+            // The call is there. Whether it says what the rule asks it to say
+            // is a different question, and a different place to send the
+            // reader: a call site a few characters short, not a missing one.
+            return match self.option_no_call_carries(facts) {
+                Some((option, value)) => vec![self.finding(
+                    ctx.path,
+                    Observed::RequiredCallOptionMissing {
+                        symbol: self.symbol.clone(),
+                        option: option.clone(),
+                        value: value.clone(),
+                    },
+                )],
+                None => Vec::new(),
+            };
         }
 
         vec![self.finding(
@@ -218,7 +303,7 @@ impl RuleEngine for CallObligationEngine {
 
 #[cfg(test)]
 mod tests {
-    use archwarden_core::traits::Exists;
+    use archwarden_core::{facts::CallOption, traits::Exists};
 
     use super::*;
 
@@ -242,6 +327,7 @@ mod tests {
                 file_pattern: Pattern::compile(".*").expect("valid pattern"),
                 symbol: symbol.to_owned(),
                 imported_from: "x".to_owned(),
+                with_options: Vec::new(),
             }
             .root()
             .to_owned()
@@ -278,12 +364,43 @@ mod tests {
                     .expect("valid pattern"),
                 symbol: "Event.save".to_owned(),
                 imported_from: "@flowmaatik/domain/event".to_owned(),
+                with_options: Vec::new(),
             },
         }
     }
 
     fn engine() -> CallObligationEngine {
         CallObligationEngine::from_rule(&rule()).expect("a call-obligation rule")
+    }
+
+    /// The same rule, asking for options. Issue #164.
+    fn engine_wanting(options: &[(&str, Option<&str>)]) -> CallObligationEngine {
+        let mut rule = rule();
+        if let CompiledRuleKind::CallObligation { with_options, .. } = &mut rule.kind {
+            *with_options = options
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), value.map(str::to_owned)))
+                .collect();
+        }
+        CallObligationEngine::from_rule(&rule).expect("a call-obligation rule")
+    }
+
+    /// Facts whose one call carries an options bag.
+    fn facts_calling_with(callee: &str, options: &[(&str, Option<&str>)]) -> FileFacts {
+        let mut facts = facts(EVENT, &[]);
+        facts.calls.push(CallFact {
+            arguments: Vec::new(),
+            options: options
+                .iter()
+                .map(|(key, value)| CallOption {
+                    key: (*key).to_owned(),
+                    value: value.map(str::to_owned),
+                })
+                .collect(),
+            callee: callee.to_owned(),
+            span: Span::new(100, 120),
+        });
+        facts
     }
 
     /// Facts for a route file: `imports` as `(specifier, names, type_only)`,
@@ -305,6 +422,7 @@ mod tests {
         for callee in calls {
             facts.calls.push(CallFact {
                 arguments: Vec::new(),
+                options: Vec::new(),
                 callee: (*callee).to_owned(),
                 span: Span::new(100, 120),
             });
@@ -325,6 +443,182 @@ mod tests {
     }
 
     const EVENT: &[(&str, &[&str], bool)] = &[("@flowmaatik/domain/event", &["Event"], false)];
+
+    /// Issue #164, reported by a repository that found it the expensive way:
+    /// of 215 files in a suite that was supposed to be entirely in-memory,
+    /// five were not, and the only evidence was a run that took longer than it
+    /// should. Same callee, same arity, opposite meaning -- the difference is
+    /// an object key.
+    #[test]
+    fn a_call_without_the_option_the_rule_asks_for_is_reported() {
+        let engine = engine_wanting(&[("PAY_IN_MEMORY", None)]);
+
+        assert!(
+            check(
+                &engine,
+                &facts_calling_with("Event.save", &[("PAY_IN_MEMORY", Some("all"))])
+            )
+            .is_empty(),
+            "the key is there"
+        );
+
+        let missing = check(
+            &engine,
+            &facts_calling_with("Event.save", &[("cache", None)]),
+        );
+        assert_eq!(
+            missing.first().map(|f| &f.observed),
+            Some(&Observed::RequiredCallOptionMissing {
+                symbol: "Event.save".to_owned(),
+                option: "PAY_IN_MEMORY".to_owned(),
+                value: None,
+            }),
+            "{missing:?}"
+        );
+    }
+
+    /// Presence is a different question from value, and a rule that only
+    /// wants presence must not have to name a value it does not care about.
+    #[test]
+    fn a_key_asked_for_by_presence_is_satisfied_by_any_value() {
+        let engine = engine_wanting(&[("PAY_IN_MEMORY", None)]);
+
+        for value in [Some("all"), Some("none"), None] {
+            assert!(
+                check(
+                    &engine,
+                    &facts_calling_with("Event.save", &[("PAY_IN_MEMORY", value)])
+                )
+                .is_empty(),
+                "{value:?}"
+            );
+        }
+    }
+
+    /// And a rule that names one is not satisfied by the key alone -- including
+    /// when the value is something the reader cannot see, which is absent
+    /// rather than assumed to match.
+    #[test]
+    fn a_key_asked_for_by_value_is_not_satisfied_by_presence() {
+        let engine = engine_wanting(&[("PAY_IN_MEMORY", Some("all"))]);
+
+        assert!(
+            check(
+                &engine,
+                &facts_calling_with("Event.save", &[("PAY_IN_MEMORY", Some("all"))])
+            )
+            .is_empty()
+        );
+
+        for wrong in [Some("none"), None] {
+            let reported = check(
+                &engine,
+                &facts_calling_with("Event.save", &[("PAY_IN_MEMORY", wrong)]),
+            );
+            assert_eq!(
+                reported.first().map(|f| &f.observed),
+                Some(&Observed::RequiredCallOptionMissing {
+                    symbol: "Event.save".to_owned(),
+                    option: "PAY_IN_MEMORY".to_owned(),
+                    value: Some("all".to_owned()),
+                }),
+                "{wrong:?}: {reported:?}"
+            );
+        }
+    }
+
+    /// One call has to carry all of them. Two calls each carrying half is two
+    /// calls, and the rule is a sentence about one.
+    #[test]
+    fn the_options_have_to_meet_on_one_call() {
+        let engine = engine_wanting(&[("PAY_IN_MEMORY", None), ("strict", Some("true"))]);
+
+        let together = facts_calling_with(
+            "Event.save",
+            &[("PAY_IN_MEMORY", Some("all")), ("strict", Some("true"))],
+        );
+        assert!(check(&engine, &together).is_empty());
+
+        let mut apart = facts_calling_with("Event.save", &[("PAY_IN_MEMORY", Some("all"))]);
+        apart.calls.push(CallFact {
+            arguments: Vec::new(),
+            options: vec![CallOption::holding("strict", "true")],
+            callee: "Event.save".to_owned(),
+            span: Span::new(200, 220),
+        });
+        assert!(!check(&engine, &apart).is_empty(), "{apart:?}");
+    }
+
+    /// It has to be *this* callee carrying it. A different call in the same
+    /// file passing the key is a different call, and a rule satisfied by one
+    /// would pass every spec that happens to mention the word somewhere.
+    #[test]
+    fn another_callee_carrying_the_option_does_not_satisfy_it() {
+        let engine = engine_wanting(&[("PAY_IN_MEMORY", None)]);
+
+        let mut facts = facts_calling_with("Event.save", &[]);
+        facts.calls.push(CallFact {
+            arguments: Vec::new(),
+            options: vec![CallOption::holding("PAY_IN_MEMORY", "all")],
+            callee: "somethingElse".to_owned(),
+            span: Span::new(300, 320),
+        });
+
+        let reported = check(&engine, &facts);
+        assert_eq!(
+            reported.first().map(|f| &f.observed),
+            Some(&Observed::RequiredCallOptionMissing {
+                symbol: "Event.save".to_owned(),
+                option: "PAY_IN_MEMORY".to_owned(),
+                value: None,
+            }),
+            "{reported:?}"
+        );
+    }
+
+    /// When several calls to the symbol each fall short, the one named is the
+    /// key missing from the call that came closest -- so the reader has one
+    /// call site to open and one key to add, rather than a list to reconcile.
+    #[test]
+    fn the_key_named_is_the_one_missing_from_the_closest_call() {
+        let engine = engine_wanting(&[("PAY_IN_MEMORY", None), ("strict", None)]);
+
+        // The first call carries an option the rule never mentions, which is
+        // no closer than carrying none: the count is of keys the rule asked
+        // for, not of keys the call happens to have.
+        let mut facts = facts_calling_with("Event.save", &[("cache", Some("false"))]);
+        facts.calls.push(CallFact {
+            arguments: Vec::new(),
+            options: vec![CallOption::holding("PAY_IN_MEMORY", "all")],
+            callee: "Event.save".to_owned(),
+            span: Span::new(300, 320),
+        });
+
+        let reported = check(&engine, &facts);
+        assert_eq!(
+            reported.first().map(|f| &f.observed),
+            Some(&Observed::RequiredCallOptionMissing {
+                symbol: "Event.save".to_owned(),
+                option: "strict".to_owned(),
+                value: None,
+            }),
+            "the call holding half of what the rule asked for is the closest \
+             one, and `strict` is what it is missing: {reported:?}"
+        );
+    }
+
+    /// A rule that asks for no options is exactly the rule it was before, and
+    /// a call carrying a bag it never mentioned satisfies it.
+    #[test]
+    fn a_rule_that_asks_for_no_options_is_unchanged() {
+        assert!(
+            check(
+                &engine(),
+                &facts_calling_with("Event.save", &[("anything", Some("at all"))])
+            )
+            .is_empty()
+        );
+    }
 
     /// The satisfied case: imported and called.
     #[test]
@@ -351,6 +645,7 @@ mod tests {
             Expectation::RequiredCall {
                 symbol: "Event.save".to_owned(),
                 imported_from: "@flowmaatik/domain/event".to_owned(),
+                with_options: Vec::new(),
             }
         );
     }
@@ -459,6 +754,7 @@ mod tests {
                 file_pattern: Pattern::compile(r"^route\.post\.ts$").expect("valid pattern"),
                 symbol: "saveEvent".to_owned(),
                 imported_from: "@flowmaatik/domain/event".to_owned(),
+                with_options: Vec::new(),
             },
             ..rule()
         })
@@ -541,6 +837,7 @@ mod tests {
             vec![Expectation::RequiredCall {
                 symbol: "Event.save".to_owned(),
                 imported_from: "@flowmaatik/domain/event".to_owned(),
+                with_options: Vec::new(),
             }]
         );
     }

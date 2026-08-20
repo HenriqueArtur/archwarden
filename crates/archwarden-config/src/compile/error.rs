@@ -54,6 +54,48 @@ pub enum CompileError {
         decision: archwarden_core::ids::DecisionId,
     },
 
+    /// A decision claims no rule can keep it, and says nothing about why.
+    ///
+    /// Refused where the config compiles rather than reported later, because
+    /// the claim is the whole feature: `enforcement: "none"` silences the
+    /// concern that a decision is unenforced, and one silenced without an
+    /// argument makes the config quieter and less true at once.
+    ///
+    /// The same line `Alternative::why_not` draws: an option with no argument
+    /// against it is a name nobody can disagree with. Issue #160.
+    #[error(
+        "decision `{decision}` claims no rule can keep it and gives no reason; \
+         `why_not_enforceable` is required with `enforcement: \"none\"`"
+    )]
+    UnenforceableWithNoReason {
+        /// The decision.
+        decision: archwarden_core::ids::DecisionId,
+    },
+
+    /// A decision explains why nothing can keep it, without claiming so.
+    ///
+    /// The reverse typo, and refused for the same reason: the reason reads as
+    /// a claim to whoever finds it, and the config would carry an argument for
+    /// something it never said.
+    #[error(
+        "decision `{decision}` gives a `why_not_enforceable` without claiming \
+         one: add `\"enforcement\": \"none\"`, or drop the reason"
+    )]
+    ReasonWithNoClaim {
+        /// The decision.
+        decision: archwarden_core::ids::DecisionId,
+    },
+
+    /// A decision's `scope` is not a glob.
+    #[error("decision `{decision}` has a `scope` that is not a valid glob")]
+    DecisionScope {
+        /// The decision.
+        decision: archwarden_core::ids::DecisionId,
+        /// What the scope compiler said.
+        #[source]
+        source: archwarden_core::scope::ScopeError,
+    },
+
     /// A decision supersedes one the config never declared.
     #[error("decision `{decision}` supersedes `{superseded}`, which this config does not declare")]
     UnknownSuperseded {

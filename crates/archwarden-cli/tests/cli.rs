@@ -1855,6 +1855,159 @@ fn the_debt_a_decision_carries_is_named_on_every_surface() {
 }
 
 /// Issue #116, end to end: the document archwarden writes, the region it never
+/// Issue #166, reported from a repository that put `config doctor` in its
+/// gate and watched it pass green for two commits with a stale decision
+/// document hanging off it.
+///
+/// A command that never fails guards nothing. Printing the word `error` and
+/// returning success is the incoherence: the word is a promise.
+#[test]
+fn config_doctor_fails_on_what_it_calls_an_error() {
+    // A decision claiming nothing can keep it, with a rule that does: the
+    // config says two things at once, which `doctor` reports as an error.
+    let contradictory = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,
+            "decisions":[{"id":"ADR-014","title":"A wall","enforcement":"none",
+                          "why_not_enforceable":"no parser sees a review"}],
+            "rules":[{"type":"presence","id":"has-a-readme","level":"error",
+                      "decision":"ADR-014",
+                      "roots":["src/*"],"require":["README.md"]}]}"#,
+        ),
+        ("src/api/README.md", "# api"),
+    ]);
+
+    archwarden()
+        .current_dir(contradictory.path())
+        .args(["config", "doctor"])
+        .assert()
+        // Two, not one: this is "your config is wrong", which is a different
+        // thing from "your code violates your config".
+        .code(2)
+        .stdout(contains("unenforceable-but-a-rule-keeps-it"));
+
+    // A warning alone is still clean, so a repository is not failed for
+    // something archwarden itself calls a warning.
+    let warned = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,
+            "decisions":[{"id":"ADR-014","title":"A wall"}],
+            "rules":[{"type":"presence","id":"has-a-readme","level":"error",
+                      "roots":["src/*"],"require":["README.md"]}]}"#,
+        ),
+        ("src/api/README.md", "# api"),
+    ]);
+
+    archwarden()
+        .current_dir(warned.path())
+        .args(["config", "doctor"])
+        .assert()
+        .success()
+        .stdout(contains("decision-nobody-enforces"));
+
+    // And `--strict` is for a gate that wants every concern to block, which
+    // is what the reporter's own pipeline meant.
+    archwarden()
+        .current_dir(warned.path())
+        .args(["config", "doctor", "--strict"])
+        .assert()
+        .code(2)
+        .stdout(contains("decision-nobody-enforces"));
+
+    // A clean config is clean either way.
+    let clean = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[{"type":"presence","id":"has-a-readme",
+            "level":"error","roots":["src/*"],"require":["README.md"]}]}"#,
+        ),
+        ("src/api/README.md", "# api"),
+    ]);
+
+    archwarden()
+        .current_dir(clean.path())
+        .args(["config", "doctor", "--strict"])
+        .assert()
+        .success()
+        .stdout(contains("No concerns"));
+}
+
+/// Issue #162. The line archwarden could not say: *has this already been
+/// rejected?* -- asked by somebody who does not know the decision's id and
+/// names the option differently from whoever rejected it.
+///
+/// End to end rather than as a unit test, because the value is in the whole
+/// path: a bilingual config on disk, a query with no accents typed by someone
+/// who never read it, and an answer that says why it matched.
+#[test]
+fn a_rejected_option_is_found_under_a_name_nobody_wrote() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,
+            "decisions":[{"id":"ADR-001","title":"Quatro camadas, mais o System",
+                          "alternatives":[{"option":"uma única camada",
+                                           "why_not":"o domínio importaria o transporte"}]}],
+            "rules":[]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["decisions", "find", "camada", "unica"])
+        .assert()
+        .success()
+        .stdout(contains("ADR-001 — Quatro camadas, mais o System"))
+        .stdout(contains("alternatives[0].option"))
+        // And why it matched, which is what a reader adjusts the query by.
+        .stdout(contains("`camada` prefix of `camadas`"))
+        .stdout(contains("`unica` exact"))
+        .stdout(contains("2 places mention"));
+
+    // One reads as one. A count sentence that says "1 places mention" is the
+    // kind of thing a reader stops trusting the rest of.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["decisions", "find", "transporte"])
+        .assert()
+        .success()
+        .stdout(contains("1 place mentions"));
+
+    // The same answer as data, in the shape the MCP tool answers with.
+    let json = archwarden()
+        .current_dir(dir.path())
+        .args(["decisions", "find", "transporte", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&json).expect("the JSON format emits JSON");
+    assert_eq!(parsed["query"], "transporte");
+    assert_eq!(parsed["hits"][0]["decision"], "ADR-001");
+    assert_eq!(parsed["hits"][0]["at"], "alternatives[0].why_not");
+    assert_eq!(parsed["hits"][0]["reasons"][0]["how"], "exact");
+
+    // Nothing found is an answer, not a failure: a command somebody runs to
+    // ask a question must not fail them for asking.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["decisions", "find", "graphql"])
+        .assert()
+        .success()
+        .stdout(contains("Nothing here has been said about `graphql`"));
+
+    // And `decisions` with no subcommand still writes, which is what every
+    // script calling it already does.
+    archwarden()
+        .current_dir(dir.path())
+        .arg("decisions")
+        .assert()
+        .success()
+        .stdout(contains("wrote 1 document"));
+}
+
 /// rewrites, and the drift `config doctor` reports when the config moves on.
 ///
 /// Asserted as one sequence because the value is in the three agreeing, and no

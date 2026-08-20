@@ -1421,6 +1421,7 @@ mod tests {
                 .collect(),
             exports: Vec::new(),
             calls: Vec::new(),
+            reads: Vec::new(),
             allowances: Vec::new(),
             metadata: Vec::new(),
             has_opaque_import: false,

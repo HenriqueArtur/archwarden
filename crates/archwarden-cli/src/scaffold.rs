@@ -171,15 +171,31 @@ fn render_text(path: &RepoRelPath, shape: &Scaffold, out: &mut dyn std::io::Writ
         }
     }
 
+    render_calls(shape, out);
+}
+
+/// The calls a file has to contain, and what they have to be given.
+fn render_calls(shape: &Scaffold, out: &mut dyn std::io::Write) {
     if shape.call_obligations.is_empty() {
         let _ = writeln!(out, "\n  Required calls: none.");
-    } else {
-        let _ = writeln!(out, "\n  Required calls:");
-        for obligation in &shape.call_obligations {
+        return;
+    }
+
+    let _ = writeln!(out, "\n  Required calls:");
+    for obligation in &shape.call_obligations {
+        let _ = writeln!(
+            out,
+            "    {} — imported from {}",
+            obligation.symbol, obligation.imported_from
+        );
+        // Indented under the call rather than appended to it: this is what
+        // somebody about to write the call has to type, and a line they can
+        // copy beats a clause they have to parse. Issue #164.
+        if !obligation.with_options.is_empty() {
             let _ = writeln!(
                 out,
-                "    {} — imported from {}",
-                obligation.symbol, obligation.imported_from
+                "      passing {{ {} }}",
+                obligation.with_options.join(", ")
             );
         }
     }
@@ -521,6 +537,38 @@ mod tests {
         );
 
         assert!(text.contains("Required calls: none."), "{text}");
+    }
+
+    /// And the options the call has to be given, on their own line under it.
+    /// Issue #164: this is what somebody about to write the call has to type,
+    /// and a line they can copy beats a clause they have to parse.
+    #[test]
+    fn a_call_obligations_options_are_printed_under_it() {
+        let text = rendered(
+            vec![rule(
+                "specs-run-in-memory",
+                &["src/*"],
+                CompiledRuleKind::CallObligation {
+                    file_pattern: Pattern::compile(r"^create-client\.use-case\.ts$")
+                        .expect("valid pattern"),
+                    symbol: "FactoryMockDependencies".to_owned(),
+                    imported_from: "../test/factories".to_owned(),
+                    with_options: vec![
+                        ("PAY_IN_MEMORY".to_owned(), None),
+                        ("strict".to_owned(), Some("true".to_owned())),
+                    ],
+                },
+            )],
+            crate::report::Format::Text,
+        );
+
+        assert!(
+            text.contains(
+                "    FactoryMockDependencies — imported from ../test/factories\n\
+                 \x20     passing { PAY_IN_MEMORY, strict: true }\n"
+            ),
+            "{text}"
+        );
     }
 
     /// The whole text format, written out by hand so the assertion is about

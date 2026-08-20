@@ -124,6 +124,14 @@ pub struct CallObligation {
     pub symbol: String,
     /// The module it must be imported from.
     pub imported_from: String,
+    /// Options the call has to be given, when the rule asks for any.
+    ///
+    /// Carried rather than dropped: an agent writing the call from this shape
+    /// without them writes one the rule then refuses, which is the failure
+    /// `scaffold` exists to prevent. Rendered as `key` or `key: value`,
+    /// the way it would be written. Issue #164.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub with_options: Vec<String>,
 }
 
 /// What may live inside a directory.
@@ -154,6 +162,29 @@ pub fn scaffold(config: &CompiledConfig, path: &RepoRelPath) -> Scaffold {
     }
 
     shape
+}
+
+/// One required call, with its options rendered the way they are written.
+///
+/// Its own function because `absorb` is a long match and this arm has a body:
+/// an agent writing the call from this shape without the options writes one
+/// the rule then refuses, which is the failure `scaffold` exists to prevent.
+fn obligation(
+    symbol: String,
+    imported_from: String,
+    with_options: Vec<archwarden_core::finding::RequiredOption>,
+) -> CallObligation {
+    CallObligation {
+        symbol,
+        imported_from,
+        with_options: with_options
+            .into_iter()
+            .map(|option| match option.value {
+                Some(value) => format!("{}: {value}", option.key),
+                None => option.key,
+            })
+            .collect(),
+    }
 }
 
 fn absorb(shape: &mut Scaffold, expectation: Expectation) {
@@ -221,10 +252,10 @@ fn absorb(shape: &mut Scaffold, expectation: Expectation) {
         Expectation::RequiredCall {
             symbol,
             imported_from,
-        } => shape.call_obligations.push(CallObligation {
-            symbol,
-            imported_from,
-        }),
+            with_options,
+        } => shape
+            .call_obligations
+            .push(obligation(symbol, imported_from, with_options)),
         Expectation::FilenamePattern { patterns } => shape.filename_patterns.extend(patterns),
         // Into the same list as a spec sibling: for someone about to write the
         // file the two are one instruction, "create this too", and the reason
@@ -685,6 +716,7 @@ mod tests {
                     .expect("valid pattern"),
                 symbol: "Event.save".to_owned(),
                 imported_from: "@org/domain/event".to_owned(),
+                with_options: Vec::new(),
             },
         )]);
 
@@ -698,6 +730,37 @@ mod tests {
                 .first()
                 .map(|c| c.imported_from.as_str()),
             Some("@org/domain/event")
+        );
+    }
+
+    /// And the options it has to be given. Issue #164: an agent writing the
+    /// call from this shape without them writes one the rule then refuses,
+    /// which is the failure `scaffold` exists to prevent.
+    #[test]
+    fn a_call_obligations_options_reach_the_shape() {
+        let shape = shape_of(vec![rule(
+            "specs-run-in-memory",
+            &["src/*"],
+            CompiledRuleKind::CallObligation {
+                file_pattern: Pattern::compile(r"^create-client\.use-case\.ts$")
+                    .expect("valid pattern"),
+                symbol: "FactoryMockDependencies".to_owned(),
+                imported_from: "../test/factories".to_owned(),
+                with_options: vec![
+                    ("PAY_IN_MEMORY".to_owned(), None),
+                    ("strict".to_owned(), Some("true".to_owned())),
+                ],
+            },
+        )]);
+
+        // Rendered the way they are written, so the line can be copied rather
+        // than translated.
+        assert_eq!(
+            shape
+                .call_obligations
+                .first()
+                .map(|c| c.with_options.as_slice()),
+            Some(["PAY_IN_MEMORY".to_owned(), "strict: true".to_owned()].as_slice())
         );
     }
 

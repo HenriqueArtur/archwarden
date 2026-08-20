@@ -43,7 +43,7 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 /// dangerous kind of shape change — an entry written by the previous build
 /// deserialises cleanly and claims every export annotates nothing, which is a
 /// finding against a file whose annotation is right there in the source.
-pub const FORMAT_VERSION: u32 = 12;
+pub const FORMAT_VERSION: u32 = 14;
 
 const META: TableDefinition<'_, &str, u32> = TableDefinition::new("meta");
 const FACTS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("facts");
@@ -349,6 +349,7 @@ mod tests {
         });
         facts.calls.push(CallFact {
             arguments: Vec::new(),
+            options: Vec::new(),
             callee: "Event.save".to_owned(),
             span: Span::new(30, 42),
         });

@@ -356,10 +356,23 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
         Expectation::RequiredImport { patterns } => {
             format!("an import from {}", join_or(patterns, "somewhere"))
         }
+        Expectation::UsedOnlyIn { callee, only_in } => format!(
+            "no use of {} outside {}",
+            join_or(callee, "anything"),
+            join_or(only_in, "anywhere"),
+        ),
         Expectation::RequiredCall {
             symbol,
             imported_from,
-        } => format!("a call to `{symbol}`, imported from `{imported_from}`"),
+            with_options,
+        } => format!(
+            "a call to `{symbol}`, imported from `{imported_from}`{}",
+            archwarden_api::guide::passing(
+                with_options
+                    .iter()
+                    .map(|option| (&option.key, option.value.as_ref()))
+            )
+        ),
         other => format!("{other:?}"),
     }
 }

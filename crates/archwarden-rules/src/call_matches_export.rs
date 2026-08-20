@@ -307,6 +307,7 @@ mod tests {
             .map(|name| CallFact {
                 callee: "invoke".to_owned(),
                 arguments: vec![name.map(ToOwned::to_owned)],
+                options: Vec::new(),
                 span: Span::new(0, 1),
             })
             .collect();

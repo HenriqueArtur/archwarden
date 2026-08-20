@@ -147,6 +147,16 @@ pub(crate) const STEPS: &[Step] = &[
         needs: None,
         role: Role::Gate,
     },
+    // And the config is held to the same standard as the code. Added the day
+    // `doctor` learned to fail (issue #166) -- a repository that ships this
+    // command as a gate and does not run it as one is recommending something
+    // it has not tried.
+    Step {
+        command: "cargo run --quiet --bin archwarden -- config doctor --strict",
+        dir: None,
+        needs: None,
+        role: Role::Gate,
+    },
     // 🧪 tests
     Step {
         command: "cargo nextest run --workspace --all-features",

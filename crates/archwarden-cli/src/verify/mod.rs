@@ -149,6 +149,9 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
         }
         // Both are file-existence questions, which is the easiest kind to
         // plant: one file that should not be there, and one that should.
+        CompiledRuleKind::Chokepoint { callee, only_in } => {
+            a_call_from_outside_the_chokepoint(rule, engine, tree, callee, only_in)
+        }
         CompiledRuleKind::Frozen => a_file_added_to_a_freeze(rule, engine, tree),
         CompiledRuleKind::Mirror { .. } => a_file_with_no_counterpart(rule, engine, tree),
         CompiledRuleKind::ExportShape(shape) => {
@@ -229,7 +232,9 @@ use probes::declarations::{
     a_document_with_no_block, a_file_declaring_the_wrong_thing, a_file_with_no_companion,
 };
 use probes::pairing::{a_file_added_to_a_freeze, a_file_with_no_counterpart, a_file_with_no_spec};
-use probes::reach::{a_file_of_the_wrong_shape, crossed_boundary};
+use probes::reach::{
+    a_call_from_outside_the_chokepoint, a_file_of_the_wrong_shape, crossed_boundary,
+};
 use probes::structure::{a_directory_holding_nothing, forbidden_subfolder};
 
 #[cfg(test)]
@@ -304,6 +309,78 @@ mod tests {
         let mut verifications = verify(&config, &tree);
         drop(guard);
         verifications.pop().expect("one rule, one verdict").verdict
+    }
+
+    fn chokepoint(callee: &[&str], only_in: &[&str]) -> CompiledRuleKind {
+        CompiledRuleKind::Chokepoint {
+            callee: callee.iter().map(|c| (*c).to_owned()).collect(),
+            only_in: Scope::compile(only_in.iter().copied()).expect("valid scope"),
+        }
+    }
+
+    /// Issue #118. A chokepoint breach is plantable where `forbid_reaching` is
+    /// not: one file with one call in it, rather than a chain that has to
+    /// resolve against a second.
+    #[test]
+    fn a_chokepoint_is_proved_by_a_call_from_outside_it() {
+        let verdict = verdict(
+            &["src/config/env.ts", "src/orders/place.ts"],
+            vec![rule(
+                "the-environment-is-read-once",
+                &["src/*"],
+                chokepoint(&["process.env"], &["src/config/**"]),
+            )],
+        );
+
+        assert!(
+            matches!(&verdict, Verdict::Fires { on } if on.contains("calling `process.env`")),
+            "{verdict:?}"
+        );
+        // Planted outside the chokepoint, which is the only place a breach can
+        // sit -- a probe in `src/config` would prove nothing.
+        assert!(
+            matches!(&verdict, Verdict::Fires { on } if !on.contains("src/config")),
+            "{verdict:?}"
+        );
+    }
+
+    /// A repository whose whole scope is inside the chokepoint has nowhere to
+    /// plant one. That is a rule `config doctor` should be reporting rather
+    /// than a failure of this probe, so it is named with the reason.
+    #[test]
+    fn a_chokepoint_covering_only_its_own_scope_cannot_be_proved() {
+        let verdict = verdict(
+            &["src/config/env.ts"],
+            vec![rule(
+                "the-environment-is-read-once",
+                &["src/config/*"],
+                chokepoint(&["process.env"], &["src/config/**"]),
+            )],
+        );
+
+        assert!(
+            matches!(&verdict, Verdict::Unverified { why } if why.contains("nowhere outside")),
+            "{verdict:?}"
+        );
+    }
+
+    /// And a rule guarding nothing constrains nothing, which is `doctor`'s
+    /// sentence rather than this one's.
+    #[test]
+    fn a_chokepoint_guarding_no_callee_is_named_as_unverified() {
+        let verdict = verdict(
+            &["src/orders/place.ts"],
+            vec![rule(
+                "guards-nothing",
+                &["src/*"],
+                chokepoint(&[], &["src/config/**"]),
+            )],
+        );
+
+        assert!(
+            matches!(&verdict, Verdict::Unverified { why } if why.contains("guards no callee")),
+            "{verdict:?}"
+        );
     }
 
     fn metadata(

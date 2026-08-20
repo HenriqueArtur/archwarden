@@ -350,8 +350,8 @@ fn tools() -> Vec<Value> {
         json!({
             "name": "config_options",
             "description":
-                "What an arch.config.json can carry: the config's own keys, and the thirteen \
-                 values a rule's `type` can take, each with its required fields, what they \
+                "What an arch.config.json can carry: the config's own keys, and every \
+                 value a rule's `type` can take, each with its required fields, what they \
                  mean, their defaults, and a rule to paste. Ask this before writing or \
                  changing a rule rather than guessing at the shape.",
             "inputSchema": {
@@ -365,6 +365,28 @@ fn tools() -> Vec<Value> {
                     },
                 },
                 "required": [],
+            },
+        }),
+        json!({
+            "name": "decisions_find",
+            "description":
+                "Has this already been rejected? Searches every decision the repository \
+                 declares -- its title, its reason, and every alternative it rejected \
+                 with the argument against it -- for anything the terms reach. Ask this \
+                 before proposing an approach: the option you are about to suggest may \
+                 already have been weighed and lost, under a different name. Accents and \
+                 case are ignored, and near-misses match.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "terms": {
+                        "type": "string",
+                        "description":
+                            "The approach, in the words you would use for it -- \
+                             `single layer`, `monolith`, `put it in one package`.",
+                    },
+                },
+                "required": ["terms"],
             },
         }),
         json!({
@@ -408,6 +430,13 @@ fn call(
         return configurable(id, arguments);
     }
 
+    // Takes terms rather than a path, so it is answered before the path is
+    // read. It needs a configuration and loads its own, on the same
+    // re-reading rule every other arm follows.
+    if name == "decisions_find" {
+        return find(id, arguments, working_directory);
+    }
+
     let Some(path) = arguments
         .and_then(|a| a.get("path"))
         .and_then(Value::as_str)
@@ -442,10 +471,21 @@ fn call(
     };
 
     let answer = match name {
-        "describe" => serde_json::to_value(describe::envelope(
-            &repo_relative,
-            &describe::describe(&prepared.compiled, &repo_relative),
-        )),
+        "describe" => {
+            let applies = describe::describe(&prepared.compiled, &repo_relative);
+            // The decisions no rule brought. An agent asking what governs a
+            // path it is about to write gets the ones nothing can check, which
+            // are the ones it cannot discover any other way -- there is no
+            // gate that will tell it later. Issue #161.
+            let brought: Vec<_> = applies
+                .iter()
+                .filter_map(|entry| entry.decision.map(|decision| &decision.id))
+                .collect();
+            let governing =
+                describe::decisions_governing(&prepared.compiled, &repo_relative, &brought);
+
+            serde_json::to_value(describe::envelope(&repo_relative, &applies, &governing))
+        }
         "scaffold" => serde_json::to_value(scaffold::envelope(
             &repo_relative,
             &scaffold::scaffold(&prepared.compiled, &repo_relative),
@@ -457,6 +497,24 @@ fn call(
             else {
                 return tool_error(id, "`check_write` needs a `content`");
             };
+            // The decisions governing this path, carried beside the verdict
+            // rather than folded into it. `AGENT-INTEGRATION.md` calls this
+            // tool "the one that earns it" because it turns a reactive denial
+            // into a question asked before writing -- and a decision nothing
+            // can check is the one thing an agent cannot discover any other
+            // way, because no gate will tell it later. It is context, so it
+            // never changes `refused`. Issues #160 and #161.
+            let applies = archwarden_api::describe::describe(&prepared.compiled, &repo_relative);
+            let brought: Vec<_> = applies
+                .iter()
+                .filter_map(|entry| entry.decision.map(|decision| &decision.id))
+                .collect();
+            let governing = archwarden_api::describe::decisions_governing(
+                &prepared.compiled,
+                &repo_relative,
+                &brought,
+            );
+
             Ok(judged(
                 &archwarden_api::single::check(
                     &prepared.merged.root,
@@ -465,6 +523,7 @@ fn call(
                     Some(content),
                 ),
                 &archwarden_api::render::Reasons::of(&prepared.compiled),
+                &governing,
             ))
         }
         other => {
@@ -480,6 +539,38 @@ fn call(
         Ok(value) => success(id, &text_content(&value.to_string(), false)),
         Err(error) => tool_error(id, &format!("the answer could not be serialised: {error}")),
     }
+}
+
+/// Has this already been rejected?
+///
+/// The surface issue #162 was really about. `config explain` can only tell
+/// somebody who already knows the decision's id, and an agent proposing an
+/// approach is exactly the party that does not -- it will reach for the name
+/// it knows, which is rarely the name the decision was filed under.
+///
+/// Answers with what matched and why, never with a score: the same contract a
+/// finding keeps, so the reader can adjust the question by reading the answer.
+fn find(id: &Value, arguments: Option<&Value>, working_directory: &Utf8Path) -> Value {
+    let Some(terms) = arguments
+        .and_then(|a| a.get("terms"))
+        .and_then(Value::as_str)
+    else {
+        return tool_error(id, "`decisions_find` needs `terms`");
+    };
+
+    let prepared = match archwarden_api::prepare(
+        Location {
+            config: None,
+            root: None,
+        },
+        working_directory,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => return tool_error(id, &error.unreadable()),
+    };
+
+    let hits = archwarden_api::similar::similar_json(&prepared.compiled, terms);
+    success(id, &text_content(&hits.to_string(), false))
 }
 
 /// What an `arch.config.json` can carry.
@@ -528,7 +619,11 @@ fn configurable(id: &Value, arguments: Option<&Value>) -> Value {
 /// pass?* wants a yes or a no, and the findings are why. Progress is reported
 /// separately and never refuses, exactly as the hook reports it — a write
 /// supplying one of a directory's required files is fixing it, not breaking it.
-fn judged(checked: &single::Checked, reasons: &archwarden_api::render::Reasons) -> Value {
+fn judged(
+    checked: &single::Checked,
+    reasons: &archwarden_api::render::Reasons,
+    governing: &[&archwarden_core::compiled::CompiledDecision],
+) -> Value {
     let mut value = json!({
         "refused": checked.refuses(),
         "path": checked.single.path,
@@ -575,6 +670,29 @@ fn judged(checked: &single::Checked, reasons: &archwarden_api::render::Reasons) 
         && let Some(map) = value.as_object_mut()
     {
         map.insert("decisions".to_owned(), json!(decisions));
+    }
+
+    // Context, never a verdict: decisions that govern the path and that no
+    // rule keeps, so nothing here can pass or fail and `refused` is untouched.
+    // Omitted when there are none, so a repository that has adopted neither
+    // field gets the object it always got.
+    if !governing.is_empty()
+        && let Some(map) = value.as_object_mut()
+    {
+        map.insert(
+            "governing_decisions".to_owned(),
+            json!(
+                governing
+                    .iter()
+                    .map(|decision| json!({
+                        "id": decision.id.as_str(),
+                        "title": decision.title,
+                        "why_not_enforceable": decision.why_not_enforceable,
+                        "link": decision.link,
+                    }))
+                    .collect::<Vec<_>>()
+            ),
+        );
     }
     value
 }
@@ -679,6 +797,22 @@ mod tests {
                  "roots":["src"],
                  "file_pattern":"^(?<n>[a-z-]+)\\.ts$",
                  "must_export":{"kind":"any","name":"{{pascal(n)}}"}}]}"#,
+        )
+        .expect("write the config");
+        (guard, root)
+    }
+
+    /// A repository whose decision records what it rejected, for #162.
+    fn rejecting_repository() -> (tempfile::TempDir, Utf8PathBuf) {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("utf-8");
+        std::fs::write(
+            root.join("arch.config.json"),
+            r#"{"version":0,
+                "decisions":[{"id":"ADR-001","title":"Four layers plus System",
+                              "alternatives":[{"option":"a monolith",
+                                               "why_not":"we tried it in 2021"}]}],
+                "rules":[]}"#,
         )
         .expect("write the config");
         (guard, root)
@@ -1039,7 +1173,13 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["check_write", "describe", "config_options", "scaffold"]
+            [
+                "check_write",
+                "describe",
+                "config_options",
+                "decisions_find",
+                "scaffold"
+            ]
         );
 
         for tool in &offered {
@@ -1065,6 +1205,43 @@ mod tests {
                 "{tool}"
             );
         }
+    }
+
+    /// Issue #162 on the surface it was really about. An agent proposing an
+    /// approach is exactly the party that does not know the decision's id, and
+    /// will reach for the name it knows -- which is rarely the name the
+    /// decision was filed under.
+    #[test]
+    fn an_agent_can_ask_whether_an_approach_was_already_rejected() {
+        let (_guard, root) = rejecting_repository();
+
+        let reply = answer(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"decisions_find","arguments":{"terms":"lets just use a monolit"}}}"#,
+            &root,
+        );
+        let found: Value = serde_json::from_str(tool_text(&reply)).expect("carrying JSON");
+
+        assert_eq!(found["query"], "lets just use a monolit");
+        let hits = found["hits"].as_array().expect("an array");
+        assert_eq!(hits.len(), 1, "{found}");
+        assert_eq!(hits[0]["decision"], "ADR-001");
+        assert_eq!(hits[0]["at"], "alternatives[0].option");
+        // Why it matched, never a score: the same contract a finding keeps.
+        assert_eq!(hits[0]["reasons"][0]["how"], "prefix");
+    }
+
+    /// And a query it needs is a query it says it needs, rather than one it
+    /// silently answers with everything.
+    #[test]
+    fn decisions_find_without_terms_says_so() {
+        let (_guard, root) = repository();
+
+        let reply = answer(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"decisions_find","arguments":{}}}"#,
+            &root,
+        );
+
+        assert!(tool_text(&reply).contains("needs `terms`"), "{reply}");
     }
 
     /// A finding says which rule, how seriously, where, and what was found —
@@ -1304,7 +1481,7 @@ mod tests {
                 .as_array()
                 .is_some_and(|keys| keys.len() > 8)
         );
-        assert_eq!(all["kinds"].as_array().map(Vec::len), Some(15));
+        assert_eq!(all["kinds"].as_array().map(Vec::len), Some(16));
     }
 
     /// It answers with no configuration at all, which is the moment it is

@@ -46,6 +46,7 @@ pub mod present;
 pub mod render;
 pub mod resolve;
 pub mod scaffold;
+pub mod similar;
 pub mod single;
 pub mod walk;
 

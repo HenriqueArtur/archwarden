@@ -358,6 +358,7 @@ pub(crate) fn doctor(
     location: Location<'_>,
     working_directory: &Utf8Path,
     format: Format,
+    strict: bool,
     output: &mut Output<'_>,
 ) -> Exit {
     let Ok((merged, compiled)) = prepare(location, working_directory, output) else {
@@ -387,7 +388,24 @@ pub(crate) fn doctor(
     }
 
     crate::doctor::render(&concerns, format, output.out);
-    Exit::Clean
+
+    // A command that never fails guards nothing. Printing the word `error` and
+    // returning success is the incoherence issue #166 reported: the word is a
+    // promise, and a pipeline that ran this and passed had been told about a
+    // problem and could not act on it.
+    //
+    // `ConfigProblem` rather than `Errors`, and that distinction is the whole
+    // reason the two codes exist: everything here is a statement about the
+    // configuration, not about the code the configuration governs.
+    let blocking = concerns
+        .iter()
+        .any(|concern| strict || concern.level == archwarden_core::level::Level::Error);
+
+    if blocking {
+        Exit::ConfigProblem
+    } else {
+        Exit::Clean
+    }
 }
 
 /// Shows what one rule reaches, and what it is reporting.

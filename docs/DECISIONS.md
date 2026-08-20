@@ -17,6 +17,112 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 34 — A read is a fact of its own, deduplicated by name
+Status: accepted.
+Context: issue #118 asks for *"only `src/config` reads the environment"*, and
+`process.env` is the example it opens with. The issue says the fact is already
+there — `CallFact` is extracted for every file — and that is true for half of
+what it lists. `Date.now()`, `fetch()` and `console.log()` are calls;
+`process.env`, `localStorage` and `crypto.subtle` are **property reads**, and
+there is no call site to record. A `chokepoint` that could only see calls would
+answer the question it was raised for with half an answer.
+
+Decision: a second list, `FileFacts::reads`, holding the dotted names a file
+reads without calling.
+
+**Not folded into `calls`.** A read is not a call, and putting one there would
+quietly satisfy a `call-obligation` rule requiring `Event.save` with a file that
+merely mentions it — a rule going green for the wrong reason, which is worse
+than a rule that never fires.
+
+**The longest chain only.** `a.b.c` records `a.b.c` and not also `a.b` and `a`.
+The prefix match a `chokepoint` applies reaches the shorter forms from the
+longer one, so recording all three would be three ways to say one thing and
+three times the cache.
+
+**Deduplicated by name, first span kept.** This is cached per file, and a
+repository's property reads outnumber its calls several times over.
+Deduplicating bounds the list by a file's distinct vocabulary rather than by its
+length. The cost is that a file reading the same name twice is reported once, at
+the first occurrence — which is where a reader would start anyway.
+
+Measured, on 120 generated files and 7,560 lines of deliberately
+member-expression-heavy TypeScript: **52 ms cold with the fact and 52 ms
+without**, five runs each, and the cache file did not change size at all. The
+walk is the same walk the calls already need, and the dedup is what keeps the
+list from growing with the file.
+
+Alternatives:
+- **Record every occurrence.** Keeps a span per site, and grows with file length
+  rather than with vocabulary. The spans of the second and third occurrence buy
+  a reader nothing they do not get from the first.
+- **Record only reads whose root is not locally bound.** Precise, and it needs
+  scope analysis this front-end does not do — the parser is syntax-only by
+  design, and adding a binding pass for one rule is a large thing to owe.
+- **A committed catalogue of ambient globals** (`process`, `window`,
+  `localStorage`). Cheapest, and it is exactly the fixed catalogue issue #118
+  says archwarden must not be: it cannot ask about `Ledger.post`, which is the
+  case that makes this architecture rather than lint.
+
+Consequences: cache format 13 to 14 (decision 3), so every repository re-parses
+once. `chokepoint` reads both lists and reports one finding per site, ordered by
+position rather than by which list it came from. The Rust front-end records
+none: `std::env::var` is a path to a function, called when it is called, and a
+`use` of it is an import `import-boundary` already cuts — the gap this fills
+does not exist there.
+
+---
+
+### 33 — Object keys are top-level, and Rust has no options bag
+Status: accepted.
+Context: issue #164, raised by a repository that found the problem the
+expensive way. `FactoryMockDependencies(ENV, { PAY_IN_MEMORY: "all" })` and
+`FactoryMockDependencies()` are the same callee at the same arity and opposite
+meanings — one runs against in-memory twins, the other starts a Postgres
+container. Of 215 files in a suite that was supposed to be entirely in-memory,
+five were not, and the only evidence was a run that took longer than it should.
+`CallFact::arguments` records string literals *by position*, so it cannot reach
+a difference that lives in an object key.
+
+Two questions had to be settled while adding the fact, and both are about where
+to stop.
+
+**How deep.** `{ db: { inMemory: true } }` could record `db.inMemory`, and that
+spelling is not in the source. Decision: top-level keys only, with a literal
+value where the value is a literal and nothing where it is not — the same line
+`arguments` already draws about a template with an interpolation in it. A
+nested bag records its key and stops. Going deeper is a second grammar and can
+be a second decision if a repository ever needs it.
+
+**Whether Rust answers this at all.** Decision 31 said a language gets the
+facts its own grammar has, not a translation of another's. Rust has no options
+bag: the nearest thing is a struct literal, which is a *typed construction with
+a name* rather than an argument shape — `Config { retries: 3 }` names a type
+the compiler already checks, and passing it is not the same act as spreading an
+untyped bag into a call. Decision: the Rust front-end records no options.
+
+Alternatives:
+- **Flatten nested keys into dotted paths.** Reaches more cases and invents a
+  spelling nobody wrote, which is how a rule reports an edge that does not
+  exist.
+- **Record struct-literal fields as `options` in Rust.** A rule written for
+  TypeScript would then half-work on Rust without saying so — the failure mode
+  decision 31 exists to prevent. A Rust rule about a struct literal should be
+  its own thing, named for what it is.
+- **Positional arguments only, and tell people to close the door by import.**
+  The reporter's own workaround, and they named the cost themselves: forbidding
+  the container-capable module from those specs is *a coarser statement than
+  the one they mean*.
+
+Consequences: `CallFact` gains `options`, which is a cache format bump
+(decision 3) — every repository re-parses once on upgrade. A rule that asks for
+options costs nothing extra: the keys are collected in the same walk that
+already collects the arguments. And presence is separable from value on both
+sides, so `with_options: ["PAY_IN_MEMORY"]` never has to name a value it does
+not care about.
+
+---
+
 ### 32 — The Rust front-end reads a CST, because the markers are in the comments
 Status: accepted.
 Context: issue #134. Decision 6 put the parser behind a trait so the front-end

@@ -329,6 +329,26 @@ pub fn describe_observed(observed: &Observed) -> String {
         Observed::RequiredCallMissing { symbol } => {
             format!("`{symbol}` is imported but never called")
         }
+        // The callee as it appears *here*, not the pattern that matched it:
+        // the reader has to go and find this line, and `process.env` is not
+        // what is written on it.
+        // "reaches", not "calls": a read is not a call, and half of what this
+        // rule guards is `process.env`, which is never called.
+        Observed::ChokepointBreached { callee } => {
+            format!("reaches `{callee}`, which only certain files may")
+        }
+        // The call site exists and is a few characters short, which is a
+        // different place to send the reader than a missing call.
+        Observed::RequiredCallOptionMissing {
+            symbol,
+            option,
+            value,
+        } => match value {
+            Some(value) => {
+                format!("`{symbol}` is called without `{option}: {value}`")
+            }
+            None => format!("`{symbol}` is called without `{option}`"),
+        },
         Observed::RequiredImportForCallMissing { symbol, module } => {
             format!("`{symbol}` is not imported from `{module}`")
         }
@@ -428,6 +448,43 @@ pub fn describe<'a>(
                 decision: rule.decision.as_ref().and_then(|id| config.decision(id)),
                 expectations,
             })
+        })
+        .collect()
+}
+
+/// Every decision whose own scope contains `path`.
+///
+/// The half `describe` could not answer. A rule brings the decision it names,
+/// so an *enforced* decision already reaches whoever stands in the paths its
+/// rule governs. An unenforced one had nothing to arrive on — and that is the
+/// decision it matters most for, because there is no gate that will catch its
+/// violation later.
+///
+/// Only decisions that declared a scope. One that did not is not "everywhere":
+/// it is a decision that said nothing about where, and answering every path
+/// with it would make `describe` louder in exactly the repositories that
+/// adopted the feature earliest. Issue #161.
+///
+/// A decision already brought by a rule is not repeated here. The caller shows
+/// both lists and a decision in each would read as two.
+#[must_use]
+pub fn decisions_governing<'a>(
+    config: &'a archwarden_core::compiled::CompiledConfig,
+    path: &archwarden_core::path::RepoRelPath,
+    already_shown: &[&archwarden_core::ids::DecisionId],
+) -> Vec<&'a archwarden_core::compiled::CompiledDecision> {
+    if config.is_ignored(path) {
+        return Vec::new();
+    }
+
+    config
+        .decisions()
+        .filter(|decision| !already_shown.contains(&&decision.id))
+        .filter(|decision| {
+            decision
+                .scope
+                .as_ref()
+                .is_some_and(|scope| scope.contains_file(path.as_path()))
         })
         .collect()
 }
@@ -643,6 +700,13 @@ pub struct JsonDescribe<'a> {
     pub path: &'a archwarden_core::path::RepoRelPath,
     /// Every rule with something to say about it.
     pub rules: Vec<JsonRule<'a>>,
+    /// Decisions that govern this path without any rule bringing them.
+    ///
+    /// Empty for every configuration written before #161, and for every path
+    /// no decision named. A decision a rule already brought is in that rule
+    /// rather than here, so the two lists never repeat one.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<JsonDecision<'a>>,
 }
 
 /// One rule, as the JSON carries it.
@@ -693,6 +757,14 @@ pub struct JsonDecision<'a> {
     pub link: Option<&'a str>,
     /// `accepted`, `proposed` or `superseded`.
     pub status: &'a str,
+    /// Why no rule can keep it, when the config claimed none can.
+    ///
+    /// Its presence *is* the claim: the config refuses one without the other.
+    /// A consumer reading this knows the decision governs and nothing checks
+    /// it, which is the one case where reading is the only enforcement there
+    /// is. Issue #160.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why_not_enforceable: Option<&'a str>,
 }
 
 impl<'a> JsonDecision<'a> {
@@ -705,6 +777,7 @@ impl<'a> JsonDecision<'a> {
             why: decision.why.as_deref(),
             link: decision.link.as_deref(),
             status: decision.status.as_str(),
+            why_not_enforceable: decision.why_not_enforceable.as_deref(),
         }
     }
 }
@@ -728,10 +801,15 @@ pub struct JsonScope<'a> {
 pub fn envelope<'a>(
     path: &'a archwarden_core::path::RepoRelPath,
     applies: &'a [Applies<'a>],
+    governing: &'a [&'a archwarden_core::compiled::CompiledDecision],
 ) -> JsonDescribe<'a> {
     JsonDescribe {
         version: DESCRIBE_VERSION,
         path,
+        decisions: governing
+            .iter()
+            .map(|decision| JsonDecision::of(decision))
+            .collect(),
         rules: applies
             .iter()
             .map(|entry| JsonRule {
@@ -754,16 +832,26 @@ pub fn envelope<'a>(
 
 /// The JSON answer for a glob and everything under it.
 #[must_use]
+#[allow(
+    clippy::type_complexity,
+    reason = "one path answers with its rules and the decisions no rule brought, \
+              and a named struct for a tuple used at one call site is a type \
+              nobody would look up twice"
+)]
 pub fn envelope_many<'a>(
     scope: &'a str,
-    answers: &'a [(archwarden_core::path::RepoRelPath, Vec<Applies<'a>>)],
+    answers: &'a [(
+        archwarden_core::path::RepoRelPath,
+        Vec<Applies<'a>>,
+        Vec<&'a archwarden_core::compiled::CompiledDecision>,
+    )],
 ) -> JsonScope<'a> {
     JsonScope {
         version: DESCRIBE_VERSION,
         scope,
         paths: answers
             .iter()
-            .map(|(path, applies)| envelope(path, applies))
+            .map(|(path, applies, governing)| envelope(path, applies, governing))
             .collect(),
     }
 }
@@ -771,6 +859,99 @@ pub fn envelope_many<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn decision_at(id: &str, scope: Option<&[&str]>, why_not: Option<&str>) -> CompiledDecision {
+        CompiledDecision {
+            id: DecisionId::new(id).expect("valid id"),
+            title: "a decision".to_owned(),
+            why: None,
+            link: None,
+            status: DecisionStatus::Accepted,
+            supersedes: Vec::new(),
+            superseded_by: Vec::new(),
+            alternatives: Vec::new(),
+            why_not_enforceable: why_not.map(ToOwned::to_owned),
+            scope: scope
+                .map(|globs| archwarden_core::scope::Scope::compile(globs).expect("valid scope")),
+        }
+    }
+
+    /// A decision with a scope reaches whoever stands in it, with no rule.
+    ///
+    /// The half `describe` could not answer. It matters most for a decision no
+    /// rule can keep, because there is no gate that will catch its violation
+    /// later -- arriving unprompted is the only way it arrives at all.
+    #[test]
+    fn a_decision_with_a_scope_governs_the_paths_inside_it() {
+        let config = a_config(Vec::new(), &[]).with_decisions(vec![decision_at(
+            "ADR-023",
+            Some(&["packages/queue/**"]),
+            Some("a runtime address, not a shape in the tree"),
+        )]);
+
+        let inside = decisions_governing(&config, &a_path("packages/queue/worker.ts"), &[]);
+        assert_eq!(inside.len(), 1, "{inside:?}");
+        assert_eq!(inside[0].id.as_str(), "ADR-023");
+
+        assert!(
+            decisions_governing(&config, &a_path("packages/web/page.ts"), &[]).is_empty(),
+            "and not the paths outside it"
+        );
+    }
+
+    /// A decision with no scope governs nothing here.
+    ///
+    /// Not "everywhere": it said nothing about where, and answering every path
+    /// with it would make `describe` loudest in the repositories that adopted
+    /// decisions earliest.
+    #[test]
+    fn a_decision_with_no_scope_reaches_no_path_this_way() {
+        let config =
+            a_config(Vec::new(), &[]).with_decisions(vec![decision_at("ADR-001", None, None)]);
+
+        assert!(decisions_governing(&config, &a_path("anywhere/at/all.ts"), &[]).is_empty());
+    }
+
+    /// A decision a rule already brought is not repeated.
+    ///
+    /// The caller prints both lists, and one decision in each reads as two.
+    #[test]
+    fn a_decision_a_rule_already_brought_is_not_listed_again() {
+        let config = a_config(Vec::new(), &[]).with_decisions(vec![decision_at(
+            "ADR-023",
+            Some(&["packages/queue/**"]),
+            None,
+        )]);
+        let already = DecisionId::new("ADR-023").expect("valid id");
+
+        assert!(
+            decisions_governing(&config, &a_path("packages/queue/worker.ts"), &[&already])
+                .is_empty()
+        );
+    }
+
+    /// An ignored path is governed by nothing, which is the answer `check`
+    /// gives for rules.
+    #[test]
+    fn an_ignored_path_is_governed_by_no_decision() {
+        let config = a_config(Vec::new(), &[]).with_decisions(vec![decision_at(
+            "ADR-023",
+            Some(&["**"]),
+            None,
+        )]);
+        let ignored = a_config(Vec::new(), &["packages/queue/**"])
+            .with_decisions(vec![decision_at("ADR-023", Some(&["**"]), None)]);
+
+        assert_eq!(
+            decisions_governing(&config, &a_path("packages/queue/worker.ts"), &[]).len(),
+            1,
+            "the control"
+        );
+        assert!(
+            decisions_governing(&ignored, &a_path("packages/queue/worker.ts"), &[]).is_empty(),
+            "an `ignore` entry wins over a decision's scope as it wins over a rule's"
+        );
+    }
     use archwarden_core::{
         compiled::{CompiledDecision, DecisionStatus},
         facts::ExportTags,
@@ -922,6 +1103,17 @@ mod tests {
                     symbol: "Event.save".to_owned(),
                 },
                 "never called",
+            ),
+            // The name as it appears at *this* site, not the pattern that
+            // matched it: the reader has to go and find this line, and
+            // `process.env` is not what is written on it. And "reaches", not
+            // "calls", because half of what a chokepoint guards is never
+            // called. Issue #118.
+            (
+                Observed::ChokepointBreached {
+                    callee: "process.env.DATABASE_URL".to_owned(),
+                },
+                "reaches `process.env.DATABASE_URL`",
             ),
         ];
 
@@ -1309,7 +1501,7 @@ mod tests {
         config: &archwarden_core::compiled::CompiledConfig,
         target: &RepoRelPath,
     ) -> serde_json::Value {
-        serde_json::to_value(envelope(target, &describe(config, target))).expect("serialises")
+        serde_json::to_value(envelope(target, &describe(config, target), &[])).expect("serialises")
     }
 
     #[test]
@@ -1492,6 +1684,8 @@ mod tests {
     #[test]
     fn a_decision_block_carries_its_title_reason_and_link() {
         let decision = CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-014").expect("valid"),
             title: "The domain does not know about transport".to_owned(),
             why: Some("it is published".to_owned()),
@@ -1517,6 +1711,8 @@ mod tests {
     #[test]
     fn a_decision_block_says_what_was_considered_and_rejected() {
         let decision = CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-014").expect("valid"),
             title: "The domain does not know about transport".to_owned(),
             why: None,
@@ -1549,6 +1745,8 @@ mod tests {
     #[test]
     fn a_rule_that_refuses_no_option_gets_the_block_unchanged() {
         let decision = CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-014").expect("valid"),
             title: "A wall".to_owned(),
             why: None,
@@ -1580,6 +1778,8 @@ mod tests {
     #[test]
     fn a_superseded_decision_says_what_replaced_it() {
         let replaced = CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-009").expect("valid"),
             title: "The old way".to_owned(),
             why: None,
@@ -1601,6 +1801,8 @@ mod tests {
     #[test]
     fn a_decision_block_omits_what_the_decision_did_not_say() {
         let bare = CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-1").expect("valid"),
             title: "A wall".to_owned(),
             why: None,
@@ -1621,6 +1823,8 @@ mod tests {
         let with = |status| {
             describe_decision(
                 &CompiledDecision {
+                    scope: None,
+                    why_not_enforceable: None,
                     id: DecisionId::new("ADR-1").expect("valid"),
                     title: "A wall".to_owned(),
                     why: None,
@@ -1658,6 +1862,8 @@ mod tests {
         governed.decision = Some(DecisionId::new("ADR-014").expect("valid"));
 
         let config = a_config(vec![governed], &[]).with_decisions(vec![CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new("ADR-014").expect("valid"),
             title: "The domain does not know about transport".to_owned(),
             why: Some("it is published, and a consumer must not inherit our client".to_owned()),
@@ -1699,6 +1905,7 @@ mod tests {
         let json = serde_json::to_string(&envelope(
             &a_path("src/user"),
             &describe(&config, &a_path("src/user")),
+            &[],
         ))
         .expect("serialises");
 
@@ -1716,6 +1923,7 @@ mod tests {
         let json = serde_json::to_string(&envelope(
             &a_path("src/user/create.use-case.ts"),
             &describe(&config, &a_path("src/user/create.use-case.ts")),
+            &[],
         ))
         .expect("serialises");
 
@@ -1736,7 +1944,7 @@ mod tests {
             &[],
         );
         let path = a_path("packages/domain/src/invoice");
-        let answers = vec![(path.clone(), describe(&config, &path))];
+        let answers = vec![(path.clone(), describe(&config, &path), Vec::new())];
 
         let parsed = serde_json::to_value(envelope_many("packages/domain/src/*", &answers))
             .expect("serialises");

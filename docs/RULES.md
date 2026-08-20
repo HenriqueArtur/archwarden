@@ -1,6 +1,6 @@
 # Rule categories
 
-archwarden ships fourteen rule categories in v0. Each has narrow, well-defined
+archwarden ships fifteen rule categories in v0. Each has narrow, well-defined
 semantics. This document is the reference for what each rule can and cannot
 express. Config syntax lives in [`CONFIG.md`](CONFIG.md).
 
@@ -11,7 +11,7 @@ engine runs them in the same order for cache-friendly evaluation.
 `mirror` reason about names and paths on disk, so they work on a repository in any
 language — or in none. `spec-pair` joins them unless `require_non_empty_spec`
 or `skip_type_only` is set. The rules that do open a file are `naming`,
-`call-obligation`, `no-passthrough`, `export-shape`, `metadata`,
+`call-obligation`, `chokepoint`, `no-passthrough`, `export-shape`, `metadata`,
 `import-boundary` and `import-cycle` for JS/TS, and `frontmatter` for markdown.
 See decision 19 for what a new language costs.
 
@@ -46,6 +46,7 @@ directory:
 | `pair` | `file_pattern` | the direct child files, by basename; the companion may sit outside |
 | `spec-pair` | `subfolders` | the listed subdirectories **and everything below them** (`"."` = the directory itself, its own files only), then files in them |
 | `call-obligation` | `file_pattern` | the direct child files, by basename |
+| `chokepoint` | *(scope only)* | every file in the directory, for what it calls and reads |
 | `import-boundary` | *(scope only)* | every file in the directory is a candidate importer |
 | `no-passthrough` | *(scope only)* | every direct child file's exports |
 
@@ -1142,6 +1143,52 @@ symbol source.
   exactly.
 - `must_call.imported_from` — the module the symbol must be imported from.
   This disambiguates same-named functions from different packages.
+- `must_call.with_options` — options the call must be given. Optional; without
+  it the rule is exactly what it was.
+
+**When the call alone is not the statement**:
+
+```ts
+// this one runs against in-memory twins
+DEP = await FactoryMockDependencies(ENV_VAR_MOCK, { PAY_IN_MEMORY: "all" });
+
+// this one starts a Postgres container, and nothing says so
+DEP = await FactoryMockDependencies();
+```
+
+Same callee, same arity, opposite meaning. An options bag is how TypeScript
+spells the argument whose presence changes what a call does, and the content is
+an object key rather than a string in a position.
+
+```json
+"must_call": {
+  "symbol": "FactoryMockDependencies",
+  "imported_from": "../test/factories",
+  "with_options": ["PAY_IN_MEMORY"]
+}
+```
+
+A **list** asks only that the key be there, whatever it holds. A **map** asks
+for the value too:
+
+```json
+"with_options": { "PAY_IN_MEMORY": "all" }
+```
+
+Presence and value are separate questions on purpose. Where the value never
+varies, a rule made to name one would be naming something it does not care
+about.
+
+One call has to carry all of them — `factory({ a })` beside `factory({ b })` is
+two calls, and the rule is a sentence about one. A value the reader cannot see
+at the call site (a variable, an expression) does not satisfy a rule that names
+one: the fact records it as absent rather than guessed, and treating absent as
+a match would pass a call archwarden cannot read.
+
+Top-level keys only. `{ db: { inMemory: true } }` is `db` and no value —
+`db.inMemory` is a spelling the source does not contain. **Rust records no
+options at all**: its nearest thing is a struct literal, which is a typed
+construction rather than an argument shape. Decision 33.
 
 **How the check works**:
 
@@ -1565,7 +1612,90 @@ the specialised forms are **shorter to write**, not whether they are
 expressible — three kinds that are one kind wearing three names is how a format
 gets heavy.
 
-## 14. Metadata
+## 14. Chokepoint
+
+**What it enforces**: a capability only these files may reach.
+
+**Scope**: parse. The calls and the dotted names a file reads, both out of the
+same walk.
+
+Every other `forbid_*` in this config is about an **import**. This is about a
+**use**, and that is exactly what is left over once `import-boundary` has cut
+every capability that arrives through a specifier.
+
+```json
+{ "type": "chokepoint",
+  "id": "the-environment-is-read-once",
+  "level": "error",
+  "roots": ["src/*"],
+  "callee": ["process.env", "process.argv"],
+  "only_in": ["src/config/**"],
+  "decision": "ADR-022",
+  "why": "config read at startup, in one place, or it is read everywhere" }
+```
+
+The sentences it exists for are ordinary ADR sentences:
+
+> *"Only `src/config` reads the environment."*
+> *"Only `src/clock` knows what time it is."*
+> *"Only the composition root constructs adapters."*
+> *"Nobody talks to the network outside `src/http`."*
+
+What they have in common is that the capability is **ambient** — `process.env`,
+`Date.now`, `fetch`, `localStorage`, `crypto` — or is the project's own symbol
+reached through an object imported legitimately somewhere else. Neither has an
+edge in the graph to cut. `only_import_from` already says *"only these files may
+import `dotenv`"*; nothing said this.
+
+**`roots` and `only_in` are different things**, and the separation is the point.
+`roots` is the population the question is asked of; `only_in` is the answer
+that is allowed. A test suite reads the environment legitimately, so a
+chokepoint that governed the whole repository by default would report the tests
+on its first run — and a rule whose first run is wrong is one nobody keeps.
+
+**An allowlist, and there is no `forbid` direction.** `only_in` is the one that
+does not decay, which is the argument #75 already made for `only_import_from`: a
+new file outside the chokepoint is reported the day it is written, where a
+forbid list has to be extended by whoever added the thing it should have
+forbidden.
+
+**Matching is exact, or a prefix at a dot.** `process.env` guards `process.env`
+and `process.env.DATABASE_URL`, and does not guard `processing.env`. That is a
+change of dialect from `call-obligation`, which matches its symbol exactly — and
+it is the right one here, because a chokepoint is about a capability rather than
+about one function, and `process.env.DATABASE_URL` is recorded as written.
+
+**A construction is spelled the way the source spells it**: `"new PostgresRepo"`.
+It is not a call, and a rule naming `PostgresRepo` does not match it — which is
+what makes *"only the composition root constructs adapters"* sayable without
+also catching every call to a factory of the same name.
+
+**Reads as well as calls.** `Date.now()` is a call and `process.env` never is;
+to an author they are one sentence, so both are guarded. Decision 34.
+
+**Not a taint analysis.** It asks whether a name appears in a file inside a
+scope. It does not follow a value, so a capability passed as an argument out of
+the chokepoint is invisible to it — the same line drawn beside `call-obligation`
+above.
+
+**Rust records nothing here.** `std::env::var` is a path to a function, recorded
+as a call when it is called, and a `use` of it is an import `import-boundary`
+already cuts. The gap this fills does not exist there.
+
+### Why this is not Biome's job
+
+The overlap is real. Biome has `noConsoleLog`, and its `overrides` can scope a
+rule to a path, so *"no console outside `src/logging`"* is roughly reachable
+there.
+
+What is not reachable is the part that makes it architecture. The callee is
+**the project's own** (`Ledger.post`, `EventBus.publish`), the population is a
+scope the rest of this config already defines, the finding names a **decision**
+with a link and a reason, and what a repository has not paid off yet lives in
+`baseline` with everything else. A fixed catalogue of universal rules cannot ask
+a question about a symbol it has never heard of.
+
+## 15. Metadata
 
 **What it enforces**: a file's **header** declares these keys about itself.
 

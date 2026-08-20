@@ -6,6 +6,7 @@
 
 pub(crate) mod agent;
 pub(crate) mod check;
+pub(crate) mod find;
 pub(crate) mod hook;
 pub(crate) mod query;
 pub(crate) mod write;

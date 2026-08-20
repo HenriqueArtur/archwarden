@@ -806,6 +806,7 @@ mod tests {
                 })
                 .collect(),
             calls: Vec::new(),
+            reads: Vec::new(),
             allowances: Vec::new(),
             metadata: Vec::new(),
             has_opaque_import: false,
@@ -1311,6 +1312,7 @@ mod tests {
                 .iter()
                 .map(|callee| CallFact {
                     arguments: Vec::new(),
+                    options: Vec::new(),
                     callee: (*callee).to_owned(),
                     span: Span::new(0, 1),
                 })

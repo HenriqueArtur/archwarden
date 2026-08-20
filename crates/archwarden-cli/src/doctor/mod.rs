@@ -81,6 +81,8 @@ pub fn examine(config: &CompiledConfig) -> Vec<Concern> {
     superseded_but_still_enforced(config, &mut concerns);
 
     decision_nobody_enforces(config, &mut concerns);
+    decision_may_duplicate(config, &mut concerns);
+    unenforceable_but_a_rule_keeps_it(config, &mut concerns);
 
     for rule in config.rules() {
         unreachable_scope(config, rule, &mut concerns);
@@ -106,8 +108,9 @@ use config::{
     walk_scope_with_boundaries,
 };
 use decisions::{
-    decision_documents_out_of_date, decision_nobody_enforces, decisions_left_unsaid,
-    reasons_left_unsaid, superseded_but_still_enforced,
+    decision_documents_out_of_date, decision_may_duplicate, decision_nobody_enforces,
+    decision_scope_matches_nothing, decisions_left_unsaid, reasons_left_unsaid,
+    superseded_but_still_enforced, unenforceable_but_a_rule_keeps_it,
 };
 use repository::{
     module_nobody_references, module_scope_matches_nothing, module_wearing_no_kind,
@@ -135,6 +138,10 @@ pub fn examine_repository(
     for module in config.modules() {
         module_scope_matches_nothing(module, tree, &mut concerns);
     }
+    // Outside the loop above: a decision's scope is nothing to do with a
+    // module, and a repository declaring decisions and no modules is the
+    // ordinary case for one adopting them first.
+    decision_scope_matches_nothing(config, tree, &mut concerns);
 
     let baseline = archwarden_api::baseline::Baseline::load(root)
         .ok()
@@ -201,6 +208,8 @@ fn facts_covered<'a>(
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::compiled::CompiledAlternative;
+
     use super::*;
 
     /// A rule asking only for forms nobody enabled can never pass.
@@ -904,6 +913,8 @@ mod tests {
     /// A decision, for the checks below.
     fn adr(id: &str, status: DecisionStatus) -> CompiledDecision {
         CompiledDecision {
+            scope: None,
+            why_not_enforceable: None,
             id: DecisionId::new(id).expect("valid id"),
             title: "A wall".to_owned(),
             why: None,
@@ -996,6 +1007,8 @@ mod tests {
     fn a_supersession_the_rules_did_not_follow_names_what_replaced_it() {
         let config = config(vec![serving("old-rule", "ADR-009")]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-009").expect("valid"),
                 title: "the old way".to_owned(),
                 why: None,
@@ -1006,6 +1019,8 @@ mod tests {
                 alternatives: Vec::new(),
             },
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-031").expect("valid"),
                 title: "the new way".to_owned(),
                 why: None,
@@ -1039,6 +1054,8 @@ mod tests {
     fn a_supersession_the_rules_followed_is_not_reported() {
         let config = config(vec![serving("new-rule", "ADR-031")]).with_decisions(vec![
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-009").expect("valid"),
                 title: "the old way".to_owned(),
                 why: None,
@@ -1049,6 +1066,8 @@ mod tests {
                 alternatives: Vec::new(),
             },
             CompiledDecision {
+                scope: None,
+                why_not_enforceable: None,
                 id: DecisionId::new("ADR-031").expect("valid"),
                 title: "the new way".to_owned(),
                 why: None,
@@ -1140,6 +1159,185 @@ mod tests {
             concerns
                 .iter()
                 .any(|c| c.message.contains("1 decision is declared")),
+            "{concerns:?}"
+        );
+    }
+
+    /// The claim and a rule, said at once. Issue #160: a decision carrying
+    /// `why_not_enforceable` is asserting that no rule *can* keep it, and a
+    /// rule pointing at it says the opposite. One of the two is stale and only
+    /// the author knows which.
+    #[test]
+    fn a_decision_claiming_nothing_can_keep_it_while_a_rule_does_is_reported() {
+        let mut unenforceable = adr("ADR-014", DecisionStatus::Accepted);
+        unenforceable.why_not_enforceable = Some("it is about tone in reviews".to_owned());
+
+        let contradictory = config(vec![serving("shape", "ADR-014")]).with_decisions(vec![
+            unenforceable,
+            adr("ADR-020", DecisionStatus::Accepted),
+        ]);
+
+        let concerns = examine(&contradictory);
+        let found = concerns
+            .iter()
+            .find(|c| c.code == "unenforceable-but-a-rule-keeps-it")
+            .unwrap_or_else(|| panic!("{concerns:?}"));
+
+        assert_eq!(found.level, Level::Error, "{found:?}");
+        assert!(found.message.contains("ADR-014"), "{found:?}");
+        assert!(
+            found.message.contains("shape"),
+            "the rule is named: {found:?}"
+        );
+    }
+
+    /// The half of that check that is easy to lose: it must be the rules
+    /// pointing at *this* decision that are counted. A config where every
+    /// decision has rules and only one claims unenforceability would report
+    /// every time if the match were dropped.
+    #[test]
+    fn a_rule_serving_a_different_decision_does_not_trigger_the_claim() {
+        let mut unenforceable = adr("ADR-014", DecisionStatus::Accepted);
+        unenforceable.why_not_enforceable = Some("it is about tone in reviews".to_owned());
+
+        let unrelated = config(vec![serving("shape", "ADR-020")]).with_decisions(vec![
+            unenforceable,
+            adr("ADR-020", DecisionStatus::Accepted),
+        ]);
+
+        let concerns = examine(&unrelated);
+        assert!(
+            concerns
+                .iter()
+                .all(|c| c.code != "unenforceable-but-a-rule-keeps-it"),
+            "{concerns:?}"
+        );
+    }
+
+    /// And the claim on its own is the whole point of #160 -- it is how a
+    /// decision stops being nagged about by `decision-nobody-enforces`.
+    #[test]
+    fn the_claim_silences_the_orphan_report_and_says_nothing_else() {
+        let mut unenforceable = adr("ADR-020", DecisionStatus::Accepted);
+        unenforceable.why_not_enforceable = Some("no parser sees a code review".to_owned());
+
+        let declared = config(vec![serving("shape", "ADR-014")]).with_decisions(vec![
+            adr("ADR-014", DecisionStatus::Accepted),
+            unenforceable,
+        ]);
+
+        let concerns = examine(&declared);
+        assert!(
+            concerns.iter().all(|c| {
+                c.code != "decision-nobody-enforces"
+                    && c.code != "unenforceable-but-a-rule-keeps-it"
+            }),
+            "{concerns:?}"
+        );
+    }
+
+    /// Issue #162, the push half. `config explain` ends with "Do not propose
+    /// it again", and it can only say that to somebody who already knows the
+    /// id -- which the person about to propose the losing option is not. This
+    /// catches the duplicate at the moment it is written.
+    #[test]
+    fn two_decisions_rejecting_the_same_option_are_reported() {
+        let mut first = adr("ADR-014", DecisionStatus::Accepted);
+        first.alternatives = vec![CompiledAlternative {
+            option: "a single layer".to_owned(),
+            why_not: "the domain would import the transport".to_owned(),
+            refused_by: None,
+        }];
+        let mut second = adr("ADR-020", DecisionStatus::Accepted);
+        second.alternatives = vec![CompiledAlternative {
+            option: "one layer, single".to_owned(),
+            why_not: "we tried it".to_owned(),
+            refused_by: None,
+        }];
+
+        let concerns = examine(&config(Vec::new()).with_decisions(vec![first, second]));
+        let found = concerns
+            .iter()
+            .find(|c| c.code == "decision-may-duplicate")
+            .unwrap_or_else(|| panic!("{concerns:?}"));
+
+        assert_eq!(found.level, Level::Warning, "{found:?}");
+        assert!(found.message.contains("ADR-020"), "{found:?}");
+        assert!(found.message.contains("ADR-014"), "{found:?}");
+    }
+
+    /// Superseding is the sanctioned way to say the same thing twice: the
+    /// later decision is *about* the earlier one. Reporting the pair would
+    /// punish recording the succession, which is the record #114 exists for.
+    #[test]
+    fn a_superseding_decision_repeating_its_predecessor_is_not_reported() {
+        let mut old = adr("ADR-014", DecisionStatus::Superseded);
+        old.alternatives = vec![CompiledAlternative {
+            option: "a single layer".to_owned(),
+            why_not: "the domain would import the transport".to_owned(),
+            refused_by: None,
+        }];
+        old.superseded_by = vec![DecisionId::new("ADR-020").expect("valid")];
+        let mut new = adr("ADR-020", DecisionStatus::Accepted);
+        new.alternatives = vec![CompiledAlternative {
+            option: "a single layer".to_owned(),
+            why_not: "still true".to_owned(),
+            refused_by: None,
+        }];
+        new.supersedes = vec![DecisionId::new("ADR-014").expect("valid")];
+
+        // Both orders, because "earlier" here is declaration order and a
+        // config is free to list the superseding decision first. Only one of
+        // the two directions is true for a given pair, so a check that
+        // demanded both would report every succession written that way.
+        let concerns = examine(&config(Vec::new()).with_decisions(vec![old.clone(), new.clone()]));
+        assert!(
+            concerns.iter().all(|c| c.code != "decision-may-duplicate"),
+            "{concerns:?}"
+        );
+
+        let mut only_forward = new.clone();
+        only_forward.supersedes = vec![DecisionId::new("ADR-014").expect("valid")];
+        let mut silent = old.clone();
+        silent.superseded_by = Vec::new();
+        let reversed =
+            examine(&config(Vec::new()).with_decisions(vec![only_forward, silent.clone()]));
+        assert!(
+            reversed.iter().all(|c| c.code != "decision-may-duplicate"),
+            "declared out of order: {reversed:?}"
+        );
+
+        // And with the succession recorded nowhere, the pair is reported --
+        // which is what the exemption is an exemption from.
+        let mut orphan = new;
+        orphan.supersedes = Vec::new();
+        let unrecorded = examine(&config(Vec::new()).with_decisions(vec![silent, orphan]));
+        assert!(
+            unrecorded
+                .iter()
+                .any(|c| c.code == "decision-may-duplicate"),
+            "{unrecorded:?}"
+        );
+    }
+
+    /// And two decisions that merely share vocabulary are not duplicates. The
+    /// concern lives in a gate, and a gate that cries wolf is one somebody
+    /// turns off -- which is why the push is stricter than the pull.
+    #[test]
+    fn two_decisions_sharing_a_word_are_left_alone() {
+        let mut layers = adr("ADR-014", DecisionStatus::Accepted);
+        layers.title = "Four layers plus System".to_owned();
+        let mut packages = adr("ADR-020", DecisionStatus::Accepted);
+        packages.title = "One package per bounded context".to_owned();
+        packages.alternatives = vec![CompiledAlternative {
+            option: "one package".to_owned(),
+            why_not: "the boundaries stop being enforceable".to_owned(),
+            refused_by: None,
+        }];
+
+        let concerns = examine(&config(Vec::new()).with_decisions(vec![layers, packages]));
+        assert!(
+            concerns.iter().all(|c| c.code != "decision-may-duplicate"),
             "{concerns:?}"
         );
     }
@@ -1761,6 +1959,7 @@ mod tests {
                     file_pattern: Pattern::compile(r"^route\.post\.ts$").expect("valid"),
                     symbol: "Event.save".to_owned(),
                     imported_from: "@org/domain/event".to_owned(),
+                    with_options: Vec::new(),
                 },
             )]),
         );
@@ -1781,6 +1980,7 @@ mod tests {
                     file_pattern: Pattern::compile(r"^route\.post\.ts$").expect("valid"),
                     symbol: "Event.save".to_owned(),
                     imported_from: module.to_owned(),
+                    with_options: Vec::new(),
                 },
             )])
         };
@@ -1820,11 +2020,44 @@ mod tests {
                     file_pattern: Pattern::compile(r"^route\.(post|put)\.ts$").expect("valid"),
                     symbol: "Event.save".to_owned(),
                     imported_from: "@org/domain/event".to_owned(),
+                    with_options: Vec::new(),
                 },
             )]),
         );
 
         assert!(!codes.contains(&"symbol-never-imported"), "{codes:?}");
+    }
+
+    /// Issue #161. What #74 gave a module, one level over: a scoped decision
+    /// whose paths are gone reaches nobody through `describe` while still
+    /// reading in the config as though it governs something.
+    #[test]
+    fn a_decision_scoped_to_nowhere_is_reported() {
+        let (guard, root) = tree_at(&[("src/user/thing.ts", "export class Thing {}")]);
+        let mut moved = adr("ADR-014", DecisionStatus::Accepted);
+        moved.scope = Some(Scope::compile(["packages/gone/**"]).expect("valid scope"));
+        let mut present = adr("ADR-020", DecisionStatus::Accepted);
+        present.scope = Some(Scope::compile(["src/**"]).expect("valid scope"));
+
+        let config = config(vec![serving("shape", "ADR-014")]).with_decisions(vec![
+            moved,
+            present,
+            adr("ADR-021", DecisionStatus::Accepted),
+        ]);
+        let tree = archwarden_engine::walk::walk(&root, &config).expect("walks");
+        let concerns = examine_repository(&root, &config, &tree);
+        drop(guard);
+
+        let found: Vec<_> = concerns
+            .iter()
+            .filter(|c| c.code == "decision-scope-matches-nothing")
+            .collect();
+
+        assert_eq!(found.len(), 1, "{concerns:?}");
+        assert!(found[0].message.contains("ADR-014"), "{found:?}");
+        // A warning, not an error: the decision is still written down and
+        // still true. What it lost is the way it arrives unprompted.
+        assert_eq!(found[0].level, Level::Warning, "{found:?}");
     }
 
     /// Decision 9: a default export's name does not bind the importer, so a

@@ -439,6 +439,9 @@ pub enum Command {
         /// Say what writing would change, and write nothing.
         #[arg(long)]
         dry_run: bool,
+        /// Ask a question of the decisions instead of writing them.
+        #[command(subcommand)]
+        command: Option<DecisionsCommand>,
     },
 
     /// Inspect the configuration itself.
@@ -446,6 +449,32 @@ pub enum Command {
         /// Which config command to run.
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+}
+
+/// `archwarden decisions ...`
+#[derive(Debug, Subcommand)]
+pub enum DecisionsCommand {
+    /// Has this already been rejected?
+    ///
+    /// Searches every declared decision -- its title, its reason, and every
+    /// alternative it rejected together with the argument against it -- for
+    /// anything the terms reach. The person about to propose a losing option
+    /// does not know the decision's id, and will name the option differently
+    /// from whoever rejected it: "single layer", "monolith" and "one package"
+    /// are the same option under three names. Issue #162.
+    ///
+    /// Every match, in declaration order, with no score. The question is not
+    /// which is most similar, it is whether there is anything similar -- and
+    /// a false negative here is the failure `alternatives` exists to prevent,
+    /// while a false positive costs two seconds of reading.
+    Find {
+        /// The words to look for. Accents and case are ignored.
+        #[arg(required = true, num_args = 1..)]
+        terms: Vec<String>,
+        /// Output format.
+        #[arg(long, value_enum, default_value_t = crate::report::Format::Text)]
+        format: crate::report::Format,
     },
 }
 
@@ -479,10 +508,24 @@ pub enum ConfigCommand {
     ///
     /// A rule that loads and then never fires is indistinguishable from a rule
     /// that passes, which is what this exists to catch.
+    ///
+    /// Exits `2` when it reports anything at `error` level, so it can guard a
+    /// gate. It is the same `2` a broken config exits with, and for the same
+    /// reason: both mean *fix your setup*, which is a different reaction from
+    /// the `1` that means *fix your code*.
     Doctor {
         /// How to render the diagnosis.
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
+        /// Fail on warnings too.
+        ///
+        /// Every concern here is a state that only exists by oversight and
+        /// that the author fixes in one command, which is what makes them
+        /// worth blocking on. The default stops at `error` because a warning
+        /// that fails a build is a warning in name only -- this is the flag
+        /// for a repository that has decided otherwise. Issue #166.
+        #[arg(long)]
+        strict: bool,
     },
 
     /// Prove that each rule bites: hand it a violation and see whether it
