@@ -96,3 +96,109 @@ pub(crate) fn render_text(verifications: &[Verification], out: &mut dyn std::io:
          and a rule with a hole in it ticks here."
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn verification(id: &str, verdict: Verdict) -> Verification {
+        Verification {
+            rule_id: id.to_owned(),
+            kind: "structure",
+            verdict,
+        }
+    }
+
+    fn text_of(verifications: &[Verification]) -> String {
+        let mut out = Vec::new();
+        render(verifications, crate::report::Format::Text, &mut out);
+        String::from_utf8(out).expect("UTF-8")
+    }
+
+    /// The tally counts three things and derives the first from the other two.
+    ///
+    /// Deliberately three of one, two of another and one of the third: with
+    /// equal counts an arithmetic slip lands on the right answer anyway, and
+    /// the summary line is the only part of this output a CI job reads.
+    #[test]
+    fn the_summary_counts_each_verdict_apart() {
+        let text = text_of(&[
+            verification(
+                "a",
+                Verdict::Fires {
+                    on: "x.ts".to_owned(),
+                },
+            ),
+            verification(
+                "b",
+                Verdict::Fires {
+                    on: "y.ts".to_owned(),
+                },
+            ),
+            verification(
+                "c",
+                Verdict::Fires {
+                    on: "z.ts".to_owned(),
+                },
+            ),
+            verification(
+                "d",
+                Verdict::Silent {
+                    on: "p.ts".to_owned(),
+                },
+            ),
+            verification(
+                "e",
+                Verdict::Silent {
+                    on: "q.ts".to_owned(),
+                },
+            ),
+            verification(
+                "f",
+                Verdict::Unverified {
+                    why: "nothing to hand it".to_owned(),
+                },
+            ),
+        ]);
+
+        assert!(
+            text.contains("3 enforce something, 2 enforce nothing, 1 not verified"),
+            "{text}"
+        );
+    }
+
+    /// An empty ruleset is three zeroes rather than a subtraction that wraps.
+    #[test]
+    fn nothing_to_verify_is_three_zeroes() {
+        assert!(text_of(&[]).contains("0 enforce something, 0 enforce nothing, 0 not verified"),);
+    }
+
+    /// Every verdict prints its own line, and the marks differ.
+    #[test]
+    fn each_verdict_is_named_on_its_own_line() {
+        let text = text_of(&[
+            verification(
+                "fires",
+                Verdict::Fires {
+                    on: "x.ts".to_owned(),
+                },
+            ),
+            verification(
+                "quiet",
+                Verdict::Silent {
+                    on: "y.ts".to_owned(),
+                },
+            ),
+            verification(
+                "unsure",
+                Verdict::Unverified {
+                    why: "no probe".to_owned(),
+                },
+            ),
+        ]);
+
+        assert!(text.contains("✓ fires — fires on x.ts"), "{text}");
+        assert!(text.contains("✗ quiet — silent on y.ts"), "{text}");
+        assert!(text.contains("? unsure — not verified: no probe"), "{text}");
+    }
+}

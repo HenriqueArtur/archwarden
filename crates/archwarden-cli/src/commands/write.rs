@@ -307,3 +307,21 @@ pub(crate) fn report_baseline_changes(
 pub(crate) fn plural(count: usize, one: &'static str, many: &'static str) -> &'static str {
     if count == 1 { one } else { many }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// One is singular and everything else is not, zero included.
+    ///
+    /// Zero is asserted because it is the case English gets wrong and a
+    /// condition written `!= 1` would too -- "0 findings" is plural, and a
+    /// message reading "0 finding" is the kind of thing a reader notices and
+    /// then stops trusting.
+    #[test]
+    fn only_one_is_singular() {
+        assert_eq!(plural(1, "finding", "findings"), "finding");
+        assert_eq!(plural(0, "finding", "findings"), "findings");
+        assert_eq!(plural(2, "finding", "findings"), "findings");
+    }
+}

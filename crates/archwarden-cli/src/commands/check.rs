@@ -465,3 +465,44 @@ pub(crate) fn report_valid(merged: &MergedConfig, rules: usize, output: &mut Out
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn standing_of(accepted: usize, gone: usize) -> String {
+        let standing = archwarden_api::baseline::Standing {
+            accepted,
+            gone,
+            by_decision: std::collections::BTreeMap::new(),
+        };
+        let mut out = Vec::new();
+        report_standing(&standing, &mut out);
+        String::from_utf8(out).expect("UTF-8")
+    }
+
+    /// A baseline with nothing stale says only what it accepted.
+    ///
+    /// The advice to re-run `archwarden baseline` is the whole value of the
+    /// second clause, and printing it when there is nothing to update trains
+    /// the reader to ignore it.
+    #[test]
+    fn a_baseline_that_is_current_does_not_ask_to_be_updated() {
+        let text = standing_of(3, 0);
+
+        assert!(text.contains("3 accepted"), "{text}");
+        assert!(!text.contains("no longer"), "{text}");
+        assert!(!text.contains("archwarden baseline"), "{text}");
+    }
+
+    /// One stale entry is singular, and more than one is not.
+    #[test]
+    fn entries_that_no_longer_occur_are_counted_and_agree_with_their_verb() {
+        let one = standing_of(3, 1);
+        assert!(one.contains("1 no longer occurs"), "{one}");
+        assert!(one.contains("archwarden baseline"), "{one}");
+
+        let several = standing_of(3, 2);
+        assert!(several.contains("2 no longer occur"), "{several}");
+    }
+}

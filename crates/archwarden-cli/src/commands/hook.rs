@@ -392,3 +392,79 @@ pub(crate) fn session_started(
     );
     Exit::Clean
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use camino::Utf8PathBuf;
+
+    fn at(contents: Option<&str>) -> (tempfile::TempDir, Utf8PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("UTF-8 path");
+        if let Some(contents) = contents {
+            std::fs::write(root.join(".gitignore"), contents).expect("write");
+        }
+        (dir, root)
+    }
+
+    /// Every spelling of the entry already being there counts as there.
+    ///
+    /// Asserted one at a time. The check is three alternatives, and a test
+    /// listing them together passes while two of them stop being consulted --
+    /// after which the line is appended a second time to a file the user owns.
+    #[test]
+    fn a_cache_already_ignored_is_left_alone() {
+        for spelling in [
+            ".archwarden/cache/",
+            ".archwarden/cache",
+            ".archwarden/",
+            "  .archwarden/cache/  ",
+        ] {
+            let (_guard, root) = at(Some(&format!("node_modules\n{spelling}\n")));
+            assert!(
+                !ignore_the_cache(&root),
+                "`{spelling}` already covers the cache"
+            );
+        }
+    }
+
+    /// A file that does not mention it gets the line, and the separator keeps
+    /// the entry on a line of its own.
+    #[test]
+    fn a_cache_nobody_ignored_gets_a_line() {
+        let (_guard, root) = at(Some("node_modules\n"));
+        assert!(ignore_the_cache(&root));
+
+        let written = std::fs::read_to_string(root.join(".gitignore")).expect("read");
+        assert!(written.contains(".archwarden/cache/"), "{written}");
+        assert!(written.starts_with("node_modules\n"), "{written}");
+
+        // The file that did not end in a newline is the case the separator
+        // exists for: without it the entry would continue the last line.
+        let (_guard, root) = at(Some("node_modules"));
+        assert!(ignore_the_cache(&root));
+        let written = std::fs::read_to_string(root.join(".gitignore")).expect("read");
+        assert!(
+            written.contains("node_modules\n"),
+            "the entry starts its own line: {written}"
+        );
+    }
+
+    /// No `.gitignore` at all is still a repository that wants one.
+    #[test]
+    fn a_repository_with_no_gitignore_gets_one() {
+        let (_guard, root) = at(None);
+
+        assert!(ignore_the_cache(&root));
+        let written = std::fs::read_to_string(root.join(".gitignore")).expect("read");
+        assert!(written.contains(".archwarden/cache/"), "{written}");
+        // A file that did not exist needs no separator before the block. The
+        // condition is `empty || ends in a newline`, and an empty string does
+        // not end in one -- so asserting only that the entry is present passes
+        // while a new file opens with a blank line nobody wrote.
+        assert!(
+            !written.starts_with("\n\n"),
+            "no separator before the first block: {written:?}"
+        );
+    }
+}
