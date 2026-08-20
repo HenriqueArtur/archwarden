@@ -1,41 +1,80 @@
 {
   "$schema": "./schema/v0.json",
   "version": 0,
-  "languages": ["rust"],
+  "languages": [
+    "rust"
+  ],
   "rules": [
     {
       "type": "structure",
       "id": "a-crate-holds-a-manifest-and-its-source",
       "level": "error",
       "why": "A crate is a manifest, its source, and the tests and benchmarks that belong to it. Anything else here is a directory somebody added without deciding what it is.",
-      "roots": ["crates/*"],
-      "allowed_subfolders": ["src", "tests", "benches"]
+      "roots": [
+        "crates/*"
+      ],
+      "allowed_subfolders": [
+        "src",
+        "tests",
+        "benches"
+      ]
     },
     {
       "type": "presence",
       "id": "a-crate-declares-itself",
       "level": "error",
       "why": "A directory under `crates/` that is not a crate is either a mistake or a thing nobody named.",
-      "roots": ["crates/*"],
-      "require": ["Cargo.toml"]
+      "roots": [
+        "crates/*"
+      ],
+      "require": [
+        "Cargo.toml"
+      ]
     },
     {
       "type": "naming",
       "id": "a-rule-engine-is-named-for-its-kind",
       "level": "error",
       "why": "Fourteen rule kinds, fourteen files, fourteen engines. The convention held by hand for the whole of v0 and nothing checked it; a fifteenth added as `NewEngine` in `new_kind.rs` would be found by a reader, eventually.",
-      "roots": ["crates/archwarden-rules/src"],
+      "roots": [
+        "crates/archwarden-rules/src"
+      ],
       "file_pattern": "^(?<name>.+)\\.rs$",
-      "must_export": { "name": "{{pascal(name)}}Engine", "kind": ["struct"] }
+      "must_export": {
+        "name": "{{pascal(name)}}Engine",
+        "kind": [
+          "struct"
+        ]
+      }
     },
     {
       "type": "naming",
       "id": "a-wire-rule-is-named-for-its-kind",
       "level": "error",
       "why": "The other side of the same convention. `docs/ARCHITECTURE.md` calls the split between wire and compiled types the seam that lets `archwarden-rules` depend on `core` alone, and the two sides are meant to be readable against each other one file at a time.",
-      "roots": ["crates/archwarden-config/src/rule"],
+      "roots": [
+        "crates/archwarden-config/src/rule"
+      ],
       "file_pattern": "^(?<name>.+)\\.rs$",
-      "must_export": { "name": "{{pascal(name)}}Rule", "kind": ["struct"] }
+      "must_export": {
+        "name": "{{pascal(name)}}Rule",
+        "kind": [
+          "struct"
+        ]
+      }
+    },
+    {
+      "type": "spec-pair",
+      "id": "every-unit-carries-its-tests",
+      "level": "error",
+      "why": "Rust keeps a unit's tests inside it, in a `#[cfg(test)]` module. Test first, watch it fail, then implement -- `cargo-mutants` on push is what stops a test that passes without asserting.",
+      "roots": [
+        "crates/*/src"
+      ],
+      "subfolders": [
+        "."
+      ],
+      "skip_type_only": true
     }
   ]
 }

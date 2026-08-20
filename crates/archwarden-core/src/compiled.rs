@@ -1577,6 +1577,7 @@ mod import_filter_tests {
             exports: Vec::new(),
             calls: Vec::new(),
             reads: Vec::new(),
+            callables: 0,
             imports: specifiers
                 .iter()
                 .map(|(specifier, resolved)| ImportFact {

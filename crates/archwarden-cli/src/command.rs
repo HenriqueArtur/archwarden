@@ -675,3 +675,58 @@ impl Output<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use camino::Utf8Path;
+    use clap::Parser as _;
+
+    use super::*;
+
+    /// The flags this invocation was given, as the loader wants them.
+    ///
+    /// Two `Option`s copied into two fields, which is the kind of thing that
+    /// reads as obviously right and is one transposition away from looking for
+    /// the config where the root is.
+    #[test]
+    fn an_invocation_hands_on_the_paths_it_was_given() {
+        let told = Cli {
+            config: Some(Utf8PathBuf::from("elsewhere/arch.config.json")),
+            root: Some(Utf8PathBuf::from("packages/api")),
+            ..Cli::parse_from(["archwarden", "check"])
+        };
+
+        let location = told.location();
+        assert_eq!(
+            location.config,
+            Some(Utf8Path::new("elsewhere/arch.config.json"))
+        );
+        assert_eq!(location.root, Some(Utf8Path::new("packages/api")));
+
+        // And an invocation that says neither asks for neither, rather than
+        // for a default the loader would then have to undo.
+        let bare = Cli::parse_from(["archwarden", "check"]);
+        assert_eq!(bare.location().config, None);
+        assert_eq!(bare.location().root, None);
+    }
+
+    /// The two translation tables between the CLI's vocabulary and the domain's.
+    ///
+    /// Each arm asserted on its own: they are a mapping, and a test naming one
+    /// passes while the other is transposed. `--by rule` grouping by path is
+    /// a report that reads perfectly and answers a question nobody asked.
+    #[test]
+    fn the_cli_vocabulary_maps_onto_the_domains() {
+        assert_eq!(By::Rule.axis(), archwarden_api::Axis::Rule);
+        assert_eq!(By::Path.axis(), archwarden_api::Axis::Path);
+
+        assert_eq!(
+            LevelFilter::Error.level(),
+            archwarden_core::level::Level::Error
+        );
+        assert_eq!(
+            LevelFilter::Warning.level(),
+            archwarden_core::level::Level::Warning
+        );
+    }
+}

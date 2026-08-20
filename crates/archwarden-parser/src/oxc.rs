@@ -132,6 +132,11 @@ impl OxcParser {
             ),
             calls,
             reads,
+            // Zero, and not a gap. For JavaScript the question `skip_type_only`
+            // asks has a complete answer in the export tags -- `type` and
+            // `interface` are the only two forms with no runtime behaviour --
+            // so nothing here has to count. Issue #157, decision 36.
+            callables: 0,
             allowances,
             metadata,
             has_opaque_import,

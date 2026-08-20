@@ -286,33 +286,6 @@ impl SpecPairEngine {
         }
     }
 
-    /// Whether every export in a file is a `type` or an `interface`.
-    ///
-    /// The question `skip_type_only` asks. `enum` is deliberately not in the
-    /// set: an enum exists at runtime and has behaviour a test can call, which
-    /// is the whole distinction being drawn. Nor is a file with no exports at
-    /// all — that is a file nobody imports rather than a contract, and it is
-    /// not what this exemption is for.
-    ///
-    /// A re-export is not type-only either. Its real kind needs the file on
-    /// the other side, which `RULES.md` keeps this rule away from, and
-    /// guessing "probably a type" would exempt files on a coin flip.
-    fn is_type_only(facts: &archwarden_core::facts::FileFacts) -> bool {
-        use archwarden_core::facts::ExportKind;
-
-        !facts.exports.is_empty()
-            && facts.exports.iter().all(|export| {
-                export.tags.contains(ExportKind::Type)
-                    || export.tags.contains(ExportKind::Interface)
-            })
-    }
-
-    /// The finding for a unit file with no spec beside it.
-    ///
-    /// Lives here rather than in `check_directory` because deciding it can
-    /// need the file's exports, and a directory listing is only names. The
-    /// inputs are otherwise the same: this file, and what else is in the
-    /// folder.
     /// Reports a unit whose language tests inside the file and which carries
     /// no test.
     ///
@@ -336,7 +309,11 @@ impl SpecPairEngine {
         let Some(facts) = ctx.facts else {
             return Vec::new();
         };
-        if self.skip_type_only && facts.exports.is_empty() {
+        // The same question the sibling branch asks, and it has to be asked
+        // here too: this is the Rust branch, and a file of pure declarations
+        // is exactly the case issue #157 was raised about. It used to exempt
+        // only a file with *no* exports at all, which a `pub struct` is not.
+        if self.skip_type_only && facts.exports_no_behaviour() {
             return Vec::new();
         }
         if facts.inline_tests > 0 {
@@ -377,7 +354,11 @@ impl SpecPairEngine {
         // no sibling to be found. Facts absent means the file could not be
         // parsed, and the run counts that as a skipped check rather than
         // silently exempting it.
-        if self.skip_type_only && ctx.facts.is_some_and(Self::is_type_only) {
+        if self.skip_type_only
+            && ctx
+                .facts
+                .is_some_and(archwarden_core::facts::FileFacts::exports_no_behaviour)
+        {
             return Vec::new();
         }
 
@@ -807,6 +788,7 @@ mod tests {
                 .collect(),
             calls: Vec::new(),
             reads: Vec::new(),
+            callables: 0,
             allowances: Vec::new(),
             metadata: Vec::new(),
             has_opaque_import: false,
@@ -1388,6 +1370,77 @@ mod tests {
         );
 
         assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    /// Issue #157. For Rust the question this flag asks is not on the export
+    /// list at all: a `struct` is an export and its `impl` block's methods are
+    /// not, and they are the behaviour a test would reach. Widening the
+    /// exempt set to include `struct` and `enum` would have excused most of a
+    /// Rust codebase from the gate -- the failure `docs/CONFIG.md` calls the
+    /// worst a linter has.
+    ///
+    /// Found turning `spec-pair` on over this repository: `command.rs` is the
+    /// clap surface, `docs.rs` is 97 lines and zero functions, and both were
+    /// reported for carrying no test.
+    #[test]
+    fn a_rust_file_that_declares_no_function_needs_no_test() {
+        use archwarden_core::facts::ExportKind;
+        let engine = type_only_engine(&["crates/*/src"], &["."]);
+
+        let mut declarations = exporting(&[ExportKind::Struct, ExportKind::Enum]);
+        declarations.path = path("crates/archwarden-core/src/docs.rs");
+        declarations.callables = 0;
+
+        let findings = check_with(
+            &engine,
+            "crates/archwarden-core/src",
+            &["docs.rs"],
+            &[("docs.rs", &declarations)],
+        );
+        assert!(findings.is_empty(), "{findings:?}");
+    }
+
+    /// And one `impl` block brings the rule back. A `struct` with behaviour is
+    /// usually the most testable thing in the crate, which is why the exempt
+    /// set could not simply gain `struct`.
+    #[test]
+    fn a_rust_struct_with_an_impl_still_needs_a_test() {
+        use archwarden_core::facts::ExportKind;
+        let engine = type_only_engine(&["crates/*/src"], &["."]);
+
+        let mut behaved = exporting(&[ExportKind::Struct]);
+        behaved.path = path("crates/archwarden-core/src/thing.rs");
+        behaved.callables = 1;
+
+        let findings = check_with(
+            &engine,
+            "crates/archwarden-core/src",
+            &["thing.rs"],
+            &[("thing.rs", &behaved)],
+        );
+        assert_eq!(offenders(&findings).len(), 1, "{findings:?}");
+    }
+
+    /// The JavaScript answer is unchanged, and the two do not borrow from each
+    /// other: a `.ts` file is judged by its export tags however many functions
+    /// it declares, because there the tags are a complete answer.
+    #[test]
+    fn a_typescript_file_is_still_judged_by_its_export_tags() {
+        use archwarden_core::facts::ExportKind;
+        let engine = type_only_engine(&["packages/domain/src/*"], &["services"]);
+
+        // `callables` is zero for every JavaScript file, and must not exempt
+        // one whose exports say it has behaviour.
+        let mut runtime = exporting(&[ExportKind::Function]);
+        runtime.callables = 0;
+
+        let findings = check_with(
+            &engine,
+            "packages/domain/src/cep/services",
+            &["cep-lookup-service.ts"],
+            &[("cep-lookup-service.ts", &runtime)],
+        );
+        assert_eq!(offenders(&findings).len(), 1, "{findings:?}");
     }
 
     /// One runtime export is enough to bring the rule back. The flag is about

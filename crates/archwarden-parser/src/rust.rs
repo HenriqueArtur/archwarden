@@ -68,6 +68,7 @@ pub fn parse(path: &RepoRelPath, source: &str, content_hash: ContentHash) -> Fil
         // an import that `import-boundary` already cuts. The gap `chokepoint`
         // fills does not exist here.
         reads: Vec::new(),
+        callables: callables(syntax),
         allowances,
         metadata,
         // Rust has no `import(name)`. The nearest thing is a `use` a macro
@@ -109,6 +110,47 @@ fn inline_tests(syntax: &SyntaxNode) -> usize {
                 .any(|path| path.syntax().text() == "test")
         })
         .count()
+}
+
+/// Functions the file declares outside its own tests.
+///
+/// The same walk `inline_tests` makes, asking the other half of the question.
+/// A file with none declares types and nothing a test could call -- which is
+/// what `skip_type_only` means for Rust, where the answer is not on the export
+/// list: a `struct` is an export and its `impl` block's methods are not.
+/// Issue #157.
+///
+/// A `#[test]` does not count, and neither does anything inside a
+/// `#[cfg(test)]` module: a file whose only functions are its own tests has no
+/// behaviour for a *caller* to reach, and counting them would exempt exactly
+/// the file that already satisfies the rule.
+fn callables(syntax: &SyntaxNode) -> usize {
+    use ra_ap_syntax::ast::HasAttrs as _;
+
+    syntax
+        .descendants()
+        .filter_map(ast::Fn::cast)
+        .filter(|function| {
+            !function
+                .attrs()
+                .filter_map(|attr| attr.path())
+                .any(|path| path.syntax().text() == "test")
+                && !in_a_test_module(function.syntax())
+        })
+        .count()
+}
+
+/// Whether this node sits inside a `#[cfg(test)]` module.
+fn in_a_test_module(node: &SyntaxNode) -> bool {
+    use ra_ap_syntax::ast::HasAttrs as _;
+
+    node.ancestors()
+        .filter_map(ast::Module::cast)
+        .any(|module| {
+            module
+                .attrs()
+                .any(|attr| attr.syntax().text().to_string().contains("cfg(test)"))
+        })
 }
 
 /// Every `use` in the file, one fact per name it binds.
@@ -585,6 +627,54 @@ mod tests {
 
         let none = facts("pub fn thing() {}\n");
         assert_eq!(none.inline_tests, 0);
+    }
+
+    /// Issue #157. `skip_type_only` asks *"does this file export anything with
+    /// behaviour?"*, and for Rust the answer is not on the export list at all:
+    /// a `struct` is an export and its `impl` block's methods are not, and
+    /// they are the behaviour a test would reach.
+    #[test]
+    fn functions_outside_the_tests_are_counted_separately() {
+        let declarations = facts(
+            "pub struct Thing;\n             pub enum Kind { A, B }\n             pub type Alias = Thing;\n",
+        );
+        assert_eq!(
+            declarations.callables, 0,
+            "nothing here is callable, which is the whole case"
+        );
+
+        // A `struct` with an `impl` is usually the most testable thing in the
+        // crate, and its methods are what a widened export list would have
+        // missed.
+        let behaved = facts("pub struct Thing;\nimpl Thing { pub fn run(&self) {} }\n");
+        assert_eq!(behaved.callables, 1);
+
+        // A file whose only functions are its own tests has no behaviour for a
+        // *caller* to reach -- counting them would exempt exactly the file
+        // that already satisfies the rule.
+        let only_tests = facts(
+            "pub struct Thing;\n             #[cfg(test)]\n             mod tests {\n             \x20   #[test]\n             \x20   fn one() {}\n             \x20   fn a_helper() {}\n             }\n",
+        );
+        assert_eq!(
+            only_tests.callables, 0,
+            "a helper inside the test module is not the unit's behaviour"
+        );
+
+        let free = facts("pub fn thing() {}\n");
+        assert_eq!(free.callables, 1);
+
+        // The mirror of the rule below: a `#[test]` outside a `#[cfg(test)]`
+        // module is still a test, so it is still not the unit's behaviour.
+        // Another attribute is not -- `#[must_use]` marks a function a caller
+        // very much can reach.
+        let loose = facts("#[test]\nfn a_test() {}\n");
+        assert_eq!(loose.callables, 0, "a test is not a callable");
+
+        let attributed = facts("#[must_use]\npub fn thing() -> u8 { 1 }\n");
+        assert_eq!(
+            attributed.callables, 1,
+            "having an attribute is not being a test"
+        );
     }
 
     /// A `#[test]` outside a `#[cfg(test)]` module is still a test.

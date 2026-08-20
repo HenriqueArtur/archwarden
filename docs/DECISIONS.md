@@ -17,6 +17,70 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 36 — `skip_type_only` asks one question, and each language answers it
+Status: accepted.
+Context: issue #157, found turning `spec-pair` on over this repository once
+#137 taught it Rust's inline tests. Two files were reported for carrying no
+test and both are right to carry none: `crates/archwarden-cli/src/command.rs`,
+the clap surface, and `crates/archwarden-core/src/docs.rs`, ninety-seven lines
+and zero functions.
+
+`skip_type_only` exists for exactly this and did not fire. It exempted a file
+whose exports are all `type` or `interface`, and a Rust declaration-only file
+exports `struct` and `enum`.
+
+**Widening the exempt list was the wrong fix, and it is worth saying why.** A
+`struct` is not a JavaScript `interface`. It can carry an `impl` block full of
+behaviour, and a file exporting one is usually the most testable thing in the
+crate. Adding `struct` and `enum` to the exempt set would have quietly excused
+most of a Rust codebase from the TDD gate — a rule enforcing nothing while
+looking like it enforces something, which `docs/CONFIG.md` calls the worst
+failure a linter has.
+
+The question the flag asks is language-independent: *does this file export
+anything a test could call?* The **answer** is not. For JavaScript the export
+tags are complete, because `type` and `interface` are the only two forms with
+no runtime behaviour. For Rust the answer is not on the export list at all: a
+`struct` is an export and its `impl` block's methods are not, and those are the
+behaviour a test would reach.
+
+Decision: one field, one sentence for the user, and a per-language answer
+behind it — the shape `FileClass::tests_live` already uses for *where do this
+language's tests live*. `FileFacts` gains `callables`, the functions a file
+declares outside its own tests, populated by the Rust front-end and zero
+everywhere else.
+
+**The predicate lives in `archwarden-core`, on `FileFacts`.** `Language` is
+`#[non_exhaustive]`, so a match in `archwarden-rules` needs a wildcard arm and
+a language added later would fall into somebody else's answer instead of
+failing to build. Answering it in the crate that owns the enum keeps the
+compiler as the guard. The same trap caught `Language::as_str` in decision 35,
+one field earlier.
+
+A `#[test]`, and anything inside a `#[cfg(test)]` module, does not count as a
+callable. A file whose only functions are its own tests has no behaviour for a
+*caller* to reach, and counting them would exempt exactly the file that already
+satisfies the rule.
+
+Alternatives:
+- **Widen `skip_type_only` to accept `struct` and `enum`.** One line, and it
+  excuses most of a Rust codebase. See above.
+- **A second flag, named for *callable* rather than *type*.** Honest, and it
+  asks the config author to know which of two questions their language answers
+  — which is a thing archwarden knows and they should not have to.
+- **Leave it, and use `ignore_files`.** The workaround #157 rejected in its own
+  words: a hand-maintained list naming two files is precisely what
+  `skip_type_only` documents itself as existing to replace.
+
+Consequences: cache format 14 to 15. `spec-pair` is now in this repository's
+own `arch.config.json`, over 88 files — which it could not be before, and which
+is the sharpest test the rule has. Turning it on found `command.rs` genuinely
+untested: three small translation tables between the CLI's vocabulary and the
+domain's, each one transposition away from a report that reads perfectly and
+answers a question nobody asked. They have tests now.
+
+---
+
 ### 35 — A preset may turn a language on, and `disable` is the way back off
 Status: accepted.
 Context: issue #158, found writing the Rust preset. A preset declaring
