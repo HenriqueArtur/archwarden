@@ -97,7 +97,13 @@ Context: decision 19 named this as the thing to settle before a second *code*
 front-end, and gave the reason: an abstraction designed while looking at one
 language is designed from the thing it is meant to abstract over, and getting
 it wrong makes every later language fight it again. Issue #131 is that debt
-coming due, because Rust arrives in 0.31.
+coming due, because Rust is the next release.
+
+*Written when that release was numbered 0.31 and named as such here. It shipped
+as 0.29.0 — the milestones ahead of it were renumbered once 0.28 turned out to
+carry nothing worth a minor. The sentence is fixed rather than left, because a
+decision that names the wrong version is a decision a reader stops trusting on
+the details that matter.*
 
 `ExportKind` today is a declaration form — `function`, `arrow`, `const`,
 `let`, `var`, `class`, `type`, `interface`, `enum`, `reexport` — carried as a
