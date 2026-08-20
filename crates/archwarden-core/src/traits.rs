@@ -553,6 +553,7 @@ mod tests {
         facts.exports.push(crate::facts::ExportFact {
             name: Some("Foo".to_owned()),
             tags: ExportTags::only(ExportKind::Function),
+            visibility: crate::facts::Visibility::Public,
             is_default: false,
             reexport_from: None,
             forwards: None,

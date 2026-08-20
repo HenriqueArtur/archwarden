@@ -61,11 +61,26 @@ pub enum ExportKind {
     Enum,
     /// `export { Foo } from './x'`, whose real kind needs cross-file analysis.
     Reexport,
+    /// Rust's `fn`. Deliberately not `function`: decision 31 refuses to reuse
+    /// a JavaScript spelling for a Rust form, because a rule copied between
+    /// the two halves of one repository would then match under the wrong
+    /// language instead of being told it does not apply.
+    Fn,
+    /// Rust's `struct`. Not `class`, for the same reason.
+    Struct,
+    /// Rust's `trait`. Not `interface`, for the same reason.
+    Trait,
+    /// Rust's `static`.
+    Static,
+    /// Rust's `mod`, when it is a declaration this file exports.
+    Mod,
+    /// Rust's `macro_rules!` and `macro`.
+    Macro,
 }
 
 impl ExportKind {
     /// Every kind, for building error messages and for exhaustive tests.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 16] = [
         Self::Function,
         Self::Arrow,
         Self::Const,
@@ -76,6 +91,12 @@ impl ExportKind {
         Self::Interface,
         Self::Enum,
         Self::Reexport,
+        Self::Fn,
+        Self::Struct,
+        Self::Trait,
+        Self::Static,
+        Self::Mod,
+        Self::Macro,
     ];
 
     /// The spelling used in a config's `must_export.kind`.
@@ -92,6 +113,12 @@ impl ExportKind {
             Self::Interface => "interface",
             Self::Enum => "enum",
             Self::Reexport => "reexport",
+            Self::Fn => "fn",
+            Self::Struct => "struct",
+            Self::Trait => "trait",
+            Self::Static => "static",
+            Self::Mod => "mod",
+            Self::Macro => "macro",
         }
     }
 
@@ -102,18 +129,29 @@ impl ExportKind {
     }
 
     /// This kind's bit in an [`ExportTags`] set.
-    fn bit(self) -> u16 {
+    ///
+    /// `u32` since decision 31: ten JavaScript forms and six Rust ones is
+    /// sixteen, which fits a `u16` exactly and leaves no room for the next
+    /// language. The set is a field on a cached fact, so widening it is a
+    /// format bump either way -- better one bump with room than two.
+    fn bit(self) -> u32 {
         match self {
-            Self::Function => 0x001,
-            Self::Arrow => 0x002,
-            Self::Const => 0x004,
-            Self::Let => 0x008,
-            Self::Var => 0x010,
-            Self::Class => 0x020,
-            Self::Type => 0x040,
-            Self::Interface => 0x080,
-            Self::Enum => 0x100,
-            Self::Reexport => 0x200,
+            Self::Function => 0x0001,
+            Self::Arrow => 0x0002,
+            Self::Const => 0x0004,
+            Self::Let => 0x0008,
+            Self::Var => 0x0010,
+            Self::Class => 0x0020,
+            Self::Type => 0x0040,
+            Self::Interface => 0x0080,
+            Self::Enum => 0x0100,
+            Self::Reexport => 0x0200,
+            Self::Fn => 0x0400,
+            Self::Struct => 0x0800,
+            Self::Trait => 0x1000,
+            Self::Static => 0x2000,
+            Self::Mod => 0x4000,
+            Self::Macro => 0x8000,
         }
     }
 }
@@ -127,7 +165,7 @@ impl std::fmt::Display for ExportKind {
 /// The set of kinds one export carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(from = "Vec<ExportKind>", into = "Vec<ExportKind>")]
-pub struct ExportTags(u16);
+pub struct ExportTags(u32);
 
 impl ExportTags {
     /// The empty set.
@@ -217,6 +255,65 @@ impl KindFilter {
     }
 }
 
+/// How far an export is visible.
+///
+/// The second axis decision 31 separated from [`ExportKind`]. A form and a
+/// visibility are orthogonal — `pub fn` and `pub(crate) fn` are the same form
+/// and different exports; `pub fn` and `pub struct` are the same export and
+/// different forms — and a single set holding both would make
+/// `OneOf([function, pub])` sayable and meaningless.
+///
+/// **Only exported symbols are carried at all.** A Rust item with no `pub` is
+/// not an [`ExportFact`], on the same terms as a JavaScript declaration with
+/// no `export`. So this distinguishes *degrees* of exported, never exported
+/// from private.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum Visibility {
+    /// Visible to anything that can name it: `pub`, and every JavaScript
+    /// `export`.
+    ///
+    /// The default because it is the only one JavaScript has. A front-end that
+    /// says nothing about visibility is describing a language where the
+    /// question does not arise, and answering `Public` is what that means.
+    #[default]
+    Public,
+    /// `pub(crate)`.
+    Crate,
+    /// `pub(super)`.
+    Super,
+    /// `pub(in path)`, whose reach is a module path this does not resolve.
+    Restricted,
+}
+
+impl Visibility {
+    /// Every visibility, for error messages and exhaustive tests.
+    pub const ALL: [Self; 4] = [Self::Public, Self::Crate, Self::Super, Self::Restricted];
+
+    /// The spelling a config uses.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Public => "public",
+            Self::Crate => "crate",
+            Self::Super => "super",
+            Self::Restricted => "restricted",
+        }
+    }
+
+    /// Parses a visibility by its config spelling.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|v| v.as_str() == name)
+    }
+}
+
+impl std::fmt::Display for Visibility {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(self.as_str())
+    }
+}
+
 /// A symbol a file exports.
 ///
 /// Like [`crate::finding::Finding`], and for the same reason, this is not
@@ -229,6 +326,12 @@ pub struct ExportFact {
     pub name: Option<String>,
     /// How it was declared.
     pub tags: ExportTags,
+    /// How far it is visible.
+    ///
+    /// `Public` for every JavaScript export, which is the only visibility that
+    /// language has. Decision 31.
+    #[serde(default)]
+    pub visibility: Visibility,
     /// Whether this is the default export. A default never satisfies a named
     /// `must_export`, because its name does not bind the importer.
     pub is_default: bool,
@@ -659,10 +762,88 @@ mod tests {
         assert_eq!(facts.calls[0].span, Span::new(u32::MAX, u32::MAX));
     }
 
+    /// A form and a visibility are two axes, and the vocabularies do not
+    /// overlap.
+    ///
+    /// Decision 31's whole content, asserted as an invariant rather than
+    /// described: no spelling means a form under one reading and a visibility
+    /// under the other, so `must_export.kind: ["crate"]` is an unknown kind
+    /// rather than a filter that quietly matches by visibility.
+    #[test]
+    fn no_spelling_is_both_a_form_and_a_visibility() {
+        for kind in ExportKind::ALL {
+            assert!(
+                Visibility::parse(kind.as_str()).is_none(),
+                "`{kind}` is a declaration form and parses as a visibility too"
+            );
+        }
+        for visibility in Visibility::ALL {
+            assert!(
+                ExportKind::parse(visibility.as_str()).is_none(),
+                "`{visibility}` is a visibility and parses as a form too"
+            );
+        }
+    }
+
+    /// Rust's forms are spelled Rust's way, and the JavaScript spellings do not
+    /// reach them.
+    ///
+    /// The half of decision 31 that is a refusal. Reusing `function` for `fn`
+    /// or `class` for `struct` reads better and makes a rule copied between
+    /// the two halves of one repository match under the wrong language; under
+    /// these spellings it matches nothing, and `doctor` says so.
+    #[test]
+    fn a_javascript_spelling_never_names_a_rust_form() {
+        assert_eq!(ExportKind::parse("fn"), Some(ExportKind::Fn));
+        assert_eq!(ExportKind::parse("struct"), Some(ExportKind::Struct));
+        assert_eq!(ExportKind::parse("trait"), Some(ExportKind::Trait));
+
+        assert_eq!(
+            ExportKind::parse("function"),
+            Some(ExportKind::Function),
+            "and the JavaScript form still means itself"
+        );
+        assert_ne!(ExportKind::parse("function"), Some(ExportKind::Fn));
+        assert_ne!(ExportKind::parse("class"), Some(ExportKind::Struct));
+        assert_ne!(ExportKind::parse("interface"), Some(ExportKind::Trait));
+    }
+
+    /// Every kind has a bit of its own, and the set holds all sixteen at once.
+    ///
+    /// Asserted by counting rather than by listing: a bit copied from the line
+    /// above -- which is how a `0x0400` becomes a second `0x0200` -- makes two
+    /// kinds indistinguishable, and every test that names one of them passes.
+    #[test]
+    fn every_kind_has_a_bit_of_its_own() {
+        let all = ExportKind::ALL
+            .into_iter()
+            .fold(ExportTags::none(), ExportTags::with);
+
+        assert_eq!(
+            all.iter().count(),
+            ExportKind::ALL.len(),
+            "a shared bit makes two kinds one"
+        );
+        for kind in ExportKind::ALL {
+            assert!(all.contains(kind), "{kind}");
+            assert!(
+                ExportTags::only(kind).iter().eq([kind]),
+                "{kind} alone is a set of one"
+            );
+        }
+    }
+
+    /// A language with one visibility gets the one it has.
+    #[test]
+    fn public_is_the_default_because_javascript_has_no_other() {
+        assert_eq!(Visibility::default(), Visibility::Public);
+    }
+
     fn export(name: &str, tags: ExportTags) -> ExportFact {
         ExportFact {
             name: Some(name.to_owned()),
             tags,
+            visibility: Visibility::Public,
             is_default: false,
             reexport_from: None,
             forwards: None,

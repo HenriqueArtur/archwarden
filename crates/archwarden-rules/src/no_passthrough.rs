@@ -325,6 +325,7 @@ mod tests {
 
     fn export(name: &str, tags: ExportTags, forwards: Option<&str>) -> ExportFact {
         ExportFact {
+            visibility: archwarden_core::facts::Visibility::Public,
             name: Some(name.to_owned()),
             tags,
             is_default: false,
@@ -441,6 +442,7 @@ mod tests {
             vec![ExportFact {
                 name: Some("*".to_owned()),
                 tags: ExportTags::only(ExportKind::Reexport),
+                visibility: archwarden_core::facts::Visibility::Public,
                 is_default: false,
                 reexport_from: Some("./other".to_owned()),
                 forwards: Some("*".to_owned()),
@@ -485,6 +487,7 @@ mod tests {
             vec![ExportFact {
                 name: Some("*".to_owned()),
                 tags: ExportTags::only(ExportKind::Reexport),
+                visibility: archwarden_core::facts::Visibility::Public,
                 is_default: false,
                 reexport_from: Some("./other".to_owned()),
                 forwards: Some("*".to_owned()),
@@ -516,6 +519,7 @@ mod tests {
             vec![ExportFact {
                 name: Some("*".to_owned()),
                 tags: ExportTags::only(ExportKind::Reexport),
+                visibility: archwarden_core::facts::Visibility::Public,
                 is_default: false,
                 reexport_from: Some("./other".to_owned()),
                 forwards: Some("*".to_owned()),

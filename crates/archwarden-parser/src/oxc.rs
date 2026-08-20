@@ -686,6 +686,9 @@ fn exports(
                 .as_ref()
                 .and_then(|name| declaration_tags.get(name).copied())
                 .unwrap_or_else(ExportTags::none),
+            // JavaScript has one visibility and it is public: a symbol is
+            // exported or it is not, and one that is not is no fact at all.
+            visibility: archwarden_core::facts::Visibility::Public,
             // Keyed by the *local* name, like the tags: `export { Local as
             // Public }` annotates `Local`, and what the rule asks about is
             // `Public`.
@@ -736,6 +739,7 @@ fn exports(
         facts.push(ExportFact {
             name: export_name(&entry.export_name),
             tags: ExportTags::only(ExportKind::Reexport),
+            visibility: archwarden_core::facts::Visibility::Public,
             // The declaration is in another file, so whether it annotates
             // anything is not knowable from here -- the same reason the kind
             // is `reexport` rather than guessed at.
@@ -766,6 +770,7 @@ fn exports(
         facts.push(ExportFact {
             name: Some("*".to_owned()),
             tags: ExportTags::only(ExportKind::Reexport),
+            visibility: archwarden_core::facts::Visibility::Public,
             // Whatever is on the other side, this file did not declare it.
             annotations: Vec::new(),
             returns: None,

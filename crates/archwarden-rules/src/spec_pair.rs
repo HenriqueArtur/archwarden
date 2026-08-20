@@ -559,6 +559,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(index, kind)| ExportFact {
+                    visibility: archwarden_core::facts::Visibility::Public,
                     name: Some(format!("Thing{index}")),
                     tags: ExportTags::only(*kind),
                     is_default: false,

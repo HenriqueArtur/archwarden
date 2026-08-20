@@ -43,7 +43,7 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 /// dangerous kind of shape change — an entry written by the previous build
 /// deserialises cleanly and claims every export annotates nothing, which is a
 /// finding against a file whose annotation is right there in the source.
-pub const FORMAT_VERSION: u32 = 8;
+pub const FORMAT_VERSION: u32 = 9;
 
 const META: TableDefinition<'_, &str, u32> = TableDefinition::new("meta");
 const FACTS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("facts");
@@ -338,6 +338,7 @@ mod tests {
         facts.exports.push(ExportFact {
             name: Some("User".to_owned()),
             tags: ExportTags::only(ExportKind::Class),
+            visibility: archwarden_core::facts::Visibility::Public,
             is_default: false,
             reexport_from: None,
             forwards: None,

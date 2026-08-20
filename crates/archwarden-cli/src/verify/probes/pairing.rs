@@ -2,7 +2,7 @@
 
 use archwarden_core::{
     compiled::CompiledRule,
-    facts::{ExportFact, ExportKind, ExportTags, FileFacts, Span},
+    facts::{ExportFact, ExportKind, ExportTags, FileFacts, Span, Visibility},
     hash::ContentHash,
     traits::{Exists, FileContext, RuleEngine},
 };
@@ -56,6 +56,7 @@ pub(crate) fn a_file_with_no_spec(
     facts.exports.push(ExportFact {
         name: Some("Probe".to_owned()),
         tags: ExportTags::only(ExportKind::Function),
+        visibility: Visibility::Public,
         is_default: false,
         reexport_from: None,
         forwards: None,
