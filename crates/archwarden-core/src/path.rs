@@ -178,6 +178,21 @@ pub enum FileClass {
     Other,
 }
 
+/// Where a language keeps the tests for a unit.
+///
+/// `spec-pair` means "every unit has a test" and the *spelling* of a test is
+/// the language's business, not archwarden's. This is that spelling, and the
+/// rule branches on it rather than assuming one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TestLocation {
+    /// Beside the unit: `<stem>.<marker>.<ext>`, or in a named directory one
+    /// level down. JavaScript, TypeScript and Astro.
+    Sibling,
+    /// Inside the unit: a `#[cfg(test)]` module. Rust.
+    Inline,
+}
+
 /// A language a front-end in this build reads.
 ///
 /// Closed on purpose. Two questions branch on it — where a language's tests
@@ -245,15 +260,15 @@ impl FileClass {
         }
     }
 
-    /// Whether a unit of this file's language is tested by a sibling file.
+    /// Where this file's language keeps the tests for a unit.
     ///
     /// `spec-pair` asks this rather than `class == Source`, and the difference
     /// is the whole point. `Source` means "a front-end in this build can read
-    /// it"; this means "and the test for it is `<stem>.<marker>.<ext>` next to
-    /// it", which is a claim about the language's conventions rather than
-    /// about archwarden's.
+    /// it"; this says where to look for the test, which is a claim about the
+    /// language's conventions rather than about archwarden's.
     ///
-    /// A language answering no is *skipped* by `spec-pair`, never failed by it.
+    /// `None` for anything that is not a unit — a document, an asset, a
+    /// language nobody here reads.
     #[allow(
         clippy::match_same_arms,
         reason = "the arms answer different questions and happen to agree \
@@ -263,18 +278,14 @@ impl FileClass {
                   rather than default to no"
     )]
     #[must_use]
-    pub fn pairs_with_sibling_spec(name: &str) -> bool {
+    pub fn tests_live(name: &str) -> Option<TestLocation> {
         match Self::language(name) {
             // `.astro` is `Embedded`, and the spec for `Card.astro` is
-            // `Card.spec.ts` -- the sibling exists under another extension, and
-            // the pairing this asks about holds.
-            Some(Language::Ts | Language::Astro) => true,
-            // Rust's unit tests are a `#[cfg(test)]` module inside the file.
-            // There is no sibling to look for, and demanding one would fail
-            // every Rust file in a repository that already had a `spec-pair`
-            // rule. Teaching the rule the inline form is issue #137.
-            Some(Language::Rust) => false,
-            None => false,
+            // `Card.spec.ts` -- the sibling exists under another extension,
+            // which is still a sibling.
+            Some(Language::Ts | Language::Astro) => Some(TestLocation::Sibling),
+            Some(Language::Rust) => Some(TestLocation::Inline),
+            None => None,
         }
     }
 
@@ -552,23 +563,28 @@ mod tests {
     /// question only a rule's `spec_markers` can answer.
     /// Where each language's tests live, asserted per language.
     ///
-    /// This used to demand `true` for every readable extension, which forced an
-    /// answer at a time when every answer was yes. Rust's is no, so the guard
-    /// moved into the type system: `pairs_with_sibling_spec` matches on a
-    /// closed `Language`, and a language added without an answer fails to
-    /// compile. What is left for a test is the answers themselves.
+    /// The answers themselves; that they *exist* is the compiler's job, since
+    /// `tests_live` matches on a closed `Language` and a language added without
+    /// an answer does not build.
     #[test]
     fn each_language_says_where_its_tests_live() {
         for name in ["a.ts", "a.tsx", "a.js", "a.mjs", "Card.astro"] {
-            assert!(
-                FileClass::pairs_with_sibling_spec(name),
+            assert_eq!(
+                FileClass::tests_live(name),
+                Some(TestLocation::Sibling),
                 "{name}: the spec is a sibling"
             );
         }
-        assert!(
-            !FileClass::pairs_with_sibling_spec("main.rs"),
-            "Rust tests inside the file, so `spec-pair` skips it rather than \
+        assert_eq!(
+            FileClass::tests_live("main.rs"),
+            Some(TestLocation::Inline),
+            "Rust tests inside the file, so `spec-pair` looks there rather than \
              demanding `main.spec.rs`"
+        );
+        assert_eq!(
+            FileClass::tests_live("DOC.md"),
+            None,
+            "and a document is not a unit at all"
         );
     }
 
@@ -603,9 +619,9 @@ mod tests {
 
     /// A document, an asset and a file with no extension are neither.
     #[test]
-    fn only_source_pairs_with_a_spec_or_resolves_anything() {
+    fn only_a_unit_has_a_test_location_or_resolves_anything() {
         for name in ["DOC.md", "package.json", "logo.png", "Makefile"] {
-            assert!(!FileClass::pairs_with_sibling_spec(name), "{name}");
+            assert!(FileClass::tests_live(name).is_none(), "{name}");
             assert!(!FileClass::imports_can_be_resolved(name), "{name}");
         }
     }

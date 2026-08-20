@@ -913,6 +913,30 @@ package name, resolved with the same resolver archwarden uses for imports
 (`oxc_resolver`), so npm, yarn classic, pnpm, and yarn PnP layouts all work
 without special handling.
 
+### The ones that ship
+
+`presets/rust.json` travels inside the npm package, so a repository that
+installs archwarden has it at `node_modules/archwarden/presets/rust.json`:
+
+```json
+{
+  "version": 0,
+  "languages": ["rust"],
+  "extends": ["./node_modules/archwarden/presets/rust.json"]
+}
+```
+
+Three rules: every unit carries its tests inside it, a file names what it
+exports, and a file that declares a stability carries a deadline where it needs
+one. Barrels — `mod.rs`, `lib.rs`, `main.rs` — are exempt from both of the
+first two by construction, so nothing has to list them.
+
+**`languages` has to be in your config, not only in the preset.** A preset
+declaring it is currently ignored — `languages` is neither concatenated nor
+taken from the preset — and every rule in it comes back as a *skipped check*
+with a note saying the file was not read. That is honest and it is a step
+nobody can infer, which is why it is written here. Issue #158.
+
 **Merging.**
 
 - Arrays (`modules`, `rules`, `decisions`, `ignore`, `extends`) are concatenated.

@@ -18,6 +18,27 @@ use archwarden_core::{
     traits::{FactsNeeded, FileContext, RuleEngine},
 };
 
+/// Files that name a module rather than export a symbol.
+///
+/// A `naming` rule couples a filename to the symbol inside it, and a barrel has
+/// no symbol of its own -- it declares modules and re-exports. Asking `mod.rs`
+/// for a `Mod` is asking the wrong file, and a Rust `file_pattern` written the
+/// obvious way (`^(?<name>.+)\.rs$`) matches every one of them.
+///
+/// Built in rather than left to the config, on the same argument `spec-pair`
+/// exempts `index.ts` without anyone listing it: nobody should have to declare
+/// that a module declaration exports nothing. `naming` has no `ignore_files`
+/// to put them in anyway -- #153.
+const BARRELS: [&str; 7] = [
+    "index.ts",
+    "index.tsx",
+    "index.js",
+    "index.jsx",
+    "mod.rs",
+    "lib.rs",
+    "main.rs",
+];
+
 /// A compiled `naming` rule.
 #[derive(Debug, Clone)]
 pub struct NamingEngine {
@@ -102,6 +123,9 @@ impl NamingEngine {
             return None;
         }
         let name = path.file_name()?;
+        if BARRELS.contains(&name) {
+            return None;
+        }
         if !self.file_pattern.is_match(name) {
             return None;
         }
@@ -350,6 +374,106 @@ mod tests {
     use archwarden_core::traits::Exists;
 
     use super::*;
+
+    /// A barrel names a module and exports no symbol of its own.
+    ///
+    /// The obvious Rust `file_pattern` -- `^(?<name>.+)\.rs$` -- matches every
+    /// one of them, and would demand a `Mod`, a `Lib` and a `Main` from files
+    /// that declare modules. Each spelling asserted on its own: they are seven
+    /// entries in a list, and a test naming one passes while the rest fall out.
+    #[test]
+    fn a_barrel_is_asked_for_nothing() {
+        let engine = engine_with(
+            &["src/*"],
+            "^(?<name>.+)\\.(ts|rs)$",
+            "{{pascal(name)}}",
+            KindFilter::Any,
+            None,
+        );
+
+        for name in [
+            "index.ts",
+            "index.tsx",
+            "index.js",
+            "index.jsx",
+            "mod.rs",
+            "lib.rs",
+            "main.rs",
+        ] {
+            let file = path(&format!("src/thing/{name}"));
+            assert!(
+                !engine.applies_to(&file),
+                "{name} declares modules; it exports no symbol to be named after"
+            );
+            assert!(
+                engine.describe_expectation(&file).is_empty(),
+                "{name}: and `scaffold` has nothing to say about it either"
+            );
+        }
+    }
+
+    /// A file that merely *contains* a barrel's name is not one.
+    ///
+    /// Matched on the whole filename, so `submod.rs` and `my_lib.rs` are
+    /// ordinary units. A `contains` here would quietly excuse them.
+    #[test]
+    fn a_name_that_ends_in_a_barrels_name_is_not_a_barrel() {
+        let engine = engine_with(
+            &["src/*"],
+            "^(?<name>.+)\\.rs$",
+            "{{pascal(name)}}",
+            KindFilter::Any,
+            None,
+        );
+
+        for name in ["submod.rs", "my_lib.rs", "domain.rs"] {
+            assert!(
+                engine.applies_to(&path(&format!("src/thing/{name}"))),
+                "{name}"
+            );
+        }
+    }
+
+    /// `snake_case.rs` names a `PascalCase` symbol, which is the Rust shape of
+    /// the coupling this rule exists for.
+    #[test]
+    fn a_snake_case_filename_names_a_pascal_case_symbol() {
+        let engine = engine_with(
+            &["src/*"],
+            "^(?<name>.+)\\.rs$",
+            "{{pascal(name)}}",
+            KindFilter::Any,
+            None,
+        );
+
+        assert_eq!(
+            engine.required_name(&path("src/thing/create_client.rs")),
+            Some("CreateClient".to_owned())
+        );
+        assert_eq!(
+            engine.required_name(&path("src/thing/user.rs")),
+            Some("User".to_owned()),
+            "a single word is its own pascal case"
+        );
+    }
+
+    /// And it can name the file's own word back, for a repository whose
+    /// convention is `create_client.rs` exporting `create_client`.
+    #[test]
+    fn a_snake_case_filename_can_name_itself() {
+        let engine = engine_with(
+            &["src/*"],
+            "^(?<name>.+)\\.rs$",
+            "{{snake(name)}}",
+            KindFilter::Any,
+            None,
+        );
+
+        assert_eq!(
+            engine.required_name(&path("src/thing/create_client.rs")),
+            Some("create_client".to_owned())
+        );
+    }
     use archwarden_core::{
         facts::{ExportTags, FileFacts, Span},
         hash::ContentHash,

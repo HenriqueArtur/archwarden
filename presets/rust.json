@@ -1,0 +1,59 @@
+{
+  "$schema": "https://raw.githubusercontent.com/HenriqueArtur/archwarden/main/schema/v0.json",
+  "version": 0,
+  "languages": [
+    "rust"
+  ],
+  "rules": [
+    {
+      "type": "spec-pair",
+      "id": "rust/every-unit-carries-its-tests",
+      "level": "error",
+      "why": "Rust keeps a unit's tests inside it, in a `#[cfg(test)]` module. An empty one satisfies the convention's letter and tests nothing, so this asks for a `#[test]` rather than for a module.",
+      "roots": [
+        "src/*"
+      ],
+      "subfolders": [
+        "."
+      ]
+    },
+    {
+      "type": "naming",
+      "id": "rust/a-file-names-what-it-exports",
+      "level": "error",
+      "why": "`create_client.rs` exports `CreateClient`. The coupling is what lets a reader find a symbol from a path and an agent write one without asking. Barrels are exempt by construction \u2014 `mod.rs`, `lib.rs` and `main.rs` declare modules and export no symbol of their own.",
+      "roots": [
+        "src/*"
+      ],
+      "file_pattern": "^(?<name>.+)\\.rs$",
+      "must_export": {
+        "name": "{{pascal(name)}}",
+        "kind": [
+          "struct",
+          "fn",
+          "trait",
+          "enum"
+        ]
+      }
+    },
+    {
+      "type": "metadata",
+      "id": "rust/an-experiment-carries-a-deadline",
+      "level": "warning",
+      "why": "A deprecation with no date is a comment. `// archwarden-remove-by: 2027-01-15` in the file header makes it a commitment archwarden can check.",
+      "roots": [
+        "src/**"
+      ],
+      "one_of": {
+        "stability": [
+          "stable",
+          "experimental",
+          "deprecated"
+        ]
+      },
+      "deadline": [
+        "remove-by"
+      ]
+    }
+  ]
+}

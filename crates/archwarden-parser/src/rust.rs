@@ -70,7 +70,39 @@ pub fn parse(path: &RepoRelPath, source: &str, content_hash: ContentHash) -> Fil
         // unreadable on the strength of something nobody wrote. Issue #135
         // records it as the open question it is.
         has_opaque_import: false,
+        inline_tests: inline_tests(syntax),
     }
+}
+
+/// How many `#[test]` functions the file carries.
+///
+/// The fact `spec-pair` needs for a language whose tests are not a sibling
+/// file. Rust's are a `#[cfg(test)] mod tests` *inside* the unit, so "does a
+/// test exist for this" is a question about this file rather than about the
+/// directory around it.
+///
+/// A count rather than a flag, and `#[test]` rather than the `#[cfg(test)]`
+/// module around it, for the same reason `require_non_empty_spec` refuses to
+/// count `describe`: `#[cfg(test)] mod tests {}` satisfies the letter of the
+/// convention and tests nothing, and an empty stub is what the rule exists to
+/// refuse.
+///
+/// Counted anywhere in the file. A `#[test]` outside a `#[cfg(test)]` module
+/// is unusual and is still a test; refusing it would fail a file for how it
+/// arranged its modules rather than for having no test.
+fn inline_tests(syntax: &SyntaxNode) -> usize {
+    use ra_ap_syntax::ast::HasAttrs as _;
+
+    syntax
+        .descendants()
+        .filter_map(ast::Fn::cast)
+        .filter(|function| {
+            function
+                .attrs()
+                .filter_map(|attr| attr.path())
+                .any(|path| path.syntax().text() == "test")
+        })
+        .count()
 }
 
 /// Every `use` in the file, one fact per name it binds.
@@ -461,6 +493,38 @@ mod tests {
 
         assert_eq!(file.metadata.len(), 1, "{:?}", file.metadata);
         assert_eq!(file.metadata[0].value, "payments-team");
+    }
+
+    /// A `#[cfg(test)]` module with tests in it is counted; an empty one is
+    /// not.
+    ///
+    /// The whole of what `spec-pair` will ask of a Rust file. An empty
+    /// `mod tests {}` satisfies the convention's letter and tests nothing,
+    /// which is the failure `require_non_empty_spec` already refuses on the
+    /// other side of the seam.
+    #[test]
+    fn tests_inside_the_file_are_counted_and_an_empty_module_is_not() {
+        let with_tests = facts(
+            "pub fn thing() {}\n\n             #[cfg(test)]\n             mod tests {\n             \x20   #[test]\n             \x20   fn one() {}\n             \x20   #[test]\n             \x20   fn two() {}\n             \x20   fn a_helper_is_not_a_test() {}\n             }\n",
+        );
+        assert_eq!(with_tests.inline_tests, 2, "helpers do not count");
+
+        let empty = facts("pub fn thing() {}\n\n#[cfg(test)]\nmod tests {}\n");
+        assert_eq!(empty.inline_tests, 0, "an empty module tests nothing");
+
+        let none = facts("pub fn thing() {}\n");
+        assert_eq!(none.inline_tests, 0);
+    }
+
+    /// A `#[test]` outside a `#[cfg(test)]` module is still a test.
+    ///
+    /// Refusing it would fail a file for how it arranged its modules rather
+    /// than for having no test, which is not what the rule is about.
+    #[test]
+    fn a_test_outside_a_cfg_module_still_counts() {
+        let file = facts("pub fn thing() {}\n\n#[test]\nfn loose() {}\n");
+
+        assert_eq!(file.inline_tests, 1);
     }
 
     /// Nothing at all is not an error either.

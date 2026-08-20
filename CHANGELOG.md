@@ -17,6 +17,63 @@ saying so.
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-08-20
+
+Rust stops being a language archwarden can read and becomes one it has opinions
+about. **No existing configuration reports anything new** — everything here is
+about `.rs` files, which a config sees only after naming `rust` in `languages`.
+
+### Added
+
+- **`spec-pair` understands a language whose tests live inside the unit.** Rust
+  keeps them in a `#[cfg(test)]` module *inside* the file, so demanding
+  `create_client.spec.rs` would fail every Rust file for a convention the
+  language does not have. The rule means "every unit has a test"; where a test
+  lives is the language's business.
+
+  **An empty `#[cfg(test)] mod tests {}` does not satisfy it**, unconditionally
+  rather than behind a flag. The front-end counts `#[test]` functions rather
+  than the module around them, for the reason `require_non_empty_spec` refuses
+  to count `describe`: an empty stub satisfies the letter of the convention and
+  tests nothing. An inline module is trivially addable, and a flag guarding
+  this would make the default the useless one.
+
+  It still opens no file until it has to. A JavaScript-only repository keeps
+  the `spec-pair` that reads nothing at all; a config that asked for Rust pays
+  for a parse.
+
+- **`presets/rust.json`**, shipped inside the npm package. Three rules — units
+  carry their tests, a file names what it exports, a declared stability carries
+  a deadline. See `docs/CONFIG.md`.
+
+### Changed
+
+- **Barrels are exempt from `naming`.** `mod.rs`, `lib.rs`, `main.rs` and the
+  four `index.*` spellings declare modules and export no symbol of their own,
+  and the obvious Rust `file_pattern` (`^(?<name>.+)\.rs$`) matches every one
+  of them. Asking `mod.rs` for a `Mod` is asking the wrong file.
+
+  This is new for JavaScript too: `index.ts` was exempt only by whatever
+  `file_pattern` an author happened to write. A rule that did demand a name
+  from one now stops — which is the one way an existing config could report
+  differently, and it reports *less*.
+
+- **The cache format is 10.** `FileFacts` gained the count of tests a file
+  carries inside itself, so a cache written by 0.29.0 is discarded rather than
+  misread. One cold run.
+
+### What is not here
+
+- **`skip_type_only` does not know what a declaration-only Rust file is.** It
+  exempts a file whose exports are all `type` or `interface`; a Rust file of
+  pure declarations exports `struct` and `enum`, and widening that list would
+  excuse most of a Rust codebase from the gate. #157.
+
+- **A preset cannot turn a language on.** `languages` in a preset is ignored,
+  so a repository adopting `presets/rust.json` has to name `rust` in its own
+  config as well. Every rule comes back as a counted skip until it does, which
+  is honest and is a step nobody can infer. #158.
+
 ## [0.29.0] — 2026-08-20
 
 **archwarden reads Rust.** A `src-tauri/` beside a `src/` is one repository to
@@ -2534,7 +2591,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.29.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.30.0...HEAD
+[0.30.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.1...v0.29.0
 [0.28.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.0...v0.28.1
 [0.28.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.27.0...v0.28.0

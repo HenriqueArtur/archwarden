@@ -59,7 +59,12 @@ export function manifestFor(platform, version) {
  * version that produced them, which for the schema is the whole point — a URL
  * can only ever serve one version, and it will not be yours.
  */
-const FROM_ROOT = ["README.md", "AGENTS.md", "schema/v0.json"];
+const FROM_ROOT = [
+  "README.md",
+  "AGENTS.md",
+  "schema/v0.json",
+  "presets/rust.json",
+];
 
 /** Builds all six packages. Exported so a test can run it. */
 export async function build(dist, out, version) {

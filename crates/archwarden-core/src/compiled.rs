@@ -1455,6 +1455,7 @@ mod import_filter_tests {
 
     fn importing(specifiers: &[(&str, Option<&str>)]) -> FileFacts {
         FileFacts {
+            inline_tests: 0,
             path: RepoRelPath::new("src/a.ts").expect("valid"),
             content_hash: ContentHash::of(b"x"),
             exports: Vec::new(),
