@@ -414,6 +414,20 @@ pub struct CallFact {
     /// The callee as written at the call site, e.g. `Event.save`. Method
     /// chains are recorded verbatim and matched exactly.
     pub callee: String,
+    /// The string literals the call was given, in argument order.
+    ///
+    /// `None` in a position holds an argument that is not a string literal —
+    /// a variable, an expression, a template with an interpolation in it. It
+    /// is recorded as absent rather than guessed, on the same terms as
+    /// [`FileFacts::has_opaque_import`]: inventing a value for something the
+    /// reader cannot see makes a rule report an edge nobody wrote.
+    ///
+    /// Carried because some calls mean nothing without them. `invoke("greet")`
+    /// has the callee `invoke` for every command in a Tauri application, and
+    /// the string is the entire content; so does `t("checkout.title")` against
+    /// a translation catalogue, and a feature flag key, and a job name.
+    #[serde(default)]
+    pub arguments: Vec<Option<String>>,
     /// Where it appears in the source.
     pub span: Span,
 }
@@ -749,6 +763,7 @@ mod tests {
             ..export("X", ExportTags::only(ExportKind::Const))
         });
         facts.calls.push(CallFact {
+            arguments: Vec::new(),
             callee: "f".to_owned(),
             span: Span::new(40, 50),
         });
@@ -766,6 +781,7 @@ mod tests {
     fn an_offset_that_would_overflow_leaves_the_span_alone() {
         let mut facts = FileFacts::unparsed(path(), ContentHash::of(b""));
         facts.calls.push(CallFact {
+            arguments: Vec::new(),
             callee: "f".to_owned(),
             span: Span::new(u32::MAX - 1, u32::MAX),
         });
@@ -1083,6 +1099,7 @@ mod tests {
             span: Span::new(0, 30),
         });
         facts.calls.push(CallFact {
+            arguments: Vec::new(),
             callee: "Event.save".to_owned(),
             span: Span::new(40, 52),
         });

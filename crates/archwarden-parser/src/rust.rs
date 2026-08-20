@@ -30,7 +30,7 @@ use archwarden_core::{
 };
 use ra_ap_syntax::{
     AstNode, Edition, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, ast,
-    ast::{HasModuleItem, HasName, HasVisibility},
+    ast::{HasArgList, HasModuleItem, HasName, HasVisibility},
 };
 
 /// Extracts facts from one Rust file.
@@ -281,6 +281,7 @@ fn calls(syntax: &SyntaxNode) -> Vec<CallFact> {
                 let callee = call.expr()?;
                 return Some(CallFact {
                     callee: callee.syntax().text().to_string(),
+                    arguments: literal_arguments(call.arg_list().as_ref()),
                     span: span_of(&node),
                 });
             }
@@ -288,8 +289,39 @@ fn calls(syntax: &SyntaxNode) -> Vec<CallFact> {
             let method = ast::MethodCallExpr::cast(node.clone())?;
             Some(CallFact {
                 callee: method.name_ref()?.text().to_string(),
+                arguments: literal_arguments(method.arg_list().as_ref()),
                 span: span_of(&node),
             })
+        })
+        .collect()
+}
+
+/// The string literals a call was given, in argument order.
+///
+/// `None` for anything that is not one. Rust's string literals include raw
+/// strings, and both are read as their contents -- `r#"greet"#` and `"greet"`
+/// name the same command, and a rule matching one and not the other would be
+/// answering a question about quoting.
+///
+/// A macro call is not here. `invoke!(...)` is a `MacroCall` rather than a
+/// `CallExpr`, and what a macro does with its arguments is not readable from
+/// the call site.
+fn literal_arguments(arguments: Option<&ast::ArgList>) -> Vec<Option<String>> {
+    let Some(list) = arguments else {
+        return Vec::new();
+    };
+
+    list.args()
+        .map(|argument| {
+            let ast::Expr::Literal(literal) = argument else {
+                return None;
+            };
+            match literal.kind() {
+                ast::LiteralKind::String(string) => {
+                    string.value().ok().map(std::borrow::Cow::into_owned)
+                }
+                _ => None,
+            }
         })
         .collect()
 }
@@ -832,6 +864,40 @@ mod facts_tests {
             callees,
             vec!["Event::save", "crate::audit::record", "plain"]
         );
+    }
+
+    /// A call's string literals are carried, and anything else is absent.
+    ///
+    /// `invoke("greet")` has the callee `invoke` for every command in a Tauri
+    /// application; the string is the entire content. What is *not* a literal
+    /// is recorded as absent rather than guessed -- inventing a value for a
+    /// variable would have a rule report an edge nobody wrote.
+    #[test]
+    fn a_calls_string_arguments_are_carried_and_the_rest_are_absent() {
+        let file = facts(
+            "pub fn f(name: &str) {\n\
+             \x20   invoke(\"greet\", 1);\n\
+             \x20   invoke(name);\n\
+             \x20   invoke(r#\"raw_greet\"#);\n\
+             \x20   invoke();\n\
+             }\n",
+        );
+
+        let arguments: Vec<&[Option<String>]> =
+            file.calls.iter().map(|c| c.arguments.as_slice()).collect();
+
+        assert_eq!(
+            arguments[0],
+            [Some("greet".to_owned()), None],
+            "a number is not a string"
+        );
+        assert_eq!(arguments[1], [None], "a variable is absent, not guessed");
+        assert_eq!(
+            arguments[2],
+            [Some("raw_greet".to_owned())],
+            "a raw string names the same command as a quoted one"
+        );
+        assert!(arguments[3].is_empty(), "no arguments is an empty list");
     }
 
     /// A method call is recorded by its name, without the receiver.

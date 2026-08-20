@@ -304,6 +304,7 @@ mod tests {
         }
         for callee in calls {
             facts.calls.push(CallFact {
+                arguments: Vec::new(),
                 callee: (*callee).to_owned(),
                 span: Span::new(100, 120),
             });
