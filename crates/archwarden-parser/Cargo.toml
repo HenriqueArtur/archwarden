@@ -1,6 +1,6 @@
 [package]
 name = "archwarden-parser"
-description = "Source and document parsing for archwarden: JS/TS via oxc, markdown frontmatter via yaml-rust2."
+description = "Source and document parsing for archwarden: JS/TS via oxc, Rust via ra_ap_syntax, markdown frontmatter via yaml-rust2."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -17,6 +17,7 @@ oxc_ast_visit = { workspace = true }
 oxc_parser = { workspace = true }
 oxc_span = { workspace = true }
 oxc_syntax = { workspace = true }
+ra_ap_syntax = { workspace = true }
 thiserror = { workspace = true }
 yaml-rust2 = { workspace = true }
 

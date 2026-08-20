@@ -839,6 +839,51 @@ mod tests {
         assert_eq!(Visibility::default(), Visibility::Public);
     }
 
+    /// Each visibility has its own word, and the word round-trips.
+    ///
+    /// Named literally rather than derived, because every assertion that
+    /// compares `as_str` to something else built from `as_str` -- a
+    /// round-trip, a `Display` -- holds just as well when it returns the empty
+    /// string for all four. These are the config spellings; if they change,
+    /// someone's `arch.config.json` stops compiling and this is where they were
+    /// promised.
+    #[test]
+    fn every_visibility_has_its_own_word() {
+        assert_eq!(Visibility::Public.as_str(), "public");
+        assert_eq!(Visibility::Crate.as_str(), "crate");
+        assert_eq!(Visibility::Super.as_str(), "super");
+        assert_eq!(Visibility::Restricted.as_str(), "restricted");
+
+        for visibility in Visibility::ALL {
+            assert_eq!(
+                Visibility::parse(visibility.as_str()),
+                Some(visibility),
+                "the word a config writes is the one that reads back"
+            );
+        }
+        assert_eq!(Visibility::parse("pub"), None, "the Rust keyword is not it");
+        assert_eq!(Visibility::parse(""), None);
+        assert_eq!(Visibility::parse("private"), None, "private is no export");
+    }
+
+    /// A visibility prints as the word a config writes, and pads like the
+    /// kinds beside it.
+    ///
+    /// It reaches a report through `{}` -- a finding naming what it found --
+    /// so the two spellings have to be one. A `Display` deriving its own text
+    /// would drift from `as_str` the first time either changed.
+    #[test]
+    fn a_visibility_prints_the_word_a_config_writes() {
+        for visibility in Visibility::ALL {
+            assert_eq!(visibility.to_string(), visibility.as_str());
+            assert_eq!(
+                format!("{visibility:>10}"),
+                format!("{:>10}", visibility.as_str()),
+                "and honours the width, like ExportKind"
+            );
+        }
+    }
+
     fn export(name: &str, tags: ExportTags) -> ExportFact {
         ExportFact {
             name: Some(name.to_owned()),
