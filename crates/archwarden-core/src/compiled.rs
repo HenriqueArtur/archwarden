@@ -28,6 +28,10 @@ pub struct Languages {
     /// Astro components. JS/TS is always read and needs no flag: a
     /// configuration that asked for nothing still means TypeScript.
     pub astro: bool,
+    /// Rust. Off unless the config named it, so a `src-tauri/` beside a `src/`
+    /// is a counted skip rather than a tree held to rules written for the
+    /// other half of the repository.
+    pub rust: bool,
 }
 
 /// How far a `skip_dirs` exemption reaches.
@@ -989,8 +993,15 @@ mod tests {
             SkipDirs::default(),
             ContentHash::of(b""),
         )
-        .with_languages(Languages { astro: true });
+        .with_languages(Languages {
+            astro: true,
+            rust: false,
+        });
         assert!(asked.languages().astro);
+        assert!(
+            !asked.languages().rust,
+            "a language nobody named stays off, whatever else was asked for"
+        );
     }
 
     #[test]

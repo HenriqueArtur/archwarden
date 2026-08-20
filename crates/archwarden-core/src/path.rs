@@ -192,12 +192,50 @@ impl FileClass {
     ///
     /// A heuristic, and deliberately a short one. Its only job is to turn
     /// silence into a named skip, so the worst a wrong entry does is report a
-    /// check nobody could make — which is a sentence, not a false finding. A
-    /// language gaining a front-end moves its extension up to `SOURCE` and
-    /// nothing else changes.
+    /// check nobody could make — which is a sentence, not a false finding.
+    ///
+    /// A language gaining a front-end moves its extension up to `SOURCE`, and
+    /// [`FileClass::pairs_with_sibling_spec`] is the question that has to be
+    /// answered in the same commit. This sentence used to end "and nothing
+    /// else changes", which was false: `spec-pair` reads `Source` as "a unit
+    /// that needs a test beside it", so a language whose tests do not live
+    /// beside it would start failing that rule in every configuration that
+    /// already had one.
     const UNREADABLE_SOURCE: [&'static str; 12] = [
         "py", "go", "rs", "rb", "java", "kt", "kts", "php", "cs", "swift", "scala", "ex",
     ];
+
+    /// Whether a unit of this file's language is tested by a sibling file.
+    ///
+    /// `spec-pair` asks this rather than `class == Source`, and the difference
+    /// is the whole point. `Source` means "a front-end in this build can read
+    /// it"; this means "and the test for it is `<stem>.<marker>.<ext>` next to
+    /// it", which is a claim about the language's conventions rather than
+    /// about archwarden's.
+    ///
+    /// JavaScript and TypeScript answer yes. Rust would answer no — its unit
+    /// tests live in a `#[cfg(test)]` module inside the file — and a language
+    /// that answers no is *skipped* by `spec-pair`, not failed by it.
+    ///
+    /// `.astro` answers yes too, and is worth stating: it is `Embedded` rather
+    /// than `Source`, and its spec is `Card.spec.ts` rather than
+    /// `Card.spec.astro` -- so the sibling exists under another extension, and
+    /// the pairing this asks about holds.
+    ///
+    /// Written as a match rather than a second list beside `SOURCE`, so a
+    /// language added to one and forgotten in the other cannot compile into a
+    /// silent answer.
+    #[must_use]
+    pub fn pairs_with_sibling_spec(name: &str) -> bool {
+        let Some((_, extension)) = name.rsplit_once('.') else {
+            return false;
+        };
+
+        matches!(
+            extension,
+            "ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "astro"
+        )
+    }
 
     /// Classifies by extension.
     #[must_use]
@@ -436,6 +474,50 @@ mod tests {
 
     /// A spec file is a source file. Whether it counts as "a spec" is a
     /// question only a rule's `spec_markers` can answer.
+    /// Every readable source extension answers the sibling-spec question.
+    ///
+    /// The tripwire for decision 31's successor. `spec-pair` reads `Source` as
+    /// "a unit that needs a test beside it", and that reading is only true
+    /// while every language in `SOURCE` tests by sibling. Rust does not -- its
+    /// unit tests are a `#[cfg(test)]` module inside the file -- so moving
+    /// `rs` into `SOURCE` without teaching `spec-pair` would make every
+    /// existing `spec-pair` rule start demanding `create_client.spec.rs`.
+    ///
+    /// This fails the moment `SOURCE` grows an extension the match below does
+    /// not name, which is the commit where that decision has to be taken
+    /// rather than the release where somebody notices.
+    #[test]
+    fn every_source_extension_says_whether_its_tests_sit_beside_it() {
+        for extension in FileClass::SOURCE {
+            let name = format!("unit.{extension}");
+            assert!(
+                FileClass::pairs_with_sibling_spec(&name),
+                "`{extension}` is readable source and nothing says where its \
+                 tests live. Answer it in `pairs_with_sibling_spec`: `true` if \
+                 the test is `<stem>.<marker>.{extension}` beside the file, \
+                 `false` if the language tests some other way -- and if it is \
+                 `false`, `spec-pair` skips the language rather than failing it."
+            );
+        }
+    }
+
+    /// A language with no front-end is not asked the question at all.
+    #[test]
+    fn a_language_nobody_reads_pairs_with_nothing() {
+        for name in ["main.rs", "app.py", "server.go", "Thing.java"] {
+            assert!(!FileClass::pairs_with_sibling_spec(name), "{name}");
+            assert_eq!(FileClass::of(name), FileClass::UnreadableSource, "{name}");
+        }
+    }
+
+    /// A document and a file with no extension are not units.
+    #[test]
+    fn only_source_pairs_with_a_spec() {
+        for name in ["DOC.md", "package.json", "logo.png", "Makefile"] {
+            assert!(!FileClass::pairs_with_sibling_spec(name), "{name}");
+        }
+    }
+
     #[test]
     fn files_are_classified_by_extension() {
         for name in [

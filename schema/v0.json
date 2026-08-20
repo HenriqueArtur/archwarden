@@ -144,6 +144,11 @@
           "description": "Astro components: the TypeScript module inside the `---` fence.",
           "type": "string",
           "const": "astro"
+        },
+        {
+          "description": "Rust, read by its own front-end.\n\nAsked for rather than assumed, on the same terms as `astro`: a\nrepository with a `src-tauri/` beside its `src/` has `.rs` files whose\nauthor never asked archwarden to have an opinion about them, and\ndecision 31 turns \"held to a rule nobody chose\" into a named skip.",
+          "type": "string",
+          "const": "rust"
         }
       ]
     },

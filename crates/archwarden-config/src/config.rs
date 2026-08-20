@@ -424,6 +424,13 @@ pub enum Language {
     Ts,
     /// Astro components: the TypeScript module inside the `---` fence.
     Astro,
+    /// Rust, read by its own front-end.
+    ///
+    /// Asked for rather than assumed, on the same terms as `astro`: a
+    /// repository with a `src-tauri/` beside its `src/` has `.rs` files whose
+    /// author never asked archwarden to have an opinion about them, and
+    /// decision 31 turns "held to a rule nobody chose" into a named skip.
+    Rust,
 }
 
 fn default_languages() -> Vec<Language> {

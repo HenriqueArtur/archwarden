@@ -610,8 +610,8 @@ companion, never the reverse. An orphan `notas.md` is a note taken before the
 lesson was written, which is fine and is not a finding. Write the second rule
 if you mean both.
 
-**Why not widen `spec-pair`.** Its default ignores exclude anything that is not
-a JS/TS source file, by construction and for a good reason — a PNG needs no
+**Why not widen `spec-pair`.** Its default ignores exclude anything whose tests
+do not sit beside it, by construction and for a good reason — a PNG needs no
 test — and widening a rule until its name stops describing it is how a rule
 stops being consultable. Issue #45.
 
@@ -814,9 +814,17 @@ The risk comes from accepting *any* directory, not from the convention.
 - Files that are themselves specs.
 - `index.ts`, `index.tsx`, `index.js`, `index.jsx` — barrel files re-export and
   hold no behaviour of their own.
-- Anything that is not a JS/TS source file. This covers `DOC.md`, `README.md`,
+- Anything whose tests do not sit beside it. That covers `DOC.md`, `README.md`,
   `package.json`, images and everything else in one rule, rather than naming
   them: nobody should have to declare that a PNG needs no test.
+
+  It is deliberately *not* "anything archwarden cannot read". The two say the
+  same thing about a JavaScript repository and stop agreeing the moment a
+  second language arrives: Rust is readable source whose unit tests live in a
+  `#[cfg(test)]` module **inside** the file, so a rule keyed on readability
+  would start demanding `create_client.spec.rs` from every configuration that
+  already had a `spec-pair` rule. A language that tests some other way is
+  skipped by this rule, and counted as a skip — never failed by it.
 
 **Cannot express**: test-first ordering (that the spec was written before
 the impl). Git history could tell us, but making that a gate would be
