@@ -281,6 +281,17 @@ pub enum Expectation {
         /// Glob patterns matched against the resolved import path.
         patterns: Vec<String>,
     },
+    /// This name may only be reached from certain files.
+    ///
+    /// `UsedOnlyIn` rather than `CalledOnlyIn`: a `chokepoint` guards reads as
+    /// well as calls, because `process.env` is never a call site and is the
+    /// capability the rule was raised about.
+    UsedOnlyIn {
+        /// The callees the rule guards.
+        callee: Vec<String>,
+        /// The scope patterns allowed to reach them.
+        only_in: Vec<String>,
+    },
     /// The file must call this symbol.
     RequiredCall {
         /// The callee as it appears at a call site, e.g. `Event.save`.
@@ -657,6 +668,12 @@ pub enum Observed {
     RequiredCallMissing {
         /// The callee that was looked for.
         symbol: String,
+    },
+    /// A guarded callee was reached from outside its chokepoint.
+    ChokepointBreached {
+        /// The callee as it appears at this call site, which is what the
+        /// reader has to go and find -- not the pattern that matched it.
+        callee: String,
     },
     /// The symbol is called, and not with the option the rule asks for.
     ///

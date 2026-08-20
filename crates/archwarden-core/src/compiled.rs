@@ -298,6 +298,25 @@ pub enum CompiledRuleKind {
         /// does not ask, which is what every rule written before #164 does.
         with_options: Vec<(String, Option<String>)>,
     },
+    /// A capability that may only be reached from one place.
+    ///
+    /// Every `forbid_*` field in the config is about an import. This is about
+    /// a *call*, which is what is left over once `import-boundary` has cut
+    /// every capability that arrives through a specifier: `process.env`,
+    /// `Date.now`, `fetch`, `localStorage`, and the project's own symbols
+    /// reached through an object imported legitimately somewhere else. Those
+    /// have no edge in the graph to cut. Issue #118.
+    ///
+    /// An allowlist and no forbid direction. `only_in` is the one that does
+    /// not decay -- a new file outside the chokepoint is reported the day it
+    /// is written, where a `forbid` list would have to be extended by whoever
+    /// added the thing it should have forbidden.
+    Chokepoint {
+        /// The callees, as they appear at a call site.
+        callee: Vec<String>,
+        /// The files allowed to reach them.
+        only_in: Scope,
+    },
     /// Two vocabularies that have to agree: every name called here is
     /// declared there, and every name declared there is called.
     ///
@@ -358,6 +377,7 @@ impl CompiledRuleKind {
             Self::NoPassthrough { .. } => "no-passthrough",
             Self::ImportBoundary { .. } => "import-boundary",
             Self::ImportCycle { .. } => "import-cycle",
+            Self::Chokepoint { .. } => "chokepoint",
             Self::Presence { .. } => "presence",
             Self::Pair { .. } => "pair",
             Self::Frontmatter { .. } => "frontmatter",
@@ -403,6 +423,7 @@ impl CompiledRuleKind {
             | Self::Naming { .. }
             | Self::ImportBoundary { .. }
             | Self::ImportCycle { .. }
+            | Self::Chokepoint { .. }
             | Self::CallObligation { .. }
             | Self::NoPassthrough { .. }
             // Every one of its three claims is about the exports, which is
@@ -1543,6 +1564,7 @@ mod import_filter_tests {
             content_hash: ContentHash::of(b"x"),
             exports: Vec::new(),
             calls: Vec::new(),
+            reads: Vec::new(),
             imports: specifiers
                 .iter()
                 .map(|(specifier, resolved)| ImportFact {

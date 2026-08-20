@@ -68,6 +68,8 @@ pub enum Rule {
     Frozen(FrozenRule),
     /// A counterpart in a parallel tree.
     Mirror(MirrorRule),
+    /// A capability only these files may reach.
+    Chokepoint(ChokepointRule),
     /// What a file's header declares about itself.
     Metadata(MetadataRule),
 }
@@ -91,6 +93,7 @@ impl Rule {
             Self::ExportShape(r) => &r.id,
             Self::Frozen(r) => &r.id,
             Self::Mirror(r) => &r.id,
+            Self::Chokepoint(r) => &r.id,
             Self::Metadata(r) => &r.id,
         }
     }
@@ -113,6 +116,7 @@ impl Rule {
             Self::ExportShape(r) => r.level,
             Self::Frozen(r) => r.level,
             Self::Mirror(r) => r.level,
+            Self::Chokepoint(r) => r.level,
             Self::Metadata(r) => r.level,
         }
     }
@@ -135,6 +139,7 @@ impl Rule {
             Self::ExportShape(r) => r.why.as_deref(),
             Self::Frozen(r) => r.why.as_deref(),
             Self::Mirror(r) => r.why.as_deref(),
+            Self::Chokepoint(r) => r.why.as_deref(),
             Self::Metadata(r) => r.why.as_deref(),
         }
     }
@@ -161,6 +166,7 @@ impl Rule {
             Self::ExportShape(r) => r.decision.as_ref(),
             Self::Frozen(r) => r.decision.as_ref(),
             Self::Mirror(r) => r.decision.as_ref(),
+            Self::Chokepoint(r) => r.decision.as_ref(),
             Self::Metadata(r) => r.decision.as_ref(),
         }
     }
@@ -187,6 +193,7 @@ impl Rule {
             Self::ExportShape(r) => &r.roots,
             Self::Frozen(r) => &r.roots,
             Self::Mirror(r) => &r.roots,
+            Self::Chokepoint(r) => &r.roots,
             Self::Metadata(r) => &r.roots,
         }
     }
@@ -220,6 +227,7 @@ impl Rule {
             Self::ExportShape(r) => &r.when_importing,
             Self::Frozen(r) => &r.when_importing,
             Self::Mirror(r) => &r.when_importing,
+            Self::Chokepoint(r) => &r.when_importing,
             Self::Metadata(r) => &r.when_importing,
         }
     }
@@ -242,6 +250,7 @@ impl Rule {
             Self::ExportShape(r) => &r.when_importing_packages,
             Self::Frozen(r) => &r.when_importing_packages,
             Self::Mirror(r) => &r.when_importing_packages,
+            Self::Chokepoint(r) => &r.when_importing_packages,
             Self::Metadata(r) => &r.when_importing_packages,
         }
     }
@@ -265,6 +274,7 @@ impl Rule {
             Self::Frozen(_) => "frozen",
             Self::Mirror(_) => "mirror",
             Self::Metadata(_) => "metadata",
+            Self::Chokepoint(_) => "chokepoint",
         }
     }
 }
@@ -1161,6 +1171,89 @@ mod tests {
         );
         assert!(json.contains(r#""type":"import-boundary""#), "{json}");
     }
+}
+
+/// A capability only these files may reach.
+///
+/// Every other `forbid_*` in this config is about an import. This is about a
+/// **call**, which is exactly what is left over once `import-boundary` has cut
+/// every capability that arrives through a specifier.
+///
+/// ```json
+/// { "type": "chokepoint",
+///   "id": "the-environment-is-read-once",
+///   "level": "error",
+///   "callee": ["process.env", "process.argv"],
+///   "only_in": ["src/config/**"],
+///   "decision": "ADR-022",
+///   "why": "config read at startup, in one place, or it is read everywhere" }
+/// ```
+///
+/// The sentences it exists for are ordinary ADR sentences: *only `src/config`
+/// reads the environment*, *only `src/clock` knows what time it is*, *only the
+/// composition root constructs adapters*, *nobody talks to the network outside
+/// `src/http`*. What they have in common is that the capability is ambient --
+/// `process.env`, `Date.now`, `fetch`, `localStorage` -- or is the project's
+/// own symbol reached through an object imported legitimately somewhere else.
+/// Neither has an edge in the graph to cut.
+///
+/// **Not a taint analysis.** It asks whether a name appears at a call site
+/// inside a scope. It does not follow a value, so a capability passed as an
+/// argument out of the chokepoint is invisible to it -- the same line
+/// `docs/RULES.md` already draws beside `call-obligation`. Issue #118.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ChokepointRule {
+    /// Stable identifier.
+    pub id: RuleId,
+    /// Severity.
+    pub level: Level,
+    /// Why this rule exists, in the author's words. See [`StructureRule::why`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// The decision this rule implements, when it implements a declared one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionId>,
+    /// The callees this rule guards, as they appear at a call site.
+    ///
+    /// Matched exactly, or as a prefix at a dot: `process.env` guards
+    /// `process.env` and `process.env.DATABASE_URL`, and does not guard
+    /// `processing.env`. That is a change of dialect from `call-obligation`,
+    /// which matches its symbol exactly -- and it is the right one here,
+    /// because a chokepoint is about a capability rather than about one
+    /// function, and `process.env.DATABASE_URL` is recorded as written.
+    ///
+    /// A construction is spelled the way the source spells it:
+    /// `"new PostgresRepo"`. It is not a call and does not answer to
+    /// `PostgresRepo`.
+    #[serde(default)]
+    pub callee: Vec<String>,
+    /// Directory globs this rule governs.
+    ///
+    /// Separate from [`only_in`](Self::only_in), and the separation is the
+    /// point: `roots` is the population the question is asked of, `only_in` is
+    /// the answer that is allowed. A test suite reads `process.env`
+    /// legitimately, so a chokepoint that governed the whole repository by
+    /// default would report the tests on its first run -- and a rule whose
+    /// first run is wrong is one nobody keeps.
+    pub roots: Patterns,
+    /// The files allowed to reach them.
+    ///
+    /// An allowlist, and there is no `forbid` direction. `only_in` is the one
+    /// that does not decay -- the argument #75 already made for
+    /// `only_import_from`: a new file outside the chokepoint is reported the
+    /// day it is written, where a forbid list has to be extended by whoever
+    /// added the thing it should have forbidden.
+    pub only_in: Patterns,
+    /// Narrow this rule to the files that import something.
+    ///
+    /// Path globs, matched against where an import *lands*. See
+    /// [`ImportCycleRule::when_importing`].
+    #[serde(default, skip_serializing_if = "Patterns::is_empty")]
+    pub when_importing: Patterns,
+    /// The same, for packages rather than paths.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub when_importing_packages: Vec<String>,
 }
 
 /// No file in scope may sit on an import loop.

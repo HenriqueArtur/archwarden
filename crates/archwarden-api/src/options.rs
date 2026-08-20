@@ -402,6 +402,18 @@ const EXAMPLES: &[(&str, &str)] = &[
 }"#,
     ),
     (
+        "chokepoint",
+        r#"{
+  "type": "chokepoint",
+  "id": "the-environment-is-read-once",
+  "level": "error",
+  "roots": ["src/*"],
+  "callee": ["process.env", "process.argv"],
+  "only_in": ["src/config/**"],
+  "why": "ADR-022: config read at startup, in one place, or it is read everywhere"
+}"#,
+    ),
+    (
         "import-cycle",
         r#"{
   "type": "import-cycle",
@@ -521,7 +533,7 @@ mod tests {
         let read = options();
 
         let answered: Vec<&str> = read.kinds.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(answered.len(), 15, "{answered:?}");
+        assert_eq!(answered.len(), 16, "{answered:?}");
 
         for kind in &answered {
             let Some(Found::Kind(entry)) = read.find(kind) else {

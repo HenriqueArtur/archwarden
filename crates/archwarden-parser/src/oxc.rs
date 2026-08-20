@@ -14,7 +14,8 @@ use std::collections::HashMap;
 
 use archwarden_core::{
     facts::{
-        CallFact, CallOption, ExportFact, ExportKind, ExportTags, FileFacts, ImportFact, Span,
+        CallFact, CallOption, ExportFact, ExportKind, ExportTags, FileFacts, ImportFact, ReadFact,
+        Span,
     },
     hash::ContentHash,
     path::RepoRelPath,
@@ -111,6 +112,7 @@ impl OxcParser {
         let (imports, has_opaque_import) = imports(&parsed.module_record, &parsed.program);
         let allowances = allowances(&parsed.program, source);
         let metadata = metadata(&parsed.program, source);
+        let (calls, reads) = calls(&parsed.program);
 
         Ok(FileFacts {
             path: path.clone(),
@@ -128,7 +130,8 @@ impl OxcParser {
                 &declaration_returns,
                 &forwarded,
             ),
-            calls: calls(&parsed.program),
+            calls,
+            reads,
             allowances,
             metadata,
             has_opaque_import,
@@ -947,19 +950,46 @@ impl<'a> Visit<'a> for DynamicImportCollector {
     }
 }
 
-fn calls(program: &Program<'_>) -> Vec<CallFact> {
+/// The calls a program makes, and the dotted names it merely reads.
+///
+/// One pass for both, because they are the same walk and a second one would
+/// double the cost of the most expensive thing this front-end does.
+fn calls(program: &Program<'_>) -> (Vec<CallFact>, Vec<ReadFact>) {
     let mut collector = CallCollector::default();
     collector.visit_program(program);
-    collector.calls
+    (collector.calls, collector.reads)
 }
 
 #[derive(Default)]
 struct CallCollector {
     calls: Vec<CallFact>,
+    reads: Vec<ReadFact>,
+    /// Names already recorded as read, so the list is bounded by the file's
+    /// distinct vocabulary rather than by its length. See
+    /// [`FileFacts::reads`].
+    seen: std::collections::HashSet<String>,
+    /// The spans of member expressions that are a callee.
+    ///
+    /// The walk descends into a call's callee, so `Date.now()` would arrive at
+    /// `visit_static_member_expression` as well and be recorded twice -- once
+    /// as a call and once as a read -- which a `chokepoint` would then report
+    /// twice on one line. Marked on the way in, checked on the way down.
+    callees: std::collections::HashSet<(u32, u32)>,
+}
+
+impl CallCollector {
+    /// Records a dotted name the file reads, the first time it appears.
+    fn read(&mut self, path: String, span: archwarden_core::facts::Span) {
+        if self.seen.insert(path.clone()) {
+            self.reads.push(ReadFact { path, span });
+        }
+    }
 }
 
 impl<'a> Visit<'a> for CallCollector {
     fn visit_call_expression(&mut self, call: &oxc_ast::ast::CallExpression<'a>) {
+        let at = span_of(call.callee.span());
+        self.callees.insert((at.start, at.end));
         if let Some(callee) = callee_path(&call.callee) {
             self.calls.push(CallFact {
                 callee,
@@ -969,6 +999,67 @@ impl<'a> Visit<'a> for CallCollector {
             });
         }
         oxc_ast_visit::walk::walk_call_expression(self, call);
+    }
+
+    /// A construction, recorded as the call site spells it.
+    ///
+    /// `new PostgresRepo()` is `new PostgresRepo`, verbatim, which is what
+    /// [`CallFact::callee`] promises to hold. Issue #118 asks for *"only the
+    /// composition root constructs adapters"*, and a construction is not a
+    /// call -- so it is not recorded as one. A rule naming `PostgresRepo`
+    /// still does not match this, and a rule that means the construction says
+    /// so in the two words the source already uses.
+    fn visit_new_expression(&mut self, new: &oxc_ast::ast::NewExpression<'a>) {
+        let at = span_of(new.callee.span());
+        self.callees.insert((at.start, at.end));
+        if let Some(callee) = callee_path(&new.callee) {
+            self.calls.push(CallFact {
+                callee: format!("new {callee}"),
+                arguments: Vec::new(),
+                options: Vec::new(),
+                span: span_of(new.span),
+            });
+        }
+        oxc_ast_visit::walk::walk_new_expression(self, new);
+    }
+
+    /// A dotted name read without being called.
+    ///
+    /// `process.env.DATABASE_URL` is the capability issue #118 was raised
+    /// about and it is never a call site. Recorded here as the *longest*
+    /// chain: visiting the outermost member expression and not descending into
+    /// its object means `a.b.c` records `a.b.c` and not also `a.b` and `a`.
+    /// The prefix match a `chokepoint` rule applies reaches the shorter forms
+    /// from the longer one, so recording them all would be three ways to say
+    /// one thing.
+    ///
+    /// A member expression that is a callee is skipped, because a call already
+    /// records it under its own name -- `visit_call_expression` never walks
+    /// into `call.callee`, so nothing reaches here from there.
+    fn visit_static_member_expression(
+        &mut self,
+        member: &oxc_ast::ast::StaticMemberExpression<'a>,
+    ) {
+        let at = span_of(member.span);
+        let is_callee = self.callees.contains(&(at.start, at.end));
+
+        match (is_callee, callee_path(&member.object)) {
+            // Already recorded as a call, and every link in the chain is a
+            // plain name: there is nothing below it to find, and descending
+            // would record `a.b` as a read of a call already named `a.b.c`.
+            (true, Some(_)) => {}
+            // A read. Its object is a prefix of what was just recorded, so
+            // this stops here too.
+            (false, Some(path)) => {
+                self.read(format!("{path}.{}", member.property.name), at);
+            }
+            // A chain that is not a plain name -- `expect(value).toBe` -- in
+            // either position. The call it is built from is *inside* it, and
+            // is only reached by walking.
+            (_, None) => {
+                oxc_ast_visit::walk::walk_static_member_expression(self, member);
+            }
+        }
     }
 }
 
@@ -1169,6 +1260,88 @@ mod tests {
         // a spelling -- `db.inMemory` -- that the source does not contain.
         assert_eq!(options[4], [CallOption::present("nested")]);
         assert!(options[5].is_empty(), "no bag, no keys");
+    }
+
+    /// Issue #118. *"Only the composition root constructs adapters"* is a
+    /// sentence about `new PostgresRepo()`, which is not a call and must not
+    /// be recorded as one -- a rule naming `PostgresRepo` would otherwise
+    /// start matching a construction it never meant.
+    #[test]
+    fn a_construction_is_recorded_as_the_source_spells_it() {
+        let facts = parse(
+            "a.ts",
+            "const repo = new PostgresRepo(url);\n             const c = new adapters.Postgres();\n             PostgresRepo(url);\n             const x = new (factory())();\n",
+        );
+
+        let callees: Vec<&str> = facts.calls.iter().map(|c| c.callee.as_str()).collect();
+        assert!(callees.contains(&"new PostgresRepo"), "{callees:?}");
+        assert!(callees.contains(&"new adapters.Postgres"), "{callees:?}");
+        // The plain call is still its own thing, under its own name.
+        assert!(callees.contains(&"PostgresRepo"), "{callees:?}");
+        // And a callee that is not a name is not recorded half-formed, on the
+        // same terms `callee_path` already draws for a call.
+        assert_eq!(
+            callees.iter().filter(|c| c.starts_with("new ")).count(),
+            2,
+            "{callees:?}"
+        );
+    }
+
+    /// Decision 34. `process.env` is the capability issue #118 opens with and
+    /// it is never a call site -- so a fact that only knew about calls would
+    /// answer the question with half an answer.
+    #[test]
+    fn a_dotted_name_read_without_being_called_is_its_own_fact() {
+        let facts = parse(
+            "a.ts",
+            "const url = process.env.DATABASE_URL;\n             const key = process.env.STRIPE_KEY;\n             const all = process.env;\n             const again = process.env;\n             const now = Date.now();\n             const store = localStorage;\n",
+        );
+
+        let read: Vec<&str> = facts.reads.iter().map(|r| r.path.as_str()).collect();
+
+        // The longest chain, not its prefixes: `process.env.DATABASE_URL`
+        // records itself and not also `process.env` and `process`.
+        assert_eq!(
+            read,
+            [
+                "process.env.DATABASE_URL",
+                "process.env.STRIPE_KEY",
+                "process.env",
+            ],
+            "{read:?}"
+        );
+        // Deduplicated, first occurrence kept -- this is cached per file, and
+        // a repository reads far more names than it calls.
+        assert_eq!(read.iter().filter(|p| **p == "process.env").count(), 1);
+        // A call is a call and stays out of this list, because a read is not
+        // one -- putting it here would satisfy a `call-obligation` rule with a
+        // file that merely mentions the symbol.
+        assert!(!read.contains(&"Date.now"), "{read:?}");
+        assert!(
+            facts.calls.iter().any(|c| c.callee == "Date.now"),
+            "{:?}",
+            facts.calls
+        );
+        // A bare identifier is not a dotted name and has no chain to record.
+        assert!(!read.contains(&"localStorage"), "{read:?}");
+    }
+
+    /// The regression this nearly shipped with. A callee that is not a plain
+    /// name holds its call *inside* it, so the walk has to go through -- while
+    /// a callee that is a plain name has nothing below worth recording.
+    #[test]
+    fn a_chain_that_is_not_a_name_is_still_walked_through() {
+        let facts = parse(
+            "a.ts",
+            "expect(value).toBe(1);\n             logger.audit.write(entry);\n",
+        );
+
+        let callees: Vec<&str> = facts.calls.iter().map(|c| c.callee.as_str()).collect();
+        assert_eq!(callees, ["expect", "logger.audit.write"], "{callees:?}");
+        // And nothing is recorded twice: `logger.audit` is a prefix of a call
+        // already named, and a chokepoint would otherwise report one line
+        // under two names.
+        assert!(facts.reads.is_empty(), "{:?}", facts.reads);
     }
 
     fn tags_of(facts: &FileFacts, name: &str) -> ExportTags {

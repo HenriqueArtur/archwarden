@@ -711,6 +711,12 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             lines
         }
 
+        CompiledRuleKind::Chokepoint { callee, only_in } => vec![format!(
+            "only files under {} may call {}",
+            join(only_in.patterns()),
+            join(callee),
+        )],
+
         CompiledRuleKind::CallObligation {
             file_pattern,
             symbol,
@@ -1794,6 +1800,31 @@ mod tests {
     }
 
     /// Every rule kind states its requirement, because a guide that quietly
+    /// Issue #118. The guide is what an agent reads before it writes, and a
+    /// chokepoint is a rule it cannot infer from the file in front of it --
+    /// nothing in `src/orders` says that `src/config` is the one place that
+    /// reads the environment.
+    #[test]
+    fn a_chokepoint_names_the_capability_and_the_one_place_for_it() {
+        let config = config(vec![rule(
+            "the-environment-is-read-once",
+            None,
+            &["src/*"],
+            CompiledRuleKind::Chokepoint {
+                callee: vec!["process.env".to_owned(), "process.argv".to_owned()],
+                only_in: Scope::compile(["src/config/**"]).expect("valid scope"),
+            },
+        )]);
+
+        let markdown = sentences(&config, None, &[]);
+        assert!(
+            markdown.contains("only files under `src/config/**` may call"),
+            "{markdown}"
+        );
+        assert!(markdown.contains("process.env"), "{markdown}");
+        assert!(markdown.contains("process.argv"), "{markdown}");
+    }
+
     /// Issue #164. An agent reads the guide before it writes, so a call whose
     /// options are missing from the sentence is a call it writes wrong -- and
     /// the same clause is what the failure says, because a rule worded one way

@@ -356,6 +356,11 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
         Expectation::RequiredImport { patterns } => {
             format!("an import from {}", join_or(patterns, "somewhere"))
         }
+        Expectation::UsedOnlyIn { callee, only_in } => format!(
+            "no use of {} outside {}",
+            join_or(callee, "anything"),
+            join_or(only_in, "anywhere"),
+        ),
         Expectation::RequiredCall {
             symbol,
             imported_from,

@@ -329,6 +329,14 @@ pub fn describe_observed(observed: &Observed) -> String {
         Observed::RequiredCallMissing { symbol } => {
             format!("`{symbol}` is imported but never called")
         }
+        // The callee as it appears *here*, not the pattern that matched it:
+        // the reader has to go and find this line, and `process.env` is not
+        // what is written on it.
+        // "reaches", not "calls": a read is not a call, and half of what this
+        // rule guards is `process.env`, which is never called.
+        Observed::ChokepointBreached { callee } => {
+            format!("reaches `{callee}`, which only certain files may")
+        }
         // The call site exists and is a few characters short, which is a
         // different place to send the reader than a missing call.
         Observed::RequiredCallOptionMissing {
@@ -1095,6 +1103,17 @@ mod tests {
                     symbol: "Event.save".to_owned(),
                 },
                 "never called",
+            ),
+            // The name as it appears at *this* site, not the pattern that
+            // matched it: the reader has to go and find this line, and
+            // `process.env` is not what is written on it. And "reaches", not
+            // "calls", because half of what a chokepoint guards is never
+            // called. Issue #118.
+            (
+                Observed::ChokepointBreached {
+                    callee: "process.env.DATABASE_URL".to_owned(),
+                },
+                "reaches `process.env.DATABASE_URL`",
             ),
         ];
 

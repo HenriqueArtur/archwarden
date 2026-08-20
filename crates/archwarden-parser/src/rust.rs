@@ -62,6 +62,12 @@ pub fn parse(path: &RepoRelPath, source: &str, content_hash: ContentHash) -> Fil
         imports: imports(&tree),
         exports: exports(&tree),
         calls: calls(syntax),
+        // Empty, and on decision 33's terms. Rust has no ambient capability
+        // reached through a property: `std::env::var` is a path to a function
+        // and is recorded as a call when it is called, while a `use` of it is
+        // an import that `import-boundary` already cuts. The gap `chokepoint`
+        // fills does not exist here.
+        reads: Vec::new(),
         allowances,
         metadata,
         // Rust has no `import(name)`. The nearest thing is a `use` a macro

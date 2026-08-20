@@ -17,6 +17,62 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 34 — A read is a fact of its own, deduplicated by name
+Status: accepted.
+Context: issue #118 asks for *"only `src/config` reads the environment"*, and
+`process.env` is the example it opens with. The issue says the fact is already
+there — `CallFact` is extracted for every file — and that is true for half of
+what it lists. `Date.now()`, `fetch()` and `console.log()` are calls;
+`process.env`, `localStorage` and `crypto.subtle` are **property reads**, and
+there is no call site to record. A `chokepoint` that could only see calls would
+answer the question it was raised for with half an answer.
+
+Decision: a second list, `FileFacts::reads`, holding the dotted names a file
+reads without calling.
+
+**Not folded into `calls`.** A read is not a call, and putting one there would
+quietly satisfy a `call-obligation` rule requiring `Event.save` with a file that
+merely mentions it — a rule going green for the wrong reason, which is worse
+than a rule that never fires.
+
+**The longest chain only.** `a.b.c` records `a.b.c` and not also `a.b` and `a`.
+The prefix match a `chokepoint` applies reaches the shorter forms from the
+longer one, so recording all three would be three ways to say one thing and
+three times the cache.
+
+**Deduplicated by name, first span kept.** This is cached per file, and a
+repository's property reads outnumber its calls several times over.
+Deduplicating bounds the list by a file's distinct vocabulary rather than by its
+length. The cost is that a file reading the same name twice is reported once, at
+the first occurrence — which is where a reader would start anyway.
+
+Measured, on 120 generated files and 7,560 lines of deliberately
+member-expression-heavy TypeScript: **52 ms cold with the fact and 52 ms
+without**, five runs each, and the cache file did not change size at all. The
+walk is the same walk the calls already need, and the dedup is what keeps the
+list from growing with the file.
+
+Alternatives:
+- **Record every occurrence.** Keeps a span per site, and grows with file length
+  rather than with vocabulary. The spans of the second and third occurrence buy
+  a reader nothing they do not get from the first.
+- **Record only reads whose root is not locally bound.** Precise, and it needs
+  scope analysis this front-end does not do — the parser is syntax-only by
+  design, and adding a binding pass for one rule is a large thing to owe.
+- **A committed catalogue of ambient globals** (`process`, `window`,
+  `localStorage`). Cheapest, and it is exactly the fixed catalogue issue #118
+  says archwarden must not be: it cannot ask about `Ledger.post`, which is the
+  case that makes this architecture rather than lint.
+
+Consequences: cache format 13 to 14 (decision 3), so every repository re-parses
+once. `chokepoint` reads both lists and reports one finding per site, ordered by
+position rather than by which list it came from. The Rust front-end records
+none: `std::env::var` is a path to a function, called when it is called, and a
+`use` of it is an import `import-boundary` already cuts — the gap this fills
+does not exist there.
+
+---
+
 ### 33 — Object keys are top-level, and Rust has no options bag
 Status: accepted.
 Context: issue #164, raised by a repository that found the problem the

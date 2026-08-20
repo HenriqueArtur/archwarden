@@ -1556,6 +1556,77 @@
           ]
         },
         {
+          "description": "A capability only these files may reach.",
+          "type": "object",
+          "properties": {
+            "id": {
+              "description": "Stable identifier.",
+              "$ref": "#/$defs/RuleId"
+            },
+            "level": {
+              "description": "Severity.",
+              "$ref": "#/$defs/Level"
+            },
+            "why": {
+              "description": "Why this rule exists, in the author's words. See [`StructureRule::why`].",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "decision": {
+              "description": "The decision this rule implements, when it implements a declared one.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/DecisionId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "callee": {
+              "description": "The callees this rule guards, as they appear at a call site.\n\nMatched exactly, or as a prefix at a dot: `process.env` guards\n`process.env` and `process.env.DATABASE_URL`, and does not guard\n`processing.env`. That is a change of dialect from `call-obligation`,\nwhich matches its symbol exactly -- and it is the right one here,\nbecause a chokepoint is about a capability rather than about one\nfunction, and `process.env.DATABASE_URL` is recorded as written.\n\nA construction is spelled the way the source spells it:\n`\"new PostgresRepo\"`. It is not a call and does not answer to\n`PostgresRepo`.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "roots": {
+              "description": "Directory globs this rule governs.\n\nSeparate from [`only_in`](Self::only_in), and the separation is the\npoint: `roots` is the population the question is asked of, `only_in` is\nthe answer that is allowed. A test suite reads `process.env`\nlegitimately, so a chokepoint that governed the whole repository by\ndefault would report the tests on its first run -- and a rule whose\nfirst run is wrong is one nobody keeps.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "only_in": {
+              "description": "The files allowed to reach them.\n\nAn allowlist, and there is no `forbid` direction. `only_in` is the one\nthat does not decay -- the argument #75 already made for\n`only_import_from`: a new file outside the chokepoint is reported the\nday it is written, where a forbid list has to be extended by whoever\nadded the thing it should have forbidden.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing": {
+              "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands*. See\n[`ImportCycleRule::when_importing`].",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_importing_packages": {
+              "description": "The same, for packages rather than paths.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "type": {
+              "type": "string",
+              "const": "chokepoint"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "id",
+            "level",
+            "roots",
+            "only_in"
+          ]
+        },
+        {
           "description": "What a file's header declares about itself.",
           "type": "object",
           "properties": {

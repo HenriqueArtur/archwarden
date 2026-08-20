@@ -567,6 +567,23 @@ impl CallOption {
     }
 }
 
+/// A dotted name read without being called.
+///
+/// The other half of what a `chokepoint` rule guards. See
+/// [`FileFacts::reads`] for why it is a separate list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadFact {
+    /// The name as written, e.g. `process.env.DATABASE_URL`.
+    ///
+    /// The longest chain, not its prefixes: `a.b.c` records `a.b.c` alone.
+    /// A rule naming `a.b` matches it by the prefix rule the rule applies,
+    /// so recording `a`, `a.b` and `a.b.c` would be three ways to say one
+    /// thing and three times the cache.
+    pub path: String,
+    /// Where it first appears.
+    pub span: Span,
+}
+
 /// An `archwarden-allow` marker, as written in a comment.
 ///
 /// The reason is not optional and there is no variant without one: a
@@ -773,6 +790,26 @@ pub struct FileFacts {
     pub exports: Vec<ExportFact>,
     /// Call expressions, in source order.
     pub calls: Vec<CallFact>,
+    /// Dotted names the file *reads* without calling, first occurrence each.
+    ///
+    /// `process.env` is the capability issue #118 was raised about and it is
+    /// never a call site: `process.env.DATABASE_URL` is a property read, and
+    /// so are `localStorage` and `crypto.subtle`. A `chokepoint` rule that
+    /// could only see calls would answer the question it was asked for with
+    /// half an answer.
+    ///
+    /// Not folded into [`FileFacts::calls`]. A read is not a call, and putting
+    /// one there would quietly satisfy a `call-obligation` rule that requires
+    /// `Event.save` with a file that merely mentions it.
+    ///
+    /// **First occurrence each**, deduplicated by the name. This is cached per
+    /// file, and a repository's property reads outnumber its calls several
+    /// times over; deduplicating bounds the list by the file's distinct
+    /// vocabulary rather than by its length. The cost is that a file reading
+    /// the same name twice is reported once, at the first line -- which is
+    /// where a reader would start anyway.
+    #[serde(default)]
+    pub reads: Vec<ReadFact>,
     /// Suppression markers found in comments, in source order.
     ///
     /// Only the ones that parse as a marker; ordinary prose is not carried,
@@ -856,6 +893,7 @@ impl FileFacts {
             imports: Vec::new(),
             exports: Vec::new(),
             calls: Vec::new(),
+            reads: Vec::new(),
             allowances: Vec::new(),
             metadata: Vec::new(),
             has_opaque_import: false,
