@@ -17,7 +17,7 @@ saying so.
 
 ## [Unreleased]
 
-Groundwork for Rust, which arrives in 0.31. **No existing configuration reports
+Groundwork for Rust. **No existing configuration reports
 anything new** — every check here is about a language this build still cannot
 read, and both new questions answer exactly as `FileClass::Source` did for
 every language it can.

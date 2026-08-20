@@ -137,6 +137,16 @@ pub(crate) const STEPS: &[Step] = &[
         needs: None,
         role: Role::Gate,
     },
+    // archwarden checks archwarden. The binary is built by the step above it
+    // and run against this repository's own `arch.config.json` -- which is the
+    // sharpest test the tool has, because a front-end that cannot hold a
+    // ten-crate workspace is not ready for anybody else's.
+    Step {
+        command: "cargo run --quiet --bin archwarden -- check",
+        dir: None,
+        needs: None,
+        role: Role::Gate,
+    },
     // 🧪 tests
     Step {
         command: "cargo nextest run --workspace --all-features",
