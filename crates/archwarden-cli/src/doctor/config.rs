@@ -5,6 +5,7 @@ use archwarden_core::{
     facts::{ExportKind, ExportTags, KindFilter},
     ids::RuleId,
     level::Level,
+    path::Language,
 };
 use archwarden_engine::walk::RepoTree;
 
@@ -329,5 +330,148 @@ pub(super) fn list(items: &[String]) -> String {
         None => "nothing".to_owned(),
         Some((last, [])) => last.clone(),
         Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// A `must_export.kind` no language this config reads can declare.
+///
+/// Decision 31 split the vocabulary by language and promised the other half of
+/// it here: *"not applicable is reported, never silent"*. Without this a rule
+/// asking for a `struct` over a `.ts` file reports the file for exporting a
+/// `const`, which reads like a naming mistake and is a configuration one --
+/// and a rule asking only for forms nobody enabled reports every file it
+/// reaches, forever.
+///
+/// Two shapes, and only the second is unambiguous enough to name here. A rule
+/// whose kinds are *all* unproducible is a rule that can never pass; one whose
+/// kinds are a mix is a rule spanning two trees on purpose, which is what a
+/// Tauri repository writes deliberately.
+pub(super) fn kind_no_enabled_language_can_declare(
+    config: &CompiledConfig,
+    rule: &CompiledRule,
+    concerns: &mut Vec<Concern>,
+) {
+    let CompiledRuleKind::Naming { kind, .. } = &rule.kind else {
+        return;
+    };
+    let KindFilter::OneOf(wanted) = kind else {
+        return;
+    };
+
+    let enabled = enabled_languages(config);
+    let unreachable: Vec<ExportKind> = wanted
+        .iter()
+        .filter(|kind| !enabled.iter().any(|language| kind.produced_by(*language)))
+        .collect();
+
+    // A mix is deliberate: one rule over both halves of a repository names the
+    // form each half spells. Only a rule that can never be satisfied is a
+    // mistake this can be sure of.
+    if unreachable.len() != wanted.iter().count() {
+        return;
+    }
+
+    let named = unreachable
+        .iter()
+        .map(|kind| format!("`{kind}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let languages = enabled
+        .iter()
+        .map(|language| format!("`{}`", language_name(*language)))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    concerns.push(Concern {
+        code: "kind-no-language-declares",
+        level: Level::Error,
+        rule_id: Some(rule.id.clone()),
+        path: None,
+        message: format!(
+            "its `must_export.kind` asks only for {named}, and no language this \
+             config reads ({languages}) can declare one -- so every file the \
+             rule reaches is reported, and none of them can be fixed"
+        ),
+        fix: "name a form the language spells, or add the language to \
+              `languages`. `function` is TypeScript and `fn` is Rust; `const`, \
+              `type` and `enum` are both"
+            .to_owned(),
+    });
+}
+
+/// The languages this configuration reads.
+///
+/// TypeScript is always read and needs no flag, which is what
+/// `compiled::Languages` says of itself.
+fn enabled_languages(config: &CompiledConfig) -> Vec<Language> {
+    let mut languages = vec![Language::Ts];
+    if config.languages().astro {
+        languages.push(Language::Astro);
+    }
+    if config.languages().rust {
+        languages.push(Language::Rust);
+    }
+    languages
+}
+
+/// The spelling `languages` uses for one.
+fn language_name(language: Language) -> &'static str {
+    // `Language` is `#[non_exhaustive]`, so a fallback is required. Naming the
+    // three rather than deriving one keeps the spelling here the same as the
+    // one `languages` accepts; a language added upstream reads as its debug
+    // form until somebody names it, which is visible rather than wrong.
+    match language {
+        Language::Astro => "astro",
+        Language::Rust => "rust",
+        _ => "ts",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every language prints the word `languages` accepts.
+    ///
+    /// Tested directly because the concern that renders it cannot reach all
+    /// three: it fires only when no enabled language declares the form, and
+    /// TypeScript is always enabled -- so a message is only ever built while
+    /// Rust is *off*. Mutation testing found the arm that way, and deleting it
+    /// broke nothing.
+    ///
+    /// The words matter because the fix tells somebody to add one to
+    /// `languages`, and a message naming `Rust` where the config wants `rust`
+    /// sends them to a refusal.
+    #[test]
+    fn every_language_prints_the_word_a_config_writes() {
+        assert_eq!(language_name(Language::Ts), "ts");
+        assert_eq!(language_name(Language::Astro), "astro");
+        assert_eq!(language_name(Language::Rust), "rust");
+    }
+
+    /// The set follows the config, and TypeScript is always in it.
+    ///
+    /// `compiled::Languages` says so of itself: a configuration that asked for
+    /// nothing still means TypeScript.
+    #[test]
+    fn the_enabled_set_is_typescript_plus_whatever_was_asked_for() {
+        use archwarden_core::{compiled::Languages, glob::PathSet, hash::ContentHash};
+
+        let bare = CompiledConfig::new(
+            Vec::new(),
+            PathSet::default(),
+            archwarden_core::compiled::SkipDirs::default(),
+            ContentHash::of(b""),
+        );
+        assert_eq!(enabled_languages(&bare), vec![Language::Ts]);
+
+        let both = bare.with_languages(Languages {
+            astro: true,
+            rust: true,
+        });
+        assert_eq!(
+            enabled_languages(&both),
+            vec![Language::Ts, Language::Astro, Language::Rust]
+        );
     }
 }

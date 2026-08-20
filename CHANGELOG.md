@@ -17,6 +17,72 @@ saying so.
 
 ## [Unreleased]
 
+## [0.31.0] — 2026-08-20
+
+**One repository, two languages, and the seam between them.** A Tauri
+application is TypeScript and Rust joined by a string that no import records
+and no resolver can see. archwarden checks it now.
+
+**No existing configuration reports anything new.**
+
+### Added
+
+- **`call-matches-export`, a rule about two vocabularies rather than one
+  file.**
+
+  ```json
+  { "type": "call-matches-export", "id": "every-invoke-names-a-command",
+    "level": "error",
+    "roots": ["src/**"], "callee": "invoke",
+    "declared_in": ["src-tauri/src/**"], "attribute": "tauri::command" }
+  ```
+
+  `invoke("save_document")` and `#[tauri::command] fn save_document` are the
+  same edge, and there is no import between them — the coupling is a string on
+  one side and an attribute on the other, in different languages, checked by
+  nothing until somebody clicks the button.
+
+  **Deliberately not a `tauri` rule.** A framework in the engine is a framework
+  the engine has to keep up with. `t("checkout.title")` against a translation
+  catalogue is the same question, and so is a feature-flag key.
+
+  `report_uncalled` reports the other direction and is **off by default**. A
+  call naming nothing is unambiguous; a declaration nobody calls is not —
+  archwarden reads the languages it has front-ends for, and a command called
+  from one it does not read looks exactly like a command nobody calls.
+
+  It is the first rule answered *once* about the whole repository. That costs
+  one extra pass over facts already extracted and **no resolution at all**,
+  which is what separates it from a graph rule.
+
+- **A call carries the string literals it was given.** `CallFact.arguments`,
+  one slot per argument, holding the literal or nothing. Absent rather than
+  guessed: a template with an interpolation, or a variable, is recorded as
+  absent, because inventing a value for something the reader cannot see makes a
+  rule report an edge nobody wrote.
+
+- **An export carries the attributes written on it.** `#[tauri::command]` reads
+  as `tauri::command`; arguments are dropped, because what a rule asks of an
+  attribute is whether it is there.
+
+- **`presets/tauri.json`**, shipped in the npm package beside the Rust preset.
+
+- **`config doctor` reports a `must_export.kind` no enabled language can
+  declare.** Decision 31 promised this and it was missing. A rule asking for
+  `kind: ["struct"]` whose scope reaches a `.ts` file reported the file for
+  exporting a `const` — which reads like a naming mistake and is a
+  configuration one, since TypeScript cannot spell a `struct`.
+
+  Only the unambiguous case. A rule naming `["const", "struct"]` over both
+  halves of a repository is one rule for two languages written on purpose, and
+  reporting it would make the honest way to do that look wrong.
+
+### Changed
+
+- **The cache format is 12.** `FileFacts` gained a call's arguments and an
+  export's attributes, so a cache from 0.30.0 is discarded rather than misread.
+  One cold run.
+
 ## [0.30.0] — 2026-08-20
 
 Rust stops being a language archwarden can read and becomes one it has opinions
@@ -2591,7 +2657,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.30.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.31.0...HEAD
+[0.31.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.29.0...v0.30.0
 [0.29.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.1...v0.29.0
 [0.28.1]: https://github.com/HenriqueArtur/archwarden/compare/v0.28.0...v0.28.1

@@ -123,6 +123,17 @@ pub fn verify(config: &CompiledConfig, tree: &RepoTree) -> Vec<Verification> {
 
 fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) -> Verdict {
     match &rule.kind {
+        // A probe for this would be two files that have to disagree with each
+        // other, in two scopes, in two languages -- and the rule is answered
+        // once about the whole repository rather than about a file, which is
+        // the shape everything here is built on. Named rather than synthesised.
+        CompiledRuleKind::CallMatchesExport { callee, .. } => Verdict::Unverified {
+            why: format!(
+                "a violation is a `{callee}` in one scope naming something no \
+                 declaration in another answers to -- two files that have to \
+                 disagree, which this cannot build from one"
+            ),
+        },
         CompiledRuleKind::Structure { .. } => forbidden_subfolder(rule, engine, tree),
         CompiledRuleKind::SpecPair { .. } => a_file_with_no_spec(rule, engine, tree),
         CompiledRuleKind::Presence { .. } => a_directory_holding_nothing(rule, engine, tree),

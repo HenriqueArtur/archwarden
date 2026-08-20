@@ -165,7 +165,7 @@ pub struct GuideRule<'a> {
 /// and it is load-bearing: `no-passthrough` was missing from this list from the
 /// day that rule shipped, so `agent-guide --kinds no-passthrough` refused a
 /// kind archwarden has.
-pub const KINDS: [&str; 14] = [
+pub const KINDS: [&str; 15] = [
     "structure",
     "naming",
     "spec-pair",
@@ -176,6 +176,7 @@ pub const KINDS: [&str; 14] = [
     "import-boundary",
     "import-cycle",
     "call-obligation",
+    "call-matches-export",
     "export-shape",
     "frozen",
     "mirror",
@@ -350,6 +351,27 @@ fn reaches(rule: &CompiledRule, prefix: &RepoRelPath) -> bool {
 #[allow(clippy::too_many_lines, reason = "one arm per rule kind; see above")]
 fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
     match kind {
+        CompiledRuleKind::CallMatchesExport {
+            callee,
+            argument,
+            attribute,
+            report_uncalled,
+            ..
+        } => {
+            let held = attribute
+                .as_ref()
+                .map_or_else(String::new, |name| format!(", carrying `#[{name}]`"));
+            let mut lines = vec![format!(
+                "every `{callee}(...)` names, in argument {argument}, something \
+                 declared in the rule's `declared_in` scope{held}"
+            )];
+            if *report_uncalled {
+                lines.push(format!(
+                    "and every such declaration is named by a `{callee}` somewhere"
+                ));
+            }
+            lines
+        }
         CompiledRuleKind::Structure {
             allowed_subfolders,
             warn_subfolders,
@@ -1154,6 +1176,13 @@ mod tests {
     #[test]
     fn every_kind_the_tool_has_is_accepted() {
         let every: Vec<CompiledRuleKind> = vec![
+            CompiledRuleKind::CallMatchesExport {
+                callee: "invoke".to_owned(),
+                argument: 0,
+                declared_in: Scope::compile(["src-tauri/src/**"]).expect("valid scope"),
+                attribute: Some("tauri::command".to_owned()),
+                report_uncalled: false,
+            },
             CompiledRuleKind::Structure {
                 allowed_subfolders: None,
                 warn_subfolders: Vec::new(),
@@ -2140,6 +2169,70 @@ mod tests {
             said.contains("in a directory matching `^use-cases$`"),
             "{said}"
         );
+    }
+
+    /// A call-matching rule states the callee, the argument and the marker.
+    ///
+    /// The digest is what an agent reads before writing code, and a rule about
+    /// a seam it cannot see in either file is the one it most needs told. Both
+    /// branches, because the second direction is a sentence of its own and a
+    /// rule with it off must not claim it.
+    #[test]
+    fn a_call_matching_rule_states_the_seam_it_is_about() {
+        let of = |report_uncalled| {
+            sentences(
+                &config(vec![rule(
+                    "ipc",
+                    None,
+                    &["src/**"],
+                    CompiledRuleKind::CallMatchesExport {
+                        callee: "invoke".to_owned(),
+                        argument: 0,
+                        declared_in: Scope::compile(["src-tauri/src/**"]).expect("valid scope"),
+                        attribute: Some("tauri::command".to_owned()),
+                        report_uncalled,
+                    },
+                )]),
+                None,
+                &[],
+            )
+        };
+
+        let quiet = of(false);
+        assert!(quiet.contains("`invoke(...)`"), "{quiet}");
+        assert!(quiet.contains("argument 0"), "{quiet}");
+        assert!(quiet.contains("`#[tauri::command]`"), "{quiet}");
+        assert!(
+            !quiet.contains("named by a"),
+            "the second direction is off and is not claimed: {quiet}"
+        );
+
+        let both = of(true);
+        assert!(both.contains("named by a `invoke`"), "{both}");
+    }
+
+    /// A rule naming no attribute says nothing about one.
+    #[test]
+    fn a_call_matching_rule_with_no_attribute_claims_none() {
+        let said = sentences(
+            &config(vec![rule(
+                "catalogue",
+                None,
+                &["src/**"],
+                CompiledRuleKind::CallMatchesExport {
+                    callee: "t".to_owned(),
+                    argument: 0,
+                    declared_in: Scope::compile(["strings/**"]).expect("valid scope"),
+                    attribute: None,
+                    report_uncalled: false,
+                },
+            )]),
+            None,
+            &[],
+        );
+
+        assert!(said.contains("`t(...)`"), "{said}");
+        assert!(!said.contains("carrying"), "{said}");
     }
 
     /// A frontmatter rule lists the keys it requires, beside the vocabularies.

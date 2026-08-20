@@ -425,6 +425,18 @@ const EXAMPLES: &[(&str, &str)] = &[
 }"#,
     ),
     (
+        "call-matches-export",
+        r#"{
+  "type": "call-matches-export",
+  "id": "every-invoke-names-a-command",
+  "level": "error",
+  "roots": ["src/**"],
+  "callee": "invoke",
+  "declared_in": ["src-tauri/src/**"],
+  "attribute": "tauri::command"
+}"#,
+    ),
+    (
         "no-passthrough",
         r#"{
   "type": "no-passthrough",
@@ -509,7 +521,7 @@ mod tests {
         let read = options();
 
         let answered: Vec<&str> = read.kinds.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(answered.len(), 14, "{answered:?}");
+        assert_eq!(answered.len(), 15, "{answered:?}");
 
         for kind in &answered {
             let Some(Found::Kind(entry)) = read.find(kind) else {

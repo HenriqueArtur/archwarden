@@ -1,0 +1,25 @@
+{
+  "$schema": "https://raw.githubusercontent.com/HenriqueArtur/archwarden/main/schema/v0.json",
+  "version": 0,
+  "languages": ["rust"],
+  "rules": [
+    {
+      "type": "call-matches-export",
+      "id": "tauri/every-invoke-names-a-command",
+      "level": "error",
+      "why": "`invoke(\"save_document\")` and `#[tauri::command] fn save_document` are the same edge, joined by a string with no import between them. Nothing checks it until somebody clicks the button, which is the kind of obligation this tool exists for.",
+      "roots": ["src/**"],
+      "callee": "invoke",
+      "declared_in": ["src-tauri/src/**"],
+      "attribute": "tauri::command"
+    },
+    {
+      "type": "structure",
+      "id": "tauri/commands-live-together",
+      "level": "warning",
+      "why": "A `#[tauri::command]` is the application's attack surface as much as its API. Keeping them in one folder is what makes reviewing that surface a thing somebody can do.",
+      "roots": ["src-tauri/src/*"],
+      "allowed_subfolders": ["commands"]
+    }
+  ]
+}

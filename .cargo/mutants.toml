@@ -82,6 +82,22 @@ exclude_globs = [
 # The last two share `ci::run`'s reason rather than adding one, which is the
 # bar this list sets for itself. Another sharing one of these reasons would be
 # fine. One with a new reason is worth stopping for.
+#
+# # A fourth reason, stopped for
+#
+# `the mutant is the original`. A method whose entire body is a constant --
+# `false`, `Vec::new()` -- offers a mutant replacing it with that same constant.
+# There is no behaviour between the two, so no test can distinguish them, and
+# the exclusion is not a judgement about whether the code deserves a test. It
+# is arithmetic.
+#
+# This is a different claim from the parser guard above, which has two *paths*
+# reaching one answer. Here there is one path, and the tool has rewritten it as
+# itself.
+#
+# Named individually rather than by a pattern, because a method whose body is a
+# constant *today* may not be one tomorrow -- and if it grows a branch, this
+# entry should stop matching and the mutant should come back.
 
 exclude_re = [
     "single\\.rs:\\d+:\\d+: replace && with \\|\\| in check",
@@ -116,4 +132,20 @@ exclude_re = [
     "mutants\\.rs:\\d+:\\d+: replace pending -> Result<usize, String> with Ok\\(\\d+\\)",
     "mutants\\.rs:\\d+:\\d+: delete ! in pending",
     "mutants\\.rs:\\d+:\\d+: delete ! in run",
+    # The mutant is the original: each of these has a body that already *is*
+    # the value the tool substitutes.
+    #
+    # `check_repository`'s default returns `Vec::new()`, and a rule that never
+    # asked for the repository is asked nothing -- that is the default's whole
+    # content.
+    #
+    # `call-matches-export` answers `false` and `Vec::new()` to the two
+    # per-file questions on purpose: no file individually satisfies or violates
+    # an agreement between two vocabularies, and the honest answer to "what does
+    # this rule require of this path" is nothing, because the other half is
+    # somewhere else and may not exist yet. `docs/RULES.md` says so and
+    # `it_asks_about_the_repository_and_claims_no_file` asserts it.
+    "traits\\.rs:\\d+:\\d+: replace RuleEngine::check_repository -> Vec<Finding> with vec!\\[\\]",
+    "call_matches_export\\.rs:\\d+:\\d+: replace <impl RuleEngine for CallMatchesExportEngine>::applies_to -> bool with false",
+    "call_matches_export\\.rs:\\d+:\\d+: replace <impl RuleEngine for CallMatchesExportEngine>::describe_expectation -> Vec<Expectation> with vec!\\[\\]",
 ]

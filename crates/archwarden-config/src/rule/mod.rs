@@ -52,6 +52,8 @@ pub enum Rule {
     ImportCycle(ImportCycleRule),
     /// Files matching a pattern must call a given symbol.
     CallObligation(CallObligationRule),
+    /// Every name a call asks for is declared somewhere.
+    CallMatchesExport(CallMatchesExportRule),
     /// A file whose whole content is forwarding another module.
     NoPassthrough(NoPassthroughRule),
     /// These files must exist in each governed directory.
@@ -81,6 +83,7 @@ impl Rule {
             Self::ImportBoundary(r) => &r.id,
             Self::ImportCycle(r) => &r.id,
             Self::CallObligation(r) => &r.id,
+            Self::CallMatchesExport(r) => &r.id,
             Self::NoPassthrough(r) => &r.id,
             Self::Presence(r) => &r.id,
             Self::Pair(r) => &r.id,
@@ -102,6 +105,7 @@ impl Rule {
             Self::ImportBoundary(r) => r.level,
             Self::ImportCycle(r) => r.level,
             Self::CallObligation(r) => r.level,
+            Self::CallMatchesExport(r) => r.level,
             Self::NoPassthrough(r) => r.level,
             Self::Presence(r) => r.level,
             Self::Pair(r) => r.level,
@@ -123,6 +127,7 @@ impl Rule {
             Self::ImportBoundary(r) => r.why.as_deref(),
             Self::ImportCycle(r) => r.why.as_deref(),
             Self::CallObligation(r) => r.why.as_deref(),
+            Self::CallMatchesExport(r) => r.why.as_deref(),
             Self::NoPassthrough(r) => r.why.as_deref(),
             Self::Presence(r) => r.why.as_deref(),
             Self::Pair(r) => r.why.as_deref(),
@@ -148,6 +153,7 @@ impl Rule {
             Self::ImportBoundary(r) => r.decision.as_ref(),
             Self::ImportCycle(r) => r.decision.as_ref(),
             Self::CallObligation(r) => r.decision.as_ref(),
+            Self::CallMatchesExport(r) => r.decision.as_ref(),
             Self::NoPassthrough(r) => r.decision.as_ref(),
             Self::Presence(r) => r.decision.as_ref(),
             Self::Pair(r) => r.decision.as_ref(),
@@ -173,6 +179,7 @@ impl Rule {
             Self::ImportBoundary(r) => &r.from,
             Self::ImportCycle(r) => &r.roots,
             Self::CallObligation(r) => &r.roots,
+            Self::CallMatchesExport(r) => &r.roots,
             Self::NoPassthrough(r) => &r.roots,
             Self::Presence(r) => &r.roots,
             Self::Pair(r) => &r.roots,
@@ -205,6 +212,7 @@ impl Rule {
             Self::ImportBoundary(_) => NONE,
             Self::ImportCycle(r) => &r.when_importing,
             Self::CallObligation(r) => &r.when_importing,
+            Self::CallMatchesExport(r) => &r.when_importing,
             Self::NoPassthrough(r) => &r.when_importing,
             Self::Presence(r) => &r.when_importing,
             Self::Pair(r) => &r.when_importing,
@@ -226,6 +234,7 @@ impl Rule {
             Self::ImportBoundary(_) => &[],
             Self::ImportCycle(r) => &r.when_importing_packages,
             Self::CallObligation(r) => &r.when_importing_packages,
+            Self::CallMatchesExport(r) => &r.when_importing_packages,
             Self::NoPassthrough(r) => &r.when_importing_packages,
             Self::Presence(r) => &r.when_importing_packages,
             Self::Pair(r) => &r.when_importing_packages,
@@ -247,6 +256,7 @@ impl Rule {
             Self::ImportBoundary(_) => "import-boundary",
             Self::ImportCycle(_) => "import-cycle",
             Self::CallObligation(_) => "call-obligation",
+            Self::CallMatchesExport(_) => "call-matches-export",
             Self::NoPassthrough(_) => "no-passthrough",
             Self::Presence(_) => "presence",
             Self::Pair(_) => "pair",
@@ -259,6 +269,7 @@ impl Rule {
     }
 }
 
+mod call_matches_export;
 mod call_obligation;
 mod frontmatter;
 mod import_boundary;
@@ -268,6 +279,7 @@ mod presence;
 mod spec_pair;
 mod structure;
 
+pub use call_matches_export::CallMatchesExportRule;
 pub use call_obligation::{CallObligationRule, MustCall};
 pub use frontmatter::FrontmatterRule;
 pub use import_boundary::ImportBoundaryRule;

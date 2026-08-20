@@ -687,6 +687,7 @@ fn exports(
         let exported = export_name(&entry.export_name);
 
         facts.push(ExportFact {
+            attributes: Vec::new(),
             tags: local
                 .as_ref()
                 .and_then(|name| declaration_tags.get(name).copied())
@@ -742,6 +743,7 @@ fn exports(
     // for the wrong reason.
     for entry in &record.indirect_export_entries {
         facts.push(ExportFact {
+            attributes: Vec::new(),
             name: export_name(&entry.export_name),
             tags: ExportTags::only(ExportKind::Reexport),
             visibility: archwarden_core::facts::Visibility::Public,
@@ -773,6 +775,7 @@ fn exports(
     // that file *does* add something.
     for entry in &record.star_export_entries {
         facts.push(ExportFact {
+            attributes: Vec::new(),
             name: Some("*".to_owned()),
             tags: ExportTags::only(ExportKind::Reexport),
             visibility: archwarden_core::facts::Visibility::Public,
@@ -958,11 +961,38 @@ impl<'a> Visit<'a> for CallCollector {
         if let Some(callee) = callee_path(&call.callee) {
             self.calls.push(CallFact {
                 callee,
+                arguments: literal_arguments(call),
                 span: span_of(call.span),
             });
         }
         oxc_ast_visit::walk::walk_call_expression(self, call);
     }
+}
+
+/// The string literals a call was given, in argument order.
+///
+/// `None` for an argument that is not one. A template literal with no
+/// interpolation is a string and is read as one; with an interpolation it is
+/// absent, on the same argument `has_opaque_import` makes -- flattening
+/// `` `./locales/${name}` `` into a value nobody wrote would have a rule report
+/// an edge that does not exist.
+///
+/// A spread (`f(...args)`) ends the useful part of the list: nothing after it
+/// is in a position anybody can name, so it and everything past it are absent.
+fn literal_arguments(call: &oxc_ast::ast::CallExpression<'_>) -> Vec<Option<String>> {
+    use oxc_ast::ast::Argument;
+
+    call.arguments
+        .iter()
+        .map(|argument| match argument {
+            Argument::StringLiteral(literal) => Some(literal.value.to_string()),
+            Argument::TemplateLiteral(template) if template.expressions.is_empty() => template
+                .quasis
+                .first()
+                .map(|quasi| quasi.value.raw.to_string()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Renders a callee as a dotted path, when it is one.
@@ -1000,6 +1030,43 @@ mod tests {
                 ContentHash::of(source.as_bytes()),
             )
             .expect("should parse")
+    }
+
+    /// A call's string arguments are carried; anything the reader cannot see
+    /// is absent.
+    ///
+    /// The fact `invoke("greet")` needs, and `t("checkout.title")` and a
+    /// feature flag key. A template with an interpolation is *not* flattened
+    /// into a value nobody wrote -- the same argument `has_opaque_import`
+    /// makes about a dynamic import.
+    #[test]
+    fn a_calls_string_arguments_are_carried_and_the_rest_are_absent() {
+        let facts = parse(
+            "a.ts",
+            "invoke('greet', 1);\n\
+             invoke(name);\n\
+             invoke(`plain`);\n\
+             invoke(`locales/${name}`);\n\
+             invoke();\n",
+        );
+
+        let arguments: Vec<&[Option<String>]> =
+            facts.calls.iter().map(|c| c.arguments.as_slice()).collect();
+
+        assert_eq!(arguments[0], [Some("greet".to_owned()), None]);
+        assert_eq!(arguments[1], [None], "a variable is absent, not guessed");
+        assert_eq!(
+            arguments[2],
+            [Some("plain".to_owned())],
+            "a template with nothing in it is a string"
+        );
+        assert_eq!(
+            arguments[3],
+            [None],
+            "and one with an interpolation is not flattened into a value \
+             nobody wrote"
+        );
+        assert!(arguments[4].is_empty());
     }
 
     fn tags_of(facts: &FileFacts, name: &str) -> ExportTags {

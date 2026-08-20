@@ -30,7 +30,7 @@ use archwarden_core::{
 };
 use ra_ap_syntax::{
     AstNode, Edition, SourceFile, SyntaxKind, SyntaxNode, SyntaxToken, ast,
-    ast::{HasModuleItem, HasName, HasVisibility},
+    ast::{HasArgList, HasModuleItem, HasName, HasVisibility},
 };
 
 /// Extracts facts from one Rust file.
@@ -210,6 +210,7 @@ fn exports(tree: &SourceFile) -> Vec<ExportFact> {
             let visibility = visibility_of(visibility.as_ref())?;
 
             Some(ExportFact {
+                attributes: attributes_of(item.syntax()),
                 name: name.map(|n| n.text().to_string()),
                 tags: ExportTags::only(kind),
                 visibility,
@@ -238,6 +239,7 @@ fn exported_macro(node: &ast::MacroRules) -> Option<ExportFact> {
         .filter_map(|attr| attr.path())
         .any(|path| path.syntax().text() == "macro_export")
         .then(|| ExportFact {
+            attributes: attributes_of(node.syntax()),
             name: node.name().map(|n| n.text().to_string()),
             tags: ExportTags::only(ExportKind::Macro),
             visibility: Visibility::Public,
@@ -248,6 +250,29 @@ fn exported_macro(node: &ast::MacroRules) -> Option<ExportFact> {
             returns: None,
             span: span_of(node.syntax()),
         })
+}
+
+/// The attribute paths written directly on an item.
+///
+/// `#[tauri::command]` reads as `tauri::command`. Arguments are dropped --
+/// `#[serde(rename = "x")]` is `serde` -- because what a rule asks of an
+/// attribute is whether it is there, and reading inside one is a second
+/// grammar with its own ways to be wrong.
+///
+/// Direct attributes only. An attribute on the enclosing module says something
+/// about the module, and hoisting it onto every item inside would have a rule
+/// report a claim nobody wrote on the line it is reported against.
+fn attributes_of(node: &SyntaxNode) -> Vec<String> {
+    // The item's direct children rather than `HasAttrs::attrs`. `ast::Item` is
+    // an enum over every item kind and casting a node to it loses the concrete
+    // type the trait is implemented on, so the accessor comes back empty --
+    // silently, which is how the first version of this shipped an always-empty
+    // list and a rule that reported every declaration missing.
+    node.children()
+        .filter_map(ast::Attr::cast)
+        .filter_map(|attr| attr.path())
+        .map(|path| path.syntax().text().to_string())
+        .collect()
 }
 
 /// How far an item is visible, or `None` when it is not exported at all.
@@ -281,6 +306,7 @@ fn calls(syntax: &SyntaxNode) -> Vec<CallFact> {
                 let callee = call.expr()?;
                 return Some(CallFact {
                     callee: callee.syntax().text().to_string(),
+                    arguments: literal_arguments(call.arg_list().as_ref()),
                     span: span_of(&node),
                 });
             }
@@ -288,8 +314,39 @@ fn calls(syntax: &SyntaxNode) -> Vec<CallFact> {
             let method = ast::MethodCallExpr::cast(node.clone())?;
             Some(CallFact {
                 callee: method.name_ref()?.text().to_string(),
+                arguments: literal_arguments(method.arg_list().as_ref()),
                 span: span_of(&node),
             })
+        })
+        .collect()
+}
+
+/// The string literals a call was given, in argument order.
+///
+/// `None` for anything that is not one. Rust's string literals include raw
+/// strings, and both are read as their contents -- `r#"greet"#` and `"greet"`
+/// name the same command, and a rule matching one and not the other would be
+/// answering a question about quoting.
+///
+/// A macro call is not here. `invoke!(...)` is a `MacroCall` rather than a
+/// `CallExpr`, and what a macro does with its arguments is not readable from
+/// the call site.
+fn literal_arguments(arguments: Option<&ast::ArgList>) -> Vec<Option<String>> {
+    let Some(list) = arguments else {
+        return Vec::new();
+    };
+
+    list.args()
+        .map(|argument| {
+            let ast::Expr::Literal(literal) = argument else {
+                return None;
+            };
+            match literal.kind() {
+                ast::LiteralKind::String(string) => {
+                    string.value().ok().map(std::borrow::Cow::into_owned)
+                }
+                _ => None,
+            }
         })
         .collect()
 }
@@ -785,6 +842,49 @@ mod facts_tests {
         assert_eq!(file.exports[0].name.as_deref(), Some("shown"));
     }
 
+    /// An export carries the attributes written on it, as paths.
+    ///
+    /// The fact the Tauri seam is read from: `#[tauri::command]` is what makes
+    /// a `pub fn` a command, and nothing else in the file says so. Arguments
+    /// are dropped -- `#[serde(rename = "x")]` is `serde` -- because what a
+    /// rule asks of an attribute is whether it is there.
+    #[test]
+    fn an_export_carries_the_attributes_written_on_it() {
+        let file = facts(
+            "#[tauri::command]\n             #[allow(unused)]\n             pub fn save_document() {}\n\n             pub fn plain() {}\n\n             #[serde(rename = \"x\")]\n             pub struct Thing;\n",
+        );
+
+        assert_eq!(
+            file.exports[0].attributes,
+            vec!["tauri::command".to_owned(), "allow".to_owned()],
+            "both, in order, and the path only"
+        );
+        assert!(
+            file.exports[1].attributes.is_empty(),
+            "none is an empty list"
+        );
+        assert_eq!(
+            file.exports[2].attributes,
+            vec!["serde".to_owned()],
+            "the arguments are not part of the path"
+        );
+    }
+
+    /// An attribute on the enclosing module is not on the item.
+    ///
+    /// Hoisting it would have a rule report a claim nobody wrote on the line it
+    /// is reported against.
+    #[test]
+    fn an_attribute_on_the_module_is_not_on_what_is_inside_it() {
+        let file = facts("#[tauri::command]\npub mod outer { }\n");
+
+        assert_eq!(file.exports.len(), 1);
+        assert_eq!(
+            file.exports[0].attributes,
+            vec!["tauri::command".to_owned()]
+        );
+    }
+
     /// A macro is exported by an attribute, not by `pub`.
     ///
     /// Found by mutation testing, which deleted the match arm and nothing
@@ -832,6 +932,40 @@ mod facts_tests {
             callees,
             vec!["Event::save", "crate::audit::record", "plain"]
         );
+    }
+
+    /// A call's string literals are carried, and anything else is absent.
+    ///
+    /// `invoke("greet")` has the callee `invoke` for every command in a Tauri
+    /// application; the string is the entire content. What is *not* a literal
+    /// is recorded as absent rather than guessed -- inventing a value for a
+    /// variable would have a rule report an edge nobody wrote.
+    #[test]
+    fn a_calls_string_arguments_are_carried_and_the_rest_are_absent() {
+        let file = facts(
+            "pub fn f(name: &str) {\n\
+             \x20   invoke(\"greet\", 1);\n\
+             \x20   invoke(name);\n\
+             \x20   invoke(r#\"raw_greet\"#);\n\
+             \x20   invoke();\n\
+             }\n",
+        );
+
+        let arguments: Vec<&[Option<String>]> =
+            file.calls.iter().map(|c| c.arguments.as_slice()).collect();
+
+        assert_eq!(
+            arguments[0],
+            [Some("greet".to_owned()), None],
+            "a number is not a string"
+        );
+        assert_eq!(arguments[1], [None], "a variable is absent, not guessed");
+        assert_eq!(
+            arguments[2],
+            [Some("raw_greet".to_owned())],
+            "a raw string names the same command as a quoted one"
+        );
+        assert!(arguments[3].is_empty(), "no arguments is an empty list");
     }
 
     /// A method call is recorded by its name, without the receiver.

@@ -87,6 +87,7 @@ pub fn examine(config: &CompiledConfig) -> Vec<Concern> {
         constrains_nothing(rule, &mut concerns);
         spec_subfolder_not_allowed(config, rule, &mut concerns);
         hint_disagrees_with_kind(rule, &mut concerns);
+        kind_no_enabled_language_can_declare(config, rule, &mut concerns);
     }
 
     concerns
@@ -101,7 +102,8 @@ pub use render::render;
 
 use config::{
     constrains_nothing, frozen_with_nothing_accepted, hint_disagrees_with_kind,
-    spec_subfolder_not_allowed, unreachable_scope, walk_scope_with_boundaries,
+    kind_no_enabled_language_can_declare, spec_subfolder_not_allowed, unreachable_scope,
+    walk_scope_with_boundaries,
 };
 use decisions::{
     decision_documents_out_of_date, decision_nobody_enforces, decisions_left_unsaid,
@@ -200,6 +202,122 @@ fn facts_covered<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rule asking only for forms nobody enabled can never pass.
+    ///
+    /// Decision 31's other half. Without it a rule wanting a `struct` over a
+    /// `.ts` file reports the file for exporting a `const`, which reads like a
+    /// naming mistake and is a configuration one.
+    #[test]
+    fn a_kind_no_enabled_language_declares_is_a_concern() {
+        let rule = rule(
+            "rust-shaped",
+            &["src/*"],
+            CompiledRuleKind::Naming {
+                file_pattern: Pattern::compile("^(?<name>.+)$").expect("valid"),
+                dir_pattern: None,
+                name_template: "{{pascal(name)}}".to_owned(),
+                kind: KindFilter::OneOf(ExportTags::only(ExportKind::Struct)),
+                annotation: Vec::new(),
+                signature_hint: None,
+            },
+        );
+
+        let concerns = examine(&config(vec![rule]));
+
+        assert_eq!(concerns.len(), 1, "{concerns:?}");
+        assert_eq!(concerns[0].code, "kind-no-language-declares");
+        assert!(
+            concerns[0].message.contains("`struct`"),
+            "it names the form"
+        );
+        assert!(concerns[0].message.contains("`ts`"), "and what is enabled");
+    }
+
+    /// The concern names every language the config reads, not only the default.
+    ///
+    /// Found by mutation testing: deleting the `astro` and `rust` arms of the
+    /// message broke nothing, because the only test enabled neither. A message
+    /// that named the wrong set would send somebody to add a language they
+    /// already have.
+    #[test]
+    fn the_concern_names_the_languages_the_config_actually_reads() {
+        let rule = rule(
+            "rust-shaped-again",
+            &["src/*"],
+            CompiledRuleKind::Naming {
+                file_pattern: Pattern::compile("^(?<name>.+)$").expect("valid"),
+                dir_pattern: None,
+                name_template: "{{pascal(name)}}".to_owned(),
+                kind: KindFilter::OneOf(ExportTags::only(ExportKind::Struct)),
+                annotation: Vec::new(),
+                signature_hint: None,
+            },
+        );
+
+        // Astro on and Rust off: `struct` is still unreachable, and the
+        // message has two languages to name rather than one.
+        let compiled = config(vec![rule]).with_languages(archwarden_core::compiled::Languages {
+            astro: true,
+            rust: false,
+        });
+        let concerns = examine(&compiled);
+
+        assert_eq!(concerns.len(), 1, "{concerns:?}");
+        let message = &concerns[0].message;
+        assert!(message.contains("`ts`"), "{message}");
+        assert!(message.contains("`astro`"), "{message}");
+        assert!(
+            !message.contains("`rust`"),
+            "and does not name one nobody turned on: {message}"
+        );
+    }
+
+    /// A rule naming one form per language is a rule spanning both trees on
+    /// purpose, and is left alone.
+    ///
+    /// The case a Tauri repository writes deliberately: `["const", "struct"]`
+    /// over `src/**` and `src-tauri/src/**`, each half satisfying the form its
+    /// own language spells. Reporting it would make the honest way to write
+    /// one rule for two languages look like a mistake.
+    #[test]
+    fn a_kind_naming_a_form_from_each_language_is_not_a_concern() {
+        let rule = rule(
+            "both-trees",
+            &["src/*"],
+            CompiledRuleKind::Naming {
+                file_pattern: Pattern::compile("^(?<name>.+)$").expect("valid"),
+                dir_pattern: None,
+                name_template: "{{pascal(name)}}".to_owned(),
+                kind: KindFilter::OneOf(
+                    ExportTags::only(ExportKind::Struct).with(ExportKind::Const),
+                ),
+                annotation: Vec::new(),
+                signature_hint: None,
+            },
+        );
+
+        assert!(examine(&config(vec![rule])).is_empty());
+    }
+
+    /// A rule asking for any form at all is asking for nothing unreachable.
+    #[test]
+    fn a_rule_naming_no_kind_is_not_a_concern() {
+        let rule = rule(
+            "any",
+            &["src/*"],
+            CompiledRuleKind::Naming {
+                file_pattern: Pattern::compile("^(?<name>.+)$").expect("valid"),
+                dir_pattern: None,
+                name_template: "{{pascal(name)}}".to_owned(),
+                kind: KindFilter::Any,
+                annotation: Vec::new(),
+                signature_hint: None,
+            },
+        );
+
+        assert!(examine(&config(vec![rule])).is_empty());
+    }
     use archwarden_core::compiled::{CompiledRuleKind, SkipScope};
     use archwarden_core::facts::{ExportKind, ExportTags, KindFilter};
     use archwarden_core::{

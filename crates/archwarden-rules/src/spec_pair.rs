@@ -793,6 +793,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(index, kind)| ExportFact {
+                    attributes: Vec::new(),
                     visibility: archwarden_core::facts::Visibility::Public,
                     name: Some(format!("Thing{index}")),
                     tags: ExportTags::only(*kind),
@@ -1309,6 +1310,7 @@ mod tests {
             facts.calls = callees
                 .iter()
                 .map(|callee| CallFact {
+                    arguments: Vec::new(),
                     callee: (*callee).to_owned(),
                     span: Span::new(0, 1),
                 })

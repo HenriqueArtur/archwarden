@@ -1,6 +1,7 @@
 //! One rule of the wire format, lowered into one compiled rule.
 
 use archwarden_core::compiled::{CompiledRule, CompiledRuleKind};
+use archwarden_core::scope::Scope;
 
 use crate::rule::Rule;
 
@@ -32,6 +33,22 @@ pub(super) fn compile_rule(
     let scope = compile_scope(rule, &id, modules, inside)?;
 
     let kind = match rule {
+        Rule::CallMatchesExport(r) => CompiledRuleKind::CallMatchesExport {
+            callee: require_name(&id, &r.callee)?,
+            argument: r.argument,
+            declared_in: Scope::compile(r.declared_in.iter()).map_err(|source| {
+                CompileError::Scope {
+                    rule: id.clone(),
+                    source,
+                }
+            })?,
+            attribute: r
+                .attribute
+                .as_deref()
+                .map(|name| require_name(&id, name))
+                .transpose()?,
+            report_uncalled: r.report_uncalled,
+        },
         Rule::Structure(r) => CompiledRuleKind::Structure {
             allowed_subfolders: r.allowed_subfolders.clone(),
             warn_subfolders: r.warn_subfolders.clone(),

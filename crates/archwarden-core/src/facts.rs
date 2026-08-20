@@ -128,6 +128,66 @@ impl ExportKind {
         Self::ALL.into_iter().find(|k| k.as_str() == name)
     }
 
+    /// Whether a file in this language can declare an export of this form.
+    ///
+    /// Decision 31 split the vocabulary by language deliberately, and this is
+    /// the other half of that: a rule asking for a `struct` over a `.ts` file
+    /// is asking for something the language cannot spell, and the file is
+    /// reported for exporting a `const` instead. That reads like a naming
+    /// mistake and is a configuration mistake.
+    ///
+    /// Three forms are shared because they *are* the same thing in both
+    /// languages, which is why they kept one spelling.
+    ///
+    /// Exhaustive on purpose: a kind added without an answer does not compile,
+    /// and a language added to [`crate::path::Language`] fails here too.
+    #[allow(
+        clippy::match_same_arms,
+        reason = "the arms answer for different languages and happen to agree. \
+                  Merging them loses the exhaustiveness that is the point: a \
+                  form added without an answer, or a language added to \
+                  `Language`, has to fail to compile rather than default"
+    )]
+    #[must_use]
+    pub fn produced_by(self, language: crate::path::Language) -> bool {
+        use crate::path::Language;
+
+        match (self, language) {
+            // Shared: the same declaration under the same name.
+            (Self::Const | Self::Type | Self::Enum, _) => true,
+            // JavaScript and TypeScript, which Astro's fence is.
+            (
+                Self::Function
+                | Self::Arrow
+                | Self::Let
+                | Self::Var
+                | Self::Class
+                | Self::Interface
+                | Self::Reexport,
+                Language::Ts | Language::Astro,
+            ) => true,
+            (
+                Self::Function
+                | Self::Arrow
+                | Self::Let
+                | Self::Var
+                | Self::Class
+                | Self::Interface
+                | Self::Reexport,
+                Language::Rust,
+            ) => false,
+            // Rust.
+            (
+                Self::Fn | Self::Struct | Self::Trait | Self::Static | Self::Mod | Self::Macro,
+                Language::Rust,
+            ) => true,
+            (
+                Self::Fn | Self::Struct | Self::Trait | Self::Static | Self::Mod | Self::Macro,
+                Language::Ts | Language::Astro,
+            ) => false,
+        }
+    }
+
     /// This kind's bit in an [`ExportTags`] set.
     ///
     /// `u32` since decision 31: ten JavaScript forms and six Rust ones is
@@ -326,6 +386,19 @@ pub struct ExportFact {
     pub name: Option<String>,
     /// How it was declared.
     pub tags: ExportTags,
+    /// The attributes written on the declaration, as paths.
+    ///
+    /// `#[tauri::command]` is `tauri::command`; `#[test]` is `test`. Arguments
+    /// are not carried — `#[serde(rename = "x")]` is `serde` — because the
+    /// question a rule asks of an attribute is whether it is *there*, and
+    /// reading inside one is a second grammar with a second set of ways to be
+    /// wrong.
+    ///
+    /// Empty for JavaScript, which has no such thing. A decorator is a
+    /// different shape and would be a different field, since it is an
+    /// expression rather than a path.
+    #[serde(default)]
+    pub attributes: Vec<String>,
     /// How far it is visible.
     ///
     /// `Public` for every JavaScript export, which is the only visibility that
@@ -414,6 +487,20 @@ pub struct CallFact {
     /// The callee as written at the call site, e.g. `Event.save`. Method
     /// chains are recorded verbatim and matched exactly.
     pub callee: String,
+    /// The string literals the call was given, in argument order.
+    ///
+    /// `None` in a position holds an argument that is not a string literal —
+    /// a variable, an expression, a template with an interpolation in it. It
+    /// is recorded as absent rather than guessed, on the same terms as
+    /// [`FileFacts::has_opaque_import`]: inventing a value for something the
+    /// reader cannot see makes a rule report an edge nobody wrote.
+    ///
+    /// Carried because some calls mean nothing without them. `invoke("greet")`
+    /// has the callee `invoke` for every command in a Tauri application, and
+    /// the string is the entire content; so does `t("checkout.title")` against
+    /// a translation catalogue, and a feature flag key, and a job name.
+    #[serde(default)]
+    pub arguments: Vec<Option<String>>,
     /// Where it appears in the source.
     pub span: Span,
 }
@@ -749,6 +836,7 @@ mod tests {
             ..export("X", ExportTags::only(ExportKind::Const))
         });
         facts.calls.push(CallFact {
+            arguments: Vec::new(),
             callee: "f".to_owned(),
             span: Span::new(40, 50),
         });
@@ -766,6 +854,7 @@ mod tests {
     fn an_offset_that_would_overflow_leaves_the_span_alone() {
         let mut facts = FileFacts::unparsed(path(), ContentHash::of(b""));
         facts.calls.push(CallFact {
+            arguments: Vec::new(),
             callee: "f".to_owned(),
             span: Span::new(u32::MAX - 1, u32::MAX),
         });
@@ -846,6 +935,69 @@ mod tests {
         }
     }
 
+    /// Every form belongs to a language, and the shared ones belong to both.
+    ///
+    /// The table decision 31 implies, asserted rather than described. A rule
+    /// asking for a `struct` over a `.ts` file is asking for something the
+    /// language cannot spell -- and without this the file is reported for
+    /// exporting a `const`, which reads like a naming mistake and is a
+    /// configuration mistake.
+    #[test]
+    fn every_form_says_which_languages_can_declare_it() {
+        use crate::path::Language;
+
+        for kind in [ExportKind::Const, ExportKind::Type, ExportKind::Enum] {
+            assert!(kind.produced_by(Language::Ts), "{kind} is shared");
+            assert!(kind.produced_by(Language::Rust), "{kind} is shared");
+        }
+
+        for kind in [
+            ExportKind::Function,
+            ExportKind::Arrow,
+            ExportKind::Let,
+            ExportKind::Var,
+            ExportKind::Class,
+            ExportKind::Interface,
+            ExportKind::Reexport,
+        ] {
+            assert!(kind.produced_by(Language::Ts), "{kind}");
+            assert!(kind.produced_by(Language::Astro), "{kind}: the fence is TS");
+            assert!(!kind.produced_by(Language::Rust), "{kind} is not Rust");
+        }
+
+        for kind in [
+            ExportKind::Fn,
+            ExportKind::Struct,
+            ExportKind::Trait,
+            ExportKind::Static,
+            ExportKind::Mod,
+            ExportKind::Macro,
+        ] {
+            assert!(kind.produced_by(Language::Rust), "{kind}");
+            assert!(!kind.produced_by(Language::Ts), "{kind} is not TypeScript");
+            assert!(!kind.produced_by(Language::Astro), "{kind}");
+        }
+    }
+
+    /// Every form is claimed by at least one language.
+    ///
+    /// A kind nobody can declare is a spelling a config may name and no file
+    /// can satisfy -- the shape of a rule that enforces nothing while looking
+    /// like it enforces something.
+    #[test]
+    fn no_form_is_orphaned() {
+        use crate::path::Language;
+
+        for kind in ExportKind::ALL {
+            assert!(
+                [Language::Ts, Language::Astro, Language::Rust]
+                    .into_iter()
+                    .any(|language| kind.produced_by(language)),
+                "`{kind}` is a form no language in this build can declare"
+            );
+        }
+    }
+
     /// A language with one visibility gets the one it has.
     #[test]
     fn public_is_the_default_because_javascript_has_no_other() {
@@ -899,6 +1051,7 @@ mod tests {
 
     fn export(name: &str, tags: ExportTags) -> ExportFact {
         ExportFact {
+            attributes: Vec::new(),
             name: Some(name.to_owned()),
             tags,
             visibility: Visibility::Public,
@@ -1083,6 +1236,7 @@ mod tests {
             span: Span::new(0, 30),
         });
         facts.calls.push(CallFact {
+            arguments: Vec::new(),
             callee: "Event.save".to_owned(),
             span: Span::new(40, 52),
         });

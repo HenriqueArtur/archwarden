@@ -293,6 +293,36 @@ pub enum CompiledRuleKind {
         /// The module the symbol must come from.
         imported_from: String,
     },
+    /// Two vocabularies that have to agree: every name called here is
+    /// declared there, and every name declared there is called.
+    ///
+    /// The seam a Tauri application is joined by. `invoke("save_document")`
+    /// and `#[tauri::command] fn save_document` are the same edge and there is
+    /// no import between them -- the coupling is a string on one side and an
+    /// attribute on the other, in different languages, checked by nothing until
+    /// a user clicks the button.
+    ///
+    /// Deliberately not a `tauri` rule. A framework in the engine is a
+    /// framework the engine has to keep up with; the shape is general and
+    /// Tauri is its first instance. `t("checkout.title")` against a catalogue
+    /// and a feature-flag key are the same question.
+    CallMatchesExport {
+        /// The callee whose argument names something, e.g. `invoke`.
+        callee: String,
+        /// Which argument holds the name. Zero-based.
+        argument: usize,
+        /// Where the declarations live.
+        declared_in: Scope,
+        /// The attribute a declaration carries to be one, e.g.
+        /// `tauri::command`. `None` accepts any export in scope.
+        attribute: Option<String>,
+        /// Whether a declaration nobody calls is reported.
+        ///
+        /// Off by default: a command called only from a language archwarden
+        /// does not read is not dead, and reporting it would be confident about
+        /// something the run cannot see.
+        report_uncalled: bool,
+    },
     /// What a file exposes, said without reference to what it is called.
     ExportShape(ExportShape),
     /// A directory that has stopped growing.
@@ -328,6 +358,7 @@ impl CompiledRuleKind {
             Self::Frontmatter { .. } => "frontmatter",
             Self::Metadata { .. } => "metadata",
             Self::CallObligation { .. } => "call-obligation",
+            Self::CallMatchesExport { .. } => "call-matches-export",
             Self::ExportShape(_) => "export-shape",
             Self::Frozen => "frozen",
             Self::Mirror { .. } => "mirror",
@@ -360,7 +391,11 @@ impl CompiledRuleKind {
                 skip_type_only,
                 ..
             } => *require_non_empty_spec || *skip_type_only,
-            Self::Naming { .. }
+            // `CallMatchesExport` joins them because both its sides are facts:
+            // the calls in one file and the exports in another, and every file
+            // in either scope has to be read for the two to be compared.
+            Self::CallMatchesExport { .. }
+            | Self::Naming { .. }
             | Self::ImportBoundary { .. }
             | Self::ImportCycle { .. }
             | Self::CallObligation { .. }
@@ -931,6 +966,27 @@ mod tests {
     /// The modules a config declared travel with it, because two questions
     /// need them and neither belongs to a rule: whether a module reaches any
     /// file, and whether anything references it. Issue #74.
+    /// The new kind names itself and says it must be read.
+    ///
+    /// Both halves of a `call-matches-export` are facts -- the calls in one
+    /// file and the exports in another -- so every file in either scope is
+    /// opened. Asserted because `needs_parse` is what keeps a structural
+    /// configuration off the disk, and a kind answering it wrongly either
+    /// reads a repository it did not have to or reports nothing at all.
+    #[test]
+    fn a_call_matching_rule_names_itself_and_has_to_be_read() {
+        let kind = CompiledRuleKind::CallMatchesExport {
+            callee: "invoke".to_owned(),
+            argument: 0,
+            declared_in: Scope::compile(["backend/**"]).expect("valid scope"),
+            attribute: Some("tauri::command".to_owned()),
+            report_uncalled: false,
+        };
+
+        assert_eq!(kind.type_name(), "call-matches-export");
+        assert!(kind.needs_parse());
+    }
+
     #[test]
     fn the_modules_a_configuration_declared_travel_with_it() {
         let declared = vec![

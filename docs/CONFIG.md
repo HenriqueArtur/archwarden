@@ -931,6 +931,18 @@ exports, and a file that declares a stability carries a deadline where it needs
 one. Barrels — `mod.rs`, `lib.rs`, `main.rs` — are exempt from both of the
 first two by construction, so nothing has to list them.
 
+`presets/tauri.json` is the same package, and is the rule set this whole
+milestone exists for: every `invoke("...")` in `src/` names a
+`#[tauri::command]` in `src-tauri/src/`, and commands live in one folder.
+
+```json
+{
+  "version": 0,
+  "languages": ["rust"],
+  "extends": ["./node_modules/archwarden/presets/tauri.json"]
+}
+```
+
 **`languages` has to be in your config, not only in the preset.** A preset
 declaring it is currently ignored — `languages` is neither concatenated nor
 taken from the preset — and every rule in it comes back as a *skipped check*
