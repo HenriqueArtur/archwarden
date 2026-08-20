@@ -113,6 +113,11 @@ impl OxcParser {
         Ok(FileFacts {
             path: path.clone(),
             content_hash,
+            // JavaScript's tests are a sibling file, so the question this
+            // answers is about the directory rather than about this file, and
+            // `spec-pair` asks it there. Zero is not "no tests" -- it is "this
+            // is not where they live".
+            inline_tests: 0,
             imports,
             exports: exports(
                 &parsed.module_record,

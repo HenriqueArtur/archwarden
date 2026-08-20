@@ -13,7 +13,7 @@ use archwarden_core::{
     glob::PathSet,
     ids::{ModuleId, RuleId},
     level::Level,
-    path::{FileClass, RepoRelPath},
+    path::{FileClass, RepoRelPath, TestLocation},
     scope::Scope,
     traits::{FactsNeeded, FileContext, RuleEngine},
 };
@@ -23,7 +23,18 @@ use archwarden_core::{
 /// Baked in rather than configurable, as `docs/RULES.md` specifies. A rule
 /// that made you list these would make every config longer for no choice
 /// anyone wants to make differently.
-const ALWAYS_EXEMPT: [&str; 4] = ["index.ts", "index.tsx", "index.js", "index.jsx"];
+const ALWAYS_EXEMPT: [&str; 7] = [
+    "index.ts",
+    "index.tsx",
+    "index.js",
+    "index.jsx",
+    // Rust's barrels. `mod.rs` and `lib.rs` declare modules and re-export;
+    // `main.rs` is four lines over a `run`. None of them holds behaviour of
+    // its own, which is the same argument `index.ts` is here on.
+    "mod.rs",
+    "lib.rs",
+    "main.rs",
+];
 
 /// A compiled `spec-pair` rule.
 #[derive(Debug, Clone)]
@@ -40,12 +51,43 @@ pub struct SpecPairEngine {
     spec_dirs: Vec<String>,
     require_non_empty_spec: bool,
     skip_type_only: bool,
+    /// Whether the configuration turned on a language whose tests live inside
+    /// the unit.
+    ///
+    /// Only `needs_facts` reads it, and only to answer honestly. This rule
+    /// otherwise opens no file at all, and a JavaScript-only repository keeps
+    /// that -- but a unit whose test is a `#[cfg(test)]` module cannot be
+    /// judged without reading it, so a config that asked for Rust pays for a
+    /// parse. Passed in from `engines_for`, which has the compiled config;
+    /// the rule cannot know from its own shape which languages it will see.
+    reads_inline_tests: bool,
+}
+
+/// What a `spec-pair` rule asks beyond "a test exists".
+///
+/// Three flags in a struct rather than three arguments, which clippy refused
+/// at eight and was right to: `build(rule, a, b, c, d, false, false, true)` is
+/// a call nobody can read, and the three trailing booleans are the part that
+/// changes what the rule means.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Demands {
+    /// The spec file must contain at least one test case.
+    pub(crate) non_empty_spec: bool,
+    /// A file whose exports are all types needs no test.
+    pub(crate) skip_type_only: bool,
+    /// The configuration turned on a language whose tests live inside the
+    /// unit, so this rule has to read the file to judge it.
+    pub(crate) inline_tests: bool,
 }
 
 impl SpecPairEngine {
     /// Builds an engine from a compiled rule.
     ///
     /// Returns `None` for a rule of any other kind.
+    ///
+    /// Never reads inline tests: this constructor has a rule and not a config,
+    /// and which languages are on is the config's answer. `engines_for` is the
+    /// path that knows, and it is the path a run takes.
     #[must_use]
     pub fn from_rule(rule: &CompiledRule) -> Option<Self> {
         let CompiledRuleKind::SpecPair {
@@ -66,8 +108,11 @@ impl SpecPairEngine {
             spec_markers,
             ignore_files,
             spec_dirs,
-            *require_non_empty_spec,
-            *skip_type_only,
+            Demands {
+                non_empty_spec: *require_non_empty_spec,
+                skip_type_only: *skip_type_only,
+                inline_tests: false,
+            },
         ))
     }
 
@@ -84,8 +129,7 @@ impl SpecPairEngine {
         spec_markers: &[String],
         ignore_files: &PathSet,
         spec_dirs: &[String],
-        require_non_empty_spec: bool,
-        skip_type_only: bool,
+        demands: Demands,
     ) -> Self {
         Self {
             id: rule.id.clone(),
@@ -96,8 +140,9 @@ impl SpecPairEngine {
             spec_markers: spec_markers.to_vec(),
             ignore_files: ignore_files.clone(),
             spec_dirs: spec_dirs.to_vec(),
-            require_non_empty_spec,
-            skip_type_only,
+            require_non_empty_spec: demands.non_empty_spec,
+            skip_type_only: demands.skip_type_only,
+            reads_inline_tests: demands.inline_tests,
         }
     }
 
@@ -222,13 +267,10 @@ impl SpecPairEngine {
         // Only a language whose tests sit beside the unit is subject to this
         // rule. That keeps it off `DOC.md`, `package.json` and images without
         // anyone listing them -- and off a language that tests some other way,
-        // which `FileClass::Source` alone would not.
-        //
-        // The two questions read the same today and are not the same question.
-        // Rust is readable source whose unit tests live in a `#[cfg(test)]`
-        // module *inside* the file, so `class == Source` would have this rule
-        // demanding `create_client.spec.rs` the day the front-end lands.
-        if !FileClass::pairs_with_sibling_spec(name) {
+        // which `FileClass::Source` alone would not: a language that tests
+        // some other way is asked for that other way, and one that is not a
+        // unit at all is exempt.
+        if FileClass::tests_live(name).is_none() {
             return true;
         }
         if ALWAYS_EXEMPT.contains(&name) {
@@ -271,6 +313,56 @@ impl SpecPairEngine {
     /// need the file's exports, and a directory listing is only names. The
     /// inputs are otherwise the same: this file, and what else is in the
     /// folder.
+    /// Reports a unit whose language tests inside the file and which carries
+    /// no test.
+    ///
+    /// There is no sibling to look for and nothing to say about a spec file,
+    /// so the two halves of the sibling form collapse into one question: does
+    /// this file have a test in it?
+    ///
+    /// A `#[cfg(test)]` module with nothing in it does not count, which is the
+    /// same line `require_non_empty_spec` draws on the other side — and it is
+    /// drawn here unconditionally rather than behind a flag, because an inline
+    /// module is trivially addable and an empty one is the only way to satisfy
+    /// this rule without writing a test.
+    fn missing_inline_test(&self, name: &str, ctx: FileContext<'_>) -> Vec<Finding> {
+        if self.is_exempt(ctx.path, name) {
+            return Vec::new();
+        }
+
+        // Absent facts mean the file could not be read, which the run already
+        // counts as a check nobody could make. Reporting it here as well would
+        // say the file has no test when what happened is that nobody looked.
+        let Some(facts) = ctx.facts else {
+            return Vec::new();
+        };
+        if self.skip_type_only && facts.exports.is_empty() {
+            return Vec::new();
+        }
+        if facts.inline_tests > 0 {
+            return Vec::new();
+        }
+
+        vec![Finding {
+            rule_id: self.id.clone(),
+            module_id: self.module.clone(),
+            level: self.level,
+            path: ctx.path.clone(),
+            span: None,
+            observed: Observed::SpecIsEmpty {
+                path: ctx.path.clone(),
+            },
+            expected: Expectation::RequiredSibling {
+                path: ctx.path.clone(),
+                // The file itself is where the test goes, and it has to hold
+                // one -- an empty `#[cfg(test)]` module is the only way to
+                // satisfy this rule without writing a test, so the demand is
+                // never merely "a module exists".
+                non_empty_spec: true,
+            },
+        }]
+    }
+
     fn missing_sibling(
         &self,
         parent: &RepoRelPath,
@@ -371,7 +463,7 @@ impl RuleEngine for SpecPairEngine {
     }
 
     fn needs_facts(&self) -> FactsNeeded {
-        if self.require_non_empty_spec || self.skip_type_only {
+        if self.require_non_empty_spec || self.skip_type_only || self.reads_inline_tests {
             FactsNeeded::Code
         } else {
             FactsNeeded::Nothing
@@ -395,7 +487,10 @@ impl RuleEngine for SpecPairEngine {
         }
 
         if !self.is_spec(name) {
-            return self.missing_sibling(&parent, name, ctx);
+            return match FileClass::tests_live(name) {
+                Some(TestLocation::Inline) => self.missing_inline_test(name, ctx),
+                _ => self.missing_sibling(&parent, name, ctx),
+            };
         }
         if !self.require_non_empty_spec {
             return Vec::new();
@@ -454,6 +549,144 @@ mod tests {
     use archwarden_core::traits::Exists;
 
     use super::*;
+
+    fn rust_engine() -> SpecPairEngine {
+        let rule = CompiledRule {
+            id: RuleId::new("tested").expect("valid id"),
+            module: None,
+            why: None,
+            module_why: None,
+            decision: None,
+            imports: None,
+            level: Level::Error,
+            scope: Scope::compile(["src/*"]).expect("valid scope"),
+            kind: CompiledRuleKind::SpecPair {
+                subfolders: owned(&["."]),
+                spec_markers: owned(&["spec"]),
+                ignore_files: PathSet::default(),
+                spec_dirs: Vec::new(),
+                require_non_empty_spec: false,
+                skip_type_only: false,
+            },
+        };
+
+        SpecPairEngine::build(
+            &rule,
+            &owned(&["."]),
+            &owned(&["spec"]),
+            &PathSet::default(),
+            &[],
+            Demands {
+                non_empty_spec: false,
+                skip_type_only: false,
+                // The flag `engines_for` sets from the compiled config.
+                inline_tests: true,
+            },
+        )
+    }
+
+    fn rust_facts(path: &str, inline_tests: usize) -> FileFacts {
+        let mut facts = FileFacts::unparsed(
+            RepoRelPath::new(path).expect("a path"),
+            archwarden_core::hash::ContentHash::of(b""),
+        );
+        facts.inline_tests = inline_tests;
+        facts
+    }
+
+    fn judged(engine: &SpecPairEngine, path: &str, inline_tests: usize) -> Vec<Finding> {
+        let file = RepoRelPath::new(path).expect("a path");
+        let facts = rust_facts(path, inline_tests);
+
+        engine.check_file(FileContext {
+            path: &file,
+            facts: Some(&facts),
+            docs: None,
+            siblings: &[],
+            exists: Exists::none(),
+            graph: None,
+            as_of: archwarden_core::date::Date::EPOCH,
+        })
+    }
+
+    /// A Rust unit is judged by what is inside it, not by what sits beside it.
+    ///
+    /// The rule means "every unit has a test"; where a test lives is the
+    /// language's business. Demanding `unit.spec.rs` would fail every Rust file
+    /// in a repository for a convention the language does not have -- and the
+    /// siblings list here is empty, so nothing beside the file could satisfy it.
+    #[test]
+    fn a_rust_unit_is_asked_for_a_test_inside_itself() {
+        assert!(
+            judged(&rust_engine(), "src/thing/unit.rs", 1).is_empty(),
+            "a test inside the file satisfies it, with no sibling anywhere"
+        );
+    }
+
+    /// An empty `#[cfg(test)]` module is the only way to satisfy this rule
+    /// without writing a test, so it does not satisfy it.
+    ///
+    /// The same line `require_non_empty_spec` draws by refusing to count
+    /// `describe`, drawn here unconditionally: an inline module is trivially
+    /// addable, and a flag guarding it would make the default the useless one.
+    #[test]
+    fn a_rust_unit_with_no_test_in_it_is_reported() {
+        let findings = judged(&rust_engine(), "src/thing/unit.rs", 0);
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(matches!(findings[0].observed, Observed::SpecIsEmpty { .. }));
+    }
+
+    /// Rust's barrels are exempt, on the same argument `index.ts` is.
+    ///
+    /// Each asserted separately: they are three entries in a list, and a test
+    /// naming one passes while the other two fall out of it.
+    #[test]
+    fn the_rust_barrels_are_exempt() {
+        for name in ["mod.rs", "lib.rs", "main.rs"] {
+            assert!(
+                judged(&rust_engine(), &format!("src/thing/{name}"), 0).is_empty(),
+                "{name} declares modules and holds no behaviour of its own"
+            );
+        }
+    }
+
+    /// A file that could not be read is a check nobody could make, not a file
+    /// with no test.
+    #[test]
+    fn a_rust_unit_with_no_facts_is_not_reported_as_untested() {
+        let file = RepoRelPath::new("src/thing/unit.rs").expect("a path");
+
+        assert!(
+            rust_engine()
+                .check_file(FileContext {
+                    path: &file,
+                    facts: None,
+                    docs: None,
+                    siblings: &[],
+                    exists: Exists::none(),
+                    graph: None,
+                    as_of: archwarden_core::date::Date::EPOCH,
+                })
+                .is_empty(),
+            "the run counts this as a skipped check; saying `no test` would be \
+             a different and wrong sentence"
+        );
+    }
+
+    /// The rule opens no file until a language that needs it is turned on.
+    ///
+    /// `spec-pair` otherwise reads nothing at all, and a JavaScript-only
+    /// repository keeps that.
+    #[test]
+    fn facts_are_asked_for_only_where_tests_live_inside_the_file() {
+        assert_eq!(rust_engine().needs_facts(), FactsNeeded::Code);
+        assert_eq!(
+            engine(&["src/*"], &["."], &[]).needs_facts(),
+            FactsNeeded::Nothing,
+            "and a rule that will see no such language still opens nothing"
+        );
+    }
     use archwarden_core::facts::FileFacts;
 
     fn path(p: &str) -> RepoRelPath {
@@ -552,6 +785,7 @@ mod tests {
         use archwarden_core::facts::{ExportFact, ExportTags, Span};
 
         FileFacts {
+            inline_tests: 0,
             path: path("x.ts"),
             content_hash: archwarden_core::hash::ContentHash::of(b""),
             imports: Vec::new(),

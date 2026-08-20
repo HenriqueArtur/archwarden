@@ -306,6 +306,7 @@ mod tests {
 
     fn facts(path_str: &str, imports: &[&str], exports: Vec<ExportFact>) -> FileFacts {
         FileFacts {
+            inline_tests: 0,
             path: path(path_str),
             content_hash: archwarden_core::hash::ContentHash::of(b""),
             imports: vec![ImportFact {

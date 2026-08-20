@@ -650,6 +650,18 @@ pub struct FileFacts {
     /// there is "these ones, and I cannot see inside that one".
     #[serde(default)]
     pub has_opaque_import: bool,
+    /// How many tests the file carries inside itself.
+    ///
+    /// Zero for a language whose tests are a sibling file, where the question
+    /// is about the directory rather than about this file. Rust's unit tests
+    /// are a `#[cfg(test)] mod tests` *inside* the unit, so `spec-pair` asks
+    /// this of the file instead of looking beside it.
+    ///
+    /// A count rather than a flag, for the reason `require_non_empty_spec`
+    /// refuses to count `describe`: an empty `#[cfg(test)] mod tests {}`
+    /// satisfies the letter of the convention and tests nothing.
+    #[serde(default)]
+    pub inline_tests: usize,
 }
 
 impl FileFacts {
@@ -698,6 +710,7 @@ impl FileFacts {
             allowances: Vec::new(),
             metadata: Vec::new(),
             has_opaque_import: false,
+            inline_tests: 0,
         }
     }
 

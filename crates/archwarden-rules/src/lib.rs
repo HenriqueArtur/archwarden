@@ -95,8 +95,15 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                     spec_markers,
                     ignore_files,
                     spec_dirs,
-                    *require_non_empty_spec,
-                    *skip_type_only,
+                    spec_pair::Demands {
+                        non_empty_spec: *require_non_empty_spec,
+                        skip_type_only: *skip_type_only,
+                        // A language whose tests live inside the unit cannot be
+                        // judged without reading it. Asked of the config rather
+                        // than of the rule, because the rule cannot know from
+                        // its own shape which languages its scope will reach.
+                        inline_tests: config.languages().rust,
+                    },
                 )),
                 CompiledRuleKind::Naming {
                     file_pattern,

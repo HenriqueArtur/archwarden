@@ -1400,6 +1400,7 @@ mod tests {
 
         let mut offset = 0u32;
         archwarden_core::facts::FileFacts {
+            inline_tests: 0,
             path: path(path_str),
             content_hash: archwarden_core::hash::ContentHash::of(b""),
             imports: imports
