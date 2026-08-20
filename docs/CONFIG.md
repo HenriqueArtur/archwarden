@@ -509,6 +509,51 @@ A scope matching no directory is a **warning** — `decision-scope-matches-nothi
 files enforces nothing and that is a hole; a decision with no files is still
 written down and still true. What it has lost is the way it arrives unprompted.
 
+#### Finding one before you propose against it
+
+`alternatives` records what lost and why, and `config explain` ends with **"Do
+not propose it again."** — which it can only say to somebody who already knows
+the id. The person about to propose the losing option is, by definition, not
+that person, and will name it differently from whoever rejected it: *single
+layer*, *monolith*, *one package* and *just put it together* are the same
+option under four names.
+
+```
+$ archwarden decisions find camada unica
+2 places mention `camada unica`:
+
+  ADR-001 — Quatro camadas, mais o System
+    title  "Quatro camadas, mais o System"
+      `camada` prefix of `camadas`
+    alternatives[0].option  "uma única camada"
+      `camada` exact
+      `unica` exact
+```
+
+It says **why it matched**, never a score: exact, a prefix, or how many
+characters off. The same contract a finding keeps — a reader adjusts the query
+by reading the answer, rather than trusting a number they cannot inspect.
+Accents and case are ignored on both sides, which is not optional for a
+bilingual repository, since nobody types the accent into a query.
+
+Every match, in declaration order, with no ranking and no top-N. The corpus is
+a hundred short strings, so returning eight instead of three is free — and the
+errors are asymmetric: a false negative means the rejected option gets proposed
+again, which is the exact failure `alternatives` exists to prevent, while a
+false positive costs two seconds of reading. `--format json` for the same
+answer as data, and the MCP tool `decisions_find` for an agent.
+
+`config doctor` asks the same question in the other direction:
+`decision-may-duplicate` reports two decisions that appear to say the same
+thing, catching the duplicate at the moment it is written rather than waiting
+to be asked. That check is **stricter** than the command, and deliberately: the
+command answers a person who will read what comes back, while the concern lives
+in a gate, and a gate that cries wolf is one somebody turns off. It compares
+only the fields that *name* something — titles and rejected options, never the
+prose — and requires every word of the shorter phrase to be reached. A decision
+that `supersedes` another is exempt: saying the same thing twice is what
+superseding is.
+
 #### Presets ship decisions
 
 `extends` folds them the way it folds rules: concatenated, presets first. Two

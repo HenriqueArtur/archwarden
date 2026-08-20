@@ -347,3 +347,62 @@ pub(super) fn decision_scope_matches_nothing(
         });
     }
 }
+
+/// Whether the first decision is a successor of the second.
+///
+/// Asked of both fields. `supersedes` is what an author writes and
+/// `superseded_by` is computed from it, so in a compiled config they agree --
+/// but reading only one would make this check depend on which of the two the
+/// compiler happened to fill.
+fn succeeds(
+    decision: &archwarden_core::compiled::CompiledDecision,
+    other: &archwarden_core::compiled::CompiledDecision,
+) -> bool {
+    decision.supersedes.contains(&other.id) || other.superseded_by.contains(&decision.id)
+}
+
+/// Two decisions that appear to say the same thing.
+///
+/// The push half of issue #162, and the valuable half: it catches the
+/// duplicate at the moment it is written, where `decisions find` waits to be
+/// asked by somebody who already suspects. `doctor` is already in the gate.
+///
+/// A warning. Two decisions naming the same option is often deliberate -- one
+/// supersedes the other, or they are about different scopes -- and only the
+/// author can tell. What the concern is for is the case where nobody knew.
+pub(super) fn decision_may_duplicate(config: &CompiledConfig, concerns: &mut Vec<Concern>) {
+    for duplicate in archwarden_api::similar::duplicates(config) {
+        // Superseding is the sanctioned way to say the same thing twice: one
+        // decision is *about* the other, and reporting the pair would punish
+        // recording the succession.
+        //
+        // Either direction, because `earlier` and `later` here are declaration
+        // order and a config is free to list the superseding decision first --
+        // which a config written newest-first does by default.
+        if succeeds(duplicate.later, duplicate.earlier)
+            || succeeds(duplicate.earlier, duplicate.later)
+        {
+            continue;
+        }
+
+        concerns.push(Concern {
+            code: "decision-may-duplicate",
+            level: Level::Warning,
+            rule_id: None,
+            path: None,
+            message: format!(
+                "`{}` {} and `{}` {} both say `{}`",
+                duplicate.later.id,
+                duplicate.later_at.path(),
+                duplicate.earlier.id,
+                duplicate.earlier_at.path(),
+                duplicate.text,
+            ),
+            fix: "if one supersedes the other, say so with `supersedes` -- \
+                  otherwise reword whichever is about something else, because \
+                  two decisions under one name is two answers to the same \
+                  question"
+                .to_owned(),
+        });
+    }
+}

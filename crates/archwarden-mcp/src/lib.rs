@@ -368,6 +368,28 @@ fn tools() -> Vec<Value> {
             },
         }),
         json!({
+            "name": "decisions_find",
+            "description":
+                "Has this already been rejected? Searches every decision the repository \
+                 declares -- its title, its reason, and every alternative it rejected \
+                 with the argument against it -- for anything the terms reach. Ask this \
+                 before proposing an approach: the option you are about to suggest may \
+                 already have been weighed and lost, under a different name. Accents and \
+                 case are ignored, and near-misses match.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "terms": {
+                        "type": "string",
+                        "description":
+                            "The approach, in the words you would use for it -- \
+                             `single layer`, `monolith`, `put it in one package`.",
+                    },
+                },
+                "required": ["terms"],
+            },
+        }),
+        json!({
             "name": "scaffold",
             "description":
                 "The smallest shape that would satisfy the rules at a path: required \
@@ -406,6 +428,13 @@ fn call(
     // this one is about the ones you could write. Issue #97.
     if name == "config_options" {
         return configurable(id, arguments);
+    }
+
+    // Takes terms rather than a path, so it is answered before the path is
+    // read. It needs a configuration and loads its own, on the same
+    // re-reading rule every other arm follows.
+    if name == "decisions_find" {
+        return find(id, arguments, working_directory);
     }
 
     let Some(path) = arguments
@@ -510,6 +539,38 @@ fn call(
         Ok(value) => success(id, &text_content(&value.to_string(), false)),
         Err(error) => tool_error(id, &format!("the answer could not be serialised: {error}")),
     }
+}
+
+/// Has this already been rejected?
+///
+/// The surface issue #162 was really about. `config explain` can only tell
+/// somebody who already knows the decision's id, and an agent proposing an
+/// approach is exactly the party that does not -- it will reach for the name
+/// it knows, which is rarely the name the decision was filed under.
+///
+/// Answers with what matched and why, never with a score: the same contract a
+/// finding keeps, so the reader can adjust the question by reading the answer.
+fn find(id: &Value, arguments: Option<&Value>, working_directory: &Utf8Path) -> Value {
+    let Some(terms) = arguments
+        .and_then(|a| a.get("terms"))
+        .and_then(Value::as_str)
+    else {
+        return tool_error(id, "`decisions_find` needs `terms`");
+    };
+
+    let prepared = match archwarden_api::prepare(
+        Location {
+            config: None,
+            root: None,
+        },
+        working_directory,
+    ) {
+        Ok(prepared) => prepared,
+        Err(error) => return tool_error(id, &error.unreadable()),
+    };
+
+    let hits = archwarden_api::similar::similar_json(&prepared.compiled, terms);
+    success(id, &text_content(&hits.to_string(), false))
 }
 
 /// What an `arch.config.json` can carry.
@@ -736,6 +797,22 @@ mod tests {
                  "roots":["src"],
                  "file_pattern":"^(?<n>[a-z-]+)\\.ts$",
                  "must_export":{"kind":"any","name":"{{pascal(n)}}"}}]}"#,
+        )
+        .expect("write the config");
+        (guard, root)
+    }
+
+    /// A repository whose decision records what it rejected, for #162.
+    fn rejecting_repository() -> (tempfile::TempDir, Utf8PathBuf) {
+        let guard = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(guard.path().to_path_buf()).expect("utf-8");
+        std::fs::write(
+            root.join("arch.config.json"),
+            r#"{"version":0,
+                "decisions":[{"id":"ADR-001","title":"Four layers plus System",
+                              "alternatives":[{"option":"a monolith",
+                                               "why_not":"we tried it in 2021"}]}],
+                "rules":[]}"#,
         )
         .expect("write the config");
         (guard, root)
@@ -1096,7 +1173,13 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            ["check_write", "describe", "config_options", "scaffold"]
+            [
+                "check_write",
+                "describe",
+                "config_options",
+                "decisions_find",
+                "scaffold"
+            ]
         );
 
         for tool in &offered {
@@ -1122,6 +1205,43 @@ mod tests {
                 "{tool}"
             );
         }
+    }
+
+    /// Issue #162 on the surface it was really about. An agent proposing an
+    /// approach is exactly the party that does not know the decision's id, and
+    /// will reach for the name it knows -- which is rarely the name the
+    /// decision was filed under.
+    #[test]
+    fn an_agent_can_ask_whether_an_approach_was_already_rejected() {
+        let (_guard, root) = rejecting_repository();
+
+        let reply = answer(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"decisions_find","arguments":{"terms":"lets just use a monolit"}}}"#,
+            &root,
+        );
+        let found: Value = serde_json::from_str(tool_text(&reply)).expect("carrying JSON");
+
+        assert_eq!(found["query"], "lets just use a monolit");
+        let hits = found["hits"].as_array().expect("an array");
+        assert_eq!(hits.len(), 1, "{found}");
+        assert_eq!(hits[0]["decision"], "ADR-001");
+        assert_eq!(hits[0]["at"], "alternatives[0].option");
+        // Why it matched, never a score: the same contract a finding keeps.
+        assert_eq!(hits[0]["reasons"][0]["how"], "prefix");
+    }
+
+    /// And a query it needs is a query it says it needs, rather than one it
+    /// silently answers with everything.
+    #[test]
+    fn decisions_find_without_terms_says_so() {
+        let (_guard, root) = repository();
+
+        let reply = answer(
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"decisions_find","arguments":{}}}"#,
+            &root,
+        );
+
+        assert!(tool_text(&reply).contains("needs `terms`"), "{reply}");
     }
 
     /// A finding says which rule, how seriously, where, and what was found —

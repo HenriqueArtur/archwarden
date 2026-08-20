@@ -1855,6 +1855,80 @@ fn the_debt_a_decision_carries_is_named_on_every_surface() {
 }
 
 /// Issue #116, end to end: the document archwarden writes, the region it never
+/// Issue #162. The line archwarden could not say: *has this already been
+/// rejected?* -- asked by somebody who does not know the decision's id and
+/// names the option differently from whoever rejected it.
+///
+/// End to end rather than as a unit test, because the value is in the whole
+/// path: a bilingual config on disk, a query with no accents typed by someone
+/// who never read it, and an answer that says why it matched.
+#[test]
+fn a_rejected_option_is_found_under_a_name_nobody_wrote() {
+    let dir = repo(&[(
+        "arch.config.json",
+        r#"{"version":0,
+            "decisions":[{"id":"ADR-001","title":"Quatro camadas, mais o System",
+                          "alternatives":[{"option":"uma única camada",
+                                           "why_not":"o domínio importaria o transporte"}]}],
+            "rules":[]}"#,
+    )]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .args(["decisions", "find", "camada", "unica"])
+        .assert()
+        .success()
+        .stdout(contains("ADR-001 — Quatro camadas, mais o System"))
+        .stdout(contains("alternatives[0].option"))
+        // And why it matched, which is what a reader adjusts the query by.
+        .stdout(contains("`camada` prefix of `camadas`"))
+        .stdout(contains("`unica` exact"))
+        .stdout(contains("2 places mention"));
+
+    // One reads as one. A count sentence that says "1 places mention" is the
+    // kind of thing a reader stops trusting the rest of.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["decisions", "find", "transporte"])
+        .assert()
+        .success()
+        .stdout(contains("1 place mentions"));
+
+    // The same answer as data, in the shape the MCP tool answers with.
+    let json = archwarden()
+        .current_dir(dir.path())
+        .args(["decisions", "find", "transporte", "--format", "json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value =
+        serde_json::from_slice(&json).expect("the JSON format emits JSON");
+    assert_eq!(parsed["query"], "transporte");
+    assert_eq!(parsed["hits"][0]["decision"], "ADR-001");
+    assert_eq!(parsed["hits"][0]["at"], "alternatives[0].why_not");
+    assert_eq!(parsed["hits"][0]["reasons"][0]["how"], "exact");
+
+    // Nothing found is an answer, not a failure: a command somebody runs to
+    // ask a question must not fail them for asking.
+    archwarden()
+        .current_dir(dir.path())
+        .args(["decisions", "find", "graphql"])
+        .assert()
+        .success()
+        .stdout(contains("Nothing here has been said about `graphql`"));
+
+    // And `decisions` with no subcommand still writes, which is what every
+    // script calling it already does.
+    archwarden()
+        .current_dir(dir.path())
+        .arg("decisions")
+        .assert()
+        .success()
+        .stdout(contains("wrote 1 document"));
+}
+
 /// rewrites, and the drift `config doctor` reports when the config moves on.
 ///
 /// Asserted as one sequence because the value is in the three agreeing, and no

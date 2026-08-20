@@ -81,6 +81,7 @@ pub fn examine(config: &CompiledConfig) -> Vec<Concern> {
     superseded_but_still_enforced(config, &mut concerns);
 
     decision_nobody_enforces(config, &mut concerns);
+    decision_may_duplicate(config, &mut concerns);
     unenforceable_but_a_rule_keeps_it(config, &mut concerns);
 
     for rule in config.rules() {
@@ -107,9 +108,9 @@ use config::{
     walk_scope_with_boundaries,
 };
 use decisions::{
-    decision_documents_out_of_date, decision_nobody_enforces, decision_scope_matches_nothing,
-    decisions_left_unsaid, reasons_left_unsaid, superseded_but_still_enforced,
-    unenforceable_but_a_rule_keeps_it,
+    decision_documents_out_of_date, decision_may_duplicate, decision_nobody_enforces,
+    decision_scope_matches_nothing, decisions_left_unsaid, reasons_left_unsaid,
+    superseded_but_still_enforced, unenforceable_but_a_rule_keeps_it,
 };
 use repository::{
     module_nobody_references, module_scope_matches_nothing, module_wearing_no_kind,
@@ -207,6 +208,8 @@ fn facts_covered<'a>(
 
 #[cfg(test)]
 mod tests {
+    use archwarden_core::compiled::CompiledAlternative;
+
     use super::*;
 
     /// A rule asking only for forms nobody enabled can never pass.
@@ -1229,6 +1232,112 @@ mod tests {
                 c.code != "decision-nobody-enforces"
                     && c.code != "unenforceable-but-a-rule-keeps-it"
             }),
+            "{concerns:?}"
+        );
+    }
+
+    /// Issue #162, the push half. `config explain` ends with "Do not propose
+    /// it again", and it can only say that to somebody who already knows the
+    /// id -- which the person about to propose the losing option is not. This
+    /// catches the duplicate at the moment it is written.
+    #[test]
+    fn two_decisions_rejecting_the_same_option_are_reported() {
+        let mut first = adr("ADR-014", DecisionStatus::Accepted);
+        first.alternatives = vec![CompiledAlternative {
+            option: "a single layer".to_owned(),
+            why_not: "the domain would import the transport".to_owned(),
+            refused_by: None,
+        }];
+        let mut second = adr("ADR-020", DecisionStatus::Accepted);
+        second.alternatives = vec![CompiledAlternative {
+            option: "one layer, single".to_owned(),
+            why_not: "we tried it".to_owned(),
+            refused_by: None,
+        }];
+
+        let concerns = examine(&config(Vec::new()).with_decisions(vec![first, second]));
+        let found = concerns
+            .iter()
+            .find(|c| c.code == "decision-may-duplicate")
+            .unwrap_or_else(|| panic!("{concerns:?}"));
+
+        assert_eq!(found.level, Level::Warning, "{found:?}");
+        assert!(found.message.contains("ADR-020"), "{found:?}");
+        assert!(found.message.contains("ADR-014"), "{found:?}");
+    }
+
+    /// Superseding is the sanctioned way to say the same thing twice: the
+    /// later decision is *about* the earlier one. Reporting the pair would
+    /// punish recording the succession, which is the record #114 exists for.
+    #[test]
+    fn a_superseding_decision_repeating_its_predecessor_is_not_reported() {
+        let mut old = adr("ADR-014", DecisionStatus::Superseded);
+        old.alternatives = vec![CompiledAlternative {
+            option: "a single layer".to_owned(),
+            why_not: "the domain would import the transport".to_owned(),
+            refused_by: None,
+        }];
+        old.superseded_by = vec![DecisionId::new("ADR-020").expect("valid")];
+        let mut new = adr("ADR-020", DecisionStatus::Accepted);
+        new.alternatives = vec![CompiledAlternative {
+            option: "a single layer".to_owned(),
+            why_not: "still true".to_owned(),
+            refused_by: None,
+        }];
+        new.supersedes = vec![DecisionId::new("ADR-014").expect("valid")];
+
+        // Both orders, because "earlier" here is declaration order and a
+        // config is free to list the superseding decision first. Only one of
+        // the two directions is true for a given pair, so a check that
+        // demanded both would report every succession written that way.
+        let concerns = examine(&config(Vec::new()).with_decisions(vec![old.clone(), new.clone()]));
+        assert!(
+            concerns.iter().all(|c| c.code != "decision-may-duplicate"),
+            "{concerns:?}"
+        );
+
+        let mut only_forward = new.clone();
+        only_forward.supersedes = vec![DecisionId::new("ADR-014").expect("valid")];
+        let mut silent = old.clone();
+        silent.superseded_by = Vec::new();
+        let reversed =
+            examine(&config(Vec::new()).with_decisions(vec![only_forward, silent.clone()]));
+        assert!(
+            reversed.iter().all(|c| c.code != "decision-may-duplicate"),
+            "declared out of order: {reversed:?}"
+        );
+
+        // And with the succession recorded nowhere, the pair is reported --
+        // which is what the exemption is an exemption from.
+        let mut orphan = new;
+        orphan.supersedes = Vec::new();
+        let unrecorded = examine(&config(Vec::new()).with_decisions(vec![silent, orphan]));
+        assert!(
+            unrecorded
+                .iter()
+                .any(|c| c.code == "decision-may-duplicate"),
+            "{unrecorded:?}"
+        );
+    }
+
+    /// And two decisions that merely share vocabulary are not duplicates. The
+    /// concern lives in a gate, and a gate that cries wolf is one somebody
+    /// turns off -- which is why the push is stricter than the pull.
+    #[test]
+    fn two_decisions_sharing_a_word_are_left_alone() {
+        let mut layers = adr("ADR-014", DecisionStatus::Accepted);
+        layers.title = "Four layers plus System".to_owned();
+        let mut packages = adr("ADR-020", DecisionStatus::Accepted);
+        packages.title = "One package per bounded context".to_owned();
+        packages.alternatives = vec![CompiledAlternative {
+            option: "one package".to_owned(),
+            why_not: "the boundaries stop being enforceable".to_owned(),
+            refused_by: None,
+        }];
+
+        let concerns = examine(&config(Vec::new()).with_decisions(vec![layers, packages]));
+        assert!(
+            concerns.iter().all(|c| c.code != "decision-may-duplicate"),
             "{concerns:?}"
         );
     }

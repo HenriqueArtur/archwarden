@@ -51,6 +51,12 @@ The same operations, reachable as tools rather than as commands.
   MCP did and was reachable only through the pre-write hook, which means only
   *reactively*: the agent writes, and is denied. Through MCP it can ask
   *would this content pass?* before writing anything.
+- `decisions_find(terms)` — **has this already been rejected?** The other
+  question an agent cannot answer any other way. `config explain` can only tell
+  somebody who already knows the decision's id, and an agent proposing an
+  approach is exactly the party that does not: it reaches for the name it
+  knows, which is rarely the name the decision was filed under. Ask it before
+  proposing, not after being refused.
 - `describe(path)`, `scaffold(path)` — Layer 2, without a shell.
 
 Mechanically: **stdio, not HTTP.** The client spawns the binary and speaks
