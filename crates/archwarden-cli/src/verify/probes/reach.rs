@@ -1,0 +1,198 @@
+//! Probes for what a file exports and what it reaches.
+
+use archwarden_core::{
+    compiled::CompiledRule,
+    facts::{ExportFact, ExportKind, ExportTags, FileFacts, ImportFact, Span},
+    hash::ContentHash,
+    path::RepoRelPath,
+    traits::{Exists, FileContext, RuleEngine},
+};
+use archwarden_engine::walk::RepoTree;
+
+use crate::verify::probes::{a_directory_in_scope, a_file_in_scope, a_file_matching};
+use crate::verify::{PROBE, Verdict};
+
+/// A file whose exports break whichever claim this rule makes.
+///
+/// Every one of the three is plantable, which is unusual here: a `naming`
+/// violation means running a regex backwards and a cycle means two files that
+/// resolve against each other, but "has a default", "has one export too many"
+/// and "declares no return type" are each one synthetic fact.
+///
+/// The probe breaks the *first* claim the rule makes, because a rule that fires
+/// on any of them has been shown to fire. A rule making none of the three
+/// constrains nothing, which is `config doctor`'s sentence rather than this
+/// one's.
+pub(crate) fn a_file_of_the_wrong_shape(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+    shape: &archwarden_core::compiled::ExportShape,
+) -> Verdict {
+    let Some(directory) = a_directory_in_scope(rule, tree) else {
+        return Verdict::Unverified {
+            why: format!(
+                "no directory in this repository is inside `{}`",
+                rule.scope.patterns().join("`, `")
+            ),
+        };
+    };
+
+    let name = format!("{PROBE}.ts");
+    let Ok(probe) = directory.join(&name) else {
+        return Verdict::Unverified {
+            why: format!("`{directory}` cannot hold a probe file"),
+        };
+    };
+    if !engine.applies_to(&probe) {
+        return Verdict::Unverified {
+            why: format!(
+                "the rule covers `{directory}` but not a file directly in it, so \
+                 the probe has nowhere to sit"
+            ),
+        };
+    }
+
+    let exported = |name: Option<&str>, is_default: bool| ExportFact {
+        name: name.map(ToOwned::to_owned),
+        tags: ExportTags::only(ExportKind::Function),
+        is_default,
+        reexport_from: None,
+        forwards: None,
+        annotations: Vec::new(),
+        // No return type declared, which is the `must_return` violation and is
+        // inert for the other two claims.
+        returns: None,
+        span: Span::new(0, 1),
+    };
+
+    let mut facts = FileFacts::unparsed(probe.clone(), ContentHash::of(PROBE.as_bytes()));
+    let broke = if shape.forbid_default {
+        facts.exports.push(exported(None, true));
+        "a default export"
+    } else if let Some(limit) = shape.max_exports {
+        for index in 0..=limit {
+            facts
+                .exports
+                .push(exported(Some(&format!("{PROBE}{index}")), false));
+        }
+        "one export more than the limit"
+    } else if !shape.must_return.is_empty() {
+        facts.exports.push(exported(Some("Probe"), false));
+        "an exported function declaring no return type"
+    } else {
+        return Verdict::Unverified {
+            why: "the rule makes none of the three claims, so there is nothing \
+                  to break -- `config doctor` reports a rule that constrains \
+                  nothing"
+                .to_owned(),
+        };
+    };
+
+    let findings = engine.check_file(FileContext {
+        path: &probe,
+        facts: Some(&facts),
+        docs: None,
+        siblings: std::slice::from_ref(&name),
+        exists: Exists::none(),
+        graph: None,
+        // The probe asks whether the rule bites *now*, so it answers for
+        // today. A deadline planted in 1970 is past on every run there
+        // has ever been.
+        as_of: archwarden_core::date::Date::today(),
+    });
+
+    let on = format!("`{probe}` with {broke}");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
+    }
+}
+
+/// A file this rule covers, importing something the rule forbids.
+pub(crate) fn crossed_boundary(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+    forbid: &archwarden_core::glob::PathSet,
+    forbid_packages: &[String],
+    except_from: &archwarden_core::glob::PathSet,
+) -> Verdict {
+    let Some(importer) = a_file_in_scope(rule, engine, tree, except_from) else {
+        return Verdict::Unverified {
+            why: format!(
+                "no source file in this repository is inside `{}` without being \
+                 exempted by `except_from`",
+                rule.scope.patterns().join("`, `")
+            ),
+        };
+    };
+
+    // The forbidden path half first: it is the half that needs resolution, and
+    // so the half most likely to be enforcing nothing.
+    let (import, on) = if forbid.is_empty() {
+        let Some(package) = forbid_packages.first() else {
+            return Verdict::Unverified {
+                why: "the rule only requires an import, and a file that imports \
+                      nothing is not a violation this can tell apart from a file \
+                      the rule does not cover"
+                    .to_owned(),
+            };
+        };
+        (
+            probe_import(package.clone(), None),
+            format!("`{importer}` importing the package `{package}`"),
+        )
+    } else {
+        let Some(target) = a_file_matching(forbid, tree) else {
+            return Verdict::Unverified {
+                why: format!(
+                    "no file in this repository matches `{}`, so there is nothing \
+                     for a probe to import",
+                    forbid.patterns().join("`, `")
+                ),
+            };
+        };
+        (
+            probe_import(format!("./{}", target.as_str()), Some(target.clone())),
+            format!("`{importer}` importing `{target}`"),
+        )
+    };
+
+    let mut facts = FileFacts::unparsed(importer.clone(), ContentHash::of(PROBE.as_bytes()));
+    facts.imports.push(import);
+
+    let findings = engine.check_file(FileContext {
+        path: importer,
+        facts: Some(&facts),
+        docs: None,
+        siblings: &[],
+        exists: Exists::none(),
+        graph: None,
+        // The probe asks whether the rule bites *now*, so it answers for
+        // today. A deadline planted in 1970 is past on every run there
+        // has ever been.
+        as_of: archwarden_core::date::Date::today(),
+    });
+
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
+    }
+}
+
+/// An import as the parser would have recorded it, already resolved.
+///
+/// `type_only` is false: a rule with `include_type_only: false` still catches a
+/// value import, so this is the probe that asks the least of the rule.
+pub(crate) fn probe_import(specifier: String, resolved: Option<RepoRelPath>) -> ImportFact {
+    ImportFact {
+        specifier,
+        resolved,
+        type_only: false,
+        names: Vec::new(),
+        span: Span::new(0, 1),
+    }
+}

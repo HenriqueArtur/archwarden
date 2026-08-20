@@ -17,6 +17,65 @@ saying so.
 
 ## [Unreleased]
 
+Nothing here changes what archwarden reports. The binary, the config surface
+and every rule behave exactly as they did in 0.28.0.
+
+### Added
+
+- **`CLAUDE.md`, a map for working *on* this repository.** `AGENTS.md` is about
+  using archwarden in somebody else's project and ships inside the npm package;
+  there was nothing about changing this one. The documentation it points at is
+  around 50 KB across `docs/`, and the cost of that was paid every time: the
+  crate graph, the inline-test convention, the panic-free lints and the rule
+  that an `#[allow]` carries its argument all had to be rediscovered before any
+  work could start. It is a map, not a copy — every section points at the file
+  that owns the answer.
+
+- **`cargo xtask linker`**, which points cargo at the `rust-lld` already inside
+  the pinned toolchain. Measured, relinking the binary after touching one file:
+  **6.47 s** with the default GNU linker, **1.02 s** with this. `--print` is the
+  default and `--write` appends to the user's own `~/.cargo/config.toml`; the
+  repository's config is untouched, so nothing changes for anyone else or for
+  CI. See `CONTRIBUTING.md`.
+
+### Changed
+
+- **Six files that held several responsibilities each are now directories.**
+  `cli/lib.rs` (5121 lines) was the clap surface, the dispatch and forty
+  handlers; `config/compile.rs` was seven things, a quarter of it the error
+  enum; `config/rule.rs` was the only place in the project where rule kinds
+  were *not* one file each, which `archwarden-rules/` has always been.
+  `cli/doctor.rs`, `cli/verify.rs` and `cli/report.rs` were catalogues.
+
+  No behaviour change anywhere: the test count is identical either side of
+  every one of them, and `cargo xtask check-schema` reports no drift — which is
+  the check that matters for `rule.rs`, whose `#[serde]` and `#[schemars]`
+  attributes generate the published schema.
+
+  The test modules stayed put, and that is the honest result rather than a
+  shortfall. Measured across all six, between 55% and 100% of each file's tests
+  go through its entry point rather than the functions the split moved. They
+  test the entry point, so they live with it.
+
+- **Three `why` descriptions in `schema/v0.json` no longer point at a Rust
+  type.** They read *"See [`StructureRule::why`]"* — a rustdoc link, which
+  `schemars` copies verbatim into the published schema, which an editor then
+  shows to somebody writing `arch.config.json` who has no `StructureRule` to
+  look at. They now say the same thing in words that mean something to that
+  reader. No field, type or validation changed.
+
+- **The dev profile emits line tables instead of full debug info.** Measured on
+  a cold `cargo nextest run --workspace --all-features`: **89.0 s and 3.0 GB**
+  before, **75.8 s and 1.9 GB** after, with the same 2006 tests passing. What
+  it drops is the variable and type description an interactive debugger wants,
+  and nothing in this project's loop asks for that — a failure here is read as
+  a panic message and a line number, both of which line tables keep.
+
+- **`CONTRIBUTING.md` no longer names a decision number that is thirteen behind
+  reality.** It said the next entry in `docs/DECISIONS.md` was 17; the file is
+  at 30. Anyone following that sentence would have written over an existing
+  decision. It now says to read the top of the file, which cannot go stale.
+
 ## [0.28.0] — 2026-08-19
 
 Time, added without losing the determinism decision 28 defended.

@@ -136,6 +136,22 @@ module_name_repetitions = "allow"
 # Revisit once the error enums exist and are worth documenting per-variant.
 missing_errors_doc = "allow"
 
+[profile.dev]
+# Debug info is the largest artefact this profile produces and almost none of
+# it is read. `line-tables-only` keeps what a backtrace uses -- file, line,
+# function -- and drops the variable and type descriptions only an interactive
+# debugger wants. Nothing in this project's loop asks for those: the suite runs
+# under `cargo nextest`, and a failure is read as a panic message and a line.
+#
+# It is paid back twice. Less debug info to emit, so compilation is shorter;
+# and far less for the linker to relocate, which is where the time actually
+# goes -- `nextest` links one test binary per crate, and there are eleven.
+#
+# Measured, cold build of `cargo nextest run --workspace --all-features`:
+# 89.0s and 3.0 GB with full debug info, 75.8s and 1.9 GB with this. The same
+# 2006 tests pass either way.
+debug = "line-tables-only"
+
 [profile.release]
 # A linter is distributed as one binary and run constantly. Optimise for the
 # run, accept the build cost: this is paid once in CI per release.
