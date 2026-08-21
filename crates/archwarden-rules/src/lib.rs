@@ -209,9 +209,13 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                 CompiledRuleKind::ExportShape(shape) => {
                     Box::new(export_shape::ExportShapeEngine::build(rule, shape))
                 }
-                CompiledRuleKind::Chokepoint { callee, only_in } => {
-                    Box::new(chokepoint::ChokepointEngine::build(rule, callee, only_in))
-                }
+                CompiledRuleKind::Chokepoint {
+                    callee,
+                    renders,
+                    only_in,
+                } => Box::new(chokepoint::ChokepointEngine::build(
+                    rule, callee, renders, only_in,
+                )),
                 CompiledRuleKind::CallObligation {
                     file_pattern,
                     symbol,

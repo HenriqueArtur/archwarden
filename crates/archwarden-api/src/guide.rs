@@ -712,11 +712,31 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             lines
         }
 
-        CompiledRuleKind::Chokepoint { callee, only_in } => vec![format!(
-            "only files under {} may call {}",
-            join(only_in.patterns()),
-            join(callee),
-        )],
+        // Two clauses, because a call and a render are different
+        // relationships and a rule that guards both is making two statements.
+        // Issue #145.
+        CompiledRuleKind::Chokepoint {
+            callee,
+            renders,
+            only_in,
+        } => {
+            let mut said = Vec::new();
+            if !callee.is_empty() {
+                said.push(format!(
+                    "only files under {} may call {}",
+                    join(only_in.patterns()),
+                    join(callee),
+                ));
+            }
+            if !renders.is_empty() {
+                said.push(format!(
+                    "only files under {} may render {}",
+                    join(only_in.patterns()),
+                    join(renders),
+                ));
+            }
+            said
+        }
 
         CompiledRuleKind::CallObligation {
             file_pattern,
@@ -1816,6 +1836,7 @@ mod tests {
             &["src/*"],
             CompiledRuleKind::Chokepoint {
                 callee: vec!["process.env".to_owned(), "process.argv".to_owned()],
+                renders: Vec::new(),
                 only_in: Scope::compile(["src/config/**"]).expect("valid scope"),
             },
         )]);
@@ -1827,6 +1848,26 @@ mod tests {
         );
         assert!(markdown.contains("process.env"), "{markdown}");
         assert!(markdown.contains("process.argv"), "{markdown}");
+    }
+
+    /// Issue #145. A call and a render are different relationships, so a rule
+    /// guarding both is making two statements and the guide says two.
+    #[test]
+    fn a_chokepoint_that_guards_markup_says_render_rather_than_call() {
+        let config = config(vec![rule(
+            "only-checkout-renders-its-form",
+            None,
+            &["src/features/*"],
+            CompiledRuleKind::Chokepoint {
+                callee: vec!["useCheckout".to_owned()],
+                renders: vec!["CheckoutForm".to_owned()],
+                only_in: Scope::compile(["src/features/checkout/**"]).expect("valid scope"),
+            },
+        )]);
+
+        let markdown = sentences(&config, None, &[]);
+        assert!(markdown.contains("may call `useCheckout`"), "{markdown}");
+        assert!(markdown.contains("may render `CheckoutForm`"), "{markdown}");
     }
 
     /// Issue #164. An agent reads the guide before it writes, so a call whose

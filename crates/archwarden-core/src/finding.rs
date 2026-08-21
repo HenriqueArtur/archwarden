@@ -289,6 +289,9 @@ pub enum Expectation {
     UsedOnlyIn {
         /// The callees the rule guards.
         callee: Vec<String>,
+        /// The JSX elements it guards. Issue #145.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        renders: Vec<String>,
         /// The scope patterns allowed to reach them.
         only_in: Vec<String>,
     },
@@ -671,9 +674,16 @@ pub enum Observed {
     },
     /// A guarded callee was reached from outside its chokepoint.
     ChokepointBreached {
-        /// The callee as it appears at this call site, which is what the
-        /// reader has to go and find -- not the pattern that matched it.
+        /// The name as it appears at this site, which is what the reader has
+        /// to go and find -- not the pattern that matched it.
         callee: String,
+        /// Whether it was rendered rather than called.
+        ///
+        /// The two are different relationships and the sentence has to say
+        /// which: *"renders `Card`"* sends a reader to markup, *"reaches
+        /// `Date.now`"* sends them to code. Issue #145.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        rendered: bool,
     },
     /// The symbol is called, and not with the option the rule asks for.
     ///

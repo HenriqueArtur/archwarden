@@ -322,6 +322,7 @@ mod tests {
             reads: Vec::new(),
             callables: 0,
             directives: Vec::new(),
+            renders: Vec::new(),
             allowances: Vec::new(),
             metadata: Vec::new(),
             has_opaque_import: false,

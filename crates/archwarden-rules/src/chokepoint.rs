@@ -18,6 +18,7 @@ pub struct ChokepointEngine {
     level: Level,
     scope: Scope,
     callee: Vec<String>,
+    renders: Vec<String>,
     only_in: Scope,
 }
 
@@ -27,21 +28,32 @@ impl ChokepointEngine {
     /// Returns `None` for a rule of any other kind.
     #[must_use]
     pub fn from_rule(rule: &CompiledRule) -> Option<Self> {
-        let CompiledRuleKind::Chokepoint { callee, only_in } = &rule.kind else {
+        let CompiledRuleKind::Chokepoint {
+            callee,
+            renders,
+            only_in,
+        } = &rule.kind
+        else {
             return None;
         };
 
-        Some(Self::build(rule, callee, only_in))
+        Some(Self::build(rule, callee, renders, only_in))
     }
 
     /// Builds an engine from a rule whose kind is already known.
-    pub(crate) fn build(rule: &CompiledRule, callee: &[String], only_in: &Scope) -> Self {
+    pub(crate) fn build(
+        rule: &CompiledRule,
+        callee: &[String],
+        renders: &[String],
+        only_in: &Scope,
+    ) -> Self {
         Self {
             id: rule.id.clone(),
             module: rule.module.clone(),
             level: rule.level,
             scope: rule.scope.clone(),
             callee: callee.to_vec(),
+            renders: renders.to_vec(),
             only_in: only_in.clone(),
         }
     }
@@ -68,6 +80,7 @@ impl ChokepointEngine {
     fn expectation(&self) -> Expectation {
         Expectation::UsedOnlyIn {
             callee: self.callee.clone(),
+            renders: self.renders.clone(),
             only_in: self.only_in.patterns().to_vec(),
         }
     }
@@ -133,12 +146,25 @@ impl RuleEngine for ChokepointEngine {
         let mut sites: Vec<_> = calls
             .chain(reads)
             .filter(|(name, _)| self.guards(name))
+            .map(|(name, span)| (name, span, false))
+            // A render is a use and a *different* one: `<Card />` compiles to
+            // a call, and matching it against `callee` would make a rule about
+            // a capability start firing on markup. Matched exactly, because
+            // `Ui.Button` is one component rather than a member of a `Ui`
+            // capability. Issue #145.
+            .chain(
+                facts
+                    .renders
+                    .iter()
+                    .filter(|render| self.renders.contains(&render.name))
+                    .map(|render| (render.name.as_str(), render.span, true)),
+            )
             .collect();
-        sites.sort_by_key(|(_, span)| span.start);
+        sites.sort_by_key(|(_, span, _)| span.start);
 
         sites
             .into_iter()
-            .map(|(name, span)| Finding {
+            .map(|(name, span, rendered)| Finding {
                 rule_id: self.id.clone(),
                 module_id: self.module.clone(),
                 level: self.level,
@@ -146,6 +172,7 @@ impl RuleEngine for ChokepointEngine {
                 span: Some(span),
                 observed: Observed::ChokepointBreached {
                     callee: name.to_owned(),
+                    rendered,
                 },
                 expected: self.expectation(),
             })
@@ -180,6 +207,40 @@ mod tests {
         RepoRelPath::new(p).expect("valid path")
     }
 
+    /// An engine guarding JSX elements rather than calls. Issue #145.
+    fn rendering_engine(renders: &[&str], only_in: &[&str]) -> ChokepointEngine {
+        ChokepointEngine::from_rule(&CompiledRule {
+            id: RuleId::new("only-checkout-renders-its-form").expect("valid id"),
+            module: None,
+            why: None,
+            module_why: None,
+            decision: None,
+            imports: None,
+            directives: None,
+            level: Level::Error,
+            scope: Scope::compile(["src/features/*"]).expect("valid scope"),
+            kind: CompiledRuleKind::Chokepoint {
+                callee: Vec::new(),
+                renders: renders.iter().map(|r| (*r).to_owned()).collect(),
+                only_in: Scope::compile(only_in.iter().copied()).expect("valid scope"),
+            },
+        })
+        .expect("a chokepoint rule")
+    }
+
+    /// Facts for a file that renders these elements.
+    fn rendering(at: &str, elements: &[&str]) -> FileFacts {
+        let mut facts = FileFacts::unparsed(path(at), ContentHash::of(b"source"));
+        for (index, name) in elements.iter().enumerate() {
+            facts.renders.push(archwarden_core::facts::RenderFact {
+                name: (*name).to_owned(),
+                #[expect(clippy::cast_possible_truncation, reason = "test spans are tiny")]
+                span: Span::new(index as u32 * 10, 5 + index as u32 * 10),
+            });
+        }
+        facts
+    }
+
     fn engine() -> ChokepointEngine {
         ChokepointEngine::from_rule(&CompiledRule {
             id: RuleId::new("the-environment-is-read-once").expect("valid id"),
@@ -193,6 +254,7 @@ mod tests {
             scope: Scope::compile(["src/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Chokepoint {
                 callee: vec!["process.env".to_owned(), "new PostgresRepo".to_owned()],
+                renders: Vec::new(),
                 only_in: Scope::compile(["src/config/**"]).expect("valid scope"),
             },
         })
@@ -245,6 +307,7 @@ mod tests {
             reported.first().map(|f| &f.observed),
             Some(&Observed::ChokepointBreached {
                 callee: "process.env.STRIPE_KEY".to_owned(),
+                rendered: false,
             }),
             "{reported:?}"
         );
@@ -279,12 +342,74 @@ mod tests {
             reported
                 .iter()
                 .map(|f| match &f.observed {
-                    Observed::ChokepointBreached { callee } => callee.as_str(),
+                    Observed::ChokepointBreached { callee, .. } => callee.as_str(),
                     other => panic!("{other:?}"),
                 })
                 .collect::<Vec<_>>(),
             ["process.env", "new PostgresRepo"]
         );
+    }
+
+    /// Issue #145. *"Nothing outside `features/checkout` renders
+    /// `CheckoutForm`"* is not an import question: rendering and importing are
+    /// different relationships, and a component reached through a barrel or
+    /// passed as a prop comes apart from its import exactly where it matters.
+    #[test]
+    fn an_element_rendered_outside_its_chokepoint_is_reported() {
+        let engine = rendering_engine(&["CheckoutForm"], &["src/features/checkout/**"]);
+
+        let elsewhere = rendering("src/features/orders/page.tsx", &["div", "CheckoutForm"]);
+        let reported = check(&engine, &elsewhere);
+
+        assert_eq!(
+            reported.first().map(|f| &f.observed),
+            Some(&Observed::ChokepointBreached {
+                callee: "CheckoutForm".to_owned(),
+                rendered: true,
+            }),
+            "{reported:?}"
+        );
+        // `renders`, not `reaches`: the reader is being sent to markup, and a
+        // sentence about a call site would send them looking for one that is
+        // not there.
+        assert!(reported[0].span.is_some());
+
+        // And the feature that owns it renders it freely.
+        let owner = rendering("src/features/checkout/page.tsx", &["CheckoutForm"]);
+        assert!(check(&engine, &owner).is_empty());
+    }
+
+    /// A render is a *different* use from a call. `<Card />` compiles to one,
+    /// and a rule about a capability must not start firing on markup.
+    #[test]
+    fn a_call_and_a_render_are_guarded_separately() {
+        let by_render = rendering_engine(&["Card"], &["src/features/checkout/**"]);
+        let mut called = facts("src/features/orders/page.tsx", &["Card"], &[]);
+        called.renders.clear();
+        assert!(
+            check(&by_render, &called).is_empty(),
+            "a rule guarding a render does not guard a call of the same name"
+        );
+
+        let by_call = engine();
+        let rendered = rendering("src/orders/place.ts", &["process.env"]);
+        assert!(
+            check(&by_call, &rendered).is_empty(),
+            "and the reverse: a rule guarding a call does not guard markup"
+        );
+    }
+
+    /// Matched exactly, and **not** by the dot-prefix rule `callee` uses.
+    /// `Ui.Button` is one component, not a member of a `Ui` capability.
+    #[test]
+    fn an_element_name_is_matched_whole() {
+        let engine = rendering_engine(&["Ui"], &["src/features/checkout/**"]);
+        let nested = rendering("src/features/orders/page.tsx", &["Ui.Button"]);
+
+        assert!(check(&engine, &nested).is_empty(), "{nested:?}");
+
+        let exact = rendering_engine(&["Ui.Button"], &["src/features/checkout/**"]);
+        assert!(!check(&exact, &nested).is_empty());
     }
 
     /// The prefix is at a dot, which is what makes it a boundary between names
@@ -350,6 +475,7 @@ mod tests {
             scope: Scope::compile(["src/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Chokepoint {
                 callee: vec!["process.env".to_owned()],
+                renders: Vec::new(),
                 only_in: Scope::compile(["src/config/**"]).expect("valid scope"),
             },
         };
@@ -380,6 +506,7 @@ mod tests {
         let engine = engine();
         let expected = Expectation::UsedOnlyIn {
             callee: vec!["process.env".to_owned(), "new PostgresRepo".to_owned()],
+            renders: Vec::new(),
             only_in: vec!["src/config/**".to_owned()],
         };
 

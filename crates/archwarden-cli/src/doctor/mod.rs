@@ -668,6 +668,7 @@ mod tests {
             &["src/*"],
             CompiledRuleKind::Chokepoint {
                 callee: Vec::new(),
+                renders: Vec::new(),
                 only_in: Scope::compile(["src/config/**"]).expect("valid scope"),
             },
         )]);
@@ -689,6 +690,7 @@ mod tests {
             &["src/*"],
             CompiledRuleKind::Chokepoint {
                 callee: vec!["Date.now".to_owned()],
+                renders: Vec::new(),
                 only_in: Scope::compile(std::iter::empty::<&str>()).expect("valid scope"),
             },
         )]);

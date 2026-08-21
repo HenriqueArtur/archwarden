@@ -361,15 +361,30 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
         // anywhere`, which is the opposite of what the rule means -- and this
         // is the string `describe`, `scaffold` and the pre-write hook all say,
         // so an agent was being told the reverse. Issue #168.
-        Expectation::UsedOnlyIn { callee, only_in } => {
-            let guarded = join_or(callee, "anything");
+        // Two clauses when the rule makes two statements. A call and a render
+        // are different relationships, and "no use of `Card`" would send a
+        // reader looking for a call site that is not there. Issue #145.
+        Expectation::UsedOnlyIn {
+            callee,
+            renders,
+            only_in,
+        } => {
+            let mut said = Vec::new();
+            if !callee.is_empty() {
+                said.push(format!("no use of {}", join_or(callee, "anything")));
+            }
+            if !renders.is_empty() {
+                said.push(format!("no render of {}", join_or(renders, "anything")));
+            }
+            if said.is_empty() {
+                said.push("no use of anything".to_owned());
+            }
+            let guarded = said.join(" and ");
+
             if only_in.is_empty() {
-                format!("no use of {guarded} here at all")
+                format!("{guarded} here at all")
             } else {
-                format!(
-                    "no use of {guarded} outside {}",
-                    join_or(only_in, "anywhere")
-                )
+                format!("{guarded} outside {}", join_or(only_in, "anywhere"))
             }
         }
         Expectation::RequiredCall {

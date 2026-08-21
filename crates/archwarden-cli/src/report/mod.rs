@@ -822,6 +822,7 @@ mod tests {
     fn an_empty_allowlist_says_nobody_rather_than_outside_anywhere() {
         let nobody = describe_expectation(&Expectation::UsedOnlyIn {
             callee: vec!["Date.now".to_owned(), "console".to_owned()],
+            renders: Vec::new(),
             only_in: Vec::new(),
         });
 
@@ -830,6 +831,7 @@ mod tests {
         // And a rule that does name an allowlist still reads as it did.
         let somewhere = describe_expectation(&Expectation::UsedOnlyIn {
             callee: vec!["process.env".to_owned()],
+            renders: Vec::new(),
             only_in: vec!["src/config/**".to_owned()],
         });
 

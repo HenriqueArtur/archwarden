@@ -213,12 +213,17 @@ pub(crate) fn a_call_from_outside_the_chokepoint(
     engine: &dyn RuleEngine,
     tree: &RepoTree,
     callee: &[String],
+    renders: &[String],
     only_in: &archwarden_core::scope::Scope,
 ) -> Verdict {
-    let Some(guarded) = callee.first() else {
+    // A call if the rule guards one, otherwise a render. Either proves the
+    // rule bites; planting both would prove it twice. Issue #145.
+    let rendered = callee.is_empty();
+    let Some(guarded) = callee.first().or_else(|| renders.first()) else {
         return Verdict::Unverified {
-            why: "the rule guards no callee, so there is nothing to break -- \
-                  `config doctor` reports a rule that constrains nothing"
+            why: "the rule guards no callee and no element, so there is \
+                  nothing to break -- `config doctor` reports a rule that \
+                  constrains nothing"
                 .to_owned(),
         };
     };
@@ -247,12 +252,19 @@ pub(crate) fn a_call_from_outside_the_chokepoint(
     };
 
     let mut facts = FileFacts::unparsed(probe.clone(), ContentHash::of(PROBE.as_bytes()));
-    facts.calls.push(archwarden_core::facts::CallFact {
-        callee: guarded.clone(),
-        arguments: Vec::new(),
-        options: Vec::new(),
-        span: Span::new(0, 1),
-    });
+    if rendered {
+        facts.renders.push(archwarden_core::facts::RenderFact {
+            name: guarded.clone(),
+            span: Span::new(0, 1),
+        });
+    } else {
+        facts.calls.push(archwarden_core::facts::CallFact {
+            callee: guarded.clone(),
+            arguments: Vec::new(),
+            options: Vec::new(),
+            span: Span::new(0, 1),
+        });
+    }
 
     let findings = engine.check_file(FileContext {
         path: &probe,
@@ -264,7 +276,8 @@ pub(crate) fn a_call_from_outside_the_chokepoint(
         as_of: archwarden_core::date::Date::today(),
     });
 
-    let on = format!("`{probe}` calling `{guarded}`");
+    let verb = if rendered { "rendering" } else { "calling" };
+    let on = format!("`{probe}` {verb} `{guarded}`");
     if findings.is_empty() {
         Verdict::Silent { on }
     } else {

@@ -1605,6 +1605,14 @@
               },
               "default": []
             },
+            "renders": {
+              "description": "The JSX elements this rule guards, as they appear in markup.\n\n```json\n{ \"type\": \"chokepoint\", \"id\": \"only-the-primitives-layer-writes-markup\",\n  \"level\": \"error\",\n  \"roots\": [\"src/features/*\"],\n  \"renders\": [\"div\", \"span\", \"button\"],\n  \"only_in\": [\"src/ui/primitives/**\"] }\n```\n\n*\"Nothing outside `features/checkout` renders `CheckoutForm`\"* and *\"a\nfeature may not write raw markup, only composed components\"* are the\ntwo sentences a design system needs, and neither is an import\nquestion: rendering and importing are different relationships.\n\nMatched exactly, and **not** by the dot-prefix rule `callee` uses.\n`Ui.Button` is one component, not a member of a `Ui` capability, so a\nrule naming `Ui` does not guard it. Issue #145.\n\nThe case is JSX's own distinction: `div` is an intrinsic element and\n`Card` is a component in scope.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
             "roots": {
               "description": "Directory globs this rule governs.\n\nSeparate from [`only_in`](Self::only_in), and the separation is the\npoint: `roots` is the population the question is asked of, `only_in` is\nthe answer that is allowed. A test suite reads `process.env`\nlegitimately, so a chokepoint that governed the whole repository by\ndefault would report the tests on its first run -- and a rule whose\nfirst run is wrong is one nobody keeps.",
               "$ref": "#/$defs/OneOrMany"

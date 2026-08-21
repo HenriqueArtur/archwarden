@@ -325,6 +325,13 @@ pub enum CompiledRuleKind {
     Chokepoint {
         /// The callees, as they appear at a call site.
         callee: Vec<String>,
+        /// The JSX elements, as they appear in markup.
+        ///
+        /// A render is a use, which is what this rule guards -- and it is a
+        /// *different* use from a call. `<Card />` compiles to one, and a rule
+        /// naming `Card` under `callee` must not start matching markup.
+        /// Issue #145.
+        renders: Vec<String>,
         /// The files allowed to reach them.
         only_in: Scope,
     },
@@ -1626,6 +1633,7 @@ mod import_filter_tests {
             reads: Vec::new(),
             callables: 0,
             directives: Vec::new(),
+            renders: Vec::new(),
             imports: specifiers
                 .iter()
                 .map(|(specifier, resolved)| ImportFact {

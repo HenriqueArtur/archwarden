@@ -138,6 +138,7 @@ impl OxcParser {
             // so nothing here has to count. Issue #157, decision 36.
             callables: 0,
             directives: directives(&parsed.program),
+            renders: renders(&parsed.program),
             allowances,
             metadata,
             has_opaque_import,
@@ -419,6 +420,73 @@ fn metadata(program: &Program<'_>, source: &str) -> Vec<archwarden_core::facts::
             )
         })
         .collect()
+}
+
+/// The JSX elements a file renders, first occurrence each.
+///
+/// `<Card />` is a usage of `Card` and `import-boundary` covers it only by
+/// accident -- the edge that rule sees is the import, not the render. Issue
+/// #145.
+///
+/// Deduplicated by name, on decision 34's terms: a template renders `<div>`
+/// many times, and a list that grew with the markup would grow the cache with
+/// it. The first span is kept, which is where a reader would start.
+fn renders(program: &Program<'_>) -> Vec<archwarden_core::facts::RenderFact> {
+    let mut collector = RenderCollector::default();
+    collector.visit_program(program);
+    collector.found
+}
+
+#[derive(Default)]
+struct RenderCollector {
+    found: Vec<archwarden_core::facts::RenderFact>,
+    seen: std::collections::HashSet<String>,
+}
+
+impl<'a> Visit<'a> for RenderCollector {
+    fn visit_jsx_opening_element(&mut self, element: &oxc_ast::ast::JSXOpeningElement<'a>) {
+        if let Some(name) = jsx_name(&element.name)
+            && self.seen.insert(name.clone())
+        {
+            self.found.push(archwarden_core::facts::RenderFact {
+                name,
+                span: span_of(element.name.span()),
+            });
+        }
+        oxc_ast_visit::walk::walk_jsx_opening_element(self, element);
+    }
+}
+
+/// A JSX element name as the source spells it.
+///
+/// `<div>` is `div`, `<Card>` is `Card`, `<Foo.Bar>` is `Foo.Bar`. The case is
+/// the distinction between an intrinsic and a component, which is JSX's own
+/// rule -- so the name carries it and nothing else has to.
+///
+/// `<this />` has no name anybody wrote and `<a:b />` is XML namespacing that
+/// no React codebase uses; both are absent rather than recorded half-formed,
+/// on the same terms `callee_path` draws for a call.
+fn jsx_name(name: &oxc_ast::ast::JSXElementName<'_>) -> Option<String> {
+    use oxc_ast::ast::JSXElementName;
+
+    match name {
+        JSXElementName::Identifier(identifier) => Some(identifier.name.to_string()),
+        JSXElementName::IdentifierReference(reference) => Some(reference.name.to_string()),
+        JSXElementName::MemberExpression(member) => jsx_member(member),
+        JSXElementName::NamespacedName(_) | JSXElementName::ThisExpression(_) => None,
+    }
+}
+
+/// A `<Foo.Bar.Baz />` chain, joined with its dots.
+fn jsx_member(member: &oxc_ast::ast::JSXMemberExpression<'_>) -> Option<String> {
+    use oxc_ast::ast::JSXMemberExpressionObject;
+
+    let object = match &member.object {
+        JSXMemberExpressionObject::IdentifierReference(reference) => reference.name.to_string(),
+        JSXMemberExpressionObject::MemberExpression(inner) => jsx_member(inner)?,
+        JSXMemberExpressionObject::ThisExpression(_) => return None,
+    };
+    Some(format!("{object}.{}", member.property.name))
 }
 
 /// The directives at the top of the file, as written.
@@ -1304,6 +1372,46 @@ mod tests {
             2,
             "{callees:?}"
         );
+    }
+
+    /// Issue #145. `<Card />` is a *usage* of `Card`, and rendering and
+    /// importing are different relationships -- a component reached through a
+    /// barrel, one passed as a prop, one imported for a type annotation and
+    /// never rendered. An import-based rule reads all three wrong.
+    #[test]
+    fn the_jsx_a_file_renders_is_its_own_fact() {
+        let facts = parse(
+            "a.tsx",
+            "export const Page = () => (\n             \x20 <div>\n             \x20   <Card />\n             \x20   <Card />\n             \x20   <Ui.Button />\n             \x20   <Deeply.Nested.Thing />\n             \x20   <span>text</span>\n             \x20 </div>\n             );\n",
+        );
+
+        let rendered: Vec<&str> = facts.renders.iter().map(|r| r.name.as_str()).collect();
+
+        // Every distinct element, in source order, deduplicated -- a template
+        // renders `<div>` many times and the list is bounded by the file's
+        // vocabulary rather than by its length.
+        assert_eq!(
+            rendered,
+            ["div", "Card", "Ui.Button", "Deeply.Nested.Thing", "span"],
+            "{rendered:?}"
+        );
+
+        // The case is the distinction, which is JSX's own rule: `div` is an
+        // intrinsic and `Card` is a component in scope. Nothing else has to
+        // say so.
+        assert!(rendered.contains(&"div"));
+
+        // And a render is not a call. Recording it as one would make
+        // `call-obligation` fire on markup.
+        assert!(facts.calls.is_empty(), "{:?}", facts.calls);
+    }
+
+    /// A `.ts` file has no JSX to render, and `<T>` in one is a type
+    /// assertion rather than an element.
+    #[test]
+    fn a_file_without_jsx_renders_nothing() {
+        let facts = parse("a.ts", "export const x = 1;\n");
+        assert!(facts.renders.is_empty());
     }
 
     /// Issue #144. React Server Components draw the sharpest architectural

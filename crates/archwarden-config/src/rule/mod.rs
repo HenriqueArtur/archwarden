@@ -1252,6 +1252,29 @@ pub struct ChokepointRule {
     /// `PostgresRepo`.
     #[serde(default)]
     pub callee: Vec<String>,
+    /// The JSX elements this rule guards, as they appear in markup.
+    ///
+    /// ```json
+    /// { "type": "chokepoint", "id": "only-the-primitives-layer-writes-markup",
+    ///   "level": "error",
+    ///   "roots": ["src/features/*"],
+    ///   "renders": ["div", "span", "button"],
+    ///   "only_in": ["src/ui/primitives/**"] }
+    /// ```
+    ///
+    /// *"Nothing outside `features/checkout` renders `CheckoutForm`"* and *"a
+    /// feature may not write raw markup, only composed components"* are the
+    /// two sentences a design system needs, and neither is an import
+    /// question: rendering and importing are different relationships.
+    ///
+    /// Matched exactly, and **not** by the dot-prefix rule `callee` uses.
+    /// `Ui.Button` is one component, not a member of a `Ui` capability, so a
+    /// rule naming `Ui` does not guard it. Issue #145.
+    ///
+    /// The case is JSX's own distinction: `div` is an intrinsic element and
+    /// `Card` is a component in scope.
+    #[serde(default)]
+    pub renders: Vec<String>,
     /// Directory globs this rule governs.
     ///
     /// Separate from [`only_in`](Self::only_in), and the separation is the

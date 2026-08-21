@@ -1764,6 +1764,31 @@ also catching every call to a factory of the same name.
 **Reads as well as calls.** `Date.now()` is a call and `process.env` never is;
 to an author they are one sentence, so both are guarded. Decision 34.
 
+**And renders.** `renders` guards JSX elements, beside `callee`:
+
+```json
+{ "type": "chokepoint", "id": "only-checkout-renders-its-form",
+  "level": "error",
+  "roots": ["src/features/*"],
+  "renders": ["CheckoutForm"],
+  "only_in": ["src/features/checkout/**"] }
+```
+
+*"Nothing outside `features/checkout` renders `CheckoutForm`"* and *"a feature
+composes rather than writes raw markup"* — `renders: ["div", "span"]` with
+`only_in: ["src/ui/primitives/**"]` — are the two sentences a design system
+needs, and neither is an import question. `<Card />` is usually imported, so
+`import-boundary` covers it by accident; the two come apart at a barrel
+re-export, at a component passed as a prop, and at one imported for a type
+annotation and never rendered.
+
+`renders` is matched **exactly**, and that is a different rule from `callee`'s
+dot-prefix. `Ui.Button` is one component rather than a member of a `Ui`
+capability, so a rule naming `Ui` guards nothing. The case is JSX's own
+distinction: `div` is an intrinsic element, `Card` is a component in scope.
+
+Decision 37.
+
 **Not a taint analysis.** It asks whether a name appears in a file inside a
 scope. It does not follow a value, so a capability passed as an argument out of
 the chokepoint is invisible to it — the same line drawn beside `call-obligation`
