@@ -17,6 +17,110 @@ saying so.
 
 ## [Unreleased]
 
+## [0.34.0] — 2026-08-21
+
+**React.** Four issues about the boundaries a React codebase actually has, and
+one bug reported mid-milestone that mattered more than any of them.
+
+**Two changes make an existing, unchanged config report differently.** Both are
+listed first.
+
+### Fixed
+
+- **An `exports` array is a fallback list, not a first choice.** Reported from
+  a pnpm monorepo of 47 packages where `check` exited 0 with **2073 of 20843
+  imports unresolved** — a tenth of the repository invisible to every boundary
+  rule, behind a note that was honest and a gate that passed anyway.
+
+  The array is how one level holds both a file and a directory, and it is the
+  only map that satisfies Node and `tsc` at once:
+
+  ```json
+  "exports": { "./*.ts": "./src/*.ts", "./*": ["./src/*.ts", "./src/*/index.ts"] }
+  ```
+
+  The resolver read only the first member. Node's rule is to try each in order
+  and take the first that **resolves**.
+
+  **Imports that never resolved now do.** If you have a package like this,
+  boundary rules start seeing edges they were blind to, and may report findings
+  that were always true. `baseline` is the answer for anyone not paying that
+  debt today. `archwarden rename` had the same hole from the same source: a
+  file reached through a later member had no specifier to rewrite to.
+
+### Changed
+
+- **The cache format moved from 15 to 17.** `FileFacts` gained the directives
+  at the top of a file and the JSX it renders. One cold run on upgrade.
+
+### Added
+
+- **`when_declaring` and `when_not_declaring` on `import-boundary`.** React
+  Server Components draw the sharpest architectural boundary in the modern
+  JavaScript ecosystem, and it is a directive rather than a path — two files in
+  the same directory, importing the same module, on opposite sides of it.
+
+  ```json
+  { "type": "import-boundary", "id": "a-client-component-cannot-reach-the-database",
+    "level": "error",
+    "from": ["app/**"],
+    "when_declaring": ["use client"],
+    "forbid_import_from": ["src/db/**"] }
+  ```
+
+  Both directions, because a **server** component is spelled by the *absence*
+  of `"use client"` — there is no directive that says so, and *"a server
+  component may not import a browser-only package"* is not sayable without the
+  inverted form.
+
+  The cheapest of the three narrowing axes: `from` is lexical, `when_importing`
+  needs an import *resolved*, and this needs only the file parsed.
+
+- **`renders` on `chokepoint`.** `<Card />` is a *usage* of `Card`, and usually
+  `Card` was imported — so `import-boundary` covered it by accident. The two
+  come apart at a barrel re-export, at a component passed as a prop, and at one
+  imported for a type annotation and never rendered.
+
+  ```json
+  { "type": "chokepoint", "id": "only-checkout-renders-its-form",
+    "level": "error",
+    "roots": ["src/features/*"],
+    "renders": ["CheckoutForm"],
+    "only_in": ["src/features/checkout/**"] }
+  ```
+
+  `renders: ["div", "span"]` with `only_in: ["src/ui/primitives/**"]` is the
+  other half: *a feature composes rather than writes raw markup*.
+
+  Matched **exactly**, unlike `callee`'s prefix-at-a-dot: `Ui.Button` is one
+  component rather than a member of a `Ui` capability. The case is JSX's own
+  distinction — `div` is an intrinsic, `Card` is a component in scope.
+  Decision 37.
+
+- **`file_pattern` and `imported_from` on `chokepoint`.** `roots` selects
+  directories; `file_pattern` selects the files in them, so *"only
+  `*.server.ts` may call `fetch`"* is sayable. `imported_from` disambiguates a
+  name two packages both export, matched against the specifier as written so
+  the rule still needs no resolution.
+
+- **`presets/react.json`.** Four rules and three decisions, shipped in the npm
+  package beside the Rust and Tauri ones.
+
+  Two of the four need nothing this release added — a component file names the
+  component in it, and has a test beside it — which is worth stating plainly: a
+  React project could have adopted archwarden for those alone at any point.
+
+  Its `roots` are spelled `["src/components", "src/components/**"]` rather than
+  `src/components/*`, and that is worth copying: a React project keeps
+  components both directly in the folder and nested under it, and `*` selects
+  only the children.
+
+- **A gate that every shipped preset compiles.** Read off disk rather than
+  listed, so a preset added without a test line is still covered. A preset is
+  adopted by somebody who does not know its conventions, and one that stops
+  compiling ships broken to all of them.
+
+
 ## [0.33.0] — 2026-08-21
 
 **The silent green run.** Four of these five were found by turning archwarden
@@ -2879,7 +2983,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.33.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.34.0...HEAD
+[0.34.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.30.0...v0.31.0
