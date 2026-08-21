@@ -482,6 +482,30 @@ pub(crate) fn report_valid(merged: &MergedConfig, rules: usize, output: &mut Out
             let _ = writeln!(output.out, "    {source}");
         }
     }
+
+    // Which languages are read, once a preset can add one. A preset that turns
+    // a language on turns on *reading files*, and that is a cost the adopter
+    // should be able to see rather than infer from a run getting slower.
+    // Issue #158 asked for this in the same breath as the union.
+    //
+    // Printed only when a preset is involved: a repository whose own config
+    // names its languages is being told what it just wrote.
+    if merged.sources.len() > 1 {
+        // Named by the enum's own crate, where the match is exhaustive: this
+        // one cannot be, because `Language` is `#[non_exhaustive]` and a
+        // wildcard here would print a list quietly missing a new language.
+        let mut asked: Vec<&'static str> = Vec::new();
+        for language in &merged.config.languages {
+            let name = language.as_str();
+            if !asked.contains(&name) {
+                asked.push(name);
+            }
+        }
+        // Sorted rather than in merge order, so reordering `extends` does not
+        // reword this line.
+        asked.sort_unstable();
+        let _ = writeln!(output.out, "  reads: {}", asked.join(", "));
+    }
 }
 
 #[cfg(test)]

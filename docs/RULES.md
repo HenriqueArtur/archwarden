@@ -343,6 +343,30 @@ derivable from the filename by a case transform.
     (`export function Foo(deps: FooDeps): UseCase<FooInput, FooOutput>`)
     rather than just a name. Constraining the actual type is type checking;
     use `tsc`.
+- `ignore_files` — optional. Repo-relative globs this rule does not ask about.
+
+**Barrels are exempt, and nobody lists them.** `index.ts`, `index.tsx`,
+`index.js`, `index.jsx`, `mod.rs`, `lib.rs` and `main.rs` declare modules and
+re-export; they have no symbol of their own, and asking `mod.rs` for a `Mod` is
+asking the wrong file. The obvious Rust `file_pattern` — `^(?<name>.+)\.rs$` —
+matches every one of them, so this is built in rather than left to each config.
+
+**`ignore_files` is for everything else**, and it is one rule's exemption
+rather than the walk's. The top-level `ignore` removes a file from **every**
+rule, so a repository that wanted one `naming` rule to skip a generated file
+while a `metadata` or `structure` rule still saw it had to choose between the
+two. Spelled and matched the way `spec-pair` spells it. Issue #153.
+
+**Proving it bites.** `config verify-rules` takes a file this rule already
+covers and hands the engine facts with no exports at all: the rule renders its
+own template against that real path, finds nothing answering to it, and fires.
+
+It does not invent a filename, which would be a regex run backwards —
+archwarden's engine is linear-time by design and has no generator. That is why
+this was the one kind whose bite could not be demonstrated until #154, and it
+is the kind most likely to be silently inert: a `file_pattern` matching nothing
+reports nothing, and a rule reaching no file is `config doctor`'s
+`scope-matches-nothing` rather than this command's business.
 
 **Case transformers available in templates**: `pascal`, `camel`, `kebab`,
 `snake`, `upper`, `lower`, `raw`.
@@ -716,8 +740,8 @@ is set.
   "TDD gate" flag: it prevents empty stubs from satisfying the rule.
   **`describe(...)` does not count** — an empty `describe` block satisfies the
   letter of the rule while defeating its entire purpose.
-- `skip_type_only` (bool, default `false`) — if true, a file whose exports are
-  all `type` or `interface` needs no spec. See below.
+- `skip_type_only` (bool, default `false`) — if true, a file that exports
+  nothing a test could call needs no spec. See below.
 
 ### `skip_type_only`: files with nothing to test
 
@@ -747,6 +771,29 @@ What it replaces is a hand-maintained `ignore_files` list. On one real
 repository the five entries in it were all interface-only service and adapter
 files, and the flag removes all five while reporting exactly what the list
 reported.
+
+#### Each language answers it in its own terms
+
+The question is the same everywhere — *does this file export anything a test
+could call?* — and only the answer differs.
+
+For JavaScript the export tags are a complete answer, because `type` and
+`interface` are the only two forms with no runtime behaviour. **For Rust the
+answer is not on the export list at all.** A `struct` is an export; the methods
+in its `impl` block are not, and those are the behaviour a test would reach. So
+a Rust file is exempt when it **declares no function outside its own tests** —
+a file of `struct`, `enum` and `type` declarations, which is what a module of
+pure types looks like there.
+
+Widening the exempt set to include `struct` and `enum` would have been one
+line, and would have quietly excused most of a Rust codebase from the gate: a
+`struct` with an `impl` is usually the most testable thing in a crate. Decision
+36 records the argument.
+
+A `#[test]`, and anything inside a `#[cfg(test)]` module, does not count as a
+function here. A file whose only functions are its own tests has no behaviour
+for a *caller* to reach, and counting them would exempt exactly the file that
+already satisfies the rule.
 
 ### How a spec is named
 

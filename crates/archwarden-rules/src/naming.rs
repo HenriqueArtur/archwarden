@@ -52,6 +52,30 @@ pub struct NamingEngine {
     kind: KindFilter,
     annotation: Vec<String>,
     signature_hint: Option<String>,
+    ignore_files: archwarden_core::glob::PathSet,
+}
+
+/// The fields of a `naming` rule, as `engines_for` destructured them.
+///
+/// A struct rather than eight arguments, which is the shape this workspace
+/// already reaches for when a signature grows past what a reader can hold.
+/// Built at the one place that destructures the variant, so a field added to
+/// the kind still fails to compile there before it can be forgotten here.
+pub(crate) struct NamingFields<'a> {
+    /// Regex over the filename.
+    pub file_pattern: &'a Pattern,
+    /// Optional regex over the directory name.
+    pub dir_pattern: Option<&'a Pattern>,
+    /// The required name, as a template.
+    pub name_template: &'a str,
+    /// Which declaration forms satisfy it.
+    pub kind: &'a KindFilter,
+    /// The annotations that satisfy it, any one of them.
+    pub annotation: &'a [String],
+    /// A signature shown by `scaffold`, never verified.
+    pub signature_hint: Option<&'a str>,
+    /// Files this rule does not ask about.
+    pub ignore_files: &'a archwarden_core::glob::PathSet,
 }
 
 impl NamingEngine {
@@ -67,6 +91,7 @@ impl NamingEngine {
             kind,
             annotation,
             signature_hint,
+            ignore_files,
         } = &rule.kind
         else {
             return None;
@@ -74,12 +99,15 @@ impl NamingEngine {
 
         Some(Self::build(
             rule,
-            file_pattern,
-            dir_pattern.as_ref(),
-            name_template,
-            kind,
-            annotation,
-            signature_hint.as_deref(),
+            &NamingFields {
+                file_pattern,
+                dir_pattern: dir_pattern.as_ref(),
+                name_template,
+                kind,
+                annotation,
+                signature_hint: signature_hint.as_deref(),
+                ignore_files,
+            },
         ))
     }
 
@@ -90,26 +118,19 @@ impl NamingEngine {
     /// a kind added without an engine fails to compile. There is no runtime
     /// state in which a rule goes unchecked, which is why a run has nothing to
     /// report as unimplemented.
-    pub(crate) fn build(
-        rule: &CompiledRule,
-        file_pattern: &Pattern,
-        dir_pattern: Option<&Pattern>,
-        name_template: &str,
-        kind: &KindFilter,
-        annotation: &[String],
-        signature_hint: Option<&str>,
-    ) -> Self {
+    pub(crate) fn build(rule: &CompiledRule, fields: &NamingFields<'_>) -> Self {
         Self {
             id: rule.id.clone(),
             module: rule.module.clone(),
             level: rule.level,
             scope: rule.scope.clone(),
-            file_pattern: file_pattern.clone(),
-            dir_pattern: dir_pattern.cloned(),
-            name_template: name_template.to_owned(),
-            kind: kind.clone(),
-            annotation: annotation.to_vec(),
-            signature_hint: signature_hint.map(str::to_owned),
+            file_pattern: fields.file_pattern.clone(),
+            dir_pattern: fields.dir_pattern.cloned(),
+            name_template: fields.name_template.to_owned(),
+            kind: fields.kind.clone(),
+            annotation: fields.annotation.to_vec(),
+            signature_hint: fields.signature_hint.map(str::to_owned),
+            ignore_files: fields.ignore_files.clone(),
         }
     }
 
@@ -124,6 +145,11 @@ impl NamingEngine {
         }
         let name = path.file_name()?;
         if BARRELS.contains(&name) {
+            return None;
+        }
+        // This rule's own exemption, not the walk's: the file is still read
+        // and every other rule still sees it. Issue #153.
+        if self.ignore_files.is_match(path.as_path()) {
             return None;
         }
         if !self.file_pattern.is_match(name) {
@@ -375,6 +401,33 @@ mod tests {
 
     use super::*;
 
+    /// Issue #153. A file that is not a barrel and that *this* rule should not
+    /// see. The only way to exclude one was the top-level `ignore`, which
+    /// removes it from every rule -- so a repository wanting a `metadata` or
+    /// `structure` rule to still see the file had to choose between two rules.
+    #[test]
+    fn a_rule_can_exempt_a_file_without_hiding_it_from_every_other_rule() {
+        let engine = engine_ignoring(&["crates/*/src/generated.rs"]);
+
+        assert!(
+            !engine.applies_to(&path("crates/core/src/generated.rs")),
+            "the rule was told not to ask about it"
+        );
+        // Its neighbour is untouched: this is one rule's exemption, not the
+        // walk's.
+        assert!(engine.applies_to(&path("crates/core/src/handwritten.rs")));
+    }
+
+    /// Repo-relative globs, spelled the way `spec-pair` spells them. A rule
+    /// that names none is exactly the rule it was.
+    #[test]
+    fn a_rule_that_names_no_exemption_asks_about_everything_in_scope() {
+        let engine = engine_ignoring(&[]);
+
+        assert!(engine.applies_to(&path("crates/core/src/generated.rs")));
+        assert!(engine.applies_to(&path("crates/core/src/handwritten.rs")));
+    }
+
     /// A barrel names a module and exports no symbol of its own.
     ///
     /// The obvious Rust `file_pattern` -- `^(?<name>.+)\.rs$` -- matches every
@@ -506,6 +559,35 @@ mod tests {
                 kind,
                 annotation: Vec::new(),
                 signature_hint: signature_hint.map(ToOwned::to_owned),
+                ignore_files: archwarden_core::glob::PathSet::default(),
+            },
+        };
+
+        NamingEngine::from_rule(&rule).expect("is a naming rule")
+    }
+
+    /// A Rust-shaped rule with an exemption list, for issue #153.
+    fn engine_ignoring(ignore: &[&str]) -> NamingEngine {
+        let rule = CompiledRule {
+            id: RuleId::new("a-file-names-what-it-exports").expect("valid id"),
+            module: None,
+            why: None,
+            module_why: None,
+            decision: None,
+            imports: None,
+            level: Level::Error,
+            scope: Scope::compile(["crates/*/src"]).expect("valid scope"),
+            kind: CompiledRuleKind::Naming {
+                file_pattern: Pattern::compile(r"^(?<name>.+)\.rs$").expect("valid pattern"),
+                dir_pattern: None,
+                name_template: "{{pascal(name)}}".to_owned(),
+                kind: KindFilter::Any,
+                annotation: Vec::new(),
+                signature_hint: None,
+                ignore_files: archwarden_core::glob::PathSet::compile(
+                    ignore.iter().map(|g| (*g).to_owned()),
+                )
+                .expect("valid globs"),
             },
         };
 
@@ -547,6 +629,7 @@ mod tests {
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
                 annotation: Vec::new(),
                 signature_hint: None,
+                ignore_files: archwarden_core::glob::PathSet::default(),
             },
         };
 
@@ -921,6 +1004,7 @@ mod tests {
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
                 annotation: annotation.iter().map(|a| (*a).to_owned()).collect(),
                 signature_hint: None,
+                ignore_files: archwarden_core::glob::PathSet::default(),
             },
         };
 
@@ -1019,6 +1103,7 @@ mod tests {
                 kind: KindFilter::OneOf(ExportTags::only(ExportKind::Class)),
                 annotation: vec!["AgentToolModule".to_owned()],
                 signature_hint: None,
+                ignore_files: archwarden_core::glob::PathSet::default(),
             },
         };
 
@@ -1249,6 +1334,7 @@ mod tests {
                 kind: KindFilter::Any,
                 annotation: Vec::new(),
                 signature_hint: None,
+                ignore_files: archwarden_core::glob::PathSet::default(),
             },
         };
         let engine = NamingEngine::from_rule(&rule).expect("is a naming rule");
@@ -1285,6 +1371,7 @@ mod tests {
                 kind: KindFilter::Any,
                 annotation: Vec::new(),
                 signature_hint: None,
+                ignore_files: archwarden_core::glob::PathSet::default(),
             },
         };
         let engine = NamingEngine::from_rule(&rule).expect("is a naming rule");
@@ -1317,6 +1404,7 @@ mod tests {
                     "function {{pascal(entity)}}{{pascal(action)}}(input: {{pascal(entity)}}): void"
                         .to_owned(),
                 ),
+                ignore_files: archwarden_core::glob::PathSet::default(),
             },
         };
         let engine = NamingEngine::from_rule(&rule).expect("is a naming rule");

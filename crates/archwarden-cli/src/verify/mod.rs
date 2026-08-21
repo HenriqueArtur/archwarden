@@ -189,13 +189,15 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
         // `file_pattern` whose language is what a violating name would have to
         // come from, and inventing a string that matches an arbitrary regex is
         // a generator this does not have.
-        CompiledRuleKind::Naming { .. } | CompiledRuleKind::CallObligation { .. } => {
-            Verdict::Unverified {
-                why: "a violation means inventing a filename that matches this rule's \
-                      `file_pattern`, which is a regex run backwards"
-                    .to_owned(),
-            }
-        }
+        // `naming` used to sit beside `call-obligation` here. It does not need
+        // to: a violation of a `naming` rule is not an invented filename, it is
+        // a file the rule already covers with the export taken away. Issue #154.
+        CompiledRuleKind::Naming { .. } => a_covered_file_without_its_export(rule, engine, tree),
+        CompiledRuleKind::CallObligation { .. } => Verdict::Unverified {
+            why: "a violation means inventing a filename that matches this rule's \
+                  `file_pattern`, which is a regex run backwards"
+                .to_owned(),
+        },
 
         // Planting a violation means two files that import each other and a
         // resolver that places both, which is the whole `check` pipeline run
@@ -233,7 +235,8 @@ use probes::declarations::{
 };
 use probes::pairing::{a_file_added_to_a_freeze, a_file_with_no_counterpart, a_file_with_no_spec};
 use probes::reach::{
-    a_call_from_outside_the_chokepoint, a_file_of_the_wrong_shape, crossed_boundary,
+    a_call_from_outside_the_chokepoint, a_covered_file_without_its_export,
+    a_file_of_the_wrong_shape, crossed_boundary,
 };
 use probes::structure::{a_directory_holding_nothing, forbidden_subfolder};
 
@@ -944,24 +947,58 @@ mod tests {
         assert!(matches!(verdict, Verdict::Unverified { .. }), "{verdict:?}");
     }
 
-    /// The two kinds whose violation is a filename say so, rather than being
-    /// left out of the report. A rule that went unchecked has to be visible as
-    /// unchecked.
+    /// Issue #154. `naming` was the one kind whose bite this command could not
+    /// demonstrate -- and it is the kind most likely to be silently inert, so
+    /// leaving it unverified left the gap exactly where it mattered.
+    ///
+    /// The probe does not invent a filename, which would be a regex run
+    /// backwards. It takes a file the rule *already* covers and hands the
+    /// engine facts with no exports at all.
     #[test]
-    fn the_kinds_that_cannot_be_synthesised_are_named() {
+    fn a_naming_rule_is_proved_by_a_file_it_covers_exporting_nothing() {
         let verdict = verdict(
             &["src/order/create.use-case.ts"],
+            vec![rule("usecase-name", &["src/*"], naming())],
+        );
+
+        assert!(
+            matches!(&verdict, Verdict::Fires { on } if on.contains("create.use-case.ts")
+                && on.contains("exporting nothing")),
+            "{verdict:?}"
+        );
+    }
+
+    /// And a rule reaching no file keeps its verdict honest rather than
+    /// claiming one. That state is `config doctor`'s `scope-matches-nothing`,
+    /// not this command's business.
+    #[test]
+    fn a_naming_rule_that_covers_no_file_is_named_as_unverified() {
+        let verdict = verdict(
+            &["src/order/notes.md"],
+            vec![rule("usecase-name", &["src/*"], naming())],
+        );
+
+        let Verdict::Unverified { why } = verdict else {
+            panic!("there is nothing to take an export away from: {verdict:?}");
+        };
+        assert!(why.contains("no file this rule covers"), "{why}");
+    }
+
+    /// `call-obligation` still cannot be synthesised, and says so rather than
+    /// being left out of the report. A rule that went unchecked has to be
+    /// visible as unchecked.
+    #[test]
+    fn the_kind_that_cannot_be_synthesised_is_named() {
+        let verdict = verdict(
+            &["src/order/route.post.ts"],
             vec![rule(
-                "usecase-name",
+                "audit",
                 &["src/*"],
-                CompiledRuleKind::Naming {
-                    file_pattern: Pattern::compile(r"^(?<name>[a-z-]+)\.use-case\.ts$")
-                        .expect("valid pattern"),
-                    dir_pattern: None,
-                    name_template: "{{pascal(name)}}".to_owned(),
-                    kind: archwarden_core::facts::KindFilter::Any,
-                    annotation: Vec::new(),
-                    signature_hint: None,
+                CompiledRuleKind::CallObligation {
+                    file_pattern: Pattern::compile(r"^route\.post\.ts$").expect("valid pattern"),
+                    symbol: "Event.save".to_owned(),
+                    imported_from: "@org/domain/event".to_owned(),
+                    with_options: Vec::new(),
                 },
             )],
         );
@@ -970,6 +1007,20 @@ mod tests {
             panic!("a filename cannot be invented: {verdict:?}");
         };
         assert!(why.contains("file_pattern"), "{why}");
+    }
+
+    /// The `naming` rule the two tests above share.
+    fn naming() -> CompiledRuleKind {
+        CompiledRuleKind::Naming {
+            file_pattern: Pattern::compile(r"^(?<name>[a-z-]+)\.use-case\.ts$")
+                .expect("valid pattern"),
+            dir_pattern: None,
+            name_template: "{{pascal(name)}}".to_owned(),
+            kind: archwarden_core::facts::KindFilter::Any,
+            annotation: Vec::new(),
+            signature_hint: None,
+            ignore_files: archwarden_core::glob::PathSet::default(),
+        }
     }
 
     /// A `structure` rule that allows a folder by the probe's own name is

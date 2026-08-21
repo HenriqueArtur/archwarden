@@ -566,6 +566,7 @@ mod tests {
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
             annotation: Vec::new(),
             signature_hint: None,
+            ignore_files: archwarden_core::glob::PathSet::default(),
         }
     }
 
@@ -1262,6 +1263,7 @@ mod narrowing_tests {
                     kind: archwarden_core::facts::KindFilter::Any,
                     annotation: Vec::new(),
                     signature_hint: None,
+                    ignore_files: archwarden_core::glob::PathSet::default(),
                 },
             }],
             PathSet::default(),

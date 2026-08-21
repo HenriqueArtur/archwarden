@@ -82,6 +82,7 @@ pub(super) fn compile_rule(
                 name_template: r.must_export.name.clone(),
                 annotation,
                 signature_hint: r.must_export.signature_hint.clone(),
+                ignore_files: globs(&id, "ignore_files", &r.ignore_files)?,
                 file_pattern,
                 dir_pattern,
             }

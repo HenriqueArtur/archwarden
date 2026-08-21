@@ -8,6 +8,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::Patterns;
+use crate::one_or_many::OneOrMany;
 
 /// The filename dictates the exported symbol's name.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -67,6 +68,21 @@ pub struct NamingRule {
     pub dir_pattern: Option<String>,
     /// The export the file must carry.
     pub must_export: MustExport,
+    /// Files this rule does not ask about.
+    ///
+    /// Repo-relative globs, spelled the way [`SpecPairRule::ignore_files`]
+    /// spells them. Separate from the top-level `ignore`, which hides a file
+    /// from *every* rule -- so a repository wanting one rule to skip a file
+    /// and a `metadata` or `structure` rule to still see it had to choose
+    /// between the two. Issue #153.
+    ///
+    /// Barrels do not belong here. `mod.rs`, `lib.rs`, `main.rs` and
+    /// `index.ts` are exempt by construction: nobody should have to declare
+    /// that a module declaration exports no symbol of its own.
+    ///
+    /// [`SpecPairRule::ignore_files`]: crate::rule::SpecPairRule::ignore_files
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub ignore_files: Patterns,
     /// Narrow this rule to the files that import something.
     ///
     /// Path globs, matched against where an import *lands* — the same way an

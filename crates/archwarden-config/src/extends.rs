@@ -158,12 +158,13 @@ pub fn merge(entry: LoadedConfig, resolver: &PresetResolver) -> Result<MergedCon
         root: config_root,
         schema,
         skip_dirs,
-        // The entry config's, not a preset's. Which languages a repository
-        // asks archwarden to read is a decision about *this* repository, and a
-        // shared preset cannot know whether the project including it has any
-        // `.astro` at all -- the same reasoning that stops a preset setting
-        // `root`.
-        languages,
+        // Unioned by `absorb` above rather than taken from one side, which is
+        // why it is bound and dropped here instead of assigned below. It read
+        // the other way until issue #158: a preset cannot know whether the
+        // project including it has any `.astro`, but a preset whose every rule
+        // is about `.rs` knows exactly what it needs -- and could not ask for
+        // it. Decision 35 records which half of that argument won.
+        languages: _,
         language,
         // Likewise, and more so: closing the architecture says every file in
         // *this* repository is somebody's responsibility, and a preset cannot
@@ -187,7 +188,6 @@ pub fn merge(entry: LoadedConfig, resolver: &PresetResolver) -> Result<MergedCon
     merged.root = config_root;
     merged.schema = schema;
     merged.skip_dirs = skip_dirs;
-    merged.languages = languages;
     merged.language = language;
     merged.governance = governance;
 
@@ -275,6 +275,18 @@ impl Accumulator {
             .decisions
             .extend(loaded.config.decisions.clone());
         self.merged.disable.extend(loaded.config.disable.clone());
+
+        // A union with every preset in the chain, unlike the scalars below.
+        // A preset that ships Rust rules and cannot turn Rust on is a preset
+        // that does nothing on adoption day -- silently, as a clean run with a
+        // skip note, which is the failure decision 31 named. And it is a set:
+        // extending a Rust preset and an Astro one means both, and there is no
+        // way to spell a conflict between two members. Issue #158, decision 35.
+        for language in &loaded.config.languages {
+            if !self.merged.languages.contains(language) {
+                self.merged.languages.push(*language);
+            }
+        }
 
         let mut ignore = std::mem::take(&mut self.merged.ignore).into_vec();
         ignore.extend(loaded.config.ignore.iter().cloned());
@@ -409,6 +421,85 @@ mod tests {
                 .languages
                 .contains(&crate::config::Language::Astro),
             "and so did its neighbour, which is the shape being protected"
+        );
+    }
+
+    /// Issue #158. A preset that ships Rust rules and cannot turn Rust on is
+    /// a preset that does nothing on adoption day -- and does it *silently*,
+    /// as a clean run with a skip note. `docs/CONFIG.md` calls a rule that
+    /// enforces nothing while looking like it enforces something the worst
+    /// failure a linter has, and this manufactured one.
+    #[test]
+    fn a_preset_can_turn_on_the_language_its_rules_are_about() {
+        let (_guard, root) = tree(&[
+            (
+                "arch.config.json",
+                r#"{"version":0,"extends":"./preset.json","rules":[]}"#,
+            ),
+            ("preset.json", r#"{"version":0,"languages":["rust"]}"#),
+        ]);
+
+        let merged = merge_at(&root).expect("merges");
+
+        assert!(
+            merged
+                .config
+                .languages
+                .contains(&crate::config::Language::Rust),
+            "the preset's rules are about Rust and could not read a `.rs` file"
+        );
+    }
+
+    /// A union, not a replacement. Somebody extending a Rust preset and an
+    /// Astro one means both, and there is no way to spell a conflict between
+    /// two members of a set.
+    #[test]
+    fn the_languages_of_every_preset_and_the_entry_config_are_unioned() {
+        let (_guard, root) = tree(&[
+            (
+                "arch.config.json",
+                r#"{"version":0,"extends":["./rust.json","./astro.json"],
+                    "languages":["ts"],"rules":[]}"#,
+            ),
+            ("rust.json", r#"{"version":0,"languages":["rust"]}"#),
+            ("astro.json", r#"{"version":0,"languages":["astro"]}"#),
+        ]);
+
+        let merged = merge_at(&root).expect("merges");
+        let mut asked: Vec<String> = merged
+            .config
+            .languages
+            .iter()
+            .map(|language| format!("{language:?}"))
+            .collect();
+        asked.sort();
+
+        assert_eq!(asked, ["Astro", "Rust", "Ts"], "{asked:?}");
+    }
+
+    /// And naming one twice asks for it once. A set, spelled as a list.
+    #[test]
+    fn a_language_named_by_two_presets_is_asked_for_once() {
+        let (_guard, root) = tree(&[
+            (
+                "arch.config.json",
+                r#"{"version":0,"extends":["./a.json","./b.json"],
+                    "languages":["rust"],"rules":[]}"#,
+            ),
+            ("a.json", r#"{"version":0,"languages":["rust"]}"#),
+            ("b.json", r#"{"version":0,"languages":["rust"]}"#),
+        ]);
+
+        let merged = merge_at(&root).expect("merges");
+
+        assert_eq!(
+            merged
+                .config
+                .languages
+                .iter()
+                .filter(|l| **l == crate::config::Language::Rust)
+                .count(),
+            1
         );
     }
 

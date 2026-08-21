@@ -17,6 +17,127 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 36 — `skip_type_only` asks one question, and each language answers it
+Status: accepted.
+Context: issue #157, found turning `spec-pair` on over this repository once
+#137 taught it Rust's inline tests. Two files were reported for carrying no
+test and both are right to carry none: `crates/archwarden-cli/src/command.rs`,
+the clap surface, and `crates/archwarden-core/src/docs.rs`, ninety-seven lines
+and zero functions.
+
+`skip_type_only` exists for exactly this and did not fire. It exempted a file
+whose exports are all `type` or `interface`, and a Rust declaration-only file
+exports `struct` and `enum`.
+
+**Widening the exempt list was the wrong fix, and it is worth saying why.** A
+`struct` is not a JavaScript `interface`. It can carry an `impl` block full of
+behaviour, and a file exporting one is usually the most testable thing in the
+crate. Adding `struct` and `enum` to the exempt set would have quietly excused
+most of a Rust codebase from the TDD gate — a rule enforcing nothing while
+looking like it enforces something, which `docs/CONFIG.md` calls the worst
+failure a linter has.
+
+The question the flag asks is language-independent: *does this file export
+anything a test could call?* The **answer** is not. For JavaScript the export
+tags are complete, because `type` and `interface` are the only two forms with
+no runtime behaviour. For Rust the answer is not on the export list at all: a
+`struct` is an export and its `impl` block's methods are not, and those are the
+behaviour a test would reach.
+
+Decision: one field, one sentence for the user, and a per-language answer
+behind it — the shape `FileClass::tests_live` already uses for *where do this
+language's tests live*. `FileFacts` gains `callables`, the functions a file
+declares outside its own tests, populated by the Rust front-end and zero
+everywhere else.
+
+**The predicate lives in `archwarden-core`, on `FileFacts`.** `Language` is
+`#[non_exhaustive]`, so a match in `archwarden-rules` needs a wildcard arm and
+a language added later would fall into somebody else's answer instead of
+failing to build. Answering it in the crate that owns the enum keeps the
+compiler as the guard. The same trap caught `Language::as_str` in decision 35,
+one field earlier.
+
+A `#[test]`, and anything inside a `#[cfg(test)]` module, does not count as a
+callable. A file whose only functions are its own tests has no behaviour for a
+*caller* to reach, and counting them would exempt exactly the file that already
+satisfies the rule.
+
+Alternatives:
+- **Widen `skip_type_only` to accept `struct` and `enum`.** One line, and it
+  excuses most of a Rust codebase. See above.
+- **A second flag, named for *callable* rather than *type*.** Honest, and it
+  asks the config author to know which of two questions their language answers
+  — which is a thing archwarden knows and they should not have to.
+- **Leave it, and use `ignore_files`.** The workaround #157 rejected in its own
+  words: a hand-maintained list naming two files is precisely what
+  `skip_type_only` documents itself as existing to replace.
+
+Consequences: cache format 14 to 15. `spec-pair` is now in this repository's
+own `arch.config.json`, over 88 files — which it could not be before, and which
+is the sharpest test the rule has. Turning it on found `command.rs` genuinely
+untested: three small translation tables between the CLI's vocabulary and the
+domain's, each one transposition away from a report that reads perfectly and
+answers a question nobody asked. They have tests now.
+
+---
+
+### 35 — A preset may turn a language on, and `disable` is the way back off
+Status: accepted.
+Context: issue #158, found writing the Rust preset. A preset declaring
+`"languages": ["rust"]` did not take: `languages` was read from the entry
+config alone, so the local default `["ts"]` won and every rule in the preset
+was reported as a **counted skip**.
+
+The failure is the one decision 31 exists to name, arriving through the front
+door. A preset exists so somebody can adopt a set of conventions without
+knowing them; a Rust preset that requires the adopter to *also* write
+`"languages": ["rust"]` has a step nobody can infer, and getting it wrong
+produces a clean green run with a note. `docs/CONFIG.md` calls a rule that
+enforces nothing while looking like it enforces something the worst failure a
+linter has, and this manufactured one on adoption day. Measured on the
+published 0.32.0: `0 errors, 0 warnings, 2 skipped`, against a file that
+violates two of the preset's rules.
+
+Decision: `languages` is unioned across the whole `extends` chain, like the
+lists and unlike the other scalars.
+
+The reasoning it replaces was not wrong, it was one-sided. A preset cannot know
+whether the project including it has any `.astro` — that is why `governance`
+and `root` stay with the entry config. But a preset whose every rule is about
+`.rs` knows exactly what it needs, and the two cases are not the same.
+
+**Nothing new spells "off".** The open question was whether an adopter needs a
+way to decline a language a preset turns on, since `disable` drops rules by id
+and had no equivalent. It turns out `disable` is already the answer: a language
+costs nothing on its own, because a file is only parsed when some rule's scope
+reaches it. Disabling the preset's rules leaves the union in place and reads no
+files — measured at four milliseconds and zero files parsed. A second field
+would have been a second way to say what one already says.
+
+**The union is announced.** A preset that turns a language on turns on
+*reading files*, and `docs/RULES.md` is careful about which rules open one at
+all. `config validate` now prints `reads: rust, ts` whenever a preset is
+involved, so the cost is visible rather than inferred from a run getting
+slower. Not printed for a config with no presets: that would be telling
+somebody what they just wrote.
+
+Alternatives:
+- **Leave it, and document the extra line.** A documented step that a green run
+  does not enforce is a step people skip, and the skipping is invisible.
+- **Let a preset *propose* a language, confirmed locally.** Honest, and it is
+  the same extra step wearing a ceremony.
+- **Infer the language from the rules in the preset.** Removes the field from
+  the preset entirely, and makes `languages` mean two different things
+  depending on where it is written -- the kind of implicitness this format has
+  refused elsewhere.
+
+Consequences: a repository extending a preset that names a language starts
+reading those files on upgrade, and rules that were skipped begin to fire. That
+is the bug being fixed rather than a regression, and `baseline` is the answer
+for anyone not paying that debt today.
+
+---
+
 ### 34 — A read is a fact of its own, deduplicated by name
 Status: accepted.
 Context: issue #118 asks for *"only `src/config` reads the environment"*, and

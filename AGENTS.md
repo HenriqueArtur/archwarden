@@ -664,11 +664,13 @@ it fires. Nothing is written to the repository.
 
 ```
 ✓ domain-is-self-contained — fires on `packages/domain/order.ts` importing `apps/api/env.ts`
+✓ usecase-name — fires on `src/order/create.use-case.ts` exporting nothing
 ✗ cancelled-by-its-own-except — silent on `packages/domain/order.ts` importing `apps/api/env.ts`
-? usecase-name — not verified: a violation means inventing a filename that matches
-  this rule's `file_pattern`, which is a regex run backwards
+? every-invoke-names-a-command — not verified: a violation is a `invoke` in one scope
+  naming something no declaration in another answers to — two files that have to
+  disagree, which this cannot build from one
 
-3 enforce something, 1 enforce nothing, 2 not verified
+3 enforce something, 1 enforce nothing, 1 not verified
 ```
 
 It exits **non-zero on `✗`**, so it belongs in CI beside `check`.

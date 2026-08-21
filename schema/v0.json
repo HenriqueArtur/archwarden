@@ -605,6 +605,10 @@
               "description": "The export the file must carry.",
               "$ref": "#/$defs/MustExport"
             },
+            "ignore_files": {
+              "description": "Files this rule does not ask about.\n\nRepo-relative globs, spelled the way [`SpecPairRule::ignore_files`]\nspells them. Separate from the top-level `ignore`, which hides a file\nfrom *every* rule -- so a repository wanting one rule to skip a file\nand a `metadata` or `structure` rule to still see it had to choose\nbetween the two. Issue #153.\n\nBarrels do not belong here. `mod.rs`, `lib.rs`, `main.rs` and\n`index.ts` are exempt by construction: nobody should have to declare\nthat a module declaration exports no symbol of its own.\n\n[`SpecPairRule::ignore_files`]: crate::rule::SpecPairRule::ignore_files",
+              "$ref": "#/$defs/OneOrMany"
+            },
             "when_importing": {
               "description": "Narrow this rule to the files that import something.\n\nPath globs, matched against where an import *lands* — the same way an\n`import-boundary` matches. Without this a rule's population is where a\nfile sits and what it is called; with it, what the file talks to.\n\nLeave it out and nothing changes, including the cost: a rule that does\nnot ask never resolves an import. Issue #98, decision 25.",
               "$ref": "#/$defs/OneOrMany"

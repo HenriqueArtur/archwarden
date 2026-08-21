@@ -68,44 +68,63 @@ pub(super) fn frozen_with_nothing_accepted(
 /// invisible from the outside, which is the whole reason this command exists:
 /// a rule enforcing nothing looks exactly like a repository that satisfies it.
 ///
-/// Only `structure` today, because it is the only kind whose fields are all
-/// optional — every other kind carries its constraint in a field that must be
-/// present for the config to parse at all.
+/// Two kinds, and they are the two whose fields are all optional — every other
+/// kind carries its constraint in a field that must be present for the config
+/// to parse at all.
 pub(super) fn constrains_nothing(rule: &CompiledRule, concerns: &mut Vec<Concern>) {
-    let CompiledRuleKind::Structure {
-        allowed_subfolders,
-        warn_subfolders,
-        subfolder_patterns,
-        filename_patterns,
-        ..
-    } = &rule.kind
-    else {
-        return;
+    let (message, fix) = match &rule.kind {
+        CompiledRuleKind::Structure {
+            allowed_subfolders,
+            warn_subfolders,
+            subfolder_patterns,
+            filename_patterns,
+            ..
+        } => {
+            // An *empty* `allowed_subfolders` is a constraint -- "no subfolder
+            // may exist here" -- so what matters is whether the field was
+            // named at all. Issue #40.
+            if allowed_subfolders.is_some()
+                || !warn_subfolders.is_empty()
+                || !subfolder_patterns.is_empty()
+                || !filename_patterns.is_empty()
+            {
+                return;
+            }
+            (
+                "it names no allowed subfolder, no warned subfolder and no \
+                 pattern for a folder or a filename, so there is nothing it \
+                 can report",
+                "give it something to enforce — `allowed_subfolders: []` \
+                 forbids every subfolder — or drop the rule",
+            )
+        }
+        // An empty `only_in` is a constraint here, the way an empty
+        // `allowed_subfolders` is above: it says *nobody here may*. An empty
+        // `callee` is not -- there is no capability to guard, so the rule can
+        // never report anything. `config verify-rules` already refuses such a
+        // rule and points at this concern. Issue #168.
+        CompiledRuleKind::Chokepoint { callee, .. } => {
+            if !callee.is_empty() {
+                return;
+            }
+            (
+                "it guards no callee, so there is no capability it can report \
+                 anybody for reaching",
+                "name what only these files may reach — a call like \
+                 `Date.now`, or a name they read like `process.env` — or drop \
+                 the rule",
+            )
+        }
+        _ => return,
     };
-
-    // An *empty* `allowed_subfolders` is a constraint -- "no subfolder may
-    // exist here" -- so what matters is whether the field was named at all.
-    // Issue #40.
-    if allowed_subfolders.is_some()
-        || !warn_subfolders.is_empty()
-        || !subfolder_patterns.is_empty()
-        || !filename_patterns.is_empty()
-    {
-        return;
-    }
 
     concerns.push(Concern {
         code: "rule-constrains-nothing",
         level: Level::Warning,
         rule_id: Some(rule.id.clone()),
         path: None,
-        message: "it names no allowed subfolder, no warned subfolder and no \
-                  pattern for a folder or a filename, so there is nothing it \
-                  can report"
-            .to_owned(),
-        fix: "give it something to enforce — `allowed_subfolders: []` forbids \
-              every subfolder — or drop the rule"
-            .to_owned(),
+        message: message.to_owned(),
+        fix: fix.to_owned(),
     });
 }
 

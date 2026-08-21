@@ -450,6 +450,7 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             kind,
             annotation,
             signature_hint,
+            ignore_files: _,
         } => {
             // The directory half belongs in the same sentence, not in a note
             // under it. An agent reading "files matching `^(?<action>...)$`
@@ -862,6 +863,7 @@ mod tests {
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Function)),
             annotation: Vec::new(),
             signature_hint: Some("(deps: Deps): UseCase".to_owned()),
+            ignore_files: archwarden_core::glob::PathSet::default(),
         }
     }
 
@@ -1140,6 +1142,7 @@ mod tests {
             kind: KindFilter::OneOf(ExportTags::only(ExportKind::Const)),
             annotation: vec!["AgentToolModule".to_owned()],
             signature_hint: None,
+            ignore_files: archwarden_core::glob::PathSet::default(),
         };
         let config = config(vec![rule("tools", None, &["src/*"], annotated)]);
 
@@ -2048,6 +2051,7 @@ mod tests {
                     kind: KindFilter::Any,
                     annotation: Vec::new(),
                     signature_hint: None,
+                    ignore_files: archwarden_core::glob::PathSet::default(),
                 },
             )]),
             None,
@@ -2264,6 +2268,7 @@ mod tests {
                     kind: KindFilter::Any,
                     annotation: Vec::new(),
                     signature_hint: None,
+                    ignore_files: archwarden_core::glob::PathSet::default(),
                 },
             )]),
             None,

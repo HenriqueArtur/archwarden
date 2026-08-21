@@ -567,6 +567,56 @@ impl CallOption {
     }
 }
 
+impl FileFacts {
+    /// Whether this file exports nothing a test could call.
+    ///
+    /// What `spec-pair`'s `skip_type_only` asks. One question, answered the
+    /// way each language spells it -- the shape [`FileClass::tests_live`]
+    /// already uses -- and answered *here* rather than at the call site
+    /// because [`Language`] is `#[non_exhaustive]`: a match in another crate
+    /// needs a wildcard arm, and a language added later would fall into
+    /// somebody else's answer instead of failing to build. Issue #157.
+    ///
+    /// Three boundaries survive from the JavaScript-only version of this, and
+    /// each is drawn where it is for a reason. A file with **no exports at
+    /// all** is never exempt: that is a file nobody imports rather than a
+    /// contract, and exempting it would make deleting the `export` keyword a
+    /// way out of the rule. An **`enum`** exists at runtime and has values a
+    /// test can assert on. A **re-export** is not type-only either -- its real
+    /// kind needs the file on the other side, which `docs/RULES.md` keeps this
+    /// rule away from, and guessing would exempt files on a coin flip.
+    ///
+    /// [`FileClass::tests_live`]: crate::path::FileClass::tests_live
+    /// [`Language`]: crate::path::Language
+    #[must_use]
+    pub fn exports_no_behaviour(&self) -> bool {
+        use crate::path::{FileClass, Language};
+
+        if self.exports.is_empty() {
+            return false;
+        }
+        let Some(name) = self.path.file_name() else {
+            return false;
+        };
+
+        match FileClass::language(name) {
+            // For JavaScript the export tags are a complete answer: `type` and
+            // `interface` are the only two forms with no runtime behaviour.
+            Some(Language::Ts | Language::Astro) => self.exports.iter().all(|export| {
+                export.tags.contains(ExportKind::Type)
+                    || export.tags.contains(ExportKind::Interface)
+            }),
+            // For Rust it is not on the export list at all. A `struct` is an
+            // export and its `impl` block's methods are not, and those are the
+            // behaviour a test would reach -- so adding `struct` and `enum` to
+            // the exempt set would have excused most of a Rust codebase from
+            // the gate.
+            Some(Language::Rust) => self.callables == 0,
+            None => false,
+        }
+    }
+}
+
 /// A dotted name read without being called.
 ///
 /// The other half of what a `chokepoint` rule guards. See
@@ -810,6 +860,19 @@ pub struct FileFacts {
     /// where a reader would start anyway.
     #[serde(default)]
     pub reads: Vec<ReadFact>,
+    /// Functions the file declares outside its own tests.
+    ///
+    /// The fact `skip_type_only` needs to answer for Rust, where the question
+    /// *"does this file export anything with behaviour?"* is not on the export
+    /// list at all. A `struct` is an export; its `impl` block's methods are
+    /// not, and they are the behaviour a test would reach. Issue #157.
+    ///
+    /// Zero for a language whose front-end does not populate it, which is what
+    /// every JavaScript file records: there the question has a complete answer
+    /// in the export tags -- `type` and `interface` are the only two forms
+    /// with no runtime behaviour -- so nothing has to count.
+    #[serde(default)]
+    pub callables: usize,
     /// Suppression markers found in comments, in source order.
     ///
     /// Only the ones that parse as a marker; ordinary prose is not carried,
@@ -894,6 +957,7 @@ impl FileFacts {
             exports: Vec::new(),
             calls: Vec::new(),
             reads: Vec::new(),
+            callables: 0,
             allowances: Vec::new(),
             metadata: Vec::new(),
             has_opaque_import: false,
@@ -941,6 +1005,86 @@ mod tests {
 
     fn path() -> RepoRelPath {
         RepoRelPath::new("packages/domain/src/user/user.ts").expect("valid")
+    }
+
+    /// A file with these exports, at this path.
+    fn exporting(at: &str, kinds: &[ExportKind]) -> FileFacts {
+        let mut facts = FileFacts::unparsed(
+            RepoRelPath::new(at).expect("valid path"),
+            ContentHash::of(b""),
+        );
+        facts.exports = kinds
+            .iter()
+            .map(|kind| ExportFact {
+                attributes: Vec::new(),
+                visibility: Visibility::Public,
+                name: Some("Thing".to_owned()),
+                tags: ExportTags::only(*kind),
+                is_default: false,
+                reexport_from: None,
+                forwards: None,
+                annotations: Vec::new(),
+                returns: None,
+                span: Span::new(0, 1),
+            })
+            .collect();
+        facts
+    }
+
+    /// Issue #157. One question -- *does this file export anything a test
+    /// could call?* -- and each language answers it in its own terms.
+    ///
+    /// Answered here rather than in `archwarden-rules` because `Language` is
+    /// `#[non_exhaustive]`: a match in another crate needs a wildcard arm, and
+    /// a language added later would fall into somebody else's answer instead
+    /// of failing to build. Decision 36.
+    #[test]
+    fn each_language_says_what_having_no_behaviour_looks_like() {
+        // JavaScript: the export tags are a complete answer, because `type`
+        // and `interface` are the only two forms with no runtime behaviour.
+        assert!(
+            exporting("src/a.ts", &[ExportKind::Interface, ExportKind::Type])
+                .exports_no_behaviour()
+        );
+        assert!(
+            !exporting("src/a.ts", &[ExportKind::Interface, ExportKind::Function])
+                .exports_no_behaviour(),
+            "one runtime export is enough to bring the rule back"
+        );
+        // An `enum` exists at runtime and has values a test can assert on.
+        assert!(!exporting("src/a.ts", &[ExportKind::Enum]).exports_no_behaviour());
+
+        // Rust: not on the export list at all. A `struct` is an export and its
+        // `impl` block's methods are not.
+        let mut declarations = exporting("src/a.rs", &[ExportKind::Struct, ExportKind::Enum]);
+        declarations.callables = 0;
+        assert!(
+            declarations.exports_no_behaviour(),
+            "a module of pure declarations has nothing a test could call"
+        );
+
+        let mut behaved = exporting("src/a.rs", &[ExportKind::Struct]);
+        behaved.callables = 1;
+        assert!(
+            !behaved.exports_no_behaviour(),
+            "a struct with an impl is usually the most testable thing there is"
+        );
+
+        // The two do not borrow from each other: `callables` is zero for every
+        // JavaScript file and must not exempt one whose exports say otherwise.
+        let mut runtime = exporting("src/a.ts", &[ExportKind::Function]);
+        runtime.callables = 0;
+        assert!(!runtime.exports_no_behaviour());
+
+        // A file with no exports at all is never exempt: that is a file nobody
+        // imports, and exempting it would make deleting the `export` keyword a
+        // way out of the rule.
+        assert!(!exporting("src/a.rs", &[]).exports_no_behaviour());
+        assert!(!exporting("src/a.ts", &[]).exports_no_behaviour());
+
+        // And a language no front-end reads answers nothing rather than
+        // exempting itself.
+        assert!(!exporting("src/a.py", &[ExportKind::Type]).exports_no_behaviour());
     }
 
     /// Issue #13. A front-end that parses a slice reports offsets into the
