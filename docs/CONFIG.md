@@ -1339,17 +1339,34 @@ is where a `naming` rule belongs.
 
 ### A whole layer at once
 
-A directory or a glob as the source makes `--to` relative to **each matched
+A directory or a glob as the source moves everything under it, and **the
+leading dot decides what `--to` means**.
+
+A destination beginning with `.` or `..` is a **step from each matched
 directory**:
 
 ```bash
 archwarden impact 'packages/domain/src/*/shared' --to '../calcs' --apply
 ```
 
-Every `shared` becomes the `calcs` beside it. Files nested inside a match land
-in the destination directly — `feature/shared/consts/list-shared.ts` goes to
-`feature/calcs/`, not to `feature/shared/calcs/`. Two files landing on one path
-is refused before anything is written.
+Every `shared` becomes the `calcs` beside it. That is the batch form's whole
+point: measuring from anywhere else would land every match in one place.
+
+Anything else is a **path**, the same way the source argument is a path:
+
+```bash
+archwarden impact apps/api/src/Infrastructure/Http --to apps/api/src/http --apply
+```
+
+`Infrastructure/Http/Account/mount.ts` becomes `http/Account/mount.ts`. Until
+0.35 this was read as a step and appended to the source, so the report named a
+destination *inside* the directory being moved — and `--apply` moved files
+there. Issue #171.
+
+Files nested inside a match land in the destination directly —
+`feature/shared/consts/list-shared.ts` goes to `feature/calcs/`, not to
+`feature/shared/calcs/`. Two files landing on one path is refused before
+anything is written.
 
 One file keeps the other reading: `--to` is the whole destination path, which
 is what makes renaming during a move expressible at all.
