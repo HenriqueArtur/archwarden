@@ -520,6 +520,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: archwarden_core::level::Level::Error,
             scope: Scope::compile(["packages/domain/src/*"]).expect("valid scope"),
             kind: archwarden_core::compiled::CompiledRuleKind::Structure {

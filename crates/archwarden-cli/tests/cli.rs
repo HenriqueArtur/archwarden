@@ -1855,6 +1855,79 @@ fn the_debt_a_decision_carries_is_named_on_every_surface() {
 }
 
 /// Issue #116, end to end: the document archwarden writes, the region it never
+/// Issue #144, end to end. React Server Components draw the sharpest
+/// architectural boundary in the modern JavaScript ecosystem, and it is a
+/// directive rather than a path -- two files in the same directory, importing
+/// the same module, on opposite sides of it.
+#[test]
+fn a_rule_can_narrow_by_what_a_file_declares_about_itself() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"import-boundary","id":"a-client-component-cannot-reach-the-database",
+                 "level":"error","from":["app/*"],
+                 "when_declaring":["use client"],
+                 "forbid_import_from":["src/db/**"]},
+                {"type":"import-boundary","id":"a-server-component-cannot-use-a-browser-package",
+                 "level":"error","from":["app/*"],
+                 "when_not_declaring":["use client"],
+                 "forbid_import_from_packages":["react-dom"]}]}"#,
+        ),
+        ("src/db/client.ts", "export const db = 1;"),
+        // A client component reaching the database: a credential in the bundle.
+        (
+            "app/dashboard/chart.tsx",
+            "\"use client\";\nimport { db } from \"../../src/db/client\";\n",
+        ),
+        // A server component reaching a browser-only package. Same directory,
+        // and nothing about where it sits tells the two apart.
+        (
+            "app/dashboard/page.tsx",
+            "import { createPortal } from \"react-dom\";\n",
+        ),
+        // And a client component using that package is exactly right.
+        (
+            "app/dashboard/modal.tsx",
+            "\"use client\";\nimport { createPortal } from \"react-dom\";\n",
+        ),
+    ]);
+
+    // Read as findings rather than as text: `react-dom` is not installed in
+    // this fixture, so every file that imports it appears in the unresolved
+    // note -- and a rule not firing is the thing being asserted.
+    let out = archwarden()
+        .current_dir(dir.path())
+        .args(["check", "--format", "json"])
+        .assert()
+        .code(1)
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&out).expect("valid JSON");
+    let reported: Vec<String> = report["findings"]
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|finding| {
+            format!(
+                "{} {}",
+                finding["rule_id"].as_str().unwrap_or_default(),
+                finding["path"].as_str().unwrap_or_default()
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        reported,
+        [
+            "a-client-component-cannot-reach-the-database app/dashboard/chart.tsx",
+            "a-server-component-cannot-use-a-browser-package app/dashboard/page.tsx",
+        ],
+        "a client component may use a browser package, and only these two are wrong"
+    );
+}
+
 /// Issue #166, reported from a repository that put `config doctor` in its
 /// gate and watched it pass green for two commits with a stale decision
 /// document hanging off it.

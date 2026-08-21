@@ -17,6 +17,64 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 37 — A render is a use of its own, and the case is the distinction
+Status: accepted.
+Context: issue #145. In a `.tsx` file `<Card />` is a usage of `Card`, and
+usually `Card` was imported — so `import-boundary` covers it by accident. The
+two come apart exactly where a design system needs them to:
+
+- a component in scope through a barrel, where the import names the barrel and
+  the render names the component;
+- a component passed as a prop and rendered — `<Layout slot={Card} />` — where
+  nothing renders `Card` at the site that decided to;
+- a file that imports a component for a type annotation and never renders it,
+  which an import-based rule reads as a dependency that is not one.
+
+Decision: `FileFacts` gains `renders`, and `chokepoint` gains a `renders`
+field beside `callee`.
+
+**Not folded into `CallFact`.** JSX compiles to a call, and recording it as one
+would make `call-obligation` fire on markup — which is not what anybody means
+by *"this file must call `Event.save`"*. The issue said so and it is right.
+
+**Not folded into `chokepoint.callee` either**, for the mirror of that reason.
+A rule guarding the `Card` *capability* must not start firing because somebody
+wrote `<Card />`, and a rule about markup must not fire on a function call. Two
+fields, one rule, one `only_in` — because both are the same sentence about
+where a thing may be used, and a second rule kind would duplicate the scope,
+the allowlist and the finding.
+
+**The case is the distinction, and nothing else records it.** JSX's own rule is
+that a lowercase name is an intrinsic element and a capitalised one is a
+reference to a component in scope, so `div` and `Card` already say which they
+are. A second field carrying `intrinsic: bool` would be a second thing to keep
+in step with a rule the language already enforces.
+
+**Matched exactly, unlike `callee`.** A chokepoint's callees match by prefix at
+a dot, because `process.env` is a capability whose members are written as the
+source finds them. `Ui.Button` is not that: it is *one component*, and a rule
+naming `Ui` is naming nothing. The two fields sit beside each other and match
+differently, which is worth stating out loud rather than discovering.
+
+Deduplicated by name with the first span kept, on decision 34's terms — a
+template renders `<div>` many times, and a list that grew with the markup would
+grow the cache with it.
+
+Alternatives:
+- **A `render-boundary` rule kind.** Its scope, its allowlist and its finding
+  would all be `chokepoint`'s, spelled again.
+- **Widen `chokepoint.callee` to match renders too.** One field, and it makes
+  every existing chokepoint start firing on markup that happens to share a
+  name.
+- **Record only capitalised elements.** Loses *"a feature composes rather than
+  writes markup"*, which is the design-system sentence that needs `div`.
+
+Consequences: cache format 16 to 17. The Astro front-end will want the same
+fact for its template region, which is stage 2 of issue #13, and the shape is
+already the one it needs.
+
+---
+
 ### 36 — `skip_type_only` asks one question, and each language answers it
 Status: accepted.
 Context: issue #157, found turning `spec-pair` on over this repository once

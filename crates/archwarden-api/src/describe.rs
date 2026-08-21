@@ -334,8 +334,9 @@ pub fn describe_observed(observed: &Observed) -> String {
         // what is written on it.
         // "reaches", not "calls": a read is not a call, and half of what this
         // rule guards is `process.env`, which is never called.
-        Observed::ChokepointBreached { callee } => {
-            format!("reaches `{callee}`, which only certain files may")
+        Observed::ChokepointBreached { callee, rendered } => {
+            let verb = if *rendered { "renders" } else { "reaches" };
+            format!("{verb} `{callee}`, which only certain files may")
         }
         // The call site exists and is a few characters short, which is a
         // different place to send the reader than a missing call.
@@ -1112,8 +1113,19 @@ mod tests {
             (
                 Observed::ChokepointBreached {
                     callee: "process.env.DATABASE_URL".to_owned(),
+                    rendered: false,
                 },
                 "reaches `process.env.DATABASE_URL`",
+            ),
+            // "renders", not "reaches": the reader is being sent to markup,
+            // and a sentence about a call site would send them looking for one
+            // that is not there. Issue #145.
+            (
+                Observed::ChokepointBreached {
+                    callee: "CheckoutForm".to_owned(),
+                    rendered: true,
+                },
+                "renders `CheckoutForm`",
             ),
         ];
 
@@ -1441,6 +1453,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: archwarden_core::level::Level::Error,
             scope: archwarden_core::scope::Scope::compile(scope.iter().copied())
                 .expect("valid scope"),

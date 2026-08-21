@@ -284,6 +284,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Warning,
             scope: Scope::compile(["packages/domain/src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::NoPassthrough {
@@ -320,6 +321,8 @@ mod tests {
             calls: Vec::new(),
             reads: Vec::new(),
             callables: 0,
+            directives: Vec::new(),
+            renders: Vec::new(),
             allowances: Vec::new(),
             metadata: Vec::new(),
             has_opaque_import: false,
@@ -658,6 +661,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(["packages/domain/src/**"]).expect("valid scope"),
             kind: CompiledRuleKind::NoPassthrough {

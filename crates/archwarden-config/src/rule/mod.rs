@@ -207,6 +207,30 @@ impl Rule {
     /// `import-boundary` has none and never will — it already chooses its
     /// importers with `from`, `from_module` and `from_kind`, and a second way
     /// to say the same thing is a second thing to get wrong.
+    /// The directives that put a file in this rule's population, and the ones
+    /// that keep it out.
+    ///
+    /// Only `import-boundary` asks. Issue #144 says why: its three motivating
+    /// rules -- a `"use server"` module not imported by a `"use client"` one,
+    /// a client component not reaching the database, a directory whose files
+    /// agree on which side they are on -- are all import-boundary questions
+    /// with one extra predicate. Another kind can gain the field the day it
+    /// has a sentence that needs it.
+    #[must_use]
+    pub fn when_declaring(&self) -> (&Patterns, &Patterns) {
+        const NONE: &Patterns = &OneOrMany::Many(Vec::new());
+        match self {
+            Self::ImportBoundary(r) => (&r.when_declaring, &r.when_not_declaring),
+            _ => (NONE, NONE),
+        }
+    }
+
+    /// Path globs that put a file in this rule's population.
+    ///
+    /// See [`ImportCycleRule::when_importing`]. Matched against where an
+    /// import *lands*, so a rule carrying one costs a resolution pass over the
+    /// files its scope reaches -- unlike [`when_declaring`](Self::when_declaring),
+    /// which needs only the file parsed.
     #[must_use]
     pub fn when_importing(&self) -> &Patterns {
         // A rule that never asks. A `const` rather than a `Default::default()`
@@ -1228,6 +1252,51 @@ pub struct ChokepointRule {
     /// `PostgresRepo`.
     #[serde(default)]
     pub callee: Vec<String>,
+    /// The JSX elements this rule guards, as they appear in markup.
+    ///
+    /// ```json
+    /// { "type": "chokepoint", "id": "only-the-primitives-layer-writes-markup",
+    ///   "level": "error",
+    ///   "roots": ["src/features/*"],
+    ///   "renders": ["div", "span", "button"],
+    ///   "only_in": ["src/ui/primitives/**"] }
+    /// ```
+    ///
+    /// *"Nothing outside `features/checkout` renders `CheckoutForm`"* and *"a
+    /// feature may not write raw markup, only composed components"* are the
+    /// two sentences a design system needs, and neither is an import
+    /// question: rendering and importing are different relationships.
+    ///
+    /// Matched exactly, and **not** by the dot-prefix rule `callee` uses.
+    /// `Ui.Button` is one component, not a member of a `Ui` capability, so a
+    /// rule naming `Ui` does not guard it. Issue #145.
+    ///
+    /// The case is JSX's own distinction: `div` is an intrinsic element and
+    /// `Card` is a component in scope.
+    #[serde(default)]
+    pub renders: Vec<String>,
+    /// Regex over the filename, narrowing the population further.
+    ///
+    /// `roots` selects directories; this selects the files in them. *"Only
+    /// `*.server.ts` may call `fetch`"* is a sentence about a filename, and
+    /// without this the rule could only be written about a folder. Optional:
+    /// a rule that names none governs every file its scope reaches, which is
+    /// every chokepoint written before the field existed. Issue #146.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_pattern: Option<String>,
+    /// The module a guarded name has to come from.
+    ///
+    /// Two packages can export a `Ledger`, and a rule about *this* project's
+    /// one should not fire on the other. Spelled and matched the way
+    /// [`MustCall::imported_from`](crate::rule::MustCall::imported_from) is:
+    /// against the specifier **as written**, so the rule needs no resolution.
+    ///
+    /// Optional, and absent is the right answer for an ambient capability:
+    /// `process.env` is imported from nowhere and there is nothing to
+    /// disambiguate. A rule that names one guards only the names the file
+    /// actually took from there. Issue #146.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_from: Option<String>,
     /// Directory globs this rule governs.
     ///
     /// Separate from [`only_in`](Self::only_in), and the separation is the

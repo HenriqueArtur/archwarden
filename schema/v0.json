@@ -829,6 +829,14 @@
               "type": "boolean",
               "default": true
             },
+            "when_declaring": {
+              "description": "Narrows this rule to the files that declare one of these directives.\n\n```json\n{ \"type\": \"import-boundary\", \"id\": \"a-client-component-cannot-reach-the-database\",\n  \"level\": \"error\",\n  \"from\": [\"app/**\"],\n  \"when_declaring\": [\"use client\"],\n  \"forbid_import_from\": [\"src/db/**\"] }\n```\n\nReact Server Components draw the sharpest architectural boundary in the\nmodern JavaScript ecosystem, and it is a directive rather than a path.\nAny one of the listed directives is enough: a file declaring\n`\"use client\"` is a client component whatever else it says.\n\nThe cheapest of the three narrowing axes. `roots` is lexical and costs\nnothing; `when_importing` needs an import *resolved*; this needs only\nthe file parsed, which a boundary rule already pays for. Issue #144.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_not_declaring": {
+              "description": "The same, inverted: files that declare **none** of these.\n\nBoth directions exist because React needs both sentences. A *server*\ncomponent is spelled by the absence of `\"use client\"` -- there is no\ndirective that says so -- and *\"a server component may not import a\nbrowser-only package\"* is not sayable without this.\n\nApplied together with [`when_declaring`](Self::when_declaring): a file\nhas to satisfy both to be in the population.",
+              "$ref": "#/$defs/OneOrMany"
+            },
             "type": {
               "type": "string",
               "const": "import-boundary"
@@ -1596,6 +1604,28 @@
                 "type": "string"
               },
               "default": []
+            },
+            "renders": {
+              "description": "The JSX elements this rule guards, as they appear in markup.\n\n```json\n{ \"type\": \"chokepoint\", \"id\": \"only-the-primitives-layer-writes-markup\",\n  \"level\": \"error\",\n  \"roots\": [\"src/features/*\"],\n  \"renders\": [\"div\", \"span\", \"button\"],\n  \"only_in\": [\"src/ui/primitives/**\"] }\n```\n\n*\"Nothing outside `features/checkout` renders `CheckoutForm`\"* and *\"a\nfeature may not write raw markup, only composed components\"* are the\ntwo sentences a design system needs, and neither is an import\nquestion: rendering and importing are different relationships.\n\nMatched exactly, and **not** by the dot-prefix rule `callee` uses.\n`Ui.Button` is one component, not a member of a `Ui` capability, so a\nrule naming `Ui` does not guard it. Issue #145.\n\nThe case is JSX's own distinction: `div` is an intrinsic element and\n`Card` is a component in scope.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "file_pattern": {
+              "description": "Regex over the filename, narrowing the population further.\n\n`roots` selects directories; this selects the files in them. *\"Only\n`*.server.ts` may call `fetch`\"* is a sentence about a filename, and\nwithout this the rule could only be written about a folder. Optional:\na rule that names none governs every file its scope reaches, which is\nevery chokepoint written before the field existed. Issue #146.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "imported_from": {
+              "description": "The module a guarded name has to come from.\n\nTwo packages can export a `Ledger`, and a rule about *this* project's\none should not fire on the other. Spelled and matched the way\n[`MustCall::imported_from`](crate::rule::MustCall::imported_from) is:\nagainst the specifier **as written**, so the rule needs no resolution.\n\nOptional, and absent is the right answer for an ambient capability:\n`process.env` is imported from nowhere and there is nothing to\ndisambiguate. A rule that names one guards only the names the file\nactually took from there. Issue #146.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "roots": {
               "description": "Directory globs this rule governs.\n\nSeparate from [`only_in`](Self::only_in), and the separation is the\npoint: `roots` is the population the question is asked of, `only_in` is\nthe answer that is allowed. A test suite reads `process.env`\nlegitimately, so a chokepoint that governed the whole repository by\ndefault would report the tests on its first run -- and a rule whose\nfirst run is wrong is one nobody keeps.",

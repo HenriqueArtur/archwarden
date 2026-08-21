@@ -617,6 +617,24 @@ impl FileFacts {
     }
 }
 
+/// A JSX element the file renders.
+///
+/// See [`FileFacts::renders`] for why this is not a [`CallFact`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderFact {
+    /// The element name as written: `div`, `Card`, `Foo.Bar`.
+    ///
+    /// **The case is the distinction.** JSX's own rule is that a lowercase
+    /// name is an intrinsic element and a capitalised one is a reference to a
+    /// component in scope, so the name already carries which it is and a
+    /// second field saying so would be a second thing to keep in step. A
+    /// member expression is a component whatever its case, and is recorded
+    /// with its dots.
+    pub name: String,
+    /// Where it first appears.
+    pub span: Span,
+}
+
 /// A dotted name read without being called.
 ///
 /// The other half of what a `chokepoint` rule guards. See
@@ -873,6 +891,37 @@ pub struct FileFacts {
     /// with no runtime behaviour -- so nothing has to count.
     #[serde(default)]
     pub callables: usize,
+    /// The directives at the top of the file, as written.
+    ///
+    /// `"use client"`, `"use server"`, `"use strict"` -- the content without
+    /// its quotes, in source order. React Server Components draw the sharpest
+    /// architectural boundary in the modern JavaScript ecosystem and it is a
+    /// directive, which the parser was already reading to find where the file
+    /// header ends and then throwing away. Issue #144.
+    ///
+    /// An open vocabulary rather than a closed enum. `"use strict"` exists,
+    /// frameworks invent more, and a fact layer that refused to carry an
+    /// unknown directive would make the next framework a parser change.
+    #[serde(default)]
+    pub directives: Vec<String>,
+    /// The JSX elements the file renders, first occurrence each.
+    ///
+    /// `<Card />` is a *usage* of `Card`, and usually `Card` was imported --
+    /// so `import-boundary` covers it by accident. The two come apart exactly
+    /// where it matters: a component in scope through a barrel, a component
+    /// passed as a prop and rendered elsewhere, and a file that imports a
+    /// component for a type annotation and never renders it. Rendering and
+    /// importing are different relationships. Issue #145.
+    ///
+    /// Not folded into [`FileFacts::calls`]. JSX compiles to a call, and
+    /// recording it as one would make `call-obligation` fire on markup, which
+    /// is not what anybody means by *"this file must call `Event.save`"*.
+    ///
+    /// Deduplicated by name with the first span kept, on decision 34's terms:
+    /// a template renders `<div>` many times and the list should be bounded by
+    /// the file's vocabulary rather than by its length.
+    #[serde(default)]
+    pub renders: Vec<RenderFact>,
     /// Suppression markers found in comments, in source order.
     ///
     /// Only the ones that parse as a marker; ordinary prose is not carried,
@@ -958,6 +1007,8 @@ impl FileFacts {
             calls: Vec::new(),
             reads: Vec::new(),
             callables: 0,
+            directives: Vec::new(),
+            renders: Vec::new(),
             allowances: Vec::new(),
             metadata: Vec::new(),
             has_opaque_import: false,

@@ -620,6 +620,7 @@ mod tests {
             decision: decision
                 .map(|id| archwarden_core::ids::DecisionId::new(id).expect("valid decision id")),
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: archwarden_core::scope::Scope::compile(["packages/*"]).expect("valid scope"),
             kind: archwarden_core::compiled::CompiledRuleKind::Frozen,

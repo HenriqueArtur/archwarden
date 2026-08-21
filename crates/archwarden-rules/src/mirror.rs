@@ -236,6 +236,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(roots.iter().copied()).expect("valid scope"),
             kind: CompiledRuleKind::Mirror {
@@ -501,6 +502,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Warning,
             scope: Scope::compile(["src/entities"]).expect("valid scope"),
             kind: CompiledRuleKind::Mirror {

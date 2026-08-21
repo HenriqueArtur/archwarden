@@ -188,6 +188,37 @@ pub struct ImportBoundaryRule {
     /// Whether `import type` and inline `type` marks count.
     #[serde(default = "default_true")]
     pub include_type_only: bool,
+    /// Narrows this rule to the files that declare one of these directives.
+    ///
+    /// ```json
+    /// { "type": "import-boundary", "id": "a-client-component-cannot-reach-the-database",
+    ///   "level": "error",
+    ///   "from": ["app/**"],
+    ///   "when_declaring": ["use client"],
+    ///   "forbid_import_from": ["src/db/**"] }
+    /// ```
+    ///
+    /// React Server Components draw the sharpest architectural boundary in the
+    /// modern JavaScript ecosystem, and it is a directive rather than a path.
+    /// Any one of the listed directives is enough: a file declaring
+    /// `"use client"` is a client component whatever else it says.
+    ///
+    /// The cheapest of the three narrowing axes. `roots` is lexical and costs
+    /// nothing; `when_importing` needs an import *resolved*; this needs only
+    /// the file parsed, which a boundary rule already pays for. Issue #144.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub when_declaring: Patterns,
+    /// The same, inverted: files that declare **none** of these.
+    ///
+    /// Both directions exist because React needs both sentences. A *server*
+    /// component is spelled by the absence of `"use client"` -- there is no
+    /// directive that says so -- and *"a server component may not import a
+    /// browser-only package"* is not sayable without this.
+    ///
+    /// Applied together with [`when_declaring`](Self::when_declaring): a file
+    /// has to satisfy both to be in the population.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub when_not_declaring: Patterns,
 }
 
 pub(super) fn default_true() -> bool {

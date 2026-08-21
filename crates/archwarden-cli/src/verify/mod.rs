@@ -149,9 +149,12 @@ fn verdict_for(rule: &CompiledRule, engine: &dyn RuleEngine, tree: &RepoTree) ->
         }
         // Both are file-existence questions, which is the easiest kind to
         // plant: one file that should not be there, and one that should.
-        CompiledRuleKind::Chokepoint { callee, only_in } => {
-            a_call_from_outside_the_chokepoint(rule, engine, tree, callee, only_in)
-        }
+        CompiledRuleKind::Chokepoint {
+            callee,
+            renders,
+            only_in,
+            ..
+        } => a_call_from_outside_the_chokepoint(rule, engine, tree, callee, renders, only_in),
         CompiledRuleKind::Frozen => a_file_added_to_a_freeze(rule, engine, tree),
         CompiledRuleKind::Mirror { .. } => a_file_with_no_counterpart(rule, engine, tree),
         CompiledRuleKind::ExportShape(shape) => {
@@ -283,6 +286,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -317,6 +321,9 @@ mod tests {
     fn chokepoint(callee: &[&str], only_in: &[&str]) -> CompiledRuleKind {
         CompiledRuleKind::Chokepoint {
             callee: callee.iter().map(|c| (*c).to_owned()).collect(),
+            renders: Vec::new(),
+            file_pattern: None,
+            imported_from: None,
             only_in: Scope::compile(only_in.iter().copied()).expect("valid scope"),
         }
     }

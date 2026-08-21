@@ -481,6 +481,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: archwarden_core::scope::Scope::compile(["src/*"]).expect("valid scope"),
             kind: CompiledRuleKind::Structure {

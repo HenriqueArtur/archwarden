@@ -94,6 +94,50 @@ removing.
 `when_importing_packages` is the sibling for package specifiers, matched the way
 a boundary matches them, so `zod` covers `zod/v4`.
 
+### Narrowing by what a file declares about itself
+
+`import-boundary` takes a third axis: the **directives** at the top of a file.
+
+```json
+{ "type": "import-boundary", "id": "a-client-component-cannot-reach-the-database",
+  "level": "error",
+  "from": ["app/*"],
+  "when_declaring": ["use client"],
+  "forbid_import_from": ["src/db/**"] }
+```
+
+React Server Components draw the sharpest architectural boundary in the modern
+JavaScript ecosystem, and it is a directive rather than a path — two files in
+the same directory, importing the same module, on opposite sides of it. Nothing
+about where a file sits tells them apart.
+
+`when_not_declaring` is the inverted form, and both exist because React needs
+both sentences. A **server** component is spelled by the *absence* of
+`"use client"` — there is no directive that says so — and *"a server component
+may not import a browser-only package"* is not sayable without it:
+
+```json
+{ "type": "import-boundary", "id": "a-server-component-cannot-use-a-browser-package",
+  "level": "error",
+  "from": ["app/*"],
+  "when_not_declaring": ["use client"],
+  "forbid_import_from_packages": ["react-dom"] }
+```
+
+Any one of the listed directives is enough to be in the population; both halves
+must hold when both are given. The vocabulary is open — `"use strict"` exists
+and frameworks invent more, so a fact layer refusing an unknown directive would
+make the next framework a parser change.
+
+**It is the cheapest of the three axes.** `from` is lexical and costs nothing.
+`when_importing` needs an import *resolved*, which is a pass over the files the
+scope reaches. This needs only the file parsed, which a boundary rule already
+pays for. Issue #144.
+
+Only `import-boundary` takes it. The rules it was raised for are all boundary
+questions with one extra predicate; another kind can gain the field the day it
+has a sentence that needs it.
+
 ### What it costs, and when
 
 **Nothing, unless a rule asks.** A rule that names no imports resolves nothing
@@ -1719,6 +1763,56 @@ also catching every call to a factory of the same name.
 
 **Reads as well as calls.** `Date.now()` is a call and `process.env` never is;
 to an author they are one sentence, so both are guarded. Decision 34.
+
+**And renders.** `renders` guards JSX elements, beside `callee`:
+
+```json
+{ "type": "chokepoint", "id": "only-checkout-renders-its-form",
+  "level": "error",
+  "roots": ["src/features/*"],
+  "renders": ["CheckoutForm"],
+  "only_in": ["src/features/checkout/**"] }
+```
+
+*"Nothing outside `features/checkout` renders `CheckoutForm`"* and *"a feature
+composes rather than writes raw markup"* — `renders: ["div", "span"]` with
+`only_in: ["src/ui/primitives/**"]` — are the two sentences a design system
+needs, and neither is an import question. `<Card />` is usually imported, so
+`import-boundary` covers it by accident; the two come apart at a barrel
+re-export, at a component passed as a prop, and at one imported for a type
+annotation and never rendered.
+
+`renders` is matched **exactly**, and that is a different rule from `callee`'s
+dot-prefix. `Ui.Button` is one component rather than a member of a `Ui`
+capability, so a rule naming `Ui` guards nothing. The case is JSX's own
+distinction: `div` is an intrinsic element, `Card` is a component in scope.
+
+Decision 37.
+
+**Narrowing further.** `roots` selects directories; `file_pattern` selects the
+files in them, so *"only `*.server.ts` may call `fetch`"* is sayable:
+
+```json
+{ "type": "chokepoint", "id": "only-a-server-file-fetches", "level": "error",
+  "roots": ["src/*"], "file_pattern": "\\.client\\.ts$",
+  "callee": ["fetch"], "only_in": [] }
+```
+
+`imported_from` disambiguates a name two modules both export, matched against
+the specifier **as written** — the way `must_call.imported_from` matches it, so
+the rule still needs no resolution. Absent is right for an ambient capability:
+`process.env` is imported from nowhere and there is nothing to tell apart.
+
+```json
+{ "type": "chokepoint", "id": "only-the-ledger-posts", "level": "error",
+  "roots": ["src/*"],
+  "callee": ["Ledger.post"], "imported_from": "@org/accounting",
+  "only_in": ["src/accounting/**"] }
+```
+
+A file that imports `Ledger` from somewhere else is left alone, and so is one
+that imports it from nowhere: the rule named where the name comes from, and
+this one did not come from there. Issue #146.
 
 **Not a taint analysis.** It asks whether a name appears in a file inside a
 scope. It does not follow a value, so a capability passed as an argument out of

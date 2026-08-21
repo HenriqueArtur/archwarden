@@ -69,6 +69,12 @@ pub fn parse(path: &RepoRelPath, source: &str, content_hash: ContentHash) -> Fil
         // fills does not exist here.
         reads: Vec::new(),
         callables: callables(syntax),
+        // Rust has no directive. `#![no_std]` is an inner attribute and is
+        // read as one; there is nothing here that answers to `"use client"`.
+        directives: Vec::new(),
+        // Rust has no JSX. The Astro front-end will want this for its template
+        // region, which is stage 2 of issue #13.
+        renders: Vec::new(),
         allowances,
         metadata,
         // Rust has no `import(name)`. The nearest thing is a `use` a macro

@@ -351,6 +351,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -667,6 +668,9 @@ mod tests {
             &["src/*"],
             CompiledRuleKind::Chokepoint {
                 callee: Vec::new(),
+                renders: Vec::new(),
+                file_pattern: None,
+                imported_from: None,
                 only_in: Scope::compile(["src/config/**"]).expect("valid scope"),
             },
         )]);
@@ -688,6 +692,9 @@ mod tests {
             &["src/*"],
             CompiledRuleKind::Chokepoint {
                 callee: vec!["Date.now".to_owned()],
+                renders: Vec::new(),
+                file_pattern: None,
+                imported_from: None,
                 only_in: Scope::compile(std::iter::empty::<&str>()).expect("valid scope"),
             },
         )]);
@@ -954,6 +961,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(["packages/legacy/**"]).expect("valid scope"),
             kind: CompiledRuleKind::Frozen,

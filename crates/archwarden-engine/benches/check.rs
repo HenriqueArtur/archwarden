@@ -121,6 +121,7 @@ fn config() -> CompiledConfig {
         module_why: None,
         decision: None,
         imports: None,
+        directives: None,
         level: Level::Error,
         scope: Scope::compile(["src/*"]).expect("valid scope"),
         kind: CompiledRuleKind::Naming {
@@ -160,6 +161,7 @@ fn resolving() -> CompiledConfig {
         module_why: None,
         decision: None,
         imports: None,
+        directives: None,
         level: Level::Error,
         scope: Scope::compile(["src/*"]).expect("valid scope"),
         kind: CompiledRuleKind::ImportBoundary {
@@ -208,6 +210,7 @@ fn cycles() -> CompiledConfig {
         module_why: None,
         decision: None,
         imports: None,
+        directives: None,
         level: Level::Error,
         scope: Scope::compile(["src/module-0"]).expect("valid scope"),
         kind: CompiledRuleKind::ImportCycle {
