@@ -56,7 +56,7 @@ pub fn expand(
 
     let mut requests = Vec::new();
     for (directory, file) in matched {
-        let landing = relocate(&directory, destination)?;
+        let landing = landing_for(root, working_directory, &directory, destination)?;
 
         // The file's path *inside the match*, not its name. Taking the name
         // alone flattened the tree: `src/Group/A/alpha.ts` moved to
@@ -147,6 +147,34 @@ fn matched_ancestor(
         current = path.parent();
     }
     None
+}
+
+/// Where a directory lands.
+///
+/// A destination beginning with `.` or `..` is a **step from the source**,
+/// which is what the batch form is for: `'src/*/shared' --to '../calcs'` means
+/// *each `shared` becomes the `calcs` beside it*, and measuring it from
+/// anywhere else would land every match in one place.
+///
+/// Anything else is a **path**, resolved the way the source argument is. That
+/// is what `impact apps/api/src/Infrastructure/Http --to apps/api/src/http`
+/// means, and reading it as a step appended the new path to the old one:
+/// `.../Http/apps/api/src/http/...`, on all 855 files of the move it was
+/// reported on. Issue #171.
+///
+/// The leading dot is how every tool that takes both spells the difference,
+/// and it is the same distinction the single-file form already draws by not
+/// having a source directory to measure from.
+fn landing_for(
+    root: &camino::Utf8Path,
+    working_directory: &camino::Utf8Path,
+    directory: &RepoRelPath,
+    destination: &str,
+) -> Result<RepoRelPath, String> {
+    if destination.starts_with('.') {
+        return relocate(directory, destination);
+    }
+    archwarden_api::describe::repo_relative(root, working_directory, None, destination)
 }
 
 /// Where a directory lands, given a destination written relative to it.
@@ -279,6 +307,56 @@ mod tests {
                 "src/Group/B/beta.ts -> src/Renamed/B/beta.ts",
                 "src/Group/top.ts -> src/Renamed/top.ts",
             ]
+        );
+    }
+
+    /// Issue #171. `impact <dir> --to <path>` reported every destination
+    /// *inside* the source: the new path was appended to the old instead of
+    /// replacing it, on all 855 files of a directory somebody was about to
+    /// move.
+    ///
+    /// The number beside it was right -- "0 of which would newly cross a
+    /// boundary" -- which is what made it dangerous: a correct count next to
+    /// an impossible path is a report a reader acts on.
+    #[test]
+    fn a_destination_that_is_a_path_replaces_the_source_rather_than_extending_it() {
+        let (guard, root) = tree_at(&[
+            "apps/api/src/Infrastructure/Http/Account/calcs/mount.ts",
+            "apps/api/src/Infrastructure/Http/index.ts",
+        ]);
+        let requests = expanded(
+            &root,
+            "apps/api/src/Infrastructure/Http",
+            "apps/api/src/http",
+        );
+        drop(guard);
+
+        assert_eq!(
+            requests,
+            vec![
+                "apps/api/src/Infrastructure/Http/Account/calcs/mount.ts -> apps/api/src/http/Account/calcs/mount.ts",
+                "apps/api/src/Infrastructure/Http/index.ts -> apps/api/src/http/index.ts",
+            ]
+        );
+    }
+
+    /// And a destination written as a relative step still means one. The two
+    /// are told apart by the leading `.`, which is how every tool that takes
+    /// both spells the difference.
+    #[test]
+    fn a_destination_beginning_with_a_dot_is_still_a_step_from_the_source() {
+        let (guard, root) = tree_at(&["src/Group/A/alpha.ts"]);
+        let beside = expanded(&root, "src/Group", "../Renamed");
+        let inside = expanded(&root, "src/Group", "./nested");
+        drop(guard);
+
+        assert_eq!(
+            beside,
+            vec!["src/Group/A/alpha.ts -> src/Renamed/A/alpha.ts"]
+        );
+        assert_eq!(
+            inside,
+            vec!["src/Group/A/alpha.ts -> src/Group/nested/A/alpha.ts"]
         );
     }
 

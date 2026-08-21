@@ -499,6 +499,12 @@ Reach for it when you need the whole rule set at once — for one path,
 
 ### `impact <path> --to <path>` — what a move would change
 
+**A directory source takes a path or a step.** `--to apps/api/src/http` is a
+path and replaces the source; `--to ../http` begins with a dot and is a step
+from it. The leading dot is the whole distinction, and it is the same one for a
+glob source — where a step is what the batch form is for.
+
+
 Before moving a file, ask what it costs. Your editor rewrites the import
 specifiers; this says whether the destination is somewhere the architecture
 allows the file to be, and whether the move puts somebody else's import across
