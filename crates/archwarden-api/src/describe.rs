@@ -1441,6 +1441,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: archwarden_core::level::Level::Error,
             scope: archwarden_core::scope::Scope::compile(scope.iter().copied())
                 .expect("valid scope"),

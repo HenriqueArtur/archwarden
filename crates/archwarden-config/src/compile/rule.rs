@@ -9,8 +9,9 @@ use super::{
     boundary::{forbidden_paths, importer_groups, permitted_paths, reaching_paths},
     error::CompileError,
     fields::{
-        annotation, check_document_template, check_template, companion, export_kind, globs,
-        import_filter, pattern, reachable_key, require_name, spec_dirs, spec_markers,
+        annotation, check_document_template, check_template, companion, directive_filter,
+        export_kind, globs, import_filter, pattern, reachable_key, require_name, spec_dirs,
+        spec_markers,
     },
     scope::{Modules, compile_scope},
 };
@@ -236,11 +237,15 @@ pub(super) fn compile_rule(
     // empty filter: "does not narrow" and "narrows to nothing" are different
     // statements, and only one of them should cost a resolution pass.
     let imports = import_filter(&id, rule)?;
+    // The third axis, and the cheapest: a directive is at the top of the file
+    // and needs no resolution. Issue #144.
+    let directives = directive_filter(rule);
 
     Ok(CompiledRule {
         id,
         module,
         imports,
+        directives,
         why: rule.why().map(ToOwned::to_owned),
         module_why,
         decision: rule.decision().cloned(),

@@ -94,6 +94,50 @@ removing.
 `when_importing_packages` is the sibling for package specifiers, matched the way
 a boundary matches them, so `zod` covers `zod/v4`.
 
+### Narrowing by what a file declares about itself
+
+`import-boundary` takes a third axis: the **directives** at the top of a file.
+
+```json
+{ "type": "import-boundary", "id": "a-client-component-cannot-reach-the-database",
+  "level": "error",
+  "from": ["app/*"],
+  "when_declaring": ["use client"],
+  "forbid_import_from": ["src/db/**"] }
+```
+
+React Server Components draw the sharpest architectural boundary in the modern
+JavaScript ecosystem, and it is a directive rather than a path — two files in
+the same directory, importing the same module, on opposite sides of it. Nothing
+about where a file sits tells them apart.
+
+`when_not_declaring` is the inverted form, and both exist because React needs
+both sentences. A **server** component is spelled by the *absence* of
+`"use client"` — there is no directive that says so — and *"a server component
+may not import a browser-only package"* is not sayable without it:
+
+```json
+{ "type": "import-boundary", "id": "a-server-component-cannot-use-a-browser-package",
+  "level": "error",
+  "from": ["app/*"],
+  "when_not_declaring": ["use client"],
+  "forbid_import_from_packages": ["react-dom"] }
+```
+
+Any one of the listed directives is enough to be in the population; both halves
+must hold when both are given. The vocabulary is open — `"use strict"` exists
+and frameworks invent more, so a fact layer refusing an unknown directive would
+make the next framework a parser change.
+
+**It is the cheapest of the three axes.** `from` is lexical and costs nothing.
+`when_importing` needs an import *resolved*, which is a pass over the files the
+scope reaches. This needs only the file parsed, which a boundary rule already
+pays for. Issue #144.
+
+Only `import-boundary` takes it. The rules it was raised for are all boundary
+questions with one extra predicate; another kind can gain the field the day it
+has a sentence that needs it.
+
 ### What it costs, and when
 
 **Nothing, unless a rule asks.** A rule that names no imports resolves nothing

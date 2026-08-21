@@ -357,6 +357,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(["apps/app/src/app/api/**"]).expect("valid scope"),
             kind: CompiledRuleKind::CallObligation {

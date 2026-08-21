@@ -437,6 +437,7 @@ mod tests {
             module_why: None,
             decision: Some(DecisionId::new("ADR-031").expect("valid")),
             imports: None,
+            directives: None,
             level: archwarden_core::level::Level::Error,
             scope: archwarden_core::scope::Scope::compile(["src/*"]).expect("valid"),
             kind: archwarden_core::compiled::CompiledRuleKind::Frozen,

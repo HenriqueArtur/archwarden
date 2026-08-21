@@ -207,6 +207,30 @@ impl Rule {
     /// `import-boundary` has none and never will — it already chooses its
     /// importers with `from`, `from_module` and `from_kind`, and a second way
     /// to say the same thing is a second thing to get wrong.
+    /// The directives that put a file in this rule's population, and the ones
+    /// that keep it out.
+    ///
+    /// Only `import-boundary` asks. Issue #144 says why: its three motivating
+    /// rules -- a `"use server"` module not imported by a `"use client"` one,
+    /// a client component not reaching the database, a directory whose files
+    /// agree on which side they are on -- are all import-boundary questions
+    /// with one extra predicate. Another kind can gain the field the day it
+    /// has a sentence that needs it.
+    #[must_use]
+    pub fn when_declaring(&self) -> (&Patterns, &Patterns) {
+        const NONE: &Patterns = &OneOrMany::Many(Vec::new());
+        match self {
+            Self::ImportBoundary(r) => (&r.when_declaring, &r.when_not_declaring),
+            _ => (NONE, NONE),
+        }
+    }
+
+    /// Path globs that put a file in this rule's population.
+    ///
+    /// See [`ImportCycleRule::when_importing`]. Matched against where an
+    /// import *lands*, so a rule carrying one costs a resolution pass over the
+    /// files its scope reaches -- unlike [`when_declaring`](Self::when_declaring),
+    /// which needs only the file parsed.
     #[must_use]
     pub fn when_importing(&self) -> &Patterns {
         // A rule that never asks. A `const` rather than a `Default::default()`

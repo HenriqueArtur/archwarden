@@ -22,6 +22,24 @@ const KIND_ANY: &str = "any";
 /// Decision 25. Globs are matched against the resolved path, so they are built
 /// the same way a boundary's are — the alternative would be a second glob
 /// dialect for the same job, and two dialects eventually disagree.
+/// The directive filter, when the rule asks for one.
+///
+/// `None` rather than an empty filter, on the same terms as
+/// [`import_filter`]: "does not narrow" and "narrows to nothing" are different
+/// statements. Issue #144.
+pub(super) fn directive_filter(rule: &Rule) -> Option<archwarden_core::compiled::DirectiveFilter> {
+    let (declaring, not_declaring) = rule.when_declaring();
+
+    if declaring.is_empty() && not_declaring.is_empty() {
+        return None;
+    }
+
+    Some(archwarden_core::compiled::DirectiveFilter {
+        declaring: declaring.as_slice().to_vec(),
+        not_declaring: not_declaring.as_slice().to_vec(),
+    })
+}
+
 pub(super) fn import_filter(
     id: &RuleId,
     rule: &Rule,

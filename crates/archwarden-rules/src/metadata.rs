@@ -378,6 +378,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(["src/payments/**"]).expect("valid scope"),
             kind: CompiledRuleKind::Metadata {
@@ -403,6 +404,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(["src/payments/**"]).expect("valid scope"),
             kind: CompiledRuleKind::Metadata {
@@ -835,6 +837,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(["src/payments/**"]).expect("valid"),
             kind: CompiledRuleKind::Frozen,
@@ -861,6 +864,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Warning,
             scope: Scope::compile(["src/payments/**"]).expect("valid scope"),
             kind: CompiledRuleKind::Metadata {

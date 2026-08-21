@@ -227,6 +227,58 @@ mod tests {
         assert!(pairs("{}").is_empty());
     }
 
+    /// Issue #144. The third narrowing axis, and it has to survive the
+    /// compile: a rule that asked for it and got `None` would apply to every
+    /// file in its scope, which is the opposite of what was written.
+    #[test]
+    fn a_boundary_rule_narrowed_by_a_directive_carries_the_filter() {
+        let compiled_with = |fields: &str| {
+            let config = compile_json(&format!(
+                r#"{{"version":0,"rules":[{{"type":"import-boundary","id":"b",
+                    "level":"error","from":["app/*"],
+                    "forbid_import_from":["src/db/**"]{fields}}}]}}"#
+            ))
+            .expect("compiles");
+            config.rules().next().expect("one rule").directives.clone()
+        };
+
+        let client = compiled_with(r#","when_declaring":["use client"]"#).expect("asks");
+        assert_eq!(client.declaring, ["use client"]);
+        assert!(client.not_declaring.is_empty());
+
+        // Either field on its own is a rule that asks. Requiring both would
+        // make "a server component is one without `use client`" compile to a
+        // rule that narrows nothing.
+        let server = compiled_with(r#","when_not_declaring":["use client"]"#).expect("asks");
+        assert!(server.declaring.is_empty());
+        assert_eq!(server.not_declaring, ["use client"]);
+
+        // And a rule that names neither carries nothing. `None` rather than an
+        // empty filter: "does not narrow" and "narrows to nothing" are
+        // different statements.
+        assert!(compiled_with("").is_none());
+    }
+
+    /// Only `import-boundary` asks, so another kind carrying the same scope
+    /// still applies to everything in it.
+    #[test]
+    fn a_rule_of_another_kind_is_not_narrowed_by_a_directive() {
+        let config = compile_json(
+            r#"{"version":0,"rules":[{"type":"presence","id":"p","level":"error",
+                "roots":["app/*"],"require":["page.tsx"]}]}"#,
+        )
+        .expect("compiles");
+
+        assert!(
+            config
+                .rules()
+                .next()
+                .expect("one rule")
+                .directives
+                .is_none()
+        );
+    }
+
     /// Naming one language does not turn on the other.
     ///
     /// Separate assertions per language, because the lowering is one line each

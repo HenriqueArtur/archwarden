@@ -539,6 +539,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid scope"),
             kind: CompiledRuleKind::SpecPair {
@@ -704,6 +705,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind: CompiledRuleKind::SpecPair {
@@ -789,6 +791,7 @@ mod tests {
             calls: Vec::new(),
             reads: Vec::new(),
             callables: 0,
+            directives: Vec::new(),
             allowances: Vec::new(),
             metadata: Vec::new(),
             has_opaque_import: false,
@@ -1067,6 +1070,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Warning,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -1165,6 +1169,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -1207,6 +1212,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::Structure {
@@ -1241,6 +1247,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -1274,6 +1281,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(["src/*"]).expect("valid"),
             kind: CompiledRuleKind::SpecPair {
@@ -1334,6 +1342,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind: CompiledRuleKind::SpecPair {

@@ -873,6 +873,19 @@ pub struct FileFacts {
     /// with no runtime behaviour -- so nothing has to count.
     #[serde(default)]
     pub callables: usize,
+    /// The directives at the top of the file, as written.
+    ///
+    /// `"use client"`, `"use server"`, `"use strict"` -- the content without
+    /// its quotes, in source order. React Server Components draw the sharpest
+    /// architectural boundary in the modern JavaScript ecosystem and it is a
+    /// directive, which the parser was already reading to find where the file
+    /// header ends and then throwing away. Issue #144.
+    ///
+    /// An open vocabulary rather than a closed enum. `"use strict"` exists,
+    /// frameworks invent more, and a fact layer that refused to carry an
+    /// unknown directive would make the next framework a parser change.
+    #[serde(default)]
+    pub directives: Vec<String>,
     /// Suppression markers found in comments, in source order.
     ///
     /// Only the ones that parse as a marker; ordinary prose is not carried,
@@ -958,6 +971,7 @@ impl FileFacts {
             calls: Vec::new(),
             reads: Vec::new(),
             callables: 0,
+            directives: Vec::new(),
             allowances: Vec::new(),
             metadata: Vec::new(),
             has_opaque_import: false,

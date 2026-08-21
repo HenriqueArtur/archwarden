@@ -829,6 +829,14 @@
               "type": "boolean",
               "default": true
             },
+            "when_declaring": {
+              "description": "Narrows this rule to the files that declare one of these directives.\n\n```json\n{ \"type\": \"import-boundary\", \"id\": \"a-client-component-cannot-reach-the-database\",\n  \"level\": \"error\",\n  \"from\": [\"app/**\"],\n  \"when_declaring\": [\"use client\"],\n  \"forbid_import_from\": [\"src/db/**\"] }\n```\n\nReact Server Components draw the sharpest architectural boundary in the\nmodern JavaScript ecosystem, and it is a directive rather than a path.\nAny one of the listed directives is enough: a file declaring\n`\"use client\"` is a client component whatever else it says.\n\nThe cheapest of the three narrowing axes. `roots` is lexical and costs\nnothing; `when_importing` needs an import *resolved*; this needs only\nthe file parsed, which a boundary rule already pays for. Issue #144.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "when_not_declaring": {
+              "description": "The same, inverted: files that declare **none** of these.\n\nBoth directions exist because React needs both sentences. A *server*\ncomponent is spelled by the absence of `\"use client\"` -- there is no\ndirective that says so -- and *\"a server component may not import a\nbrowser-only package\"* is not sayable without this.\n\nApplied together with [`when_declaring`](Self::when_declaring): a file\nhas to satisfy both to be in the population.",
+              "$ref": "#/$defs/OneOrMany"
+            },
             "type": {
               "type": "string",
               "const": "import-boundary"

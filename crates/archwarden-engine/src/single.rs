@@ -181,6 +181,37 @@ pub fn check_write(
     check(root, config, path, Some(content))
 }
 
+/// Whether the file's own facts put it in a rule's population.
+///
+/// Both narrowing axes, asked here for the same reason a full run asks them: a
+/// write judged against a rule that would not have applied to it is the hook
+/// and `check` disagreeing about one file. Decision 25, and issue #144 for the
+/// second.
+///
+/// A file nobody could read is **out** of a narrowed population, and that is
+/// the honest answer rather than a silent one: `unresolved_imports` carries
+/// the specifiers nobody could place, naming the file and the specifier.
+fn narrowed_in(
+    rule: Option<&archwarden_core::compiled::CompiledRule>,
+    facts: Option<&archwarden_core::facts::FileFacts>,
+) -> bool {
+    let Some(rule) = rule else {
+        return true;
+    };
+
+    if let Some(filter) = rule.directives.as_ref()
+        && !facts.is_some_and(|facts| filter.matches(facts))
+    {
+        return false;
+    }
+    if let Some(filter) = rule.imports.as_ref()
+        && !facts.is_some_and(|facts| filter.matches(facts))
+    {
+        return false;
+    }
+    true
+}
+
 fn check(
     root: &Utf8Path,
     config: &CompiledConfig,
@@ -274,15 +305,8 @@ fn check(
         // The second axis, asked here for the same reason it is asked in a full
         // run: a write judged against a rule that would not have applied to it
         // is the hook and `check` disagreeing about one file. Decision 25.
-        if let Some(filter) = rules.get(index).and_then(|rule| rule.imports.as_ref()) {
-            match facts.as_ref() {
-                Some(facts) if filter.matches(facts) => {}
-                // Not in the population, or unreadable. `unresolved_imports`
-                // above already carries the specifiers nobody could place,
-                // which is what makes a narrowing decided on incomplete
-                // information visible rather than silent.
-                _ => continue,
-            }
+        if !narrowed_in(rules.get(index).copied(), facts.as_ref()) {
+            continue;
         }
 
         // Refused before anything else is asked. A graph is the whole
@@ -542,6 +566,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(scope.iter().copied()).expect("valid scope"),
             kind,
@@ -1250,6 +1275,7 @@ mod narrowing_tests {
                 why: None,
                 module_why: None,
                 decision: None,
+                directives: None,
                 imports: narrowed.map(|glob| ImportFilter {
                     paths: PathSet::compile([glob.to_owned()]).expect("valid glob"),
                     packages: Vec::new(),
@@ -1294,6 +1320,53 @@ mod narrowing_tests {
 
     fn path(p: &str) -> RepoRelPath {
         RepoRelPath::new(p).expect("valid path")
+    }
+
+    /// Issue #144, on the pre-write surface. The hook applies the same third
+    /// axis a full run does, for the reason decision 25 gave about the second:
+    /// a write judged against a rule `check` would not have applied to it is
+    /// the two surfaces disagreeing about one file.
+    #[test]
+    fn a_file_is_judged_by_a_directive_rule_only_when_it_declares_one() {
+        let (_guard, root) = repository();
+        std::fs::write(
+            root.join("src/orders/client-view.ts"),
+            "\"use client\";\nexport const v = 1;\n",
+        )
+        .expect("write");
+
+        let by_directive = |declaring: &[&str], not_declaring: &[&str], file: &str| {
+            let mut rules: Vec<CompiledRule> = naming(None).rules().cloned().collect();
+            if let Some(rule) = rules.first_mut() {
+                rule.directives = Some(archwarden_core::compiled::DirectiveFilter {
+                    declaring: declaring.iter().map(|d| (*d).to_owned()).collect(),
+                    not_declaring: not_declaring.iter().map(|d| (*d).to_owned()).collect(),
+                });
+            }
+            let config = CompiledConfig::new(
+                rules,
+                PathSet::default(),
+                SkipDirs::default(),
+                ContentHash::of(b"directives"),
+            );
+            !super::check_file(&root, &config, &path(file))
+                .findings
+                .is_empty()
+        };
+
+        assert!(by_directive(
+            &["use client"],
+            &[],
+            "src/orders/client-view.ts"
+        ));
+        assert!(!by_directive(&["use client"], &[], "src/orders/monthly.ts"));
+
+        assert!(by_directive(&[], &["use client"], "src/orders/monthly.ts"));
+        assert!(!by_directive(
+            &[],
+            &["use client"],
+            "src/orders/client-view.ts"
+        ));
     }
 
     /// The pre-write hook applies the same filter the full run does. A write

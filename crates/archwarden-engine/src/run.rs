@@ -532,6 +532,18 @@ pub fn check(run: Run<'_>) -> Report {
                 // file only if the file's imports say so — and an import that
                 // did not resolve cannot say, which is reported rather than
                 // read as "no". Decision 25.
+                // The third axis, asked before the second because it is the
+                // cheaper of the two: a directive is at the top of the file
+                // and needs no resolution. A file nobody could open is out of
+                // the population here for the same reason it is below.
+                // Issue #144.
+                if let Some(rule) = rules.get(index)
+                    && let Some(filter) = rule.directives.as_ref()
+                    && !facts.as_ref().is_some_and(|facts| filter.matches(facts))
+                {
+                    continue;
+                }
+
                 if let Some(rule) = rules.get(index)
                     && let Some(filter) = rule.imports.as_ref()
                 {
@@ -1207,6 +1219,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind,
@@ -2883,6 +2896,7 @@ mod narrowing_tests {
                 why: None,
                 module_why: None,
                 decision: None,
+                directives: None,
                 imports: narrowed.map(|glob| ImportFilter {
                     paths: PathSet::compile([glob.to_owned()]).expect("valid glob"),
                     packages: Vec::new(),
@@ -2910,6 +2924,7 @@ mod narrowing_tests {
                 why: None,
                 module_why: None,
                 decision: None,
+                directives: None,
                 imports: narrowed.map(|glob| ImportFilter {
                     paths: PathSet::compile([glob.to_owned()]).expect("valid glob"),
                     packages: Vec::new(),
@@ -2962,6 +2977,59 @@ mod narrowing_tests {
         ),
         ("src/reports/monthly.ts", "export const m = () => 1;\n"),
     ];
+
+    /// Issue #144. The third axis, applied in a full run: two files in the
+    /// same directory, one of which declares itself a client component.
+    #[test]
+    fn a_rule_narrowed_by_a_directive_sees_only_the_files_that_declare_it() {
+        let (_guard, root) = tree(&[
+            (
+                "src/user/client-thing.ts",
+                "\"use client\";\nexport const x = 1;",
+            ),
+            ("src/user/server-thing.ts", "export const x = 1;"),
+        ]);
+
+        let by_directive = |declaring: &[&str], not_declaring: &[&str]| {
+            let mut config = naming(None);
+            let mut rules: Vec<CompiledRule> = config.rules().cloned().collect();
+            if let Some(rule) = rules.first_mut() {
+                rule.directives = Some(archwarden_core::compiled::DirectiveFilter {
+                    declaring: declaring.iter().map(|d| (*d).to_owned()).collect(),
+                    not_declaring: not_declaring.iter().map(|d| (*d).to_owned()).collect(),
+                });
+            }
+            config = CompiledConfig::new(
+                rules,
+                PathSet::default(),
+                SkipDirs::default(),
+                ContentHash::of(b"directives"),
+            );
+            let mut flagged: Vec<String> = run(&root, &config)
+                .findings
+                .iter()
+                .map(|finding| finding.path.to_string())
+                .collect();
+            flagged.sort();
+            flagged
+        };
+
+        // The rule demands an export no file has, so everything it applies to
+        // is reported -- which makes the population visible.
+        assert_eq!(
+            by_directive(&["use client"], &[]),
+            ["src/user/client-thing.ts"]
+        );
+        assert_eq!(
+            by_directive(&[], &["use client"]),
+            ["src/user/server-thing.ts"]
+        );
+        // And a rule that asks for neither is not narrowed at all.
+        assert_eq!(
+            by_directive(&[], &[]),
+            ["src/user/client-thing.ts", "src/user/server-thing.ts"]
+        );
+    }
 
     /// A rule narrowed by imports resolves, even though nothing else in the
     /// configuration asked for resolution. Without that the filter would be

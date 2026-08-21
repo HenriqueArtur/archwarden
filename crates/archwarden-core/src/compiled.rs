@@ -458,6 +458,41 @@ pub struct PassthroughForms {
     pub wrapper: bool,
 }
 
+/// Which files a rule narrows itself to by what they declare.
+///
+/// Cheaper than [`ImportFilter`] and answered from the same facts: a directive
+/// is at the top of the file and needs no resolution. Issue #144.
+#[derive(Debug, Clone)]
+pub struct DirectiveFilter {
+    /// Directives that put a file in the population.
+    ///
+    /// Any one of them is enough: a file declaring `"use client"` is a client
+    /// component whatever else it says.
+    pub declaring: Vec<String>,
+    /// Directives that take a file out of it.
+    ///
+    /// Both directions exist because React needs both sentences. *"A client
+    /// component may not import the database"* narrows by what a file
+    /// declares; *"a server component may not call a hook"* narrows by what it
+    /// does **not** -- a server component is spelled by the absence of
+    /// `"use client"`, and there is no directive that says so.
+    pub not_declaring: Vec<String>,
+}
+
+impl DirectiveFilter {
+    /// Whether this file's directives put it in the population.
+    ///
+    /// Both halves must hold. A rule naming neither is not built at all --
+    /// that is `None` on the rule, not an empty filter here.
+    #[must_use]
+    pub fn matches(&self, facts: &crate::facts::FileFacts) -> bool {
+        let declares = |wanted: &String| facts.directives.contains(wanted);
+
+        (self.declaring.is_empty() || self.declaring.iter().any(declares))
+            && !self.not_declaring.iter().any(declares)
+    }
+}
+
 /// Which files a rule narrows itself to by what they import.
 ///
 /// Both halves are matched the way `import-boundary` already matches: paths
@@ -569,6 +604,17 @@ pub struct CompiledRule {
     /// and much louder statement — "narrow me to the files that import
     /// nothing" — so the two must not be the same value. Decision 25.
     pub imports: Option<ImportFilter>,
+    /// Narrows this rule to the files that declare a directive, or that do not.
+    ///
+    /// A third axis, and the cheapest of the three. A scope is lexical and
+    /// costs nothing; [`imports`](Self::imports) needs an import to have been
+    /// *resolved*, which is a pass over the files the scope reaches; this
+    /// needs only the file parsed, which every rule asking for code facts
+    /// already pays for.
+    ///
+    /// `None` is "this rule does not ask", on the same terms as `imports`.
+    /// Issue #144.
+    pub directives: Option<DirectiveFilter>,
     /// Severity of its findings.
     pub level: Level,
     /// The directories it applies to.
@@ -979,6 +1025,7 @@ mod tests {
             module_why: None,
             decision: None,
             imports: None,
+            directives: None,
             level: Level::Error,
             scope: Scope::compile(scope).expect("valid scope"),
             kind,
@@ -1564,7 +1611,7 @@ mod tests {
 
 #[cfg(test)]
 mod import_filter_tests {
-    use super::{ImportFilter, package_of};
+    use super::{DirectiveFilter, ImportFilter, package_of};
     use crate::facts::{FileFacts, ImportFact, Span};
     use crate::hash::ContentHash;
     use crate::path::RepoRelPath;
@@ -1578,6 +1625,7 @@ mod import_filter_tests {
             calls: Vec::new(),
             reads: Vec::new(),
             callables: 0,
+            directives: Vec::new(),
             imports: specifiers
                 .iter()
                 .map(|(specifier, resolved)| ImportFact {
@@ -1592,6 +1640,50 @@ mod import_filter_tests {
             metadata: Vec::new(),
             has_opaque_import: false,
         }
+    }
+
+    /// Issue #144. React Server Components draw the sharpest architectural
+    /// boundary in the modern JavaScript ecosystem, and it is a directive
+    /// rather than a path -- so a rule that could only narrow by where a file
+    /// sits could not say either half of it.
+    #[test]
+    fn a_directive_filter_narrows_in_both_directions() {
+        let declaring = |directives: &[&str]| {
+            let mut facts = importing(&[]);
+            facts.directives = directives.iter().map(|d| (*d).to_owned()).collect();
+            facts
+        };
+
+        // A client component: what it declares puts it in.
+        let client = DirectiveFilter {
+            declaring: vec!["use client".to_owned()],
+            not_declaring: Vec::new(),
+        };
+        assert!(client.matches(&declaring(&["use client"])));
+        // Any one of them is enough, whatever else the file says.
+        assert!(client.matches(&declaring(&["use strict", "use client"])));
+        assert!(!client.matches(&declaring(&["use server"])));
+        assert!(!client.matches(&declaring(&[])));
+
+        // A server component is spelled by the *absence* of `use client`.
+        // There is no directive that says so, which is why both directions
+        // have to exist.
+        let server = DirectiveFilter {
+            declaring: Vec::new(),
+            not_declaring: vec!["use client".to_owned()],
+        };
+        assert!(server.matches(&declaring(&[])));
+        assert!(server.matches(&declaring(&["use strict"])));
+        assert!(!server.matches(&declaring(&["use client"])));
+
+        // Both halves together, and both must hold.
+        let both = DirectiveFilter {
+            declaring: vec!["use server".to_owned()],
+            not_declaring: vec!["use client".to_owned()],
+        };
+        assert!(both.matches(&declaring(&["use server"])));
+        assert!(!both.matches(&declaring(&["use server", "use client"])));
+        assert!(!both.matches(&declaring(&["use strict"])));
     }
 
     fn filter(paths: &[&str], packages: &[&str]) -> ImportFilter {

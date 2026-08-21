@@ -137,6 +137,7 @@ impl OxcParser {
             // `interface` are the only two forms with no runtime behaviour --
             // so nothing here has to count. Issue #157, decision 36.
             callables: 0,
+            directives: directives(&parsed.program),
             allowances,
             metadata,
             has_opaque_import,
@@ -417,6 +418,19 @@ fn metadata(program: &Program<'_>, source: &str) -> Vec<archwarden_core::facts::
                 archwarden_core::facts::Span::new(comment.span.start, comment.span.end),
             )
         })
+        .collect()
+}
+
+/// The directives at the top of the file, as written.
+///
+/// The content without its quotes, in source order. `header_ends` was already
+/// reading these to find where the file header stops and then dropping them,
+/// so nothing could ask whether a file is a client component. Issue #144.
+fn directives(program: &Program<'_>) -> Vec<String> {
+    program
+        .directives
+        .iter()
+        .map(|directive| directive.directive.to_string())
         .collect()
 }
 
@@ -1290,6 +1304,34 @@ mod tests {
             2,
             "{callees:?}"
         );
+    }
+
+    /// Issue #144. React Server Components draw the sharpest architectural
+    /// boundary in the modern JavaScript ecosystem and it is a directive --
+    /// which this front-end was already reading to find where the file header
+    /// ends, and then throwing away.
+    #[test]
+    fn the_directives_at_the_top_of_a_file_are_carried() {
+        let client = parse("a.ts", "\"use client\";\nexport const x = 1;\n");
+        assert_eq!(client.directives, ["use client"], "without its quotes");
+
+        // Every one, in order, and an open vocabulary: `use strict` exists,
+        // frameworks invent more, and refusing an unknown one would make the
+        // next framework a parser change.
+        let several = parse(
+            "a.ts",
+            "\"use strict\";\n\"use server\";\nexport const x = 1;\n",
+        );
+        assert_eq!(several.directives, ["use strict", "use server"]);
+
+        // A string that is not a directive is not one. `"use client"` after
+        // the first statement is an expression, which is what React itself
+        // says about it.
+        let late = parse("a.ts", "export const x = 1;\n\"use client\";\n");
+        assert!(late.directives.is_empty(), "{:?}", late.directives);
+
+        let none = parse("a.ts", "export const x = 1;\n");
+        assert!(none.directives.is_empty());
     }
 
     /// Decision 34. `process.env` is the capability issue #118 opens with and
