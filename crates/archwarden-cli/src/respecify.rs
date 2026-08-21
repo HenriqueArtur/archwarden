@@ -288,30 +288,36 @@ fn by_package(specifier: &str, package: &Package, to: &RepoRelPath) -> Rewrite {
         );
     }
 
-    for (subpath, target) in &package.subpaths {
+    for (subpath, targets) in &package.subpaths {
         let Some(subpath) = subpath.strip_prefix("./") else {
             continue;
         };
-        let target = target.trim_start_matches("./");
 
-        let Some((prefix, suffix)) = target.split_once('*') else {
-            // A literal subpath: it names one file, and it names this one or
-            // it does not.
-            if target == inside {
-                let rewritten = format!("{}/{subpath}", package.name);
-                return settle(specifier, rewritten);
-            }
-            continue;
-        };
-        let Some(star) = inside
-            .strip_prefix(prefix)
-            .and_then(|rest| rest.strip_suffix(suffix))
-        else {
-            continue;
-        };
+        // Every target of the subpath, because Node's array form is a
+        // fallback list and a file reached through the *second* member is
+        // still reached through this subpath. Issue #169.
+        for target in targets {
+            let target = target.trim_start_matches("./");
 
-        let tail = subpath.replacen('*', star, 1);
-        return settle(specifier, format!("{}/{tail}", package.name));
+            let Some((prefix, suffix)) = target.split_once('*') else {
+                // A literal subpath: it names one file, and it names this one
+                // or it does not.
+                if target == inside {
+                    let rewritten = format!("{}/{subpath}", package.name);
+                    return settle(specifier, rewritten);
+                }
+                continue;
+            };
+            let Some(star) = inside
+                .strip_prefix(prefix)
+                .and_then(|rest| rest.strip_suffix(suffix))
+            else {
+                continue;
+            };
+
+            let tail = subpath.replacen('*', star, 1);
+            return settle(specifier, format!("{}/{tail}", package.name));
+        }
     }
 
     Rewrite::Unknown(Unknown::NotExported)
@@ -530,6 +536,68 @@ mod tests {
                 "packages/domain/src/email/calcs/is-email-invalid.ts",
             ),
             Rewrite::To("@flowmaatik/domain/email/calcs/is-email-invalid".to_owned())
+        );
+    }
+
+    /// Issue #169, read from this side. A subpath whose target is Node's
+    /// fallback array names a file through *any* of its members, so a rename
+    /// into the second one still has a specifier to rewrite to.
+    ///
+    /// Both shapes of member are covered: a literal subpath, which is compared
+    /// whole, and a pattern, which is matched around its star.
+    #[test]
+    fn a_file_reached_through_a_later_member_of_an_array_still_rewrites() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let root = Utf8PathBuf::from_path_buf(dir.path().canonicalize().expect("canonicalise"))
+            .expect("UTF-8");
+        std::fs::create_dir_all(root.join("packages/application")).expect("dirs");
+        std::fs::write(
+            root.join("packages/application/package.json"),
+            r#"{"name":"@org/application","exports":{
+                 "./entry":["./src/missing.ts","./src/entry.ts"],
+                 "./*":["./src/*.ts","./src/*/index.ts"]}}"#,
+        )
+        .expect("write");
+        let workspace = Workspace::discover(&root);
+        drop(dir);
+
+        let rewrite = |specifier: &str, was: &str, to: &str| {
+            respecify(
+                specifier,
+                &path("apps/api/src/main.ts"),
+                &path(was),
+                &path(to),
+                true,
+                &workspace,
+                &PathAliases::default(),
+            )
+        };
+
+        // The literal subpath, reached through the second member. The first
+        // names a file that is not this one, and comparing only against it
+        // would call the move unexportable.
+        assert_eq!(
+            rewrite(
+                "@org/application/old",
+                "packages/application/src/old.ts",
+                "packages/application/src/entry.ts",
+            ),
+            Rewrite::To("@org/application/entry".to_owned())
+        );
+
+        // And a pattern takes its *first* matching member, which is Node's own
+        // order. Under this map `./src/*.ts` reaches `src/Order/create/index.ts`
+        // with the star spelled `Order/create/index`, so that is the specifier
+        // -- longer than a human would write and one that resolves, which is
+        // what a rewrite has to be. Choosing between valid specifiers is a
+        // separate question from finding one.
+        assert_eq!(
+            rewrite(
+                "@org/application/old",
+                "packages/application/src/old.ts",
+                "packages/application/src/Order/create/index.ts",
+            ),
+            Rewrite::To("@org/application/Order/create/index".to_owned())
         );
     }
 

@@ -607,6 +607,52 @@ mod tests {
         assert_eq!(resolved, "in-repo packages/domain/src/email/is-invalid.ts");
     }
 
+    /// Issue #169. At one level a specifier can name a file or a directory,
+    /// and the only `exports` map that satisfies both Node and `tsc` is the
+    /// array -- Node's fallback list, tried in order.
+    ///
+    /// Reading only the first member left a real monorepo with 2073 of 20843
+    /// imports unresolved while `check` exited 0: the boundary rules were
+    /// blind to a tenth of the repository and nothing said so loudly enough to
+    /// fail a build.
+    #[test]
+    fn every_target_of_an_exports_array_is_tried_in_order() {
+        let (guard, root) = repo(&[
+            ("apps/api/src/main.ts", ""),
+            (
+                "packages/application/package.json",
+                r#"{"name":"@org/application","type":"module","exports":{
+                    "./*.ts":"./src/*.ts",
+                    "./*":["./src/*.ts","./src/*/index.ts"]}}"#,
+            ),
+            ("packages/application/src/Order/queue-send.ts", TS),
+            ("packages/application/src/Order/create/index.ts", TS),
+        ]);
+
+        let resolve = |specifier: &str| {
+            describe(
+                &root,
+                ImportResolver::new(&root).resolve(&path("apps/api/src/main.ts"), specifier),
+            )
+        };
+
+        // The first target: a file-shaped specifier, which always worked.
+        assert_eq!(
+            resolve("@org/application/Order/queue-send"),
+            "in-repo packages/application/src/Order/queue-send.ts"
+        );
+        // The second: a directory-shaped one, which is the whole bug.
+        assert_eq!(
+            resolve("@org/application/Order/create"),
+            "in-repo packages/application/src/Order/create/index.ts"
+        );
+        // And a specifier no target reaches is still unresolved. The list
+        // widens what resolves; it does not make everything resolve.
+        let missing = resolve("@org/application/Order/nothing-here");
+        assert!(missing.contains("cannot resolve"), "{missing}");
+        drop(guard);
+    }
+
     /// A subpath `exports` does not cover stays unresolved.
     ///
     /// The map fills the hole `node_modules` would have filled; it does not

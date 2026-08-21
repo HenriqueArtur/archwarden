@@ -82,7 +82,13 @@ pub struct Package {
     /// Subpath patterns from `exports`, as `(subpath, target)` pairs where
     /// both may contain a single `*`. Empty when the package declares no
     /// `exports`, which means every file in it is importable by path.
-    pub subpaths: Vec<(String, String)>,
+    /// The `exports` subpaths, each with its targets **in order**.
+    ///
+    /// A list rather than one target, because Node's array form is a fallback
+    /// list: at one level a specifier can name a file or a directory, and
+    /// `["./src/*.ts", "./src/*/index.ts"]` is the only map that satisfies
+    /// both Node and `tsc`. Issue #169.
+    pub subpaths: Vec<(String, Vec<String>)>,
 }
 
 /// Every package the repository declares locally.
@@ -146,12 +152,25 @@ impl Workspace {
         for package in &self.packages {
             let directory = root.join(&package.directory);
 
-            for (subpath, target) in &package.subpaths {
+            for (subpath, targets) in &package.subpaths {
                 let Some(key) = key_for(&package.name, subpath) else {
                     continue;
                 };
-                let value = directory.join(target.trim_start_matches("./"));
-                alias.push((key, vec![AliasValue::Path(value.into_string())]));
+                // Every target, in order. `oxc_resolver` tries an alias's
+                // values one after another and takes the first that resolves,
+                // which is exactly Node's fallback rule -- so the list needs
+                // carrying rather than re-implementing. Issue #169.
+                let values: Vec<AliasValue> = targets
+                    .iter()
+                    .map(|target| {
+                        AliasValue::Path(
+                            directory
+                                .join(target.trim_start_matches("./"))
+                                .into_string(),
+                        )
+                    })
+                    .collect();
+                alias.push((key, values));
             }
 
             // Last, and always: a package with no `exports` is importable by
@@ -226,42 +245,60 @@ fn read_manifest(manifest: &Utf8Path, directory: &Utf8Path) -> Option<Package> {
 /// itself), a map of conditions (still the package itself), and a map of
 /// subpaths. Telling the last two apart is what the `.`-prefix test does —
 /// which is Node's own rule, not a heuristic.
-fn subpaths(exports: Option<&serde_json::Value>) -> Vec<(String, String)> {
+fn subpaths(exports: Option<&serde_json::Value>) -> Vec<(String, Vec<String>)> {
     let Some(exports) = exports else {
         return Vec::new();
     };
 
     match exports {
-        serde_json::Value::String(target) => vec![(".".to_owned(), target.clone())],
+        serde_json::Value::String(target) => vec![(".".to_owned(), vec![target.clone()])],
         serde_json::Value::Object(map) => {
             let is_subpath_map = map.keys().any(|key| key.starts_with('.'));
             if !is_subpath_map {
-                return condition(exports)
-                    .map(|target| vec![(".".to_owned(), target)])
-                    .unwrap_or_default();
+                let targets = condition(exports);
+                return if targets.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![(".".to_owned(), targets)]
+                };
             }
             map.iter()
                 .filter(|(key, _)| key.starts_with('.'))
-                .filter_map(|(key, value)| Some((key.clone(), condition(value)?)))
+                .map(|(key, value)| (key.clone(), condition(value)))
+                .filter(|(_, targets)| !targets.is_empty())
                 .collect()
         }
         _ => Vec::new(),
     }
 }
 
-/// Picks the target a TypeScript build would take from one `exports` entry.
+/// The targets a TypeScript build would try for one `exports` entry, in order.
 ///
-/// A string is itself; a conditions object is its best matching condition,
-/// recursively; an array is its first member that yields one. `null` means
-/// the subpath is deliberately not exported, and yields nothing.
-fn condition(value: &serde_json::Value) -> Option<String> {
+/// A string is itself. A conditions object is its best matching condition,
+/// recursively -- Node picks *one* condition, so the search stops at the first
+/// that yields anything.
+///
+/// **An array is a fallback list, not a choice.** Node tries each member in
+/// turn and takes the first that resolves, so every member is carried and the
+/// order is the answer. Reading only the first is issue #169: a package whose
+/// `"./*"` maps to `["./src/*.ts", "./src/*/index.ts"]` -- the only shape that
+/// lets one level hold both a file and a directory -- had every
+/// directory-shaped specifier come back unresolved.
+///
+/// `null` means the subpath is deliberately not exported. It contributes
+/// nothing rather than ending the list before what follows it.
+fn condition(value: &serde_json::Value) -> Vec<String> {
     match value {
-        serde_json::Value::String(target) => Some(target.clone()),
-        serde_json::Value::Array(members) => members.iter().find_map(condition),
+        serde_json::Value::String(target) => vec![target.clone()],
+        serde_json::Value::Array(members) => members.iter().flat_map(condition).collect(),
         serde_json::Value::Object(map) => CONDITIONS
             .iter()
-            .find_map(|name| map.get(*name).and_then(condition)),
-        _ => None,
+            .find_map(|name| {
+                let targets = map.get(*name).map(condition).unwrap_or_default();
+                (!targets.is_empty()).then_some(targets)
+            })
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
 }
 
@@ -305,8 +342,70 @@ mod tests {
         assert_eq!(found[0].directory, "packages/domain");
         assert_eq!(
             found[0].subpaths,
-            [("./email/*".to_owned(), "./src/email/*.ts".to_owned())]
+            [("./email/*".to_owned(), vec!["./src/email/*.ts".to_owned()])]
         );
+    }
+
+    /// Issue #169. An array target is Node's **fallback list**: try each in
+    /// order and take the first that resolves. Reading only the first member
+    /// is why a real monorepo had 2073 of 20843 imports come back unresolved
+    /// while `check` exited 0.
+    ///
+    /// The array is not an exotic spelling. At one level a specifier can name
+    /// a file or a directory, and the only map that satisfies both Node and
+    /// `tsc` is the pair.
+    #[test]
+    fn an_array_target_keeps_every_candidate_in_order() {
+        let found = discovered(&[(
+            "packages/application/package.json",
+            r#"{"name":"@org/application","exports":{
+                "./*.ts":"./src/*.ts",
+                "./*":["./src/*.ts","./src/*/index.ts"]}}"#,
+        )]);
+
+        assert_eq!(
+            found[0].subpaths,
+            [
+                ("./*.ts".to_owned(), vec!["./src/*.ts".to_owned()]),
+                (
+                    "./*".to_owned(),
+                    vec!["./src/*.ts".to_owned(), "./src/*/index.ts".to_owned()]
+                ),
+            ],
+            "declaration order, and both targets of the pattern that has two"
+        );
+    }
+
+    /// A `null` inside the list is a subpath deliberately not exported and
+    /// contributes nothing, rather than ending the list before what follows
+    /// it.
+    #[test]
+    fn a_null_in_the_list_is_skipped_and_the_rest_survive() {
+        let found = discovered(&[(
+            "packages/domain/package.json",
+            r#"{"name":"@org/domain","exports":{"./*":[null,"./src/*.ts"]}}"#,
+        )]);
+
+        assert_eq!(
+            found[0].subpaths,
+            [("./*".to_owned(), vec!["./src/*.ts".to_owned()])]
+        );
+    }
+
+    /// A conditions object inside a list contributes the condition's own
+    /// target, so the two shapes nest the way Node nests them.
+    #[test]
+    fn a_conditions_object_inside_a_list_contributes_its_target() {
+        let found = discovered(&[(
+            "packages/domain/package.json",
+            r#"{"name":"@org/domain","exports":{"./*":[
+                {"types":"./src/*.d.ts","default":"./src/*.js"},
+                "./src/*/index.ts"]}}"#,
+        )]);
+
+        let (_, targets) = &found[0].subpaths[0];
+        assert_eq!(targets.len(), 2, "{targets:?}");
+        assert_eq!(targets[1], "./src/*/index.ts");
     }
 
     /// `node_modules` is the artefact this module exists to work without. A
@@ -374,7 +473,7 @@ mod tests {
 
         assert_eq!(
             found[0].subpaths,
-            [(".".to_owned(), "./src/index.ts".to_owned())]
+            [(".".to_owned(), vec!["./src/index.ts".to_owned()])]
         );
     }
 
@@ -390,7 +489,7 @@ mod tests {
 
         assert_eq!(
             found[0].subpaths,
-            [(".".to_owned(), "./src/x.ts".to_owned())]
+            [(".".to_owned(), vec!["./src/x.ts".to_owned()])]
         );
     }
 
@@ -405,7 +504,7 @@ mod tests {
 
         assert_eq!(
             found[0].subpaths,
-            [("./a".to_owned(), "./src/a.ts".to_owned())]
+            [("./a".to_owned(), vec!["./src/a.ts".to_owned()])]
         );
     }
 
@@ -420,7 +519,7 @@ mod tests {
 
         assert_eq!(
             found[0].subpaths,
-            [("./a".to_owned(), "./src/a.ts".to_owned())]
+            [("./a".to_owned(), vec!["./src/a.ts".to_owned()])]
         );
     }
 
