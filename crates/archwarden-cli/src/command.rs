@@ -679,7 +679,6 @@ impl Output<'_> {
 #[cfg(test)]
 mod tests {
     use camino::Utf8Path;
-    use clap::Parser as _;
 
     use super::*;
 
