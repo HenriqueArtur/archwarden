@@ -17,6 +17,47 @@ saying so.
 
 ## [Unreleased]
 
+## [0.35.0] — 2026-08-21
+
+**A destination that is a path.** One bug, and it is the kind that moves files
+to the wrong place.
+
+### Fixed
+
+- **`impact <dir> --to <path>` built the destination inside the source.**
+
+  ```
+  archwarden impact apps/api/src/Infrastructure/Http --to apps/api/src/http
+  ```
+
+  ```
+  Moving `.../Infrastructure/Http/Account/calcs/mount.ts` to
+         `.../Infrastructure/Http/apps/api/src/http/Account/calcs/mount.ts`
+  ```
+
+  The new path was appended to the old rather than replacing it, on all 855
+  files of a move somebody was about to make — and the count beside it was
+  right, which is what made it dangerous: a correct number next to an
+  impossible path is a report a reader acts on.
+
+  **`--apply` shares that expansion**, so this was not only a wrong report: the
+  move itself would have created `Http/apps/api/src/http/` and put the files in
+  it.
+
+  `--to` was always measured from the matched directory. That is right for the
+  batch form and the reason it exists — `'src/*/shared' --to '../calcs'` means
+  *each `shared` becomes the `calcs` beside it*. It is wrong for a directory
+  named as a path, which is why the single-file form worked in the same
+  session while this did not.
+
+  **A destination beginning with `.` or `..` is a step; anything else is a
+  path**, resolved the way the source argument is. If you have a script passing
+  a bare relative name to a *glob* source — `--to calcs`, meaning "inside each
+  match" — it now means the path `calcs`, and two matches landing on one path
+  is refused before anything is written. Write `./calcs` to keep the old
+  meaning.
+
+
 ## [0.34.0] — 2026-08-21
 
 **React.** Four issues about the boundaries a React codebase actually has, and
@@ -2983,7 +3024,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.34.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.35.0...HEAD
+[0.35.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.31.0...v0.32.0
