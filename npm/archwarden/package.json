@@ -1,6 +1,6 @@
 {
   "name": "archwarden",
-  "version": "0.32.0",
+  "version": "0.33.0",
   "description": "A fast, declarative architecture linter for TypeScript and JavaScript.",
   "license": "MIT OR Apache-2.0",
   "repository": {

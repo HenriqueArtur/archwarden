@@ -17,6 +17,90 @@ saying so.
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-08-21
+
+**The silent green run.** Four of these five were found by turning archwarden
+on archwarden, and on the Rust preset. They share one failure mode, and it is
+the one this document calls the worst a linter has: a run that passes while
+enforcing nothing.
+
+**One change makes an existing, unchanged config report differently**, and it
+is listed first.
+
+### Changed
+
+- **A preset can now turn on the language its rules are about.** A repository
+  extending `presets/rust.json` and nothing else used to report
+
+  ```
+  0 errors, 0 warnings, 2 skipped
+  ```
+
+  on a file that violates two of the preset's rules — a clean green run,
+  because `languages` came from the local config alone and the preset's
+  declaration was ignored. `languages` is now unioned across the whole
+  `extends` chain.
+
+  **If you extend a preset that names a language, files you were not reading
+  start being read on upgrade, and rules that were skipped begin to fire.**
+  That is the bug being fixed rather than a regression, and `baseline` is the
+  answer for anyone not paying that debt today.
+
+  Nothing new spells *off*: a language costs nothing on its own, because a file
+  is parsed only when some rule's scope reaches it — so `disable` on the
+  preset's rules leaves the union in place and reads nothing. `config validate`
+  prints `reads: rust, ts` whenever a preset is involved.
+
+- **The cache format moved from 14 to 15.** `FileFacts` gained the functions a
+  file declares outside its own tests. One cold run on upgrade.
+
+### Added
+
+- **`ignore_files` on `naming`.** One rule's exemption rather than the walk's.
+  The only way to exclude a file was the top-level `ignore`, which removes it
+  from **every** rule — so a repository wanting one `naming` rule to skip a
+  generated file while a `metadata` or `structure` rule still saw it had to
+  choose between the two.
+
+  Barrels do not belong in it and never did: `index.ts`, `index.tsx`,
+  `index.js`, `index.jsx`, `mod.rs`, `lib.rs` and `main.rs` are exempt by
+  construction, because nobody should have to declare that a module
+  declaration exports no symbol of its own.
+
+- **`skip_type_only` knows what a Rust declaration-only file is.** It exempted
+  a file whose exports are all `type` or `interface`, and a Rust file of pure
+  declarations exports `struct` and `enum`.
+
+  Widening that list would have been one line and would have quietly excused
+  most of a Rust codebase from the gate: a `struct` can carry an `impl` block
+  full of behaviour. The question is language-independent — *does this file
+  export anything a test could call?* — and only the answer is not. A Rust
+  file is exempt when it declares no function outside its own tests. Decision
+  36.
+
+- **`config verify-rules` can prove a `naming` rule bites.** It was the one
+  kind whose bite the command could not demonstrate, and the kind most likely
+  to be silently inert.
+
+  The probe does not invent a filename — that would be a regex run backwards,
+  and archwarden's engine is linear-time by design. It takes a file the rule
+  **already covers** and hands the engine facts with no exports at all; the
+  rule renders its own template against that real path and fires. Nothing is
+  written and nothing is read.
+
+### Fixed
+
+- **An empty `only_in` on a `chokepoint` said `outside anywhere`.** That is how
+  the rule spells *nobody here may*, and the sentence said the opposite of what
+  it means — in the one string `describe`, `scaffold`, the pre-write hook and
+  `agent-guide` all say. It reads `no use of X here at all` now.
+
+- **`rule-constrains-nothing` covers a `chokepoint` that guards no callee.**
+  `config verify-rules` refused such a rule and pointed at a `config doctor`
+  concern that did not exist. A promise one command makes about another has to
+  be kept by the other.
+
+
 ## [0.32.0] — 2026-08-20
 
 **The sentences the config could not hold.** Six issues raised from a
@@ -2795,7 +2879,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.32.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.33.0...HEAD
+[0.33.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.32.0...v0.33.0
 [0.32.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.31.0...v0.32.0
 [0.31.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.30.0...v0.31.0
 [0.30.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.29.0...v0.30.0
