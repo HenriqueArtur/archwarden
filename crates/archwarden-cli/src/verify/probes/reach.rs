@@ -271,3 +271,67 @@ pub(crate) fn a_call_from_outside_the_chokepoint(
         Verdict::Fires { on }
     }
 }
+
+/// A file this rule already covers, with the export it demands taken away.
+///
+/// `naming` was the one kind whose bite this command could not demonstrate.
+/// Inventing a filename that satisfies a `file_pattern` means running a regex
+/// backwards, which archwarden's engine deliberately cannot do -- it is
+/// linear-time and has no generator.
+///
+/// So the probe does not invent a name. It takes a file the rule *already*
+/// matches out of the tree, and hands the engine facts for it with no exports
+/// at all. The rule renders its own template against that real path, finds
+/// nothing answering to it, and fires -- which is the demonstration.
+///
+/// Nothing is written and nothing is read: the path is real, the facts are
+/// synthetic, and the file on disk is never opened.
+///
+/// It costs a rule that matches no file its verdict, which is honest: a
+/// `naming` rule reaching nothing is `config doctor`'s `scope-matches-nothing`
+/// rather than this command's business. Issue #154.
+pub(crate) fn a_covered_file_without_its_export(
+    rule: &CompiledRule,
+    engine: &dyn RuleEngine,
+    tree: &RepoTree,
+) -> Verdict {
+    let Some(covered) = a_file_in_scope(
+        rule,
+        engine,
+        tree,
+        &archwarden_core::glob::PathSet::default(),
+    ) else {
+        return Verdict::Unverified {
+            why: format!(
+                "no file this rule covers exists yet, so there is nothing to \
+                 take an export away from -- `{}` selects the directories and \
+                 the `file_pattern` the names in them",
+                rule.scope.patterns().join("`, `")
+            ),
+        };
+    };
+
+    let path = covered.clone();
+    let name = path.file_name().unwrap_or_default().to_owned();
+    // Exports emptied rather than renamed: an invented name could collide with
+    // whatever the template renders to, and a probe that accidentally passes
+    // reports a rule as silent when it is not.
+    let facts = FileFacts::unparsed(path.clone(), ContentHash::of(PROBE.as_bytes()));
+
+    let findings = engine.check_file(FileContext {
+        path: &path,
+        facts: Some(&facts),
+        docs: None,
+        siblings: std::slice::from_ref(&name),
+        exists: Exists::none(),
+        graph: None,
+        as_of: archwarden_core::date::Date::today(),
+    });
+
+    let on = format!("`{path}` exporting nothing");
+    if findings.is_empty() {
+        Verdict::Silent { on }
+    } else {
+        Verdict::Fires { on }
+    }
+}

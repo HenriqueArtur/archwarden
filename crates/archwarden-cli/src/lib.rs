@@ -1745,12 +1745,16 @@ mod tests {
         );
     }
 
-    /// And a rule whose violation cannot be synthesised is reported as
-    /// unchecked rather than left out. A partial answer that says which part
-    /// is missing beats a confident one that is wrong.
+    /// Issue #154, end to end. `naming` was the one kind whose bite this
+    /// command could not demonstrate, and it is the kind most likely to be
+    /// silently inert -- a `file_pattern` that matches nothing reports nothing.
+    ///
+    /// The probe takes a file the rule already covers and hands the engine
+    /// facts with no exports, rather than inventing a filename that satisfies
+    /// the pattern -- which would be a regex run backwards.
     #[test]
-    fn verify_rules_names_what_it_could_not_check() {
-        let (_guard, result) = run_in(
+    fn verify_rules_proves_a_naming_rule_by_a_file_it_already_covers() {
+        let (guard, result) = run_in(
             &[
                 ("arch.config.json", NAMING),
                 (
@@ -1763,7 +1767,45 @@ mod tests {
 
         assert_eq!(result.exit, Exit::Clean, "nothing was proven silent");
         let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("valid JSON");
-        assert_eq!(parsed[0]["verdict"], "unverified");
+        assert_eq!(parsed[0]["verdict"], "fires", "{}", result.out);
+        assert!(
+            parsed[0]["probe"]
+                .as_str()
+                .is_some_and(|on| on.contains("create-client.use-case.ts")),
+            "the probe names the real file it used: {}",
+            result.out
+        );
+        // And the file on disk is untouched: the path is real, the facts are
+        // synthetic, and nothing is written.
+        assert_eq!(
+            std::fs::read_to_string(guard.path().join("src/user/create-client.use-case.ts"))
+                .expect("still there"),
+            "export function CreateClient() {}"
+        );
+    }
+
+    /// And a rule whose violation genuinely cannot be synthesised is still
+    /// reported as unchecked rather than left out. A partial answer that says
+    /// which part is missing beats a confident one that is wrong.
+    #[test]
+    fn verify_rules_names_what_it_could_not_check() {
+        let (_guard, result) = run_in(
+            &[
+                (
+                    "arch.config.json",
+                    r#"{"version":0,"rules":[{
+                        "type":"call-obligation","id":"audit","level":"error","roots":"src/*",
+                        "file_pattern":"^route\\.post\\.ts$",
+                        "must_call":{"symbol":"Event.save","imported_from":"@org/domain/event"}}]}"#,
+                ),
+                ("src/user/route.post.ts", "export function POST() {}"),
+            ],
+            &["config", "verify-rules", "--format", "json"],
+        );
+
+        assert_eq!(result.exit, Exit::Clean, "nothing was proven silent");
+        let parsed: serde_json::Value = serde_json::from_str(&result.out).expect("valid JSON");
+        assert_eq!(parsed[0]["verdict"], "unverified", "{}", result.out);
         assert!(
             parsed[0]["reason"]
                 .as_str()

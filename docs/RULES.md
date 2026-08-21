@@ -357,6 +357,17 @@ rule, so a repository that wanted one `naming` rule to skip a generated file
 while a `metadata` or `structure` rule still saw it had to choose between the
 two. Spelled and matched the way `spec-pair` spells it. Issue #153.
 
+**Proving it bites.** `config verify-rules` takes a file this rule already
+covers and hands the engine facts with no exports at all: the rule renders its
+own template against that real path, finds nothing answering to it, and fires.
+
+It does not invent a filename, which would be a regex run backwards —
+archwarden's engine is linear-time by design and has no generator. That is why
+this was the one kind whose bite could not be demonstrated until #154, and it
+is the kind most likely to be silently inert: a `file_pattern` matching nothing
+reports nothing, and a rule reaching no file is `config doctor`'s
+`scope-matches-nothing` rather than this command's business.
+
 **Case transformers available in templates**: `pascal`, `camel`, `kebab`,
 `snake`, `upper`, `lower`, `raw`.
 
