@@ -63,6 +63,7 @@ const FROM_ROOT = [
   "README.md",
   "AGENTS.md",
   "schema/v0.json",
+  "presets/react.json",
   "presets/rust.json",
   "presets/tauri.json",
 ];

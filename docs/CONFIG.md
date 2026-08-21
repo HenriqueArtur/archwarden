@@ -1034,6 +1034,34 @@ exports, and a file that declares a stability carries a deadline where it needs
 one. Barrels — `mod.rs`, `lib.rs`, `main.rs` — are exempt from both of the
 first two by construction, so nothing has to list them.
 
+`presets/react.json` is the third, and the one that needed the most new
+capability:
+
+```json
+{
+  "version": 0,
+  "extends": ["./node_modules/archwarden/presets/react.json"]
+}
+```
+
+Four rules and three decisions. A component file names the component in it and
+has a test beside it — both work on a repository that adopts archwarden today
+and need nothing new. A **client component may not reach the server**, which is
+`when_declaring: ["use client"]` and is not a question about where a file sits.
+And hooks are called where hooks live, which is a `chokepoint` with an empty
+`only_in`.
+
+That last one is a **warning**, and the decision beside it says why: the rule
+keeps the half that is a fact about where a name is used, and conditional and
+looped calls are the other half of the Rules of Hooks that no scope holds. The
+ESLint plugin checks the call lexically and knows nothing about which folder is
+allowed to hold a hook; the two are complements rather than substitutes.
+
+Its `roots` are spelled `["src/components", "src/components/**"]` rather than
+`src/components/*`, and that is worth copying: a React project keeps components
+both directly in the folder and nested under it, and `*` selects only the
+children. Writing the preset is what found it.
+
 `presets/tauri.json` is the same package, and is the rule set this whole
 milestone exists for: every `invoke("...")` in `src/` names a
 `#[tauri::command]` in `src-tauri/src/`, and commands live in one folder.

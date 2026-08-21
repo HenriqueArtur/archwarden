@@ -279,6 +279,37 @@ mod tests {
         );
     }
 
+    /// Every preset this repository ships compiles.
+    ///
+    /// A preset is adopted by somebody who does not know its conventions, and
+    /// one that stops compiling ships broken to all of them. Issue #158 showed
+    /// the softer version of the same failure -- a preset that loaded and did
+    /// nothing -- and nothing here was checking even the hard one.
+    ///
+    /// Read off disk rather than listed, so a preset added without a line here
+    /// is still covered. Issue #147.
+    #[test]
+    fn every_preset_this_repository_ships_compiles() {
+        let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../presets")
+            .canonicalize()
+            .expect("the presets directory is there");
+
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&directory).expect("readable") {
+            let path = entry.expect("an entry").path();
+            if path.extension().is_none_or(|extension| extension != "json") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("readable");
+            compile_json(&source)
+                .unwrap_or_else(|error| panic!("{} does not compile: {error}", path.display()));
+            checked += 1;
+        }
+
+        assert!(checked >= 3, "found {checked} presets, which is too few");
+    }
+
     /// Naming one language does not turn on the other.
     ///
     /// Separate assertions per language, because the lowering is one line each

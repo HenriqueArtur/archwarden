@@ -1,0 +1,124 @@
+{
+  "$schema": "https://raw.githubusercontent.com/HenriqueArtur/archwarden/main/schema/v0.json",
+  "version": 0,
+  "decisions": [
+    {
+      "id": "REACT-001",
+      "title": "A component file is named for the component in it",
+      "why": "the coupling is what lets a reader find a symbol from a path, and an agent write one without asking",
+      "alternatives": [
+        {
+          "option": "a folder per component with an `index.tsx`",
+          "why_not": "every editor tab reads `index.tsx` and the path is the only thing that says which"
+        }
+      ]
+    },
+    {
+      "id": "REACT-002",
+      "title": "The server/client boundary is declared, not inferred",
+      "why": "a client component ships to the browser; what it imports ships with it",
+      "alternatives": [
+        {
+          "option": "infer the side from the folder",
+          "why_not": "a folder cannot say it, and React reads the directive rather than the path"
+        }
+      ]
+    },
+    {
+      "id": "REACT-003",
+      "title": "Hooks are called where hooks live",
+      "why": "the Rules of Hooks are about call order, and a hook called from a plain helper is a call order nobody can read. The rule keeps the half that is a fact about where a name is used; conditional and looped calls are the other half and no scope holds them",
+      "alternatives": [
+        {
+          "option": "trust the ESLint plugin",
+          "why_not": "it checks the call lexically and knows nothing about which folder is allowed to hold a hook"
+        }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "type": "naming",
+      "id": "react/a-component-file-names-its-component",
+      "level": "error",
+      "decision": "REACT-001",
+      "why": "`user-card.tsx` exports `UserCard`. Barrels are exempt by construction.",
+      "roots": [
+        "src/components",
+        "src/components/**",
+        "src/features",
+        "src/features/**"
+      ],
+      "file_pattern": "^(?<name>[a-z0-9-]+)\\.tsx$",
+      "must_export": {
+        "name": "{{pascal(name)}}",
+        "kind": [
+          "function",
+          "const"
+        ]
+      }
+    },
+    {
+      "type": "spec-pair",
+      "id": "react/a-component-has-a-test-beside-it",
+      "level": "error",
+      "decision": "REACT-001",
+      "why": "a component with no test is a component nobody has rendered outside the app",
+      "roots": [
+        "src/components",
+        "src/components/**",
+        "src/features",
+        "src/features/**"
+      ],
+      "subfolders": [
+        "."
+      ],
+      "skip_type_only": true
+    },
+    {
+      "type": "import-boundary",
+      "id": "react/a-client-component-cannot-reach-the-server",
+      "level": "error",
+      "decision": "REACT-002",
+      "why": "a client component runs in the browser; a database client or a secret there is in the bundle",
+      "from": [
+        "src/components",
+        "src/components/**",
+        "src/features",
+        "src/features/**",
+        "app",
+        "app/**"
+      ],
+      "when_declaring": [
+        "use client"
+      ],
+      "forbid_import_from": [
+        "src/db/**",
+        "src/server/**"
+      ]
+    },
+    {
+      "type": "chokepoint",
+      "id": "react/hooks-are-called-where-hooks-live",
+      "level": "warning",
+      "decision": "REACT-003",
+      "why": "a hook called from a plain helper is the bug the Rules of Hooks exist to prevent",
+      "roots": [
+        "src/lib",
+        "src/lib/**",
+        "src/utils",
+        "src/utils/**"
+      ],
+      "callee": [
+        "useState",
+        "useEffect",
+        "useMemo",
+        "useCallback",
+        "useRef",
+        "useContext",
+        "useReducer"
+      ],
+      "only_in": []
+    }
+  ]
+}
