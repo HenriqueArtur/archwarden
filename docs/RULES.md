@@ -1789,6 +1789,31 @@ distinction: `div` is an intrinsic element, `Card` is a component in scope.
 
 Decision 37.
 
+**Narrowing further.** `roots` selects directories; `file_pattern` selects the
+files in them, so *"only `*.server.ts` may call `fetch`"* is sayable:
+
+```json
+{ "type": "chokepoint", "id": "only-a-server-file-fetches", "level": "error",
+  "roots": ["src/*"], "file_pattern": "\\.client\\.ts$",
+  "callee": ["fetch"], "only_in": [] }
+```
+
+`imported_from` disambiguates a name two modules both export, matched against
+the specifier **as written** — the way `must_call.imported_from` matches it, so
+the rule still needs no resolution. Absent is right for an ambient capability:
+`process.env` is imported from nowhere and there is nothing to tell apart.
+
+```json
+{ "type": "chokepoint", "id": "only-the-ledger-posts", "level": "error",
+  "roots": ["src/*"],
+  "callee": ["Ledger.post"], "imported_from": "@org/accounting",
+  "only_in": ["src/accounting/**"] }
+```
+
+A file that imports `Ledger` from somewhere else is left alone, and so is one
+that imports it from nowhere: the rule named where the name comes from, and
+this one did not come from there. Issue #146.
+
 **Not a taint analysis.** It asks whether a name appears in a file inside a
 scope. It does not follow a value, so a capability passed as an argument out of
 the chokepoint is invisible to it — the same line drawn beside `call-obligation`

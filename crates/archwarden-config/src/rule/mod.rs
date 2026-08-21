@@ -1275,6 +1275,28 @@ pub struct ChokepointRule {
     /// `Card` is a component in scope.
     #[serde(default)]
     pub renders: Vec<String>,
+    /// Regex over the filename, narrowing the population further.
+    ///
+    /// `roots` selects directories; this selects the files in them. *"Only
+    /// `*.server.ts` may call `fetch`"* is a sentence about a filename, and
+    /// without this the rule could only be written about a folder. Optional:
+    /// a rule that names none governs every file its scope reaches, which is
+    /// every chokepoint written before the field existed. Issue #146.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_pattern: Option<String>,
+    /// The module a guarded name has to come from.
+    ///
+    /// Two packages can export a `Ledger`, and a rule about *this* project's
+    /// one should not fire on the other. Spelled and matched the way
+    /// [`MustCall::imported_from`](crate::rule::MustCall::imported_from) is:
+    /// against the specifier **as written**, so the rule needs no resolution.
+    ///
+    /// Optional, and absent is the right answer for an ambient capability:
+    /// `process.env` is imported from nowhere and there is nothing to
+    /// disambiguate. A rule that names one guards only the names the file
+    /// actually took from there. Issue #146.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_from: Option<String>,
     /// Directory globs this rule governs.
     ///
     /// Separate from [`only_in`](Self::only_in), and the separation is the

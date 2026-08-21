@@ -325,6 +325,10 @@ pub enum CompiledRuleKind {
     Chokepoint {
         /// The callees, as they appear at a call site.
         callee: Vec<String>,
+        /// Regex over the filename, narrowing the population. Issue #146.
+        file_pattern: Option<Pattern>,
+        /// The module a guarded name has to come from. Issue #146.
+        imported_from: Option<String>,
         /// The JSX elements, as they appear in markup.
         ///
         /// A render is a use, which is what this rule guards -- and it is a

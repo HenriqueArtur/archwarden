@@ -718,19 +718,37 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
         CompiledRuleKind::Chokepoint {
             callee,
             renders,
+            file_pattern,
+            imported_from,
             only_in,
         } => {
+            // The clauses that narrow, appended to whichever statement is
+            // made: an agent told "only these files may call `fetch`" without
+            // "and only in a `*.server.ts`" is told a wider rule than exists.
+            let mut clauses = Vec::new();
+            if let Some(pattern) = file_pattern {
+                clauses.push(format!("in a file matching `{}`", pattern.as_str()));
+            }
+            if let Some(module) = imported_from {
+                clauses.push(format!("when imported from `{module}`"));
+            }
+            let narrowing = if clauses.is_empty() {
+                String::new()
+            } else {
+                format!(", {}", clauses.join(", "))
+            };
+
             let mut said = Vec::new();
             if !callee.is_empty() {
                 said.push(format!(
-                    "only files under {} may call {}",
+                    "only files under {} may call {}{narrowing}",
                     join(only_in.patterns()),
                     join(callee),
                 ));
             }
             if !renders.is_empty() {
                 said.push(format!(
-                    "only files under {} may render {}",
+                    "only files under {} may render {}{narrowing}",
                     join(only_in.patterns()),
                     join(renders),
                 ));
@@ -1837,6 +1855,8 @@ mod tests {
             CompiledRuleKind::Chokepoint {
                 callee: vec!["process.env".to_owned(), "process.argv".to_owned()],
                 renders: Vec::new(),
+                file_pattern: None,
+                imported_from: None,
                 only_in: Scope::compile(["src/config/**"]).expect("valid scope"),
             },
         )]);
@@ -1861,6 +1881,8 @@ mod tests {
             CompiledRuleKind::Chokepoint {
                 callee: vec!["useCheckout".to_owned()],
                 renders: vec!["CheckoutForm".to_owned()],
+                file_pattern: None,
+                imported_from: None,
                 only_in: Scope::compile(["src/features/checkout/**"]).expect("valid scope"),
             },
         )]);

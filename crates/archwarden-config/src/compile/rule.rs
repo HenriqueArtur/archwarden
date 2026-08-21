@@ -220,6 +220,12 @@ pub(super) fn compile_rule(
         Rule::Chokepoint(r) => CompiledRuleKind::Chokepoint {
             callee: r.callee.clone(),
             renders: r.renders.clone(),
+            file_pattern: r
+                .file_pattern
+                .as_deref()
+                .map(|source| pattern(&id, "file_pattern", source))
+                .transpose()?,
+            imported_from: r.imported_from.clone(),
             only_in: Scope::compile(r.only_in.iter()).map_err(|source| CompileError::Scope {
                 rule: id.clone(),
                 source,

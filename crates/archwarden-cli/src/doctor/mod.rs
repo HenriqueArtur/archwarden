@@ -669,6 +669,8 @@ mod tests {
             CompiledRuleKind::Chokepoint {
                 callee: Vec::new(),
                 renders: Vec::new(),
+                file_pattern: None,
+                imported_from: None,
                 only_in: Scope::compile(["src/config/**"]).expect("valid scope"),
             },
         )]);
@@ -691,6 +693,8 @@ mod tests {
             CompiledRuleKind::Chokepoint {
                 callee: vec!["Date.now".to_owned()],
                 renders: Vec::new(),
+                file_pattern: None,
+                imported_from: None,
                 only_in: Scope::compile(std::iter::empty::<&str>()).expect("valid scope"),
             },
         )]);

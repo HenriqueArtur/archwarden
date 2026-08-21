@@ -212,9 +212,18 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                 CompiledRuleKind::Chokepoint {
                     callee,
                     renders,
+                    file_pattern,
+                    imported_from,
                     only_in,
                 } => Box::new(chokepoint::ChokepointEngine::build(
-                    rule, callee, renders, only_in,
+                    rule,
+                    &chokepoint::ChokepointFields {
+                        callee,
+                        renders,
+                        file_pattern: file_pattern.as_ref(),
+                        imported_from: imported_from.as_deref(),
+                        only_in,
+                    },
                 )),
                 CompiledRuleKind::CallObligation {
                     file_pattern,
