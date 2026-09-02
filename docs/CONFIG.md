@@ -798,10 +798,14 @@ repository wanting a `metadata` rule to still see it had to choose between the
 two. Issue #153.
 
 `spec_markers` defaults to `["spec", "test"]` and can usually be omitted: it
-is what vitest and jest both accept. The extension is never configured — it
-comes from the source file, so `Component.tsx` pairs with
-`Component.spec.tsx`. See [`RULES.md`](RULES.md) for how a compound name like
-`user.db.repository.ts` is handled.
+is what vitest and jest both accept. It is **not a closed vocabulary** — any
+word the project writes is a marker, and a marker may name more than one
+component, so `["unit.spec"]` pairs `account-sanitize.ts` with
+`account-sanitize.unit.spec.ts`. Two markers where one ends the other are
+refused when the config compiles, because one file would then answer for two
+units. The extension is never configured — it comes from the source file, so
+`Component.tsx` pairs with `Component.spec.tsx`. See [`RULES.md`](RULES.md) for
+how a compound name like `user.db.repository.ts` is handled.
 
 `spec_dirs` names directories beside the file where a spec also counts —
 `["__tests__"]`, `["tests"]`, whatever the project uses. Empty by default,
@@ -814,6 +818,15 @@ Optional `require_non_empty_spec: true` fails on `.spec.ts` files that contain
 no `it(...)` or `test(...)` calls — this is what enforces "spec written
 first", not just "spec file exists". A `describe(...)` alone does not satisfy
 it.
+
+**On a `.rs` file the rule asks about the file itself**, because Rust's unit
+tests live in a `#[cfg(test)] mod tests` inside the unit rather than beside it.
+No sibling is looked for and none is demanded; what is demanded is at least one
+`#[test]`, unconditionally — an empty module is three lines and would otherwise
+be the way out. This needs `languages` to name `rust`: a language the config
+does not name is never parsed, and a rule whose whole scope is `.rs` reports
+nothing without it. `RULES.md` has the rest, including why `lib.rs` and
+`mod.rs` belong in `ignore_files`.
 
 ### Import boundary
 
