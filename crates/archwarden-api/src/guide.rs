@@ -1191,6 +1191,44 @@ mod tests {
         );
     }
 
+    /// What must *not* be there, and first.
+    ///
+    /// It is the one requirement on this rule an agent can break by writing
+    /// rather than by omitting, and this digest is what it reads before a
+    /// write. Issue #177.
+    #[test]
+    fn a_presence_rule_lists_what_may_not_exist_first() {
+        let config = config(vec![rule(
+            "deps/one-package-manager",
+            None,
+            &["."],
+            CompiledRuleKind::Presence {
+                require: vec!["package.json".to_owned()],
+                require_any: Vec::new(),
+                forbid: vec!["package-lock.json".to_owned(), "yarn.lock".to_owned()],
+            },
+        )]);
+
+        let requires = guide(&config, None, &[], None)
+            .rules
+            .first()
+            .expect("one rule")
+            .requires
+            .clone();
+
+        assert_eq!(
+            requires.first().map(String::as_str),
+            Some("must not contain: `package-lock.json`, `yarn.lock`"),
+            "{requires:?}"
+        );
+        assert!(
+            requires
+                .iter()
+                .any(|line| line == "must contain: `package.json`"),
+            "{requires:?}"
+        );
+    }
+
     /// A digest is what an agent has instead of the config, and "the folder
     /// name has to look like this" is exactly what it needs before creating
     /// one.

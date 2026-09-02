@@ -1339,6 +1339,14 @@ mod tests {
             }),
             r"`projeto.md` and `notas.md`, and a file matching `\.ino$`"
         );
+        // The whole list, not the one file found: after "delete this" the
+        // reader's next question is what else may not be here. Issue #177.
+        assert_eq!(
+            describe_expectation(&Expectation::ForbiddenFiles {
+                names: vec!["package-lock.json".to_owned(), "yarn.lock".to_owned()],
+            }),
+            "none of `package-lock.json` or `yarn.lock`"
+        );
     }
     /// A rule with both is described with both, rather than the reader having
     /// to run it again the other way round.

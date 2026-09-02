@@ -849,6 +849,31 @@ mod tests {
 
         assert_eq!(shape.required_files.names, ["projeto.md"]);
         assert_eq!(shape.required_files.patterns, [r"\.ino$"]);
+        assert!(shape.forbidden_files.is_empty());
+    }
+
+    /// And the list not to create, in a field of its own.
+    ///
+    /// Beside `forbidden_imports` rather than inside `required_files`: a
+    /// consumer acting on that one creates what it names, so a list it must
+    /// not create cannot travel there. Issue #177.
+    #[test]
+    fn a_directory_gets_the_files_that_may_not_exist_in_it() {
+        let shape = scaffold(
+            &config(vec![rule(
+                "deps/one-package-manager",
+                &["."],
+                CompiledRuleKind::Presence {
+                    require: Vec::new(),
+                    require_any: Vec::new(),
+                    forbid: vec!["package-lock.json".to_owned(), "yarn.lock".to_owned()],
+                },
+            )]),
+            &path("."),
+        );
+
+        assert_eq!(shape.forbidden_files, ["package-lock.json", "yarn.lock"]);
+        assert!(shape.required_files.names.is_empty());
     }
 
     /// Asked about a directory, the shape carries the subfolders allowed

@@ -1383,6 +1383,16 @@ mod tests {
                 },
                 "no file here matches `*.spec.ts`",
             ),
+            // "may not be" rather than "is forbidden", on `ImportNotPermitted`'s
+            // grounds: a reader told a file is banned goes looking for the ban,
+            // and the rule is a list of what this directory may hold. The one
+            // observation here about a file that exists. Issue #177.
+            (
+                Observed::ForbiddenFilePresent {
+                    name: "package-lock.json".to_owned(),
+                },
+                "`package-lock.json` is here, and may not be",
+            ),
             (
                 Observed::SpecIsEmpty {
                     path: path("order.spec.ts"),
