@@ -17,6 +17,114 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 40 — A scope may declare itself empty on purpose, in a sentence
+Status: accepted.
+Context: issue #179. `config doctor` warned that a scope matched no directory,
+and warned the same way whether the glob was a typo or the code had not been
+written yet. In one repository it had said the same three things for weeks; two
+of them were a rule and a decision about a plugin system on the roadmap, and
+the third was issue #176.
+
+The two fixes it offered are the two things the author of a deliberate
+guardrail cannot take. Pointing it at paths that exist is impossible. Dropping
+it means the boundary arrives after the first import it was meant to prevent —
+which gives up the thing a linter has over an agreement, that the rule can be
+written the day the shape is decided.
+
+Decision: a rule and a decision may carry `not_yet: "<sentence>"`. `doctor`
+stays quiet about `scope-matches-nothing` while it is set, and reports
+`scope-no-longer-empty` the day the scope starts matching something with the
+claim still on it. Nothing else reads the field; `check` fires exactly as it
+would without one.
+
+**The second half is the decision.** A field that only ever quietened something
+would be a mute, and the shape this project refuses above all others is a rule
+enforcing nothing while looking like a repository that satisfies it. The claim
+has an expiry built into it: it is a statement about the world, and the world
+changes. The precedent is `decisions[].status: proposed`, which is deliberately
+silent for the same reason and on the same terms — decision 26.
+
+**A sentence, not a boolean.** `true` is a switch; a sentence is a note to
+whoever reads the config in six months and finds a rule guarding nothing. Same
+bar as `why_not_enforceable`, and as the `reason = "..."` this codebase
+requires on every `#[allow]`.
+
+Alternatives:
+- **Infer it: warn only when a *sibling* glob in the same rule matches
+  something**, on the theory that a typo is one glob wrong out of several and a
+  not-yet directory is all of them. The issue's own second suggestion.
+  Rejected: a heuristic that is wrong in silence, which is the thing
+  `spec_markers` refuses when it says guessing is worse than saying so — and it
+  gives a single-glob rule, the common case, no answer at all.
+- **Rank it: keep the warning, sort it below the rules that are failing to do
+  their job.** Rejected as an answer to this: ordering a list does not make a
+  permanent entry in it go away, and the complaint was that the list never
+  empties. Worth doing on its own merits, and not instead of this.
+- **A global `--allow-empty-scopes` switch.** Rejected: the claim is about one
+  boundary, and a switch would silence the next typo too.
+- **Report it at `info` rather than `warning`.** Rejected: `doctor` has two
+  levels because #100 needed two, and a third for "true but not interesting"
+  is a level nobody would agree on the meaning of.
+Consequences: 16 rule wire structs gain the field, which is the tax `why` and
+`decision` already pay — there is no shared base and adding one now would be a
+refactor with its own risk. `config validate` accepts configs it used to
+refuse. No cache format change: the field never reaches a finding.
+
+---
+
+### 39 — A `presence` rule may forbid a name, and only a name
+Status: accepted.
+Context: issue #177. *"Exact versions, and one package manager"* is a decision
+every monorepo makes and nothing enforces; the repository that filed it had the
+decision recorded with `enforcement: none` and had already had caret ranges
+committed by the person who chose against them a fortnight earlier. The issue
+asked for a `manifest` rule type, or failing that a generic `file-content` type
+— a regex that must not match inside files a glob selects.
+
+Decision: `presence` gains `forbid`, a list of filenames the governed directory
+may not hold. Neither of the shapes the issue asked for is built.
+
+**Not a `manifest` type.** `README.md` already sends this reader to Syncpack
+and Manypkg for version alignment, and Syncpack enforces exact versions well.
+Every rule archwarden ships has to be something no other mainstream tool does
+well, and this is not. A manifest is also not source: there is no front-end for
+`package.json` or `Cargo.toml`, and decision 19 prices what one costs.
+
+**Not a generic `file-content` type.** *Being a general-purpose linter* is the
+first non-goal in the README, and a regex over file contents is what Biome,
+ESLint and ripgrep all do. It also cuts across the seam decision 6 draws: rule
+engines receive extracted facts and never the bytes, and a rule matching raw
+content would be the first one to reach past the parser.
+
+**The half that is ours is the lockfile.** *Which named files may exist in this
+directory* is a question about the walk, which `presence` already answers in
+the positive direction. One field, no new kind, no new capability — and the
+decision it keeps is the one review actually failed to keep.
+
+**Names, and deliberately no pattern twin.** `require_any` has the regex form
+for the positive case. A forbidden *pattern* is one glob from the general
+linter above, and the difference is real: a name is a decision somebody wrote
+down, a pattern is a search.
+
+Alternatives:
+- **`structure.filename_patterns`.** It is a whitelist every child must match,
+  so "not these three" means enumerating everything else in a repository root —
+  a list that is wrong the day somebody adds a file.
+- **A `forbidden` kind of its own.** Its scope, its `why` and its finding would
+  all be `presence`'s, spelled again — the argument decision 37 made against a
+  `render-boundary` kind.
+- **A field on `structure` instead.** `structure` is about folder shape and
+  filename *form*; this is about named files, which is `presence`'s subject.
+Consequences: `Expectation::ForbiddenFiles` and
+`Observed::ForbiddenFilePresent` are new, and `scaffold` grows
+`forbidden_files` beside `forbidden_imports` — the vocabulary an agent already
+reads. Both enums are `#[non_exhaustive]`, so a consumer matching on them keeps
+compiling. `ADR-015`-shaped decisions — *"no colour literal outside the token
+file"* — are still unenforceable, and that is the honest cost of refusing the
+generic type.
+
+---
+
 ### 38 — A spec marker may name more than one component
 Status: accepted.
 Context: issue #174. A monorepo began distinguishing the *kind* of test in the

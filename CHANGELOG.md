@@ -17,6 +17,91 @@ saying so.
 
 ## [Unreleased]
 
+### Added
+
+- **`presence` rules may forbid a name.** *"One package manager"* is a decision
+  every monorepo makes and almost nothing enforces:
+
+  ```json
+  { "type": "presence", "id": "deps/one-package-manager", "level": "error",
+    "roots": [".", "web"],
+    "forbid": ["package-lock.json", "yarn.lock", "pnpm-lock.yaml"] }
+  ```
+
+  ```
+  error   .
+          [*] deps/one-package-manager — `package-lock.json` is here, and may not be
+          expected: none of `package-lock.json`, `yarn.lock` or `pnpm-lock.yaml`
+  ```
+
+  Names, not patterns, and refused at compile the same way `require` is.
+  `scaffold` carries the list as `forbidden_files`, beside `forbidden_imports`,
+  so an agent is told what not to create rather than corrected afterwards.
+
+  Issue #177 asked for a `manifest` type or a generic `file-content` regex.
+  Neither is here: the first is what Syncpack already does well, the second is
+  the README's first non-goal and would be the first rule to reach past the
+  parser for raw bytes. Decision 39 records both refusals, including what stays
+  unenforceable because of them.
+
+- **A rule or a decision may say its scope is empty on purpose.**
+
+  ```json
+  { "type": "import-boundary", "id": "plugin/a-plugin-cannot-reach-the-host",
+    "from": ["web/src/plugins/**"], "forbid_import_from": ["web/src/frame/**"],
+    "not_yet": "Plugins are declared before they are built, on purpose." }
+  ```
+
+  `config doctor` warned about a scope matching no directory the same way
+  whether the glob was a typo or the code had not been written yet, and both
+  fixes it offered — point it at paths that exist, or drop it — are the two
+  things the author of a deliberate guardrail cannot take. A doctor that always
+  has something to say is a doctor nobody reads.
+
+  **It expires.** The day the directory appears with the claim still on the
+  rule, `doctor` reports `scope-no-longer-empty` and names the sentence back.
+  Without that half the field would be a mute, which is the one shape this
+  project refuses. A decision's `scope` takes the same field and reports
+  `decision-scope-no-longer-empty`. `check` never reads it.
+
+  A sentence rather than `true`, for the reason `why_not_enforceable` is one.
+  Issue #179, decision 40.
+
+### Fixed
+
+- **`config doctor` said nothing about a rule it could never answer.** A
+  `spec-pair` rule whose whole population is `.rs` reported nothing at all when
+  `languages` did not name `rust` — the file is never parsed, so the rule is
+  asked and declines on every file it covers, and `doctor` said `No concerns`.
+
+  One config field between a working gate and a silent one, and nothing
+  mentioned it in context. It is now `rule-reads-an-unread-language`, and only
+  when *every* file the rule reaches is such a language — a scope spanning both
+  trees is what a Tauri repository writes deliberately. Issue #181, found
+  through #178.
+
+- **A finding about the repository root printed a blank path.**
+  `RepoRelPath` spells the root as the empty string, so the line read `error`
+  and then nothing. It has been that way for every directory rule scoped to
+  `.`; `presence.forbid` is what made it common, because a lockfile rule lives
+  at the root. The human renderings say `.` now; the JSON keeps the empty
+  string, because that is the contract and a consumer joining `.` onto a root
+  would build `./.`.
+
+### Changed
+
+- **`agent-guide` states a `spec-pair` rule's two answers as two sentences.**
+  0.36.0 hung the Rust half off the sibling one as a parenthetical, so in a
+  repository that is only Rust the answer that does not apply read as the main
+  clause and the one that does as an aside. Each now names the extension it is
+  about and repeats the scope, because a requirement in that list is read on
+  its own. Issue #182.
+
+  The guide stays a pure function of the config — same config, same bytes.
+  Narrowing it per rule needs the repository on disk, which would make a
+  committed digest change when a directory appears; #182 stays open with that
+  trade written down.
+
 ## [0.36.0] — 2026-09-02
 
 **Four issues from one repository using it in anger.** Two of them turned out

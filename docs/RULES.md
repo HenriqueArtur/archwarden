@@ -589,6 +589,7 @@ type checking. Use `tsc` for that.
 
 - `require` — filenames that must be there.
 - `require_any` — regexes at least one file must match, **one file per entry**.
+- `forbid` — filenames that must **not** be there. See below.
 
 ```json
 {
@@ -627,12 +628,54 @@ file to create — the shape `spec-pair` already reports a missing sibling in �
 so a brand-new empty directory earns four findings for four absent files.
 `--summary` is the answer to volume.
 
-**Cannot express**: "this file needs *that* file", where the second is named
-relative to the first rather than to the directory. That is a pairing question
-rather than a presence one; see issue #45.
+### `forbid`: what may not be here
+
+The mirror of `require`, and the only thing this rule reports for **existing**:
+
+```json
+{ "type": "presence",
+  "id": "deps/one-package-manager",
+  "level": "error",
+  "roots": [".", "web", "app"],
+  "forbid": ["package-lock.json", "yarn.lock", "pnpm-lock.yaml"],
+  "why": "ADR-013: bun is the only installer; a second lockfile resolves differently" }
+```
+
+```
+error   .
+        [*] deps/one-package-manager — `package-lock.json` is here, and may not be
+        expected: none of `package-lock.json`, `yarn.lock` or `pnpm-lock.yaml`
+```
+
+*"One package manager"* is a decision every monorepo makes and almost nothing
+enforces — review is the guard, and review is what lets the second lockfile in,
+usually committed by the same person who chose against it a fortnight earlier.
+A lockfile is **one named file at a known path**, which is what makes it this
+rule's shape rather than a pattern's.
+
+**Not `structure.filename_patterns`.** That field is a whitelist every child
+must match, so saying "not these three" there means enumerating everything else
+in a repository root — a list that is wrong the day somebody adds a file.
+
+**Names, not paths**, refused at compile the same way `require` is. One finding
+per entry that is there, because each is a separate deletion.
+
+`scaffold` carries it as `forbidden_files`, beside `forbidden_imports` — so an
+agent about to write into a governed directory is told what not to create
+rather than corrected afterwards.
+
+**Cannot express**: a *pattern* that may not appear — `"no file matching
+\\.generated\\.ts$"`. `require_any` has the pattern form for the positive case
+and this deliberately has no twin: a forbidden pattern is one glob away from a
+general-purpose content linter, which is [the first
+non-goal](../README.md#non-goals). A name is a decision somebody wrote down; a
+pattern is a search.
+
+Decision 39, issue #177.
 
 **Cannot express**: "this file needs *that* file", where the second is named
-relative to the first rather than to the directory. That is `pair`, next.
+relative to the first rather than to the directory. That is `pair`, next —
+see issue #45.
 
 ---
 
