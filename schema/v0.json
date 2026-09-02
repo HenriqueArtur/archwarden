@@ -319,6 +319,13 @@
             "null"
           ]
         },
+        "not_yet": {
+          "description": "Why this decision's `scope` is deliberately empty, when it is.\n\nThe same field a rule carries, with the same argument: a decision may\nbe about a part of the system that is on the roadmap, and `describe`\nnever bringing it to anybody is the intended state rather than a typo.\nA sentence, not a flag — and `config doctor` speaks up again the day\nthe scope starts matching something with this still set. Issue #179,\ndecision 40.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "scope": {
           "description": "Where this decision applies, as directory globs.\n\nThe same shape as [`Module::scope`], for the same reason #74 gave it to\na module: without it the decision is only a label, and nothing can bring\nit to the person standing in the paths it governs.\n\nAn enforced decision already has an implicit scope through the roots of\nthe rules that name it. This is what an *unenforced* one has instead —\nwhich is why it matters most for the decisions `enforcement: \"none\"`\ndescribes: there is no gate that will catch their violation later, so\narriving unprompted is the only way they arrive at all. Issue #161.",
           "$ref": "#/$defs/OneOrMany"
@@ -490,6 +497,13 @@
                 }
               ]
             },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is.\n\nA boundary declared *before* the code it guards. `config doctor`\notherwise reports a scope matching no directory the same way whether\nthe glob is a typo or the directory has not been written yet, and both\nfixes it offers — point it at paths that exist, or drop it — are the\ntwo things the author of a deliberate guardrail does not want to do.\nDropping it means the rule arrives after the first violation does.\n\n**A sentence, not a flag.** `true` would be a way to silence the\ndoctor; a sentence is a note to whoever reads this config in six months\nand finds a rule guarding nothing. The same bar `#[allow]` in this\ncodebase holds to, and the same one `why_not_enforceable` holds a\ndecision to.\n\nIt does not silence the concern for ever: the day the directory appears\nwith this rule still declaring it is not yet built, `doctor` says so —\n`scope-no-longer-empty`. A field that only ever quietened something\nwould be a mute, and a rule enforcing nothing must never look like a\nrepository that satisfies it. Issue #179, decision 40.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "roots": {
               "description": "Directory globs this rule applies to.",
               "$ref": "#/$defs/OneOrMany"
@@ -586,6 +600,13 @@
                 }
               ]
             },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "roots": {
               "description": "Directory globs this rule applies to.",
               "$ref": "#/$defs/OneOrMany"
@@ -663,6 +684,13 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "roots": {
@@ -752,6 +780,13 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "from": {
@@ -879,6 +914,13 @@
                 }
               ]
             },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "roots": {
               "description": "Directory globs this rule applies to.\n\n`roots` rather than `from`: `import-boundary` calls its scope `from`\nbecause it reads against `forbid_import_from`, and this rule forbids no\ndestination. It is a rule about the files it governs, like the other\nfour that spell it `roots`.\n\nIt governs where a finding is *reported*, not what the graph is built\nfrom. The graph is always the whole repository, because a loop that\nleaves the scope and comes back is still a loop.",
               "$ref": "#/$defs/OneOrMany"
@@ -940,6 +982,13 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "roots": {
@@ -1008,6 +1057,13 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "roots": {
@@ -1097,6 +1153,13 @@
                 }
               ]
             },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "roots": {
               "description": "Directory globs this rule applies to.",
               "$ref": "#/$defs/OneOrMany"
@@ -1181,6 +1244,13 @@
                 }
               ]
             },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "roots": {
               "description": "Directory globs this rule applies to.",
               "$ref": "#/$defs/OneOrMany"
@@ -1191,6 +1261,10 @@
             },
             "require_any": {
               "description": "Regexes at least one file in each governed directory must match.\n\nFor \"there has to be a sketch and I do not care what it is called\".\nOne entry, one requirement: two regexes mean two files must be found,\none for each.",
+              "$ref": "#/$defs/OneOrMany"
+            },
+            "forbid": {
+              "description": "Filenames that must **not** exist directly inside each governed\ndirectory.\n\nNames, not paths, on the same terms as `require` and refused the same\nway — and the only thing this rule reports for *existing*.\n\nThe case it was added for is a lockfile: one package manager per\nrepository is a decision every monorepo makes and nothing enforces, and\n`bun.lock` yes / `package-lock.json` no is one named file at a known\npath rather than a pattern over a folder's children.\n\n**Not `structure.filename_patterns`.** That field is a whitelist every\nchild must match, so saying \"not these three\" there means enumerating\neverything else in a repository root — a list that is wrong the day\nsomebody adds a file. Issue #177, decision 39.",
               "$ref": "#/$defs/OneOrMany"
             },
             "when_importing": {
@@ -1245,6 +1319,13 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "roots": {
@@ -1313,6 +1394,13 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "roots": {
@@ -1396,6 +1484,13 @@
                 }
               ]
             },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "roots": {
               "description": "Directory globs this rule applies to.",
               "$ref": "#/$defs/OneOrMany"
@@ -1471,6 +1566,13 @@
                 }
               ]
             },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "roots": {
               "description": "The directories that have stopped growing.",
               "$ref": "#/$defs/OneOrMany"
@@ -1527,6 +1629,13 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "roots": {
@@ -1595,6 +1704,13 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "callee": {
@@ -1688,6 +1804,13 @@
                 {
                   "type": "null"
                 }
+              ]
+            },
+            "not_yet": {
+              "description": "Why this rule's scope is empty on purpose, when it is. The same field,\nwith the same meaning, is on every rule kind — see `StructureRule`.",
+              "type": [
+                "string",
+                "null"
               ]
             },
             "roots": {

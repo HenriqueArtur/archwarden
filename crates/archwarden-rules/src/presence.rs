@@ -29,6 +29,9 @@ pub struct PresenceEngine {
     scope: Scope,
     require: Vec<String>,
     require_any: Vec<Pattern>,
+    /// Filenames the directory may not hold. The one thing this rule reports
+    /// for existing.
+    forbid: Vec<String>,
     skip_dirs: SkipDirs,
 }
 
@@ -41,12 +44,13 @@ impl PresenceEngine {
         let CompiledRuleKind::Presence {
             require,
             require_any,
+            forbid,
         } = &rule.kind
         else {
             return None;
         };
 
-        Some(Self::build(rule, require, require_any, skip_dirs))
+        Some(Self::build(rule, require, require_any, forbid, skip_dirs))
     }
 
     /// Builds an engine from a rule whose kind is already known.
@@ -54,6 +58,7 @@ impl PresenceEngine {
         rule: &CompiledRule,
         require: &[String],
         require_any: &[Pattern],
+        forbid: &[String],
         skip_dirs: SkipDirs,
     ) -> Self {
         Self {
@@ -63,6 +68,7 @@ impl PresenceEngine {
             scope: rule.scope.clone(),
             require: require.to_vec(),
             require_any: require_any.to_vec(),
+            forbid: forbid.to_vec(),
             skip_dirs,
         }
     }
@@ -87,7 +93,28 @@ impl PresenceEngine {
         }
     }
 
+    /// What this rule says a directory may not hold.
+    ///
+    /// A second expectation rather than a field on the first: a consumer
+    /// acting on `RequiredFiles` creates what it names, so a list it must not
+    /// create cannot travel inside it. Issue #177.
+    fn refusal(&self) -> Expectation {
+        Expectation::ForbiddenFiles {
+            names: self.forbid.clone(),
+        }
+    }
+
     fn finding(&self, path: &RepoRelPath, observed: Observed) -> Finding {
+        // A forbidden file is the one finding here about something that
+        // exists, so it is the one whose expectation is the refusal rather
+        // than the requirement. Pairing it with `RequiredFiles` would report
+        // "delete this" beside a list of things to create.
+        let expected = if matches!(observed, Observed::ForbiddenFilePresent { .. }) {
+            self.refusal()
+        } else {
+            self.expectation()
+        };
+
         Finding {
             rule_id: self.id.clone(),
             module_id: self.module.clone(),
@@ -98,7 +125,7 @@ impl PresenceEngine {
             // that exists and the thing that is incomplete.
             span: None,
             observed,
-            expected: self.expectation(),
+            expected,
         }
     }
 }
@@ -163,6 +190,19 @@ impl RuleEngine for PresenceEngine {
             }
         }
 
+        // The mirror of `require`, and the only thing this rule reports for
+        // existing. One finding per entry that is there, on the same argument:
+        // each is a separate deletion, and merging them would report "two
+        // lockfiles" where the fix is two commands. Issue #177.
+        for name in &self.forbid {
+            if ctx.files.iter().any(|file| file == name) {
+                findings.push(self.finding(
+                    ctx.path,
+                    Observed::ForbiddenFilePresent { name: name.clone() },
+                ));
+            }
+        }
+
         findings
     }
 
@@ -171,11 +211,22 @@ impl RuleEngine for PresenceEngine {
         // projetos/17-nova` printing the four filenames is how a unit of work
         // gets started, which puts archwarden before the writing rather than
         // after it.
-        if !self.governs(path) || (self.require.is_empty() && self.require_any.is_empty()) {
+        if !self.governs(path) {
             return Vec::new();
         }
 
-        vec![self.expectation()]
+        let mut expectations = Vec::new();
+        if !self.require.is_empty() || !self.require_any.is_empty() {
+            expectations.push(self.expectation());
+        }
+        // Said before the writing, which is where this rule is worth most: an
+        // agent about to create a lockfile in a governed directory is told not
+        // to, rather than corrected afterwards. The same reason
+        // `forbidden_imports` is in `scaffold`. Issue #177.
+        if !self.forbid.is_empty() {
+            expectations.push(self.refusal());
+        }
+        expectations
     }
 }
 
@@ -196,6 +247,7 @@ mod tests {
             id: RuleId::new("licao-completa").expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -208,6 +260,7 @@ mod tests {
                     .iter()
                     .map(|p| Pattern::compile(p).expect("valid pattern"))
                     .collect(),
+                forbid: Vec::new(),
             },
         };
 
@@ -220,6 +273,99 @@ mod tests {
             subdirectories: &[],
             files: &owned(files),
         })
+    }
+
+    fn forbidding(scope: &[&str], forbid: &[&str]) -> PresenceEngine {
+        let rule = CompiledRule {
+            id: RuleId::new("one-package-manager").expect("valid id"),
+            module: None,
+            why: None,
+            not_yet: None,
+            module_why: None,
+            decision: None,
+            imports: None,
+            directives: None,
+            level: Level::Error,
+            scope: Scope::compile(scope).expect("valid scope"),
+            kind: CompiledRuleKind::Presence {
+                require: Vec::new(),
+                require_any: Vec::new(),
+                forbid: owned(forbid),
+            },
+        };
+
+        PresenceEngine::from_rule(&rule, SkipDirs::default()).expect("is a presence rule")
+    }
+
+    /// Issue #177. One package manager per repository is a decision every
+    /// monorepo makes, and until now nothing could hold it: a lockfile is one
+    /// named file at a known path, which `structure` cannot say without
+    /// enumerating every other file in the root.
+    #[test]
+    fn a_forbidden_file_is_reported_for_being_there() {
+        let engine = forbidding(&["."], &["package-lock.json", "yarn.lock"]);
+
+        let findings = check(
+            &engine,
+            ".",
+            &["package.json", "bun.lock", "package-lock.json"],
+        );
+
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert_eq!(
+            findings[0].observed,
+            Observed::ForbiddenFilePresent {
+                name: "package-lock.json".to_owned()
+            }
+        );
+        // The directory, as with every other finding this rule makes -- here
+        // the repository root, which `RepoRelPath` spells as the empty path.
+        // The name is in `observed`, because the fix is `rm <name>` and a
+        // pattern would not be one.
+        assert_eq!(findings[0].path, path("."));
+        // And the expectation is the refusal, not the list of files to
+        // create: "delete this" must not arrive beside "create these".
+        assert_eq!(
+            findings[0].expected,
+            Expectation::ForbiddenFiles {
+                names: owned(&["package-lock.json", "yarn.lock"])
+            }
+        );
+    }
+
+    /// One finding per forbidden file that is there, and silence for the ones
+    /// that are not. The mirror of `require`, which is the point of putting it
+    /// on this rule rather than in a kind of its own.
+    #[test]
+    fn each_forbidden_file_that_is_there_is_named_on_its_own() {
+        let engine = forbidding(&["."], &["package-lock.json", "yarn.lock"]);
+
+        assert!(
+            check(&engine, ".", &["package.json", "bun.lock"]).is_empty(),
+            "a repository keeping to one lockfile says nothing"
+        );
+
+        let both = check(&engine, ".", &["package-lock.json", "yarn.lock"]);
+        assert_eq!(both.len(), 2, "{both:?}");
+    }
+
+    /// `forbid` is a claim about the directory, so `scaffold` has to carry it:
+    /// an agent about to write into a governed folder needs the list of what
+    /// not to create, which is the same reason `forbidden_imports` is there.
+    #[test]
+    fn a_forbidden_list_is_described_for_a_directory() {
+        let engine = forbidding(&["."], &["package-lock.json"]);
+
+        assert_eq!(
+            engine.describe_expectation(&path(".")),
+            [Expectation::ForbiddenFiles {
+                names: vec!["package-lock.json".to_owned()]
+            }]
+        );
+        assert!(
+            engine.describe_expectation(&path("elsewhere")).is_empty(),
+            "and only for a directory it governs"
+        );
     }
 
     /// The rule issue #42 was filed with: a lesson is only a lesson if it has
@@ -352,6 +498,7 @@ mod tests {
             id: RuleId::new("licao-completa").expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -361,6 +508,7 @@ mod tests {
             kind: CompiledRuleKind::Presence {
                 require: owned(&["projeto.md"]),
                 require_any: Vec::new(),
+                forbid: Vec::new(),
             },
         };
         let engine = PresenceEngine::from_rule(
@@ -423,6 +571,7 @@ mod tests {
             id: RuleId::new("shape").expect("valid"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,

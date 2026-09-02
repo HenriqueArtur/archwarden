@@ -133,7 +133,10 @@ npx archwarden scaffold packages/app/src/use-cases/refund-order/refund-order.use
   "required_imports": [],
   "call_obligations": [],
   "filename_patterns": [],
-  "allowed_subfolders": null
+  "folder_name": null,
+  "allowed_subfolders": null,
+  "required_files": { "names": [], "patterns": [] },
+  "forbidden_files": []
 }
 ```
 
@@ -157,6 +160,18 @@ Pass a **directory** to ask what may exist inside it. `allowed_subfolders` is
 ```
 
 A name in `warn` is permitted but discouraged — prefer one from `allowed`.
+
+**`forbidden_files` is the list not to create.** Everything else in this shape
+tells you what to write; this one tells you what would be reported the moment
+it exists. It is usually a lockfile — a repository that has chosen one package
+manager — and creating one is not something `check` can undo for you:
+
+```json
+"forbidden_files": ["package-lock.json", "yarn.lock", "pnpm-lock.yaml"]
+```
+
+If a command you are about to run would produce one of these, that is the
+signal to use the repository's own installer instead.
 
 ### `check --file <path>` — verify one file
 
@@ -714,7 +729,7 @@ rather than left out — an unchecked rule has to be visible as unchecked.
 |---|---|---|
 | `structure` | may this folder or filename exist here? | putting the file where `allowed_subfolders` / `filename_patterns` allow |
 | `naming` | does the filename — and sometimes its directory — match the exported symbol? | exporting the exact name `scaffold` gives you |
-| `presence` | do the files this folder owes exist? | creating each name `scaffold <directory>` lists |
+| `presence` | do the files this folder owes exist, and is anything here that may not be? | creating each name `scaffold <directory>` lists, and creating none from `forbidden_files` |
 | `frontmatter` | does this document's YAML block carry the keys something reads? | writing the keys `scaffold` names, with values from the vocabularies it lists |
 | `pair` | does the file that goes with this one exist? | creating the companion `scaffold` names |
 | `spec-pair` | is there a test for it? | creating the sibling `.spec.ts` — **write it, do not leave it empty** if `non_empty_spec` is true. On a `.rs` file the test goes **inside** the file |

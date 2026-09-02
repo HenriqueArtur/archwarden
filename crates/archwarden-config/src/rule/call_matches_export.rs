@@ -32,6 +32,10 @@ pub struct CallMatchesExportRule {
     /// The decision this rule implements.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<DecisionId>,
+    /// Why this rule's scope is empty on purpose, when it is. The same field,
+    /// with the same meaning, is on every rule kind — see `StructureRule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// Where the calls are read from.
     pub roots: Patterns,
     /// The callee whose argument names something, e.g. `invoke`.

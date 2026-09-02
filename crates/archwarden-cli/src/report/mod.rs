@@ -102,6 +102,23 @@ struct Positions {
     cached: Option<(RepoRelPath, Option<String>)>,
 }
 
+/// A path as a reader should see it, with the repository root spelled `.`.
+///
+/// `RepoRelPath` spells the root as the empty string, which is right for a
+/// path and reads as a missing value in a report: a finding about the root
+/// printed a blank where every other one prints a path. Only the human
+/// renderings go through this — the JSON keeps the empty string, because that
+/// is the contract and a consumer joining it onto a root would get `./.`.
+/// Found shipping `presence.forbid`, whose first use is a lockfile at the
+/// repository root. Issue #177.
+pub(super) fn display_path(path: &archwarden_core::path::RepoRelPath) -> &str {
+    if path.as_str().is_empty() {
+        "."
+    } else {
+        path.as_str()
+    }
+}
+
 impl Positions {
     /// The path as a reader should see it: `path:line:column` when there is a
     /// position to give, and the bare path when there is not.
@@ -111,7 +128,7 @@ impl Positions {
     /// is wrong is worse than none, because the reader follows it.
     fn label(&mut self, root: &Utf8Path, finding: &Finding) -> String {
         let Some(span) = finding.span else {
-            return finding.path.to_string();
+            return display_path(&finding.path).to_owned();
         };
 
         if self
@@ -123,11 +140,11 @@ impl Positions {
             self.cached = Some((finding.path.clone(), text));
         }
         let Some((_, Some(text))) = &self.cached else {
-            return finding.path.to_string();
+            return display_path(&finding.path).to_owned();
         };
 
         let Some(before) = text.get(..span.start as usize) else {
-            return finding.path.to_string();
+            return display_path(&finding.path).to_owned();
         };
 
         let line = before.matches('\n').count() + 1;
@@ -140,7 +157,7 @@ impl Positions {
             .count()
             + 1;
 
-        format!("{}:{line}:{column}", finding.path)
+        format!("{}:{line}:{column}", display_path(&finding.path))
     }
 }
 
@@ -480,6 +497,27 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains(":1:1"), "{text}");
+    }
+
+    /// A finding about the repository root reads as `.`, not as a blank.
+    ///
+    /// `RepoRelPath` spells the root as the empty string, which is right for a
+    /// path and reads as a missing value in a report — the line said `error`
+    /// and then nothing. It has been that way for every directory rule scoped
+    /// to `.`; `presence.forbid` is what made it common, because a lockfile
+    /// rule lives at the root. Issue #177.
+    #[test]
+    fn a_finding_about_the_repository_root_reads_as_a_dot() {
+        let mut at_root = finding(Level::Error, None);
+        at_root.path = path("");
+        let text = rendered(&report(vec![at_root]), Format::Text);
+
+        assert!(text.contains("error   .\n"), "{text}");
+
+        // And only the human rendering: the JSON is a contract, and a consumer
+        // joining `.` onto a root would build `./.`.
+        assert_eq!(display_path(&path("")), ".");
+        assert_eq!(display_path(&path("web/src")), "web/src");
     }
 
     /// A span pointing past the end of a file that changed under us, or into a
@@ -925,6 +963,7 @@ mod tests {
             supersedes: Vec::new(),
             superseded_by: Vec::new(),
             alternatives: Vec::new(),
+            not_yet: None,
         };
         let reasons = Reasons::default().deciding([
             ("domain-entity-shape", adr.clone()),
@@ -1299,6 +1338,14 @@ mod tests {
                 patterns: vec![r"\.ino$".to_owned()],
             }),
             r"`projeto.md` and `notas.md`, and a file matching `\.ino$`"
+        );
+        // The whole list, not the one file found: after "delete this" the
+        // reader's next question is what else may not be here. Issue #177.
+        assert_eq!(
+            describe_expectation(&Expectation::ForbiddenFiles {
+                names: vec!["package-lock.json".to_owned(), "yarn.lock".to_owned()],
+            }),
+            "none of `package-lock.json` or `yarn.lock`"
         );
     }
     /// A rule with both is described with both, rather than the reader having

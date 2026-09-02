@@ -491,27 +491,45 @@ fn requirements(kind: &CompiledRuleKind, rust: bool) -> Vec<String> {
                 .iter()
                 .map(|marker| format!(".{marker}."))
                 .collect::<Vec<_>>();
+            let where_ = join(subfolders);
+            // The subject names the extension only when there is a second
+            // sentence to tell it apart from. A repository with one language
+            // gets the sentence it has always had.
+            let subject = if rust {
+                "every `.ts` file"
+            } else {
+                "every file"
+            };
             let mut line = format!(
-                "every file in {} needs a sibling named with {}",
-                join(subfolders),
+                "{subject} in {where_} needs a sibling named with {}",
                 join(&markers)
             );
             if *require_non_empty_spec {
                 line.push_str(", containing at least one test case");
             }
+            let mut lines = vec![line];
+
             // The other place the same question is answered. Said only when
             // the config reads Rust, because a sentence about `.rs` in a guide
             // for a repository that has none is noise -- and left unsaid it is
             // worse than noise: this is the file an agent is handed, and
             // "create the sibling" is work that satisfies nothing there.
             // Issue #178.
+            //
+            // A sentence of its own rather than a clause hung off the one
+            // above. Hung there it read as an exception to the sibling rule,
+            // so a repository that is only Rust got the answer that does not
+            // apply as the main clause and the one that does as an aside --
+            // and the scope is repeated because a requirement in a list is
+            // read on its own. Issue #182.
             if rust {
-                line.push_str(
-                    " (a `.rs` file carries its tests inside itself instead: a \
-                     `#[cfg(test)] mod tests` with at least one `#[test]` in it)",
-                );
+                lines.push(format!(
+                    "every `.rs` file in {where_} carries its tests inside \
+                     itself: a `#[cfg(test)] mod tests` with at least one \
+                     `#[test]` in it"
+                ));
             }
-            vec![line]
+            lines
         }
         CompiledRuleKind::ImportCycle { include_type_only } => {
             // One sentence, because the rule is one sentence. The chain that
@@ -666,8 +684,16 @@ fn requirements(kind: &CompiledRuleKind, rust: bool) -> Vec<String> {
         CompiledRuleKind::Presence {
             require,
             require_any,
+            forbid,
         } => {
             let mut lines = Vec::new();
+            if !forbid.is_empty() {
+                // First, because it is the one an agent can break by writing
+                // rather than by omitting, and this digest is read before a
+                // write. Issue #177.
+                let quoted: Vec<String> = forbid.iter().map(|n| format!("`{n}`")).collect();
+                lines.push(format!("must not contain: {}", quoted.join(", ")));
+            }
             if !require.is_empty() {
                 // Comma-joined, not `join`: that helper reads "a or b", and
                 // every one of these is required.
@@ -887,6 +913,7 @@ mod tests {
             id: RuleId::new(id).expect("valid id"),
             module: module.map(|m| ModuleId::new(m).expect("valid module")),
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -1148,6 +1175,7 @@ mod tests {
             CompiledRuleKind::Presence {
                 require: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
                 require_any: vec![Pattern::compile(r"\.ino$").expect("valid")],
+                forbid: Vec::new(),
             },
         )]);
 
@@ -1160,6 +1188,44 @@ mod tests {
         assert!(
             markdown.contains(r"at least one file matching: `\.ino$`"),
             "{markdown}"
+        );
+    }
+
+    /// What must *not* be there, and first.
+    ///
+    /// It is the one requirement on this rule an agent can break by writing
+    /// rather than by omitting, and this digest is what it reads before a
+    /// write. Issue #177.
+    #[test]
+    fn a_presence_rule_lists_what_may_not_exist_first() {
+        let config = config(vec![rule(
+            "deps/one-package-manager",
+            None,
+            &["."],
+            CompiledRuleKind::Presence {
+                require: vec!["package.json".to_owned()],
+                require_any: Vec::new(),
+                forbid: vec!["package-lock.json".to_owned(), "yarn.lock".to_owned()],
+            },
+        )]);
+
+        let requires = guide(&config, None, &[], None)
+            .rules
+            .first()
+            .expect("one rule")
+            .requires
+            .clone();
+
+        assert_eq!(
+            requires.first().map(String::as_str),
+            Some("must not contain: `package-lock.json`, `yarn.lock`"),
+            "{requires:?}"
+        );
+        assert!(
+            requires
+                .iter()
+                .any(|line| line == "must contain: `package.json`"),
+            "{requires:?}"
         );
     }
 
@@ -1307,6 +1373,7 @@ mod tests {
             CompiledRuleKind::Presence {
                 require: Vec::new(),
                 require_any: Vec::new(),
+                forbid: Vec::new(),
             },
             CompiledRuleKind::Pair {
                 file_pattern: Pattern::compile(r"^x\.ts$").expect("valid pattern"),
@@ -1563,6 +1630,7 @@ mod tests {
                 supersedes: Vec::new(),
                 superseded_by: Vec::new(),
                 alternatives: Vec::new(),
+                not_yet: None,
             }]),
             None,
         );
@@ -1657,6 +1725,7 @@ mod tests {
                     id: DecisionId::new("ADR-020").expect("valid"),
                     title: "Nobody enforces this".to_owned(),
                     why: None,
+                    not_yet: None,
                     link: None,
                     status: DecisionStatus::Accepted,
                     supersedes: Vec::new(),
@@ -1694,6 +1763,7 @@ mod tests {
                 id: DecisionId::new("ADR-014").expect("valid"),
                 title: "Carries debt".to_owned(),
                 why: None,
+                not_yet: None,
                 link: None,
                 status: DecisionStatus::Accepted,
                 supersedes: Vec::new(),
@@ -1706,6 +1776,7 @@ mod tests {
                 id: DecisionId::new("ADR-031").expect("valid"),
                 title: "Carries none".to_owned(),
                 why: None,
+                not_yet: None,
                 link: None,
                 status: DecisionStatus::Accepted,
                 supersedes: Vec::new(),
@@ -1764,6 +1835,7 @@ mod tests {
                 id: DecisionId::new("ADR-014").expect("valid"),
                 title: "Unmeasured".to_owned(),
                 why: None,
+                not_yet: None,
                 link: None,
                 status: DecisionStatus::Accepted,
                 supersedes: Vec::new(),
@@ -1813,6 +1885,7 @@ mod tests {
                     id: DecisionId::new("ADR-014").expect("valid"),
                     title: "reached".to_owned(),
                     why: None,
+                    not_yet: None,
                     link: None,
                     status: DecisionStatus::Accepted,
                     supersedes: Vec::new(),
@@ -1825,6 +1898,7 @@ mod tests {
                     id: DecisionId::new("ADR-020").expect("valid"),
                     title: "not reached".to_owned(),
                     why: None,
+                    not_yet: None,
                     link: None,
                     status: DecisionStatus::Accepted,
                     supersedes: Vec::new(),
@@ -1965,15 +2039,49 @@ mod tests {
         // With it, the sentence has to name the other place, because this is
         // the file an agent is handed and "create the sibling `.spec.rs`" is
         // work that satisfies nothing. Issue #178.
-        let with_rust = sentences(
-            &config(vec![spec()]).with_languages(Languages {
-                rust: true,
-                ..Languages::default()
-            }),
-            None,
-            &[],
-        );
+        let both = config(vec![spec()]).with_languages(Languages {
+            rust: true,
+            ..Languages::default()
+        });
+        let with_rust = sentences(&both, None, &[]);
         assert!(with_rust.contains("cfg(test)"), "{with_rust}");
+
+        // Two requirements, not one carrying the other as a parenthetical.
+        // Hung off the sibling sentence, the Rust half read as an exception to
+        // it -- so in a repository that is only Rust, the answer that does not
+        // apply was the main clause and the one that does was the aside.
+        // Issue #182.
+        let requires = guide(&both, None, &[], None)
+            .rules
+            .first()
+            .expect("one rule")
+            .requires
+            .clone();
+        assert_eq!(requires.len(), 2, "{requires:?}");
+        assert!(
+            !requires
+                .iter()
+                .any(|line| line.contains("sibling") && line.contains("cfg(test)")),
+            "neither answer may be a clause inside the other: {requires:?}"
+        );
+
+        // Each names the extension it is about, so neither reads as the
+        // general rule with the other as a carve-out, and each stands alone --
+        // which is how an agent reads this list.
+        assert!(
+            requires.iter().any(|line| line.contains("`.ts`")),
+            "{requires:?}"
+        );
+        assert!(
+            requires.iter().any(|line| line.contains("`.rs`")),
+            "{requires:?}"
+        );
+        // And each repeats the scope, because a sentence in a list is read on
+        // its own rather than as a continuation of the one above it.
+        assert!(
+            requires.iter().all(|line| line.contains("`src`")),
+            "{requires:?}"
+        );
     }
 
     #[test]
@@ -2498,6 +2606,7 @@ mod tests {
                 CompiledRuleKind::Presence {
                     require: vec!["projeto.md".to_owned()],
                     require_any: vec![Pattern::compile(r"\.ino$").expect("valid")],
+                    forbid: Vec::new(),
                 },
             )]),
             None,

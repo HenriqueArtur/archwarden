@@ -306,6 +306,54 @@ least one rule in the config has a `why` — a project that never used the field
 has not adopted the practice, and being nagged about a convention you did not
 choose is how a command that gives advice becomes one nobody runs.
 
+### `not_yet` — the scope is empty on purpose
+
+Optional on every rule, and on a decision. Free text, and the text is the
+point.
+
+```json
+{
+  "type": "import-boundary",
+  "id": "plugin/a-plugin-cannot-reach-the-host",
+  "level": "error",
+  "from": ["web/src/plugins/**"],
+  "forbid_import_from": ["web/src/frame/**"],
+  "not_yet": "Plugins are declared before they are built, on purpose."
+}
+```
+
+A boundary declared **before** the code it guards, which is most of the
+argument for a linter over an agreement: the rule is written the day the shape
+is decided, not the day somebody violates it. Without this field `config
+doctor` reported that scope as `scope-matches-nothing` and offered the two
+fixes such an author cannot take — point it at paths that exist, which is
+impossible, or drop it, which means the guardrail arrives after the first
+import it was meant to prevent.
+
+**A sentence, not a flag.** `"not_yet": true` would be a way to switch a
+warning off. A sentence is a note to whoever reads this config in six months
+and finds a rule guarding nothing — the same bar `why_not_enforceable` holds a
+decision to.
+
+**It expires, and that is what keeps it from being a mute.** The day the
+directory appears with the claim still on the rule, `doctor` says so:
+
+```
+warning plugin/a-plugin-cannot-reach-the-host [scope-no-longer-empty]
+  `web/src/plugins/**` matches something now, and the rule still says it is not yet built: "Plugins are declared before they are built, on purpose."
+  fix: drop `not_yet` -- the code it was waiting for is here, and the claim is now the only thing saying otherwise
+```
+
+A decision's `scope` takes the same field and reports
+`decision-scope-no-longer-empty` on the same terms. Without the claim, a scope
+matching nothing is still the typo it always was — this is opt-in per boundary
+rather than a switch over the command, because the claim is about *one*
+boundary and a global one would silence the next typo too.
+
+It reaches nothing but `doctor`. `check` never reads it, so a rule with a
+`not_yet` fires exactly as it would without one the moment there is something
+to fire on. Decision 40, issue #179.
+
 ### `decisions` — what the rules are for
 
 `why` says why a rule exists. This says **what decision it implements**, which
@@ -1704,8 +1752,10 @@ Four commands cover the config itself:
   `check` uses to pick a file's rules — so this report cannot disagree with the
   checker about what is covered. One consequence is worth stating: a `presence`
   rule governs a *directory* and claims no file, so a file dropped into a
-  directory only a `presence` rule governs is reported here. That is right. A
-  `presence` rule does not object to a file you add.
+  directory only a `presence` rule governs is reported here. That is right: a
+  `presence` rule does not object to most files you add. It objects to the ones
+  in `forbid` and to nothing else, so a directory whose only rule is a lockfile
+  refusal is still a directory where nobody is watching the rest.
 
   **The grouping is the report.** Per file it would be a thousand paths and
   nothing to do; per directory it is one rule to write. A `**` line is a

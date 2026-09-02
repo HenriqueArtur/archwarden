@@ -170,6 +170,17 @@ pub enum Expectation {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         patterns: Vec<String>,
     },
+    /// These files must not exist in the directory.
+    ///
+    /// Separate from [`Expectation::RequiredFiles`] rather than a third field
+    /// on it: a consumer acting on that one creates what it names, and a list
+    /// it must not create cannot travel inside it. `scaffold` renders the two
+    /// into `required_files` and `forbidden_files`, beside `forbidden_imports`
+    /// — which is the vocabulary an agent already reads. Issue #177.
+    ForbiddenFiles {
+        /// Filenames that must not be there.
+        names: Vec<String>,
+    },
     /// A document's frontmatter must carry these keys.
     RequiredFrontmatter {
         /// Keys that must be there.
@@ -464,6 +475,15 @@ pub enum Observed {
     /// fails to build, and the gap is found by whoever needed the file.
     RequiredFileMissing {
         /// The name that was looked for.
+        name: String,
+    },
+    /// A file the directory may not hold is there.
+    ///
+    /// The mirror of [`Observed::RequiredFileMissing`], and the one case where
+    /// this rule reports something that *exists*. The fix is a deletion, which
+    /// is why the name is carried rather than the pattern: `rm` needs a name.
+    ForbiddenFilePresent {
+        /// The name that is there and may not be.
         name: String,
     },
     /// No file in the directory matches a pattern one had to.

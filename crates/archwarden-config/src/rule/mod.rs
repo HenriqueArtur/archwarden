@@ -144,6 +144,33 @@ impl Rule {
         }
     }
 
+    /// Why this rule's scope is deliberately empty, when the author said so.
+    ///
+    /// `config doctor` reads it twice: once to stay quiet about a scope
+    /// matching nothing, and once to speak up the day it starts matching
+    /// something with this still set. Issue #179, decision 40.
+    #[must_use]
+    pub fn not_yet(&self) -> Option<&str> {
+        match self {
+            Self::Structure(r) => r.not_yet.as_deref(),
+            Self::Naming(r) => r.not_yet.as_deref(),
+            Self::SpecPair(r) => r.not_yet.as_deref(),
+            Self::ImportBoundary(r) => r.not_yet.as_deref(),
+            Self::ImportCycle(r) => r.not_yet.as_deref(),
+            Self::CallObligation(r) => r.not_yet.as_deref(),
+            Self::CallMatchesExport(r) => r.not_yet.as_deref(),
+            Self::NoPassthrough(r) => r.not_yet.as_deref(),
+            Self::Presence(r) => r.not_yet.as_deref(),
+            Self::Pair(r) => r.not_yet.as_deref(),
+            Self::Frontmatter(r) => r.not_yet.as_deref(),
+            Self::ExportShape(r) => r.not_yet.as_deref(),
+            Self::Frozen(r) => r.not_yet.as_deref(),
+            Self::Mirror(r) => r.not_yet.as_deref(),
+            Self::Chokepoint(r) => r.not_yet.as_deref(),
+            Self::Metadata(r) => r.not_yet.as_deref(),
+        }
+    }
+
     /// The decision this rule implements, when it names one.
     ///
     /// Every kind has the field, and that is why issue #100 shipped first of
@@ -1238,6 +1265,10 @@ pub struct ChokepointRule {
     /// The decision this rule implements, when it implements a declared one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<DecisionId>,
+    /// Why this rule's scope is empty on purpose, when it is. The same field,
+    /// with the same meaning, is on every rule kind — see `StructureRule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// The callees this rule guards, as they appear at a call site.
     ///
     /// Matched exactly, or as a prefix at a dot: `process.env` guards
@@ -1358,6 +1389,10 @@ pub struct ImportCycleRule {
     /// is a typo, not a style. Issue #100.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<DecisionId>,
+    /// Why this rule's scope is empty on purpose, when it is. The same field,
+    /// with the same meaning, is on every rule kind — see `StructureRule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// Directory globs this rule applies to.
     ///
     /// `roots` rather than `from`: `import-boundary` calls its scope `from`
@@ -1435,6 +1470,10 @@ pub struct NoPassthroughRule {
     /// is a typo, not a style. Issue #100.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<DecisionId>,
+    /// Why this rule's scope is empty on purpose, when it is. The same field,
+    /// with the same meaning, is on every rule kind — see `StructureRule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Which shapes count. Defaults to all three.
@@ -1518,6 +1557,10 @@ pub struct ExportShapeRule {
     /// The decision this rule implements. See [`StructureRule::decision`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<DecisionId>,
+    /// Why this rule's scope is empty on purpose, when it is. The same field,
+    /// with the same meaning, is on every rule kind — see `StructureRule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Whether a default export is refused.
@@ -1612,6 +1655,10 @@ pub struct FrozenRule {
     /// The decision this rule implements. See [`StructureRule::decision`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<DecisionId>,
+    /// Why this rule's scope is empty on purpose, when it is. The same field,
+    /// with the same meaning, is on every rule kind — see `StructureRule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// The directories that have stopped growing.
     pub roots: Patterns,
     /// Narrow this rule to the files that import something. See decision 25.
@@ -1663,6 +1710,10 @@ pub struct MirrorRule {
     /// The decision this rule implements. See [`StructureRule::decision`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<DecisionId>,
+    /// Why this rule's scope is empty on purpose, when it is. The same field,
+    /// with the same meaning, is on every rule kind — see `StructureRule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// Directory globs whose files this rule is about.
     pub roots: Patterns,
     /// Regex over the filename, with the capture groups the template uses.
@@ -1750,6 +1801,10 @@ pub struct MetadataRule {
     /// The decision this rule implements. See [`StructureRule::decision`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<DecisionId>,
+    /// Why this rule's scope is empty on purpose, when it is. The same field,
+    /// with the same meaning, is on every rule kind — see `StructureRule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// Directory globs whose files this rule is about.
     ///
     /// The whole population. There is no `file_pattern` here, which is

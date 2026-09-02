@@ -40,6 +40,10 @@ pub struct PresenceRule {
     /// is a typo, not a style. Issue #100.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<DecisionId>,
+    /// Why this rule's scope is empty on purpose, when it is. The same field,
+    /// with the same meaning, is on every rule kind — see `StructureRule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Filenames that must exist directly inside each governed directory.
@@ -60,6 +64,23 @@ pub struct PresenceRule {
     /// one for each.
     #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
     pub require_any: Patterns,
+    /// Filenames that must **not** exist directly inside each governed
+    /// directory.
+    ///
+    /// Names, not paths, on the same terms as `require` and refused the same
+    /// way — and the only thing this rule reports for *existing*.
+    ///
+    /// The case it was added for is a lockfile: one package manager per
+    /// repository is a decision every monorepo makes and nothing enforces, and
+    /// `bun.lock` yes / `package-lock.json` no is one named file at a known
+    /// path rather than a pattern over a folder's children.
+    ///
+    /// **Not `structure.filename_patterns`.** That field is a whitelist every
+    /// child must match, so saying "not these three" there means enumerating
+    /// everything else in a repository root — a list that is wrong the day
+    /// somebody adds a file. Issue #177, decision 39.
+    #[serde(default, skip_serializing_if = "OneOrMany::is_empty")]
+    pub forbid: Patterns,
     /// Narrow this rule to the files that import something.
     ///
     /// Path globs, matched against where an import *lands* — the same way an

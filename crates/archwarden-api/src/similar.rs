@@ -530,6 +530,7 @@ mod tests {
             id: DecisionId::new("ADR-001").expect("valid"),
             title: title.to_owned(),
             why: None,
+            not_yet: None,
             link: None,
             status: DecisionStatus::Accepted,
             supersedes: Vec::new(),

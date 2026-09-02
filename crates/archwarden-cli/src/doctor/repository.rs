@@ -10,6 +10,97 @@ use camino::Utf8Path;
 use super::Concern;
 use super::{config::list, facts_covered, in_scope};
 
+/// A rule whose whole population is a language the config never named.
+///
+/// The narrow gap `rule_evaluates_nothing` cannot see. That check asks whether
+/// the engine claims any file, and here it claims all of them: a `.rs` file is
+/// a unit under a `spec-pair` rule whatever `languages` says, because the
+/// question *does this file have a test* is asked of the path. What never
+/// arrives is the answer, because a language the config does not name is never
+/// parsed -- so the rule is asked and declines, silently, on every file it
+/// covers.
+///
+/// Which is a rule enforcing nothing while looking like a repository that
+/// satisfies it, and this project's own line is that a language it cannot
+/// handle is a *counted, named* skip rather than a silent pass. Decision 19
+/// requires the loud refusal; this is the configuration half of it, and it is
+/// `doctor`'s because the fix is a config edit.
+///
+/// **Only when every file it reaches is such a language.** A scope spanning
+/// both trees is what a Tauri repository writes deliberately, and one readable
+/// file means the rule is doing work -- the same line
+/// `kind_no_enabled_language_can_declare` draws when it refuses to second-guess
+/// a mixed rule. Issue #181, found through #178.
+pub(super) fn rule_reads_an_unread_language(
+    config: &CompiledConfig,
+    rule: &CompiledRule,
+    engine: &dyn archwarden_core::traits::RuleEngine,
+    tree: &RepoTree,
+    concerns: &mut Vec<Concern>,
+) {
+    if engine.answers_for_directories() || engine.needs_repository() {
+        return;
+    }
+
+    let enabled = super::config::enabled_languages(config);
+    let mut unread: Vec<archwarden_core::path::Language> = Vec::new();
+
+    // Applicability from the engine over every file, not from `in_scope`:
+    // a `spec-pair` rule's population is `roots` *and* `subfolders`, so
+    // `crates/*` with `subfolders: ["src"]` covers `crates/thing/src` while
+    // the scope alone matches only `crates/thing`. `rule_evaluates_nothing`
+    // asks the same way, and for the same reason -- re-deriving "does this
+    // rule cover this file?" here would be a second implementation that
+    // eventually disagrees with the checker.
+    for file in tree.files() {
+        if config.is_ignored(&file.path) || !engine.applies_to(&file.path) {
+            continue;
+        }
+        let Some(name) = file.path.file_name() else {
+            continue;
+        };
+        // A file of no language archwarden knows -- a `README.md`, an image --
+        // is not evidence either way. `spec-pair` exempts those itself, and a
+        // rule that reaches only them is `rule_evaluates_nothing`'s to report.
+        let Some(language) = archwarden_core::path::FileClass::language(name) else {
+            continue;
+        };
+        if enabled.contains(&language) {
+            return;
+        }
+        if !unread.contains(&language) {
+            unread.push(language);
+        }
+    }
+
+    if unread.is_empty() {
+        return;
+    }
+
+    let named = unread
+        .iter()
+        .map(|language| format!("`{}`", super::config::language_name(*language)))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    concerns.push(Concern {
+        code: "rule-reads-an-unread-language",
+        level: Level::Warning,
+        rule_id: Some(rule.id.clone()),
+        path: None,
+        message: format!(
+            "every file this rule reaches is {named}, which `languages` does \
+             not name, so the file is never read and the rule is never \
+             answered"
+        ),
+        fix: format!(
+            "add {named} to `languages` — or drop the rule, because it \
+             enforces nothing today and reads exactly like a repository that \
+             satisfies it"
+        ),
+    });
+}
+
 /// A rule whose scope matches directories and whose engine sees no file in any
 /// of them.
 ///
@@ -262,10 +353,35 @@ pub(super) fn scope_matches_nothing(
     tree: &RepoTree,
     concerns: &mut Vec<Concern>,
 ) {
-    if tree
+    let matches = tree
         .directories()
-        .any(|(path, _)| rule.scope.matches_dir(path.as_path()))
-    {
+        .any(|(path, _)| rule.scope.matches_dir(path.as_path()));
+
+    // The author said the emptiness is on purpose -- a boundary declared
+    // before the code it guards, which is the whole argument for a linter over
+    // an agreement. Two states, and both are this field's: quiet while the
+    // claim holds, and a different concern the day it stops. Issue #179.
+    if let Some(because) = &rule.not_yet {
+        if matches {
+            concerns.push(Concern {
+                code: "scope-no-longer-empty",
+                level: Level::Warning,
+                rule_id: Some(rule.id.clone()),
+                path: None,
+                message: format!(
+                    "{} matches something now, and the rule still says it is not \
+                     yet built: \"{because}\"",
+                    list(rule.scope.patterns())
+                ),
+                fix: "drop `not_yet` -- the code it was waiting for is here, \
+                      and the claim is now the only thing saying otherwise"
+                    .to_owned(),
+            });
+        }
+        return;
+    }
+
+    if matches {
         return;
     }
 

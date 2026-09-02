@@ -115,7 +115,8 @@ use decisions::{
 use repository::{
     module_nobody_references, module_scope_matches_nothing, module_wearing_no_kind,
     only_a_default_export, pattern_matches_nothing, rule_evaluates_nothing,
-    rule_reaches_outside_its_module, scope_matches_nothing, symbol_never_imported,
+    rule_reaches_outside_its_module, rule_reads_an_unread_language, scope_matches_nothing,
+    symbol_never_imported,
 };
 
 /// The concerns that need the repository, not just the configuration.
@@ -162,6 +163,10 @@ pub fn examine_repository(
         pattern_matches_nothing(config, rule, tree, &mut concerns);
         symbol_never_imported(root, config, rule, engine.as_ref(), tree, &mut concerns);
         only_a_default_export(root, config, rule, engine.as_ref(), tree, &mut concerns);
+        // Before the catch-all below, because this is the specific reason a
+        // rule with a full population still answers nothing, and the catch-all
+        // defers to whatever already explained the silence.
+        rule_reads_an_unread_language(config, rule, engine.as_ref(), tree, &mut concerns);
         // Last, and it defers to everything above: reaching no file is what a
         // rule with a pattern matching nothing *does*, and saying it twice
         // makes one mistake look like two.
@@ -348,6 +353,7 @@ mod tests {
             id: RuleId::new(id).expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -453,6 +459,12 @@ mod tests {
 
     fn codes(config: &CompiledConfig) -> Vec<&'static str> {
         examine(config).into_iter().map(|c| c.code).collect()
+    }
+
+    /// A rule declaring its scope empty on purpose. Issue #179.
+    fn not_yet(mut rule: CompiledRule, because: &str) -> CompiledRule {
+        rule.not_yet = Some(because.to_owned());
+        rule
     }
 
     /// A configuration with nothing wrong says nothing.
@@ -995,6 +1007,7 @@ mod tests {
             id: RuleId::new(rule_id).expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -1017,6 +1030,7 @@ mod tests {
             id: DecisionId::new(id).expect("valid id"),
             title: "A wall".to_owned(),
             why: None,
+            not_yet: None,
             link: None,
             status,
             supersedes: Vec::new(),
@@ -1111,6 +1125,7 @@ mod tests {
                 id: DecisionId::new("ADR-009").expect("valid"),
                 title: "the old way".to_owned(),
                 why: None,
+                not_yet: None,
                 link: None,
                 status: archwarden_core::compiled::DecisionStatus::Superseded,
                 supersedes: Vec::new(),
@@ -1123,6 +1138,7 @@ mod tests {
                 id: DecisionId::new("ADR-031").expect("valid"),
                 title: "the new way".to_owned(),
                 why: None,
+                not_yet: None,
                 link: None,
                 status: archwarden_core::compiled::DecisionStatus::Accepted,
                 supersedes: vec![DecisionId::new("ADR-009").expect("valid")],
@@ -1158,6 +1174,7 @@ mod tests {
                 id: DecisionId::new("ADR-009").expect("valid"),
                 title: "the old way".to_owned(),
                 why: None,
+                not_yet: None,
                 link: None,
                 status: archwarden_core::compiled::DecisionStatus::Superseded,
                 supersedes: Vec::new(),
@@ -1170,6 +1187,7 @@ mod tests {
                 id: DecisionId::new("ADR-031").expect("valid"),
                 title: "the new way".to_owned(),
                 why: None,
+                not_yet: None,
                 link: None,
                 status: archwarden_core::compiled::DecisionStatus::Accepted,
                 supersedes: vec![DecisionId::new("ADR-009").expect("valid")],
@@ -1711,6 +1729,152 @@ mod tests {
     fn in_module(mut rule: CompiledRule, id: &str) -> CompiledRule {
         rule.module = Some(archwarden_core::ids::ModuleId::new(id).expect("valid id"));
         rule
+    }
+
+    /// Issue #179. A guardrail written before the code it guards is not a
+    /// typo, and `doctor` said the same thing about both.
+    ///
+    /// The two fixes it offered — point it at paths that exist, or drop it —
+    /// are the two things the author of a deliberate boundary does not want to
+    /// do: the first is impossible and the second means the rule arrives after
+    /// the first violation does. A doctor that always has something to say is
+    /// a doctor nobody reads, and the day a real concern appears it lands in a
+    /// list the author has learned to skim.
+    #[test]
+    fn a_scope_declared_before_the_code_says_so_and_is_left_alone() {
+        let planned = config(vec![not_yet(
+            rule(
+                "plugin/a-plugin-cannot-reach-the-host",
+                &["web/src/plugins/*"],
+                spec_pair(&["."]),
+            ),
+            "Plugins are declared before they are built, on purpose.",
+        )]);
+
+        let entries = [("web/src/app/thing.ts", "export const x = 1;\n")];
+        let codes = repository_codes(&entries, &planned);
+        assert!(!codes.contains(&"scope-matches-nothing"), "{codes:?}");
+    }
+
+    /// The half that keeps the field from being a mute.
+    ///
+    /// The day the directory appears with the rule still declaring it is not
+    /// built, the claim has stopped being true — and a rule enforcing nothing
+    /// must never look like a repository that satisfies it. Without this, the
+    /// field would be a way to switch a warning off for ever, which is the one
+    /// shape this project refuses.
+    #[test]
+    fn a_scope_that_stopped_being_empty_is_reported_with_the_claim_still_on_it() {
+        let planned = config(vec![not_yet(
+            rule(
+                "plugin/a-plugin-cannot-reach-the-host",
+                &["web/src/plugins/*"],
+                spec_pair(&["."]),
+            ),
+            "Plugins are declared before they are built, on purpose.",
+        )]);
+
+        let entries = [(
+            "web/src/plugins/first/index.ts",
+            "export const plugin = 1;\n",
+        )];
+        let codes = repository_codes(&entries, &planned);
+        assert!(codes.contains(&"scope-no-longer-empty"), "{codes:?}");
+        // And not the concern it was standing in for: the scope matches now.
+        assert!(!codes.contains(&"scope-matches-nothing"), "{codes:?}");
+    }
+
+    /// Without the claim, nothing changes. A scope matching no directory is
+    /// still the typo it always was, and this field is opt-in per boundary
+    /// rather than a switch over the command.
+    #[test]
+    fn a_scope_matching_nothing_without_the_claim_is_still_reported() {
+        let typo = config(vec![rule(
+            "plugin/a-plugin-cannot-reach-the-host",
+            &["web/src/plugims/*"],
+            spec_pair(&["."]),
+        )]);
+
+        let entries = [("web/src/plugins/first/index.ts", "export const p = 1;\n")];
+        assert!(
+            repository_codes(&entries, &typo).contains(&"scope-matches-nothing"),
+            "{:?}",
+            repository_codes(&entries, &typo)
+        );
+    }
+
+    /// Issue #181. A rule whose whole population is a language `languages`
+    /// does not name is asked nothing, reports nothing, and looked to every
+    /// command like a repository that satisfies it.
+    ///
+    /// The gap is narrower than `rule-evaluates-nothing` and invisible to it:
+    /// the engine *does* claim the file through `applies_to`, so that check
+    /// sees a rule with a population and stays quiet. What it never gets is
+    /// facts, because a language the config does not name is never parsed.
+    ///
+    /// One config field between a working gate and a silent one, and nothing
+    /// mentioned it in context. Issue #178 is where that cost was paid.
+    #[test]
+    fn a_rule_whose_files_are_all_a_language_the_config_does_not_read_is_reported() {
+        let rust_only = config(vec![rule(
+            "rust/every-unit-carries-its-tests",
+            &["crates/*"],
+            spec_pair(&["src"]),
+        )]);
+
+        let entries = [
+            ("crates/thing/src/untested.rs", "pub fn add() {}\n"),
+            ("crates/thing/src/lib.rs", "pub mod untested;\n"),
+        ];
+        assert!(
+            repository_codes(&entries, &rust_only).contains(&"rule-reads-an-unread-language"),
+            "{:?}",
+            repository_codes(&entries, &rust_only)
+        );
+
+        // Naming the language is the fix, and it has to silence the concern --
+        // otherwise the advice does not work and the warning is permanent.
+        let with_rust = config(vec![rule(
+            "rust/every-unit-carries-its-tests",
+            &["crates/*"],
+            spec_pair(&["src"]),
+        )])
+        .with_languages(archwarden_core::compiled::Languages {
+            rust: true,
+            ..archwarden_core::compiled::Languages::default()
+        });
+        assert!(
+            !repository_codes(&entries, &with_rust).contains(&"rule-reads-an-unread-language"),
+            "{:?}",
+            repository_codes(&entries, &with_rust)
+        );
+    }
+
+    /// A scope spanning both trees is deliberate, and is what a Tauri
+    /// repository writes on purpose.
+    ///
+    /// The same line `kind-no-enabled-language-can-declare` draws: only a rule
+    /// that can *never* be answered is a mistake this can be sure of. One
+    /// `.ts` file in the population means the rule is doing work, and the
+    /// `.rs` files beside it are a counted skip that `check` already names.
+    #[test]
+    fn a_rule_reaching_one_readable_file_is_left_alone() {
+        let mixed = config(vec![rule(
+            "units-need-specs",
+            &["src/*"],
+            spec_pair(&["."]),
+        )]);
+
+        let entries = [
+            ("src/a/native.rs", "pub fn add() {}\n"),
+            ("src/a/thing.ts", "export const x = 1;\n"),
+            ("src/a/thing.spec.ts", "it('x', () => {});\n"),
+        ];
+        assert!(
+            !repository_codes(&entries, &mixed).contains(&"rule-reads-an-unread-language"),
+            "{:?}",
+            repository_codes(&entries, &mixed)
+        );
     }
 
     /// A module wearing no kind, where kinds are used, is outside every rule

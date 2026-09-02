@@ -270,6 +270,7 @@ mod tests {
             supersedes: vec![DecisionId::new("ADR-009").expect("valid")],
             superseded_by: Vec::new(),
             alternatives,
+            not_yet: None,
         }
     }
 
@@ -434,6 +435,7 @@ mod tests {
             id: RuleId::new("domain-forbids-http").expect("valid"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: Some(DecisionId::new("ADR-031").expect("valid")),
             imports: None,
@@ -486,6 +488,7 @@ mod tests {
             id: DecisionId::new("ADR-1").expect("valid"),
             title: "A wall".to_owned(),
             why: None,
+            not_yet: None,
             link: None,
             status: DecisionStatus::Accepted,
             supersedes: Vec::new(),

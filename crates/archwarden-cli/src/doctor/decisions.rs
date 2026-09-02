@@ -323,10 +323,36 @@ pub(super) fn decision_scope_matches_nothing(
         let Some(scope) = &decision.scope else {
             continue;
         };
-        if tree
+        let matches = tree
             .directories()
-            .any(|(path, _)| scope.matches_dir(path.as_path()))
-        {
+            .any(|(path, _)| scope.matches_dir(path.as_path()));
+
+        // The rule half of this, said about a decision. A decision may be
+        // about a part of the system that is on the roadmap, and `describe`
+        // never bringing it to anybody is then the intended state. The claim
+        // expires the same way: the day the directory appears, saying it is
+        // not yet built is the only thing left that is untrue. Issue #179.
+        if let Some(because) = &decision.not_yet {
+            if matches {
+                concerns.push(Concern {
+                    code: "decision-scope-no-longer-empty",
+                    level: Level::Warning,
+                    rule_id: None,
+                    path: None,
+                    message: format!(
+                        "decision `{}` has a `scope` that matches something now, \
+                         and still says it is not yet built: \"{because}\"",
+                        decision.id,
+                    ),
+                    fix: "drop `not_yet` -- the code it was waiting for is here, \
+                          and the claim is now the only thing saying otherwise"
+                        .to_owned(),
+                });
+            }
+            continue;
+        }
+
+        if matches {
             continue;
         }
 
