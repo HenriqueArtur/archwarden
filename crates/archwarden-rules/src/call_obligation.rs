@@ -354,6 +354,7 @@ mod tests {
             id: RuleId::new("non-get-routes-must-audit").expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,

@@ -195,10 +195,12 @@ pub fn engines_for(config: &CompiledConfig) -> Vec<Box<dyn RuleEngine>> {
                 CompiledRuleKind::Presence {
                     require,
                     require_any,
+                    forbid,
                 } => Box::new(presence::PresenceEngine::build(
                     rule,
                     require,
                     require_any,
+                    forbid,
                     config.skip_dirs().clone(),
                 )),
                 CompiledRuleKind::Frozen => Box::new(frozen::FrozenEngine::build(rule)),
@@ -260,6 +262,7 @@ mod tests {
             id: RuleId::new(id).expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,

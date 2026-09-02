@@ -65,6 +65,14 @@ pub struct Scaffold {
     /// a consumer reading two lists should not have to unwrap one of them.
     #[serde(default)]
     pub required_files: RequiredFiles,
+    /// When asked about a directory: what may **not** live inside it.
+    ///
+    /// Beside `forbidden_imports` rather than inside `required_files`: a
+    /// consumer acting on that one creates what it names, and a list it must
+    /// not create cannot travel there. Always present and often empty, on the
+    /// same grounds `required_files` is. Issue #177.
+    #[serde(default)]
+    pub forbidden_files: Vec<String>,
 }
 
 /// What a directory must contain.
@@ -268,6 +276,7 @@ fn absorb(shape: &mut Scaffold, expectation: Expectation) {
             shape.required_files.names.extend(names);
             shape.required_files.patterns.extend(patterns);
         }
+        Expectation::ForbiddenFiles { names } => shape.forbidden_files.extend(names),
         Expectation::AllowedSubfolders {
             allowed,
             warn,
@@ -359,6 +368,7 @@ mod tests {
             id: RuleId::new(id).expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -620,6 +630,7 @@ mod tests {
                 CompiledRuleKind::Presence {
                     require: vec!["projeto.md".to_owned(), "notas.md".to_owned()],
                     require_any: vec![Pattern::compile(r"\.ino$").expect("valid")],
+                    forbid: Vec::new(),
                 },
             )]),
             &path("projetos/17-nova"),
@@ -830,6 +841,7 @@ mod tests {
                 CompiledRuleKind::Presence {
                     require: vec!["projeto.md".to_owned()],
                     require_any: vec![Pattern::compile(r"\.ino$").expect("valid")],
+                    forbid: Vec::new(),
                 },
             )]),
             &path("projetos/17-nova"),

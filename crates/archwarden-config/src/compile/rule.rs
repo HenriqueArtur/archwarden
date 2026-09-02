@@ -142,6 +142,11 @@ pub(super) fn compile_rule(
                 .iter()
                 .map(|p| pattern(&id, "require_any", p))
                 .collect::<Result<_, _>>()?,
+            forbid: r
+                .forbid
+                .iter()
+                .map(|name| require_name(&id, name))
+                .collect::<Result<_, _>>()?,
         },
 
         Rule::Pair(r) => CompiledRuleKind::Pair {
@@ -254,6 +259,7 @@ pub(super) fn compile_rule(
         imports,
         directives,
         why: rule.why().map(ToOwned::to_owned),
+        not_yet: rule.not_yet().map(ToOwned::to_owned),
         module_why,
         decision: rule.decision().cloned(),
         level: rule.level(),

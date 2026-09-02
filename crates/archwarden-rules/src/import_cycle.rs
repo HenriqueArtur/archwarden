@@ -153,6 +153,7 @@ mod tests {
             id: RuleId::new("no-cycles").expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -318,6 +319,7 @@ mod tests {
         other.kind = CompiledRuleKind::Presence {
             require: Vec::new(),
             require_any: Vec::new(),
+            forbid: Vec::new(),
         };
 
         assert!(ImportCycleEngine::from_rule(&other).is_none());

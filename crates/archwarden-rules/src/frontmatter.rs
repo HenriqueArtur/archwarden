@@ -271,6 +271,7 @@ mod tests {
             id: RuleId::new("projeto-frontmatter").expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -544,6 +545,7 @@ mod tests {
             id: RuleId::new("licao-completa").expect("valid"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -553,6 +555,7 @@ mod tests {
             kind: CompiledRuleKind::Presence {
                 require: vec!["projeto.md".to_owned()],
                 require_any: Vec::new(),
+                forbid: Vec::new(),
             },
         };
 

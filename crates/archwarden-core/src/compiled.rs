@@ -255,6 +255,9 @@ pub enum CompiledRuleKind {
         require: Vec<String>,
         /// Regexes at least one file must match, one file per entry.
         require_any: Vec<Pattern>,
+        /// Filenames that must **not** be there. Names on the same terms as
+        /// `require`, and the only thing this rule reports for existing.
+        forbid: Vec<String>,
     },
     /// A file of one kind must have a companion of another.
     Pair {
@@ -583,6 +586,13 @@ pub struct CompiledRule {
     /// `scaffold`, `agent-guide`, `config explain`, and beside a finding — and
     /// it never changes what the rule decides. Issue #46.
     pub why: Option<String>,
+    /// Why this rule's scope is deliberately empty, when the author said so.
+    ///
+    /// A boundary declared before the code it guards. Read only by `config
+    /// doctor`, and read twice: to stay quiet about a scope matching nothing,
+    /// and to speak up the day it starts matching something with this still
+    /// set. Never reaches what a rule decides. Issue #179, decision 40.
+    pub not_yet: Option<String>,
     /// Why the *module* this rule was declared under exists.
     ///
     /// A separate field, not a fallback: "why is `domain` sealed" explains
@@ -757,6 +767,14 @@ pub struct CompiledDecision {
     /// the claim without one, so a compiled decision carrying this is one
     /// somebody wrote a reason for. Issue #160.
     pub why_not_enforceable: Option<String>,
+    /// Why this decision's scope is deliberately empty, when the author said
+    /// so.
+    ///
+    /// The same field a rule carries, for the same reason: a decision may be
+    /// about a part of the system that is on the roadmap, and `describe` never
+    /// bringing it to anybody is then the intended state rather than a typo.
+    /// Issue #179, decision 40.
+    pub not_yet: Option<String>,
     /// Where it applies, compiled.
     ///
     /// Empty is a decision that says nothing about where — which is every
@@ -1033,6 +1051,7 @@ mod tests {
             id: RuleId::new(id).expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -1441,6 +1460,7 @@ mod tests {
             id: DecisionId::new(id).expect("valid id"),
             title: "The domain does not know about transport".to_owned(),
             why: None,
+            not_yet: None,
             link: None,
             status,
             supersedes: Vec::new(),
@@ -1577,6 +1597,7 @@ mod tests {
             id: DecisionId::new("ADR-031").expect("valid"),
             title: "the new way".to_owned(),
             why: None,
+            not_yet: None,
             link: None,
             status: DecisionStatus::Accepted,
             supersedes: Vec::new(),
