@@ -203,6 +203,15 @@ pub(crate) fn describe_expectation(expectation: &Expectation) -> String {
             patterns,
         } => describe_subfolders(allowed, warn, patterns),
         Expectation::RequiredFiles { names, patterns } => describe_required_files(names, patterns),
+        // The `expected:` line beside a forbidden file. It names the whole
+        // list rather than the one file found, because the reader's question
+        // after "delete this" is "what else may not be here". Issue #177.
+        // `join_or` quotes each entry itself; quoting here too was two pairs
+        // of backticks around every name.
+        Expectation::ForbiddenFiles { names } => format!(
+            "none of {}",
+            archwarden_api::describe::join_or(names, "nothing")
+        ),
         Expectation::RequiredCompanion { path } => format!("`{path}` beside it"),
         Expectation::RequiredFrontmatter {
             keys,

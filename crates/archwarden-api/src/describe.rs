@@ -378,6 +378,14 @@ pub fn describe_observed(observed: &Observed) -> String {
             let steps: Vec<String> = chain.iter().map(|step| format!("`{step}`")).collect();
             format!("sits on an import cycle: {}", steps.join(" → "))
         }
+        // The one observation here about a file that *is* there. "may not be
+        // here" rather than "is forbidden", on the same grounds as
+        // `ImportNotPermitted` above: a reader told a file is banned goes
+        // looking for the ban, and the rule is a list of what this directory
+        // may hold. Issue #177.
+        Observed::ForbiddenFilePresent { name } => {
+            format!("`{name}` is here, and may not be")
+        }
         // `Observed` is non_exhaustive; a variant added later says what it is
         // rather than failing to compile here.
         other => format!("{other:?}"),
@@ -866,6 +874,7 @@ mod tests {
             id: DecisionId::new(id).expect("valid id"),
             title: "a decision".to_owned(),
             why: None,
+            not_yet: None,
             link: None,
             status: DecisionStatus::Accepted,
             supersedes: Vec::new(),
@@ -1450,6 +1459,7 @@ mod tests {
             id: archwarden_core::ids::RuleId::new(id).expect("valid id"),
             module: module.map(|m| archwarden_core::ids::ModuleId::new(m).expect("valid module")),
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -1708,6 +1718,7 @@ mod tests {
             supersedes: Vec::new(),
             superseded_by: Vec::new(),
             alternatives: Vec::new(),
+            not_yet: None,
         };
 
         assert_eq!(
@@ -1730,6 +1741,7 @@ mod tests {
             id: DecisionId::new("ADR-014").expect("valid"),
             title: "The domain does not know about transport".to_owned(),
             why: None,
+            not_yet: None,
             link: None,
             status: DecisionStatus::Accepted,
             supersedes: Vec::new(),
@@ -1764,6 +1776,7 @@ mod tests {
             id: DecisionId::new("ADR-014").expect("valid"),
             title: "A wall".to_owned(),
             why: None,
+            not_yet: None,
             link: None,
             status: DecisionStatus::Accepted,
             supersedes: Vec::new(),
@@ -1797,6 +1810,7 @@ mod tests {
             id: DecisionId::new("ADR-009").expect("valid"),
             title: "The old way".to_owned(),
             why: None,
+            not_yet: None,
             link: None,
             status: DecisionStatus::Superseded,
             supersedes: Vec::new(),
@@ -1820,6 +1834,7 @@ mod tests {
             id: DecisionId::new("ADR-1").expect("valid"),
             title: "A wall".to_owned(),
             why: None,
+            not_yet: None,
             link: None,
             status: DecisionStatus::Accepted,
             supersedes: Vec::new(),
@@ -1842,6 +1857,7 @@ mod tests {
                     id: DecisionId::new("ADR-1").expect("valid"),
                     title: "A wall".to_owned(),
                     why: None,
+                    not_yet: None,
                     link: None,
                     status,
                     supersedes: Vec::new(),
@@ -1886,6 +1902,7 @@ mod tests {
             supersedes: Vec::new(),
             superseded_by: Vec::new(),
             alternatives: Vec::new(),
+            not_yet: None,
         }]);
 
         let decision = &as_json(&config, &a_path("src/user"))["rules"][0]["decision"];

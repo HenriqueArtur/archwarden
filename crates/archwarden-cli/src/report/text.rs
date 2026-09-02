@@ -396,7 +396,13 @@ pub(super) fn render_single_text(
         let decision = reasons
             .decision_of_rule(&finding.rule_id)
             .filter(|decision| decided.insert(decision.id.clone()));
-        render_finding(finding, finding.path.as_str(), why, decision, out);
+        render_finding(
+            finding,
+            super::display_path(&finding.path),
+            why,
+            decision,
+            out,
+        );
     }
 
     for skipped in &single.skipped {
