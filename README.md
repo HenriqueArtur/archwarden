@@ -134,6 +134,38 @@ clean would be a test that passes for the wrong reason.
 archwarden intentionally has a narrow surface. Every rule it ships must be
 something no other mainstream tool does well.
 
+### The same list, for Rust
+
+Since 0.29 a Rust repository can turn archwarden on, and the list above is
+addressed to somebody else. Here is its other half:
+
+| | TypeScript | Rust |
+|---|---|---|
+| Formatting and style | Biome | `rustfmt`, and `clippy` for style lints |
+| Type checking | `tsc --noEmit` | `cargo check` |
+| Unused dependencies | Knip | `cargo-machete` |
+| Version alignment | Syncpack, Manypkg | workspace dependencies, and `cargo-deny` for bans |
+
+Two entries matter more than the rest, because they are the shapes archwarden
+cannot express on `.rs` today and it is better to say so than to let a reader
+discover it from a rule that reports nothing:
+
+- **A boundary between crates is the Cargo dependency graph.** A crate that
+  must not reach another does not declare it, and the compiler refuses. That is
+  stronger than `import-boundary` gives a JavaScript repository. What is left
+  uncovered is the **intra-crate** boundary — module to module inside one crate
+  — and that is the honest scope of the gap, because `import-boundary` is one
+  of the two kinds that need a resolver and no Rust resolver exists
+  ([decision 19](docs/DECISIONS.md)).
+- **Forbidding a path outright is `clippy.toml`.** `disallowed-methods`,
+  `disallowed-types` and `disallowed-macros` say *"nobody calls this"*. What
+  they do not say is `chokepoint`'s other half — *only these files may* — and
+  naming that limit is the useful part: it is exactly where archwarden would
+  add something once a resolver exists.
+
+This repository runs `clippy` and `cargo-deny` on itself, in the same battery
+as `check` — [`CONTRIBUTING.md`](CONTRIBUTING.md) lists it.
+
 ## Quick start
 
 ```bash
@@ -239,9 +271,12 @@ See [`docs/CONFIG.md`](docs/CONFIG.md).
 - Being a general-purpose linter.
 - Replacing Biome or ESLint entirely — archwarden covers structure and
   architecture, not code style.
-- Supporting non-JS/TS languages in the core. The parser layer is pluggable
-  (see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)), but shipping other
-  languages is not on the v0/v1 roadmap.
+- Being a language-agnostic linter. The parser layer is pluggable (see
+  [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)) and Rust and Astro front-ends
+  ship, but each one is priced individually — [decision
+  19](docs/DECISIONS.md) says what a third would cost, and a front-end without
+  a resolver serves the rules that need one as a counted, named skip rather
+  than a silent pass.
 
 ## Contributing
 

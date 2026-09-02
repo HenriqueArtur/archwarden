@@ -1098,6 +1098,90 @@ mod tests {
         assert_eq!(engine.spec_name_for("a.ts").as_deref(), Some("a.test.ts"));
     }
 
+    /// A marker of more than one component, which is how a repository says
+    /// which *kind* of test satisfies the rule.
+    ///
+    /// `*.unit.spec.ts` for the unit suite and `*.intg.spec.ts` for the
+    /// integration blocks: the filename says what infrastructure the test
+    /// needs, and a `spec-pair` rule whose `why` is about the edge case a unit
+    /// test covers should not be satisfied by an integration one. Naming
+    /// `unit.spec` makes it exact in both directions — the integration file is
+    /// not a spec here, so it needs its own. Issue #174, decision 38.
+    #[test]
+    fn a_marker_of_several_components_is_used_in_both_directions() {
+        let rule = CompiledRule {
+            id: RuleId::new("calcs-need-a-unit-spec").expect("valid"),
+            module: None,
+            why: None,
+            module_why: None,
+            decision: None,
+            imports: None,
+            directives: None,
+            level: Level::Error,
+            scope: Scope::compile(["packages/*/src/*"]).expect("valid"),
+            kind: CompiledRuleKind::SpecPair {
+                subfolders: owned(&["calcs"]),
+                spec_markers: owned(&["unit.spec"]),
+                ignore_files: PathSet::default(),
+                spec_dirs: Vec::new(),
+                require_non_empty_spec: false,
+                skip_type_only: false,
+            },
+        };
+        let engine = SpecPairEngine::from_rule(&rule).expect("is a spec-pair rule");
+        let calcs = "packages/domain/src/Account/calcs";
+
+        // The case the issue was filed on: the sibling exists, beside the file,
+        // with tests in it, and the rule reported it missing.
+        assert!(
+            check(
+                &engine,
+                calcs,
+                &["account-sanitize.ts", "account-sanitize.unit.spec.ts"]
+            )
+            .is_empty(),
+            "the composed sibling is the spec"
+        );
+
+        // The other direction, and the reason for preferring an explicit
+        // marker over accepting one anywhere in the name: an integration spec
+        // is not a unit spec, so it does not answer for the unit file, and it
+        // is a unit of its own that owes one.
+        let findings = check(
+            &engine,
+            calcs,
+            &["account-post.ts", "account-post.intg.spec.ts"],
+        );
+        assert_eq!(
+            offenders(&findings),
+            [
+                format!("{calcs}/account-post.ts"),
+                format!("{calcs}/account-post.intg.spec.ts")
+            ]
+        );
+
+        // And a bare `.spec.ts` is not this rule's marker either.
+        assert_eq!(
+            offenders(&check(
+                &engine,
+                calcs,
+                &["account-sum.ts", "account-sum.spec.ts"]
+            )),
+            [
+                format!("{calcs}/account-sum.ts"),
+                format!("{calcs}/account-sum.spec.ts")
+            ]
+        );
+
+        // What `scaffold` offers, and what the finding names as expected.
+        assert_eq!(
+            engine.spec_name_for("account-sanitize.ts").as_deref(),
+            Some("account-sanitize.unit.spec.ts")
+        );
+        assert!(engine.is_spec("account-sanitize.unit.spec.ts"));
+        assert!(!engine.is_spec("account-sanitize.unit.spec.helper.ts"));
+    }
+
     #[test]
     fn a_directory_outside_the_scope_is_left_alone() {
         let engine = engine(&["packages/domain/src/*"], &["calcs"], &[]);

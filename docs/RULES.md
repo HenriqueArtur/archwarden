@@ -851,7 +851,8 @@ places on purpose:
 - the **marker** is a project's preference, and `spec_markers` configures it.
   The default accepts both, which is what vitest (`**/*.{test,spec}.?(c|m)[jt]s?(x)`)
   and jest (`**/?(*.)+(spec|test).[jt]s?(x)`) do, so the common project
-  configures nothing;
+  configures nothing. It is not a closed vocabulary, and a marker may name
+  **more than one component** — see below;
 - the **extension** is the source file's own and is not configurable, because
   `Component.tsx` wanting `Component.spec.tsx` is mechanical rather than a
   choice anyone makes differently.
@@ -867,6 +868,36 @@ Two asymmetries, both deliberate:
 The marker must be the last stem component. `user.spec.ts` is a spec;
 `user.spec.helper.ts` is a helper that happens to mention one. A bare
 `spec.ts` counts, matching both runners' optional `<name>.` prefix.
+
+#### A marker may name more than one component
+
+`"spec_markers": ["unit.spec"]` pairs `account-sanitize.ts` with
+`account-sanitize.unit.spec.ts`, and nothing else.
+
+The convention it exists for is a repository that says what infrastructure a
+test needs in the filename — `*.unit.spec.ts` for the unit suite,
+`*.intg.spec.ts` for the blocks that want a database. That buys precision
+elsewhere too: an `import-boundary` can then write
+`except_from: ["**/*.intg.spec.ts"]` instead of listing three extensions.
+
+**The gain is that the rule becomes exact, not only that it stops
+misreporting.** Under the default, an `*.intg.spec.ts` sitting beside a file
+satisfies a rule whose `why` says *"the sibling spec is where the edge case
+fits"* — which is a claim about a unit test. Naming `unit.spec` makes the rule
+say what it means, and the integration file becomes a unit of its own that owes
+a spec.
+
+**Two markers where one ends the other are refused when the config compiles.**
+With `spec` and `unit.spec` both live, `a.unit.spec.ts` is the spec for `a.ts`
+by one marker and the spec for `a.unit.ts` by the other — one file satisfying
+two units, which is the shape where a gate reports nothing and looks like a
+repository that is fully tested. Markers of the same depth shadow nothing and
+are fine: `["unit.spec", "intg.spec"]` is a rule accepting either suite.
+
+A marker with an empty component — `unit.`, `unit..spec` — is refused for the
+same reason a bare `.` is: it asks for a filename nobody writes.
+
+Decision 38, issue #174.
 
 ### Where a spec may live
 
@@ -915,8 +946,58 @@ The risk comes from accepting *any* directory, not from the convention.
   second language arrives: Rust is readable source whose unit tests live in a
   `#[cfg(test)]` module **inside** the file, so a rule keyed on readability
   would start demanding `create_client.spec.rs` from every configuration that
-  already had a `spec-pair` rule. A language that tests some other way is
-  skipped by this rule, and counted as a skip — never failed by it.
+  already had a `spec-pair` rule. A language that tests some other way is not
+  asked for a sibling — it is asked for that other way, which is the next
+  section.
+
+### A language whose tests live in the file
+
+`spec-pair` asks one question — *does a test exist for this unit?* — and only
+the place to look for the answer differs. A `.ts` file is asked for a sibling.
+A `.rs` file is asked for **itself**: Rust's unit tests are a `#[cfg(test)] mod
+tests` inside the unit, so there is no sibling to find and none is demanded.
+
+```json
+{ "type": "spec-pair",
+  "id": "rust/every-unit-carries-its-tests",
+  "level": "error",
+  "roots": ["crates/*"],
+  "subfolders": ["src"],
+  "ignore_files": ["**/lib.rs", "**/mod.rs"] }
+```
+
+```
+error   crates/thing/src/untested.rs
+        [*] rust/every-unit-carries-its-tests — `crates/thing/src/untested.rs` contains no test cases
+        expected: `crates/thing/src/untested.rs`, containing at least one test case
+```
+
+Four things to know, and the first is the one that makes a rule look green when
+it is not:
+
+- **`languages` has to name `rust`.** The question cannot be answered without
+  reading the file, and a language the config does not name is never parsed. A
+  `spec-pair` rule whose whole scope is `.rs` reports nothing at all with
+  `languages` left out — no findings, and `config doctor` has nothing to say
+  about it either. If a Rust rule has never reported, check this first.
+- **`roots` selects directories, and `src` is one of them.** `crates/*/src/*`
+  selects directories *inside* `src`, of which a flat crate has none. The pair
+  above — `roots: ["crates/*"]` with `subfolders: ["src"]` — is what covers
+  `crates/*/src` and everything below it.
+- **An empty `#[cfg(test)] mod tests {}` does not satisfy it**, and that is not
+  behind a flag. `require_non_empty_spec` draws this line on the sibling side
+  because a spec file is a real cost to create; an inline module is three
+  lines, so an empty one is the *only* way to satisfy this rule without writing
+  a test. The count is of `#[test]` functions, anywhere in the file.
+- **`ignore_files` is where `lib.rs` and `mod.rs` go.** They are usually
+  declarations with nothing to test, and a rule without that carve-out reports
+  every crate root and gets switched off. They are not baked in the way
+  `index.ts` is, because a `lib.rs` holding the whole crate is an ordinary
+  arrangement in a small one.
+
+`skip_type_only` works here too and answers in Rust's own terms — a file that
+declares no function outside its own tests. See above; decision 36 has the
+argument.
 
 **Cannot express**: test-first ordering (that the spec was written before
 the impl). Git history could tell us, but making that a gate would be
@@ -1819,9 +1900,31 @@ scope. It does not follow a value, so a capability passed as an argument out of
 the chokepoint is invisible to it — the same line drawn beside `call-obligation`
 above.
 
-**Rust records nothing here.** `std::env::var` is a path to a function, recorded
-as a call when it is called, and a `use` of it is an import `import-boundary`
-already cuts. The gap this fills does not exist there.
+**Rust records nothing here, and the gap is not filled.** `std::env::var` is a
+path to a function, recorded as a call when it is called, and a `use` of it is
+an import — but `import-boundary` does not cut it. That rule is one of the two
+that need a resolver, no Rust resolver exists, and a `.rs` file under one is a
+counted skip rather than an edge.
+
+This note used to say the gap *does not exist* there, which sent a reader
+wanting *"only these files may touch `std::fs`"* from a rule that declines to a
+rule that cannot, and ended in a counted skip they had not been warned about.
+Honest at the CLI, and by then they had already believed the documentation.
+
+What does fill it today:
+
+- **`clippy.toml`** — `disallowed-methods`, `disallowed-types` and
+  `disallowed-macros` say *"nobody calls this"*, which is half of this rule.
+  The half they cannot say is `only_in`: there is no scoping to a directory, so
+  *"only `src/config` reads the environment"* is not expressible there either.
+- **The Cargo dependency graph**, for the crate-level case. A crate that must
+  not reach another does not declare it and the compiler refuses, which is
+  stronger than a linter. What neither covers is the intra-crate boundary,
+  module to module inside one crate.
+
+That is the honest scope of what is missing, and it is where archwarden would
+add something once a resolver exists. Decision 19, reached through the
+documentation rather than through a rule. Issue #175.
 
 ### Why this is not Biome's job
 

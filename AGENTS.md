@@ -190,6 +190,27 @@ npx archwarden check --file packages/domain/src/order/calcs/total.ts --format js
 }
 ```
 
+**On a `.rs` file the same rule points at the file itself**, because Rust's
+unit tests live inside it:
+
+```json
+{
+  "rule_id": "rust/every-unit-carries-its-tests",
+  "level": "error",
+  "path": "crates/thing/src/untested.rs",
+  "observed": { "type": "spec-is-empty", "path": "crates/thing/src/untested.rs" },
+  "expected": {
+    "type": "required-sibling",
+    "path": "crates/thing/src/untested.rs",
+    "non_empty_spec": true
+  }
+}
+```
+
+`expected.path` equal to `path` is the signal: the file to edit is the one
+reported, and the fix is a `#[cfg(test)] mod tests` with at least one `#[test]`
+in it. Creating `untested.spec.rs` satisfies nothing.
+
 **Read `skipped`.** A rule archwarden could not evaluate from one file appears
 there rather than being dropped in silence. A non-empty `skipped` means the
 answer is partial; run the full `check` before claiming the change is clean.
@@ -696,7 +717,7 @@ rather than left out — an unchecked rule has to be visible as unchecked.
 | `presence` | do the files this folder owes exist? | creating each name `scaffold <directory>` lists |
 | `frontmatter` | does this document's YAML block carry the keys something reads? | writing the keys `scaffold` names, with values from the vocabularies it lists |
 | `pair` | does the file that goes with this one exist? | creating the companion `scaffold` names |
-| `spec-pair` | is there a test beside it? | creating the sibling `.spec.ts` — **write it, do not leave it empty** if `non_empty_spec` is true |
+| `spec-pair` | is there a test for it? | creating the sibling `.spec.ts` — **write it, do not leave it empty** if `non_empty_spec` is true. On a `.rs` file the test goes **inside** the file |
 | `import-boundary` | may this layer import that one — or that *dependency*? | importing through whatever `except` allows, or not at all |
 | `call-obligation` | does this file call the required symbol? | calling it **anywhere in the file**, including from a local helper |
 | `no-passthrough` | does this file add anything of its own? | writing something here, or deleting the file and importing what it forwards |
@@ -707,7 +728,10 @@ Two details that decide most cases:
   below** `src`, and rules then apply to files inside them. `packages/domain/**`
   selects everything underneath.
 - `spec-pair` takes the extension from the source file: `Component.tsx` pairs
-  with `Component.spec.tsx`, not `.spec.ts`.
+  with `Component.spec.tsx`, not `.spec.ts`. On a `.rs` file it asks about the
+  file itself — a `#[cfg(test)] mod tests` with at least one `#[test]` in it.
+  There is no `create_client.spec.rs`; writing one satisfies nothing and the
+  finding names the source file as the path to fix.
 - A `naming` rule may spell the export from the **directory as well as the
   file** — `Order/fetch-by-id.ts` wanting `OrderFetchByIdRepository`. Never
   guess that name from the pattern. Ask `scaffold`, which renders it, and note

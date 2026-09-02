@@ -103,16 +103,27 @@ pub(super) fn constrains_nothing(rule: &CompiledRule, concerns: &mut Vec<Concern
         // `callee` is not -- there is no capability to guard, so the rule can
         // never report anything. `config verify-rules` already refuses such a
         // rule and points at this concern. Issue #168.
-        CompiledRuleKind::Chokepoint { callee, .. } => {
-            if !callee.is_empty() {
+        //
+        // Both fields, because a render is a use of its own -- decision 37 --
+        // and a rule naming only an element guards a capability as surely as
+        // one naming a call. Reading `callee` alone called such a rule
+        // toothless and told its author to delete it, which is the one piece
+        // of advice this command must never give about a rule that bites:
+        // `check` stays green afterwards, with nothing left to fail. The probe
+        // in `verify::probes::reach` has taken both since #145; this is the
+        // same question asked in the other command. Issue #176.
+        CompiledRuleKind::Chokepoint {
+            callee, renders, ..
+        } => {
+            if !callee.is_empty() || !renders.is_empty() {
                 return;
             }
             (
-                "it guards no callee, so there is no capability it can report \
-                 anybody for reaching",
+                "it guards no callee and no rendered element, so there is no \
+                 capability it can report anybody for reaching",
                 "name what only these files may reach — a call like \
-                 `Date.now`, or a name they read like `process.env` — or drop \
-                 the rule",
+                 `Date.now`, a name they read like `process.env`, or an \
+                 element they render like `div` — or drop the rule",
             )
         }
         _ => return,

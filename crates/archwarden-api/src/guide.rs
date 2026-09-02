@@ -317,7 +317,7 @@ fn covered<'a>(
                 .as_ref()
                 .map(archwarden_core::ids::ModuleId::as_str),
             applies_to: rule.scope.patterns(),
-            requires: requirements(&rule.kind),
+            requires: requirements(&rule.kind, config.languages().rust),
             why: rule.why.as_deref(),
             module_why: rule.module_why.as_deref(),
             decision: rule
@@ -348,8 +348,13 @@ fn reaches(rule: &CompiledRule, prefix: &RepoRelPath) -> bool {
 /// One arm per rule kind, each a handful of lines. Splitting it would put the
 /// arms somewhere the exhaustive `match` no longer names them, which is the
 /// property that makes a kind added without a sentence fail to compile.
+///
+/// `rust` is passed rather than read off the rule for the reason
+/// `archwarden-rules` gives when it builds the same engine: a rule cannot know
+/// from its own shape which languages its scope will reach, and `spec-pair`
+/// asks for a sibling in one and for a module inside the file in the other.
 #[allow(clippy::too_many_lines, reason = "one arm per rule kind; see above")]
-fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
+fn requirements(kind: &CompiledRuleKind, rust: bool) -> Vec<String> {
     match kind {
         CompiledRuleKind::CallMatchesExport {
             callee,
@@ -493,6 +498,18 @@ fn requirements(kind: &CompiledRuleKind) -> Vec<String> {
             );
             if *require_non_empty_spec {
                 line.push_str(", containing at least one test case");
+            }
+            // The other place the same question is answered. Said only when
+            // the config reads Rust, because a sentence about `.rs` in a guide
+            // for a repository that has none is noise -- and left unsaid it is
+            // worse than noise: this is the file an agent is handed, and
+            // "create the sibling" is work that satisfies nothing there.
+            // Issue #178.
+            if rust {
+                line.push_str(
+                    " (a `.rs` file carries its tests inside itself instead: a \
+                     `#[cfg(test)] mod tests` with at least one `#[test]` in it)",
+                );
             }
             vec![line]
         }
@@ -846,7 +863,7 @@ pub fn join(items: &[String]) -> String {
 mod tests {
     use super::*;
     use archwarden_core::{
-        compiled::{CompiledDecision, CompiledRule, DecisionStatus, SkipDirs},
+        compiled::{CompiledDecision, CompiledRule, DecisionStatus, Languages, SkipDirs},
         facts::{ExportTags, KindFilter},
         glob::PathSet,
         hash::ContentHash,
@@ -1921,6 +1938,44 @@ mod tests {
     }
 
     /// omitted one would teach an incomplete rule set.
+    #[test]
+    fn a_spec_pair_guide_says_where_a_rust_test_goes() {
+        let spec = || {
+            rule(
+                "spec",
+                None,
+                &["crates/*"],
+                CompiledRuleKind::SpecPair {
+                    subfolders: vec!["src".to_owned()],
+                    spec_markers: vec!["spec".to_owned()],
+                    ignore_files: PathSet::default(),
+                    spec_dirs: Vec::new(),
+                    require_non_empty_spec: false,
+                    skip_type_only: false,
+                },
+            )
+        };
+
+        // Without `rust`, the sentence is the one it has always been: this is
+        // the guide a JavaScript repository reads, and nothing about it changes.
+        let ts_only = sentences(&config(vec![spec()]), None, &[]);
+        assert!(ts_only.contains("needs a sibling"), "{ts_only}");
+        assert!(!ts_only.contains("cfg(test)"), "{ts_only}");
+
+        // With it, the sentence has to name the other place, because this is
+        // the file an agent is handed and "create the sibling `.spec.rs`" is
+        // work that satisfies nothing. Issue #178.
+        let with_rust = sentences(
+            &config(vec![spec()]).with_languages(Languages {
+                rust: true,
+                ..Languages::default()
+            }),
+            None,
+            &[],
+        );
+        assert!(with_rust.contains("cfg(test)"), "{with_rust}");
+    }
+
     #[test]
     fn every_rule_kind_states_its_requirement() {
         let config = config(vec![

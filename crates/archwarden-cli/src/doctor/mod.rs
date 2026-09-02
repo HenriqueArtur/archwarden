@@ -684,6 +684,14 @@ mod tests {
             found.rule_id.as_ref().map(RuleId::as_str),
             Some("guards-nothing")
         );
+        // Both fields are named, because both are empty and either would have
+        // been enough. Advising only about `callee` is what sent the author of
+        // a rule that renders to delete it. Issue #176.
+        assert!(
+            found.message.contains("no rendered element"),
+            "{:?}",
+            found.message
+        );
 
         // One callee is enough. An empty `only_in` is *not* the same thing --
         // it is the rule "nobody here may", which is a constraint.
@@ -696,6 +704,35 @@ mod tests {
                 file_pattern: None,
                 imported_from: None,
                 only_in: Scope::compile(std::iter::empty::<&str>()).expect("valid scope"),
+            },
+        )]);
+
+        assert!(
+            examine(&guarding)
+                .iter()
+                .all(|c| c.code != "rule-constrains-nothing"),
+            "{:?}",
+            examine(&guarding)
+        );
+    }
+
+    /// Issue #176. A render is a use of its own — decision 37 — so a rule that
+    /// names one guards a capability, and the check that reads only `callee`
+    /// calls the rule toothless and advises dropping it. That advice is the
+    /// damage: `doctor` is what somebody reaches for when they already suspect
+    /// a rule is inert, so a false positive here lands on an audience primed to
+    /// believe it, and the rule they delete is the one that was working.
+    #[test]
+    fn a_chokepoint_guarding_a_rendered_element_constrains_something() {
+        let guarding = config(vec![rule(
+            "no-raw-html-above-the-alphabet",
+            &["src/composites/*"],
+            CompiledRuleKind::Chokepoint {
+                callee: Vec::new(),
+                renders: vec!["div".to_owned()],
+                file_pattern: None,
+                imported_from: None,
+                only_in: Scope::compile(["src/components/**"]).expect("valid scope"),
             },
         )]);
 
