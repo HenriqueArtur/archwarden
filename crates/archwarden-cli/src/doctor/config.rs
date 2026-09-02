@@ -433,7 +433,7 @@ pub(super) fn kind_no_enabled_language_can_declare(
 ///
 /// TypeScript is always read and needs no flag, which is what
 /// `compiled::Languages` says of itself.
-fn enabled_languages(config: &CompiledConfig) -> Vec<Language> {
+pub(super) fn enabled_languages(config: &CompiledConfig) -> Vec<Language> {
     let mut languages = vec![Language::Ts];
     if config.languages().astro {
         languages.push(Language::Astro);
@@ -445,7 +445,7 @@ fn enabled_languages(config: &CompiledConfig) -> Vec<Language> {
 }
 
 /// The spelling `languages` uses for one.
-fn language_name(language: Language) -> &'static str {
+pub(super) fn language_name(language: Language) -> &'static str {
     // `Language` is `#[non_exhaustive]`, so a fallback is required. Naming the
     // three rather than deriving one keeps the spelling here the same as the
     // one `languages` accepts; a language added upstream reads as its debug
