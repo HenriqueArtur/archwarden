@@ -17,6 +17,71 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 38 — A spec marker may name more than one component
+Status: accepted.
+Context: issue #174. A monorepo began distinguishing the *kind* of test in the
+filename — `*.unit.spec.ts` for the unit suite, `*.intg.spec.ts` for the blocks
+that need infrastructure — which let an `import-boundary` write
+`except_from: ["**/*.intg.spec.ts"]` instead of naming three extensions. Nine
+`spec-pair` rules then reported at once: **364 findings, every one false**. The
+sibling was there, beside the file, with tests in it.
+
+`spec_markers` could not say so. A marker holding a dot was refused when the
+config compiled, and the refusal carried an argument: a marker is one component
+of `<stem>.<marker>.<extension>`, so a dotted one would change how many segments
+the name has, and guessing which division was meant is worse than saying so.
+
+Decision: a marker may hold dots. `["unit.spec"]` pairs `account-sanitize.ts`
+with `account-sanitize.unit.spec.ts`. Every component still has to be a word —
+`unit.`, `unit..spec` and a bare `.` are refused, because they ask for a
+filename nobody writes.
+
+**The old refusal was right about the danger and wrong about the mechanism.**
+Nothing guesses: matching is `<stem>.<marker>` compared as written, in both
+directions, so a multi-component marker needs no division to be inferred. What
+the refusal was actually protecting against survives, narrowed to the case that
+has it — **two markers where one ends the other are refused together.** With
+`spec` and `unit.spec` both live, `a.unit.spec.ts` is the spec for `a.ts` by one
+and the spec for `a.unit.ts` by the other. One file answering for two units is
+the shape `CONFIG.md` calls the worst failure a linter has: the gate reports
+nothing and the repository looks fully tested. Markers of the same depth shadow
+nothing, so `["unit.spec", "intg.spec"]` is fine.
+
+**The gain is precision, not only the absence of a false positive.** Under the
+default, an `*.intg.spec.ts` beside a file satisfies a rule whose `why` reads
+*"the sibling spec is where the edge case fits"* — a claim about a unit test,
+answered by an integration one. Naming `unit.spec` makes the rule say what it
+means, and it is the same argument `require_non_empty_spec` makes when it
+refuses to count `describe`.
+
+Alternatives:
+- **Accept the marker at any segment position** — `<name>.<anything>.spec.ts`
+  counts as a spec for `<name>.ts`. The shape the issue lists first. Rejected
+  twice over. It contradicts the rule that the marker is the *last stem
+  component*, which is what keeps `user.spec.helper.ts` a helper. And it
+  reintroduces the collision above as the normal case rather than a refusable
+  one: `a.unit.spec.ts` would answer for `a.ts` and `a.unit.ts` with no
+  configuration anyone could write to stop it.
+- **A separate `spec_suffixes` field beside `spec_markers`.** The issue's own
+  second shape. Rejected: two fields asking the same question, and a rule
+  setting both would need a precedence nobody would remember. A marker that may
+  hold a dot *is* a suffix; the field it belongs in already exists.
+- **Leave the refusal and tell the repository to rename its files.** Rejected
+  on the convention being real and load-bearing — the filename says what
+  infrastructure the test needs, and it is what made the boundary rule precise.
+  A linter that requires a repository to give up a working convention to be
+  lintable is one that gets switched off.
+- **Infer the division and accept either reading.** The rejected option the
+  original refusal named, and it is still rejected for the reason it gave.
+
+Consequences: no cache format change — a marker is config, and findings are
+already keyed by the rules hash. `config validate` accepts configs it used to
+refuse, which is one-directional and safe. The refusal that replaces it fires
+only on a marker list that could not have compiled before, so no existing
+config starts failing.
+
+---
+
 ### 37 — A render is a use of its own, and the case is the distinction
 Status: accepted.
 Context: issue #145. In a `.tsx` file `<Card />` is a usage of `Card`, and

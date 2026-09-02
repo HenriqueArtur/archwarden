@@ -200,23 +200,33 @@ pub(super) fn spec_dirs(rule: &RuleId, spec: &SpecPairRule) -> Result<Vec<String
     Ok(names)
 }
 
-/// A `spec_markers` entry, refused if it is empty or carries a dot of its own.
+/// A `spec_markers` entry, refused if any component of it is empty.
 ///
 /// The leading dot is optional -- `.spec` and `spec` are the same marker, and
-/// accepting both spares the author a refusal about punctuation. What is not
-/// optional is that a marker names one segment: a spec is
-/// `<stem>.<marker>.<extension>`, so a marker holding a dot would silently
-/// change how many segments the name has, and guessing which one they meant
-/// would be worse than saying so.
+/// accepting both spares the author a refusal about punctuation. Every
+/// component after that has to be a word, because a spec is
+/// `<stem>.<marker>.<extension>` and an empty one asks for `user..ts`.
+///
+/// **A marker may hold a dot.** It used to be refused on the grounds that it
+/// would change how many segments the name has and that guessing which
+/// division was meant is worse than saying so. The first half is true and is
+/// the point -- `unit.spec` is exactly the extra segment a repository
+/// distinguishing `*.unit.spec.ts` from `*.intg.spec.ts` needs to name. The
+/// second half was the mistake: nothing guesses, because matching is
+/// `<stem>.<marker>` compared as written, not a search for a marker somewhere
+/// in the name. Decision 38, issue #174.
+///
+/// What the old refusal was right to fear survives as
+/// [`CompileError::SpecMarkerEndsAnother`].
 pub(super) fn spec_markers(
     rule: &RuleId,
     spec: &SpecPairRule,
 ) -> Result<Vec<String>, CompileError> {
-    let mut markers = Vec::new();
+    let mut markers: Vec<String> = Vec::new();
 
     for marker in &spec.spec_markers {
         let trimmed = marker.trim_start_matches('.');
-        if trimmed.is_empty() || trimmed.contains('.') {
+        if trimmed.is_empty() || trimmed.split('.').any(str::is_empty) {
             return Err(CompileError::InvalidSpecMarker {
                 rule: rule.clone(),
                 marker: marker.clone(),
@@ -225,7 +235,43 @@ pub(super) fn spec_markers(
         markers.push(trimmed.to_owned());
     }
 
+    for (index, marker) in markers.iter().enumerate() {
+        if let Some(shadowed) = markers
+            .iter()
+            .skip(index + 1)
+            .find(|other| ends_with_marker(marker, other) || ends_with_marker(other, marker))
+        {
+            let (longer, shorter) = if marker.len() > shadowed.len() {
+                (marker, shadowed)
+            } else {
+                (shadowed, marker)
+            };
+            // `ends_with_marker` held, so `longer` is `shorter` with at least
+            // one component and the dot joining them in front.
+            let prefix = longer
+                .strip_suffix(&format!(".{shorter}"))
+                .unwrap_or(longer)
+                .to_owned();
+            return Err(CompileError::SpecMarkerEndsAnother {
+                rule: rule.clone(),
+                longer: longer.clone(),
+                shorter: shorter.clone(),
+                prefix,
+            });
+        }
+    }
+
     Ok(markers)
+}
+
+/// Whether `longer` is `shorter` with at least one component in front.
+///
+/// The relation that makes one spec file answer for two different units:
+/// with `spec` and `unit.spec` both live, `a.unit.spec.ts` is the spec for
+/// `a.ts` by the second marker and the spec for `a.unit.ts` by the first.
+/// Equal markers are not this -- a repeated marker names one stem twice.
+fn ends_with_marker(longer: &str, shorter: &str) -> bool {
+    longer.len() > shorter.len() && longer.ends_with(&format!(".{shorter}"))
 }
 
 pub(super) fn export_kind(
@@ -433,14 +479,34 @@ mod tests {
         );
     }
 
-    /// Empty and dotted are refused, each on its own.
+    /// A marker may name more than one component.
     ///
-    /// A spec is `<stem>.<marker>.<extension>`. An empty marker would ask for
-    /// `user..ts` and a dotted one would change how many segments the name
-    /// has -- and a rule matching a filename nobody writes reports nothing,
-    /// which is indistinguishable from a repository that satisfies it.
+    /// `*.unit.spec.ts` beside `*.intg.spec.ts` is how a repository says what
+    /// infrastructure a test needs, and a rule that cannot see the first as a
+    /// spec for `account-sanitize.ts` reports every file in its scope. Issue
+    /// #174, decision 38.
     #[test]
-    fn a_spec_marker_that_is_empty_or_carries_a_dot_is_refused() {
+    fn a_spec_marker_may_name_more_than_one_component() {
+        assert_eq!(
+            spec_markers(&id(), &spec_with_markers(&["unit.spec"])).expect("valid"),
+            vec!["unit.spec".to_owned()],
+        );
+        assert_eq!(
+            spec_markers(&id(), &spec_with_markers(&[".unit.spec"])).expect("valid"),
+            vec!["unit.spec".to_owned()],
+            "the leading dot is still optional, and still not part of the marker"
+        );
+    }
+
+    /// An empty marker, and an empty component inside one.
+    ///
+    /// A spec is `<stem>.<marker>.<extension>`, so an empty marker asks for
+    /// `user..ts` and a marker with an empty component asks for
+    /// `user.unit..ts`. Neither is a filename anybody writes, and a rule
+    /// matching none reports nothing — which is indistinguishable from a
+    /// repository that satisfies it.
+    #[test]
+    fn a_spec_marker_with_an_empty_component_is_refused() {
         assert!(
             spec_markers(&id(), &spec_with_markers(&["."])).is_err(),
             "a lone dot trims to nothing"
@@ -450,8 +516,50 @@ mod tests {
             "and so does an empty string"
         );
         assert!(
-            spec_markers(&id(), &spec_with_markers(&["spec.unit"])).is_err(),
-            "a marker holding a dot is two segments pretending to be one"
+            spec_markers(&id(), &spec_with_markers(&["unit."])).is_err(),
+            "a trailing dot is an empty component, and asks for `user.unit..ts`"
+        );
+        assert!(
+            spec_markers(&id(), &spec_with_markers(&["unit..spec"])).is_err(),
+            "and so is one in the middle"
+        );
+    }
+
+    /// Two markers where one ends the other are refused together.
+    ///
+    /// With `spec` and `unit.spec` both live, `a.unit.spec.ts` is a spec for
+    /// `a.ts` *and* a spec for `a.unit.ts`. One file satisfying two units is
+    /// the shape where a gate reports nothing and looks like a repository that
+    /// is fully tested. Refused where both can be named, rather than resolved
+    /// by picking one — guessing which they meant is worse than saying so.
+    #[test]
+    fn two_markers_where_one_ends_the_other_are_refused() {
+        assert!(
+            spec_markers(&id(), &spec_with_markers(&["spec", "unit.spec"])).is_err(),
+            "`unit.spec` ends with `.spec`"
+        );
+        assert!(
+            spec_markers(&id(), &spec_with_markers(&["unit.spec", "spec"])).is_err(),
+            "and the order it is written in does not change that"
+        );
+        assert!(
+            spec_markers(&id(), &spec_with_markers(&["unit.spec", "intg.spec"]))
+                .expect("valid")
+                .len()
+                == 2,
+            "two markers of the same depth shadow nothing"
+        );
+        assert!(
+            spec_markers(&id(), &spec_with_markers(&["spec", "test"]))
+                .expect("valid")
+                .len()
+                == 2,
+            "and neither does the default pair"
+        );
+        assert!(
+            spec_markers(&id(), &spec_with_markers(&["spec", "spec"])).is_ok(),
+            "a repeated marker names one stem, not two -- harmless, and not \
+             this refusal's business"
         );
     }
 }

@@ -65,12 +65,22 @@ pub struct SpecPairRule {
     /// of the gate in silence — eleven validation functions in one repository
     /// had no test at all and had never appeared in a report. Issue #34.
     pub subfolders: Patterns,
-    /// What makes a filename a spec: `spec`, `test`, or both.
+    /// What makes a filename a spec — `spec`, `test`, `unit.spec`, anything
+    /// the project writes. Not a closed vocabulary.
     ///
     /// A marker, not a whole suffix: the extension is taken from the source
     /// file, so `Component.tsx` wants `Component.spec.tsx` without anyone
-    /// saying so. The default accepts both markers, which is what vitest and
-    /// jest do, so the common project needs no configuration here at all.
+    /// saying so. The default accepts `spec` and `test`, which is what vitest
+    /// and jest do, so the common project needs no configuration here at all.
+    ///
+    /// **A marker may name more than one component.** `unit.spec` pairs
+    /// `account-sanitize.ts` with `account-sanitize.unit.spec.ts`, which is
+    /// what a repository distinguishing `*.unit.spec.ts` from `*.intg.spec.ts`
+    /// needs — and it makes the rule *exact*, since an integration spec then
+    /// does not satisfy a rule whose reason is about a unit test. Two markers
+    /// where one ends the other are refused together: with `spec` and
+    /// `unit.spec` both live, one file would answer for two units. Issue #174,
+    /// decision 38.
     #[serde(default = "default_spec_markers")]
     pub spec_markers: Patterns,
     /// Directories, beside the file, where a spec also counts.

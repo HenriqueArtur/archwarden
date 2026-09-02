@@ -674,7 +674,7 @@
               "$ref": "#/$defs/OneOrMany"
             },
             "spec_markers": {
-              "description": "What makes a filename a spec: `spec`, `test`, or both.\n\nA marker, not a whole suffix: the extension is taken from the source\nfile, so `Component.tsx` wants `Component.spec.tsx` without anyone\nsaying so. The default accepts both markers, which is what vitest and\njest do, so the common project needs no configuration here at all.",
+              "description": "What makes a filename a spec — `spec`, `test`, `unit.spec`, anything\nthe project writes. Not a closed vocabulary.\n\nA marker, not a whole suffix: the extension is taken from the source\nfile, so `Component.tsx` wants `Component.spec.tsx` without anyone\nsaying so. The default accepts `spec` and `test`, which is what vitest\nand jest do, so the common project needs no configuration here at all.\n\n**A marker may name more than one component.** `unit.spec` pairs\n`account-sanitize.ts` with `account-sanitize.unit.spec.ts`, which is\nwhat a repository distinguishing `*.unit.spec.ts` from `*.intg.spec.ts`\nneeds — and it makes the rule *exact*, since an integration spec then\ndoes not satisfy a rule whose reason is about a unit test. Two markers\nwhere one ends the other are refused together: with `spec` and\n`unit.spec` both live, one file would answer for two units. Issue #174,\ndecision 38.",
               "$ref": "#/$defs/OneOrMany",
               "default": [
                 "spec",

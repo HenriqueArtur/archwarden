@@ -357,18 +357,38 @@ pub enum CompileError {
         entry: String,
     },
 
-    /// A `spec-pair` marker is not a single filename component.
+    /// A `spec-pair` marker has an empty filename component.
     #[error(
-        "rule `{rule}`: `{marker}` is not a spec marker. A marker is one \
-         filename component such as `spec` or `test`; the extension comes \
-         from the source file, so `Component.tsx` wants `Component.spec.tsx` \
-         without being told."
+        "rule `{rule}`: `{marker}` is not a spec marker. A marker is one or \
+         more filename components such as `spec`, `test` or `unit.spec`, and \
+         none of them may be empty; the extension comes from the source file, \
+         so `Component.tsx` wants `Component.spec.tsx` without being told."
     )]
     InvalidSpecMarker {
         /// The rule.
         rule: RuleId,
         /// The marker as written.
         marker: String,
+    },
+
+    /// Two `spec-pair` markers where one ends the other, so a single spec
+    /// file would answer for two different units.
+    #[error(
+        "rule `{rule}`: `{longer}` ends with `.{shorter}`, so \
+         `<name>.{longer}.ts` would be the spec for `<name>.ts` and for \
+         `<name>.{prefix}.ts` at once. One spec satisfying two units is how a \
+         gate reports nothing and looks like a repository that is fully \
+         tested. Keep one of the two markers, or give them the same depth."
+    )]
+    SpecMarkerEndsAnother {
+        /// The rule.
+        rule: RuleId,
+        /// The marker that ends the other.
+        longer: String,
+        /// The marker it ends with.
+        shorter: String,
+        /// What `longer` carries in front of `shorter`.
+        prefix: String,
     },
 
     /// A `must_export.name` template refers to a capture group that neither
