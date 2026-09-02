@@ -517,6 +517,7 @@ mod tests {
             id: archwarden_core::ids::RuleId::new("shape").expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,

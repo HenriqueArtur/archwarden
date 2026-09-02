@@ -445,6 +445,7 @@ mod tests {
             id: id(),
             level: Level::Error,
             why: None,
+            not_yet: None,
             decision: None,
             roots: OneOrMany::One("src/*".to_owned()),
             subfolders: OneOrMany::One(".".to_owned()),

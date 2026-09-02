@@ -545,6 +545,7 @@ mod tests {
                 supersedes: Vec::new(),
                 superseded_by: Vec::new(),
                 alternatives: Vec::new(),
+                not_yet: None,
             },
         )]);
 
@@ -589,6 +590,7 @@ mod tests {
             id: archwarden_core::ids::DecisionId::new("ADR-014").expect("valid"),
             title: "The domain does not know about transport".to_owned(),
             why: None,
+            not_yet: None,
             link: Some("docs/adr/014.md".to_owned()),
             status: archwarden_core::compiled::DecisionStatus::Accepted,
             supersedes: Vec::new(),
@@ -607,6 +609,7 @@ mod tests {
                     id: archwarden_core::ids::DecisionId::new("ADR-020").expect("valid"),
                     title: "Not about this file".to_owned(),
                     why: None,
+                    not_yet: None,
                     link: None,
                     status: archwarden_core::compiled::DecisionStatus::Accepted,
                     supersedes: Vec::new(),

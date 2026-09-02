@@ -43,6 +43,28 @@ pub struct StructureRule {
     /// is a typo, not a style. Issue #100.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<DecisionId>,
+    /// Why this rule's scope is empty on purpose, when it is.
+    ///
+    /// A boundary declared *before* the code it guards. `config doctor`
+    /// otherwise reports a scope matching no directory the same way whether
+    /// the glob is a typo or the directory has not been written yet, and both
+    /// fixes it offers — point it at paths that exist, or drop it — are the
+    /// two things the author of a deliberate guardrail does not want to do.
+    /// Dropping it means the rule arrives after the first violation does.
+    ///
+    /// **A sentence, not a flag.** `true` would be a way to silence the
+    /// doctor; a sentence is a note to whoever reads this config in six months
+    /// and finds a rule guarding nothing. The same bar `#[allow]` in this
+    /// codebase holds to, and the same one `why_not_enforceable` holds a
+    /// decision to.
+    ///
+    /// It does not silence the concern for ever: the day the directory appears
+    /// with this rule still declaring it is not yet built, `doctor` says so —
+    /// `scope-no-longer-empty`. A field that only ever quietened something
+    /// would be a mute, and a rule enforcing nothing must never look like a
+    /// repository that satisfies it. Issue #179, decision 40.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Subdirectory names that are permitted.

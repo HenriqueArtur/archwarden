@@ -478,6 +478,7 @@ mod tests {
             id: RuleId::new(id).expect("valid id"),
             module: None,
             why: why.map(ToOwned::to_owned),
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,
@@ -554,6 +555,7 @@ mod tests {
             supersedes: Vec::new(),
             superseded_by: Vec::new(),
             alternatives: Vec::new(),
+            not_yet: None,
         }
     }
 

@@ -82,6 +82,7 @@ pub(super) fn compile_decisions(
                 id: decision.id.clone(),
                 title: decision.title.clone(),
                 why: decision.why.clone(),
+                not_yet: decision.not_yet.clone(),
                 link: decision.link.clone(),
                 status: status_of(decision, replaced_by.first())?,
                 supersedes: decision.supersedes.iter().cloned().collect(),

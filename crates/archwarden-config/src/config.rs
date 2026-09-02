@@ -216,6 +216,16 @@ pub struct Decision {
     /// says two things. Issue #160.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub why_not_enforceable: Option<String>,
+    /// Why this decision's `scope` is deliberately empty, when it is.
+    ///
+    /// The same field a rule carries, with the same argument: a decision may
+    /// be about a part of the system that is on the roadmap, and `describe`
+    /// never bringing it to anybody is the intended state rather than a typo.
+    /// A sentence, not a flag — and `config doctor` speaks up again the day
+    /// the scope starts matching something with this still set. Issue #179,
+    /// decision 40.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// Where this decision applies, as directory globs.
     ///
     /// The same shape as [`Module::scope`], for the same reason #74 gave it to
@@ -978,6 +988,7 @@ mod decision_tests {
             id: DecisionId::new("ADR-9").expect("valid"),
             title: "built".to_owned(),
             why: None,
+            not_yet: None,
             link: None,
             status: Some(DecisionStatus::Proposed),
             supersedes: crate::one_or_many::OneOrMany::default(),

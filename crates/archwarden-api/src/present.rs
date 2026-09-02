@@ -543,6 +543,7 @@ mod present_tests {
             id: RuleId::new(id).expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: None,
             imports: None,

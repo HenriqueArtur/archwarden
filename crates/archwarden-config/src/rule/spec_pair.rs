@@ -45,6 +45,10 @@ pub struct SpecPairRule {
     /// is a typo, not a style. Issue #100.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decision: Option<DecisionId>,
+    /// Why this rule's scope is empty on purpose, when it is. The same field,
+    /// with the same meaning, is on every rule kind — see `StructureRule`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_yet: Option<String>,
     /// Directory globs this rule applies to.
     pub roots: Patterns,
     /// Subdirectories subject to the rule, each covering everything below it.

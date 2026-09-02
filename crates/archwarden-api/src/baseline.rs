@@ -616,6 +616,7 @@ mod tests {
             id: RuleId::new(rule).expect("valid id"),
             module: None,
             why: None,
+            not_yet: None,
             module_why: None,
             decision: decision
                 .map(|id| archwarden_core::ids::DecisionId::new(id).expect("valid decision id")),
