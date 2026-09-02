@@ -17,6 +17,98 @@ saying so.
 
 ## [Unreleased]
 
+### Added
+
+- **A `spec-pair` marker may name more than one component.**
+
+  ```json
+  { "type": "spec-pair", "id": "domain/calcs-need-a-unit-spec",
+    "spec_markers": ["unit.spec"] }
+  ```
+
+  `account-sanitize.ts` now pairs with `account-sanitize.unit.spec.ts`. A
+  repository distinguishing `*.unit.spec.ts` from `*.intg.spec.ts` — so the
+  filename says what infrastructure a test needs — had nine `spec-pair` rules
+  report at once, **364 findings, every one false**, with the sibling sitting
+  right there.
+
+  It also makes the rule exact rather than merely quiet. Under the default an
+  `*.intg.spec.ts` satisfies a rule whose `why` is about the edge case a *unit*
+  test covers; naming `unit.spec` says what was meant, and the integration file
+  becomes a unit of its own that owes a spec.
+
+  **Two markers where one ends the other are now refused when the config
+  compiles.** With `spec` and `unit.spec` both live, `a.unit.spec.ts` would be
+  the spec for `a.ts` and for `a.unit.ts` at once — one file satisfying two
+  units, which is how a gate reports nothing and looks like a repository that
+  is fully tested. Markers of the same depth shadow nothing, so
+  `["unit.spec", "intg.spec"]` is fine. No config that compiled before can hit
+  this refusal. Issue #174, decision 38.
+
+### Fixed
+
+- **`config doctor` called a `chokepoint` toothless when it guards `renders`.**
+
+  ```
+  warning web/no-raw-html-above-the-alphabet [rule-constrains-nothing]
+    it guards no callee, so there is no capability it can report anybody for reaching
+    fix: name what only these files may reach — or drop the rule
+  ```
+
+  The rule in question had reported twenty-two real violations on its first
+  run, and `config verify-rules` proved it fires. The check read `callee` and
+  nothing else, so a rule guarding JSX elements — a use of its own since
+  decision 37 — arrived as a rule guarding nothing.
+
+  The advice is what made it worth fixing over a stray warning: it says to drop
+  the rule, `check` stays green afterwards because there is nothing left to
+  fail, and `doctor` is the command people reach for when they *already*
+  suspect a rule is inert. A false positive there lands on an audience primed
+  to believe it.
+
+  A non-empty `renders` now counts, and the message names both fields when both
+  are empty. Issue #176.
+
+- **The docs said `spec-pair` never fails a language that tests some other
+  way.** It has failed one since 0.29. `docs/RULES.md` still carried the
+  sentence from before the Rust front-end landed — *"skipped by this rule, and
+  counted as a skip — never failed by it"* — while the rule had grown a second
+  branch that asks a `.rs` file for a `#[cfg(test)] mod tests` inside itself.
+
+  The cost was a repository deleting a working rule as unwritable. It had two
+  problems stacked: `crates/*/src/*` selects directories *inside* `src`, of
+  which a flat crate has none, and `languages` did not name `rust`, without
+  which the file is never parsed and the rule reports nothing at all.
+
+  `RULES.md` now documents the branch, including both of those traps;
+  `CONFIG.md` and `AGENTS.md` say where a Rust test goes. Issue #178.
+
+- **`chokepoint`'s Rust note was circular.** It said the gap this rule fills
+  *"does not exist"* in Rust because a `use` is an import `import-boundary`
+  already cuts. `import-boundary` does not cut it: it is one of the two kinds
+  that need a resolver, and no Rust resolver exists. A reader wanting *"only
+  these files may touch `std::fs`"* was sent from a rule that declines to a
+  rule that cannot, and got a counted skip at the end of it.
+
+  The note now says the gap is not filled, and names what fills it —
+  `clippy.toml` for the *"nobody calls this"* half, the Cargo graph for the
+  crate-level boundary, and neither for `only_in` or the intra-crate case.
+  Decision 19's failure mode reached through the documentation. Issue #175.
+
+- **`README.md` had no "what to use instead" for Rust.** The section is what
+  keeps a narrow surface a feature rather than a hole, and it was addressed
+  entirely to TypeScript. It now carries both columns. The `Non-goals` entry
+  claiming other languages were not on the roadmap has been stale since 0.29
+  and is rewritten. Issue #175.
+
+### Changed
+
+- **`agent-guide` says where a Rust test goes.** A `spec-pair` rule rendered as
+  *"needs a sibling named with `.spec.`"* in a repository whose `languages`
+  names `rust`, which is an instruction to create `create_client.spec.rs` — a
+  file that satisfies nothing. The sentence now carries the inline form beside
+  the sibling one, and only when the config reads Rust. Issue #178.
+
 ## [0.35.0] — 2026-08-21
 
 **A destination that is a path.** One bug, and it is the kind that moves files
