@@ -17,6 +17,19 @@ saying so.
 
 ## [Unreleased]
 
+## [0.36.0] — 2026-09-02
+
+**Four issues from one repository using it in anger.** Two of them turned out
+not to be what they were filed as, and that is the interesting half: one asked
+for a rule kind that has shipped since 0.29 and was undocumented, and one asked
+to relax a refusal whose written argument was right about the danger and wrong
+about the mechanism.
+
+**Nothing here changes what an existing config's `check` reports.**
+`config doctor` reports one fewer warning, `agent-guide` renders one sentence
+differently on a Rust config, and no config that compiled before can hit the
+new refusal.
+
 ### Added
 
 - **A `spec-pair` marker may name more than one component.**
@@ -3116,7 +3129,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.35.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.36.0...HEAD
+[0.36.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.33.0...v0.34.0
 [0.33.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.32.0...v0.33.0
