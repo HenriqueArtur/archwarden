@@ -17,6 +17,16 @@ saying so.
 
 ## [Unreleased]
 
+## [0.37.0] — 2026-09-02
+
+**Two features narrower than the issues that asked for them, and two silences
+the doctor was keeping.** Both features are recorded as decisions with the
+alternatives that lost, including what stays unenforceable because of them.
+
+**Nothing here changes what an existing config's `check` reports.** Three new
+`config doctor` concerns, one changed `agent-guide` sentence, and a report line
+about the repository root that used to print a blank.
+
 ### Added
 
 - **`presence` rules may forbid a name.** *"One package manager"* is a decision
@@ -3214,7 +3224,8 @@ the second towards reporting less.
 
 ---
 
-[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.36.0...HEAD
+[Unreleased]: https://github.com/HenriqueArtur/archwarden/compare/v0.37.0...HEAD
+[0.37.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.36.0...v0.37.0
 [0.36.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.35.0...v0.36.0
 [0.35.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.34.0...v0.35.0
 [0.34.0]: https://github.com/HenriqueArtur/archwarden/compare/v0.33.0...v0.34.0
