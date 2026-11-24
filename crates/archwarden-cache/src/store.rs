@@ -25,6 +25,13 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 /// cache is a rebuildable artefact, and migration code for one is a liability
 /// nobody is paid back for. See decision 3.
 ///
+/// 17 → 18: no field changed and every value did. A `CommonJS` file's facts
+/// were written by a parser that read no `require` and no `module.exports`,
+/// and facts are keyed by content hash alone — so without the bump an
+/// unedited file keeps claiming it imports and exports nothing, which is a
+/// boundary rule passing on an edge that is right there in the source.
+/// Decision 41.
+///
 /// 7 → 8: `FileFacts::metadata`. The same dangerous shape again — an entry
 /// written by the previous build deserialises cleanly and claims the file
 /// declares nothing about itself, which is a finding against a file whose
@@ -43,7 +50,7 @@ use redb::{Database, ReadableDatabase, TableDefinition};
 /// dangerous kind of shape change — an entry written by the previous build
 /// deserialises cleanly and claims every export annotates nothing, which is a
 /// finding against a file whose annotation is right there in the source.
-pub const FORMAT_VERSION: u32 = 17;
+pub const FORMAT_VERSION: u32 = 18;
 
 const META: TableDefinition<'_, &str, u32> = TableDefinition::new("meta");
 const FACTS: TableDefinition<'_, &[u8], &[u8]> = TableDefinition::new("facts");
