@@ -17,6 +17,102 @@ Consequences: what this locks us into or unlocks.
 
 ---
 
+### 41 — `CommonJS` is read off the AST, into the facts an ES module already fills
+Status: accepted.
+Context: the JS/TS front-end took its imports and exports from `oxc`'s module
+record, which covers module *syntax*. `CommonJS` has none — a `require` is a
+call and an export is an assignment — so a `.cjs` file, or a `.js` file in a
+package that never moved to ES modules, parsed cleanly and produced a file
+that imports nothing and exports nothing. A test said so on purpose:
+*"`CommonJS` resolution has its own rules and v0 does not claim to follow
+them."*
+
+That was a boundary rule over a `CommonJS` layer passing on every edge in it,
+and a `naming` rule failing every file in it, with nothing in the report to
+tell either from the truth. It is the shape this project refuses above all
+others — a rule enforcing nothing while looking like a repository that
+satisfies it — and unlike a `.py` file it was not even a counted skip, because
+the file *was* read.
+
+Decision: both halves are read off the AST and land in `ImportFact` and
+`ExportFact`. No new fact type, no new rule kind, no config field, and no rule
+engine knows a second module system exists.
+
+**Imports.** `require('<literal>')` anywhere in the file is an import, on the
+terms `import()` already is: a literal specifier is recorded, anything else
+sets `has_opaque_import` and is not invented. The names are the bindings —
+`const x = require()`, `const { a, b: c } = require()` and
+`const a = require().a` — because `call-obligation` and `chokepoint` ask
+whether a symbol was imported *by name*. TypeScript's `import x = require()`
+is the same import; the module record does not carry it either.
+
+**Exports.** Top-level statements only, as `export` is:
+
+- `exports.x = …` and `module.exports.x = …` are named exports.
+- `module.exports = { a, b: …, c() {} }` is one named export per property —
+  the dominant idiom, and the one `const { a } = require()` consumes by name.
+- `module.exports = <anything else>` and TypeScript's `export = X` are a
+  default: what the importer receives under a name of its own choosing.
+- `module.exports = require('./x')` and `{ ...require('./x') }` are
+  `export * from './x'`; `exports.x = require('./x')` is a named re-export.
+
+**The kind is the ES-module kind for the same source.** `exports.x = 10` is
+how `CommonJS` spells `export const x = 10`, so it is a `const`; an arrow is
+`const` + `arrow`; a function or class expression is `function` or `class`;
+`exports.x = local` takes the declaration of `local`. A rule written against
+one module system gets the same answer from the other, which is the property a
+repository half-way through a migration needs.
+
+**A binding that holds a `require` is an import, not a declaration.**
+`const { A } = require('./a'); module.exports = { A }` is `import { A }`
+followed by `export { A }`, and is recorded the way that is: no tags, forwards
+`A`. Otherwise `no-passthrough` would read a barrel as six `const` aliases.
+
+**Resolution is the resolver that was already there.** The claim the old test
+made was truer of the sentence than of the code: extension probing and
+directory indexes *are* the `CommonJS` algorithm, and the resolver had been
+applying them to ES modules all along. Two things were actually missing.
+`.json` joins the extension list, last, where Node has it. And the `exports`
+condition order stays `import` before `require` for every specifier — see the
+second alternative.
+
+Alternatives:
+- **A `languages` opt-in, as Astro has.** Rejected: that field is for widening
+  *which files* archwarden governs, and a `.js` file was already governed, read
+  and counted. This is the same change as reading `import()` (which was a
+  bypass found in a real monorepo) and as `export *` producing a fact in 0.22:
+  seeing more of a file that was already being judged. It changes what an
+  unchanged config reports and the changelog says so first.
+- **Tell the resolver which kind of import it is, so a `require` prefers the
+  `require` condition.** Rejected for now: it widens the one-method `Resolver`
+  trait (decision 6) for a difference that changes an answer in exactly one
+  case — a *workspace* package whose `import` and
+  `require` conditions name different source files. For a dependency both land
+  in the same package, which is all a boundary rule asks. Cheap to revisit if
+  that case turns up; expensive to carry if it does not.
+- **A new `ExportKind` for a property assignment.** Rejected: it would be a new
+  word in the config surface that means "`const`, but in the other module
+  system", and every preset that says `kind: ["function", "arrow"]` would have
+  to learn it or silently stop matching.
+- **Scope analysis, so a shadowed `require` or `exports` is not misread.**
+  Rejected: it needs `oxc_semantic`, a second pass and a dependency, to handle
+  a file that binds `require` to something that does not load modules. The
+  common rebinding — `createRequire(import.meta.url)` — is one that does.
+- **Follow assignments inside functions and conditions.** Rejected: one that
+  may never run would satisfy a `must_export`, and a `must_export` satisfied by
+  an export that does not happen is a rule enforcing nothing.
+Consequences: an unchanged config reports differently on a repository with
+`CommonJS` in it — boundary and cycle findings that were always true appear,
+and `naming` findings that were always false disappear. Cache format 17 → 18,
+because facts are keyed by content hash and no field changed: an unedited file
+would otherwise keep its empty facts. Not read, and absent rather than guessed:
+`exports[key] = …`, `Object.defineProperty(exports, …)` (compiler output,
+which is not what a rule is about), `require.resolve`, a spread of anything
+that is not a `require`, and any export below the top level. A file that mixes
+both module systems gets the union.
+
+---
+
 ### 40 — A scope may declare itself empty on purpose, in a sentence
 Status: accepted.
 Context: issue #179. `config doctor` warned that a scope matched no directory,

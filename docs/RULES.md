@@ -195,6 +195,42 @@ importers with `from`, `from_module` and `from_kind`.
 
 See decision 25.
 
+## `CommonJS` is the same facts, spelled as calls and assignments
+
+Every rule below is written in terms of what a file imports and exports, and a
+`CommonJS` file does both without module syntax. It is read into the same
+facts, so nothing in a rule has to say which module system it is about.
+Decision 41.
+
+| the source says | a rule sees |
+|---|---|
+| `const x = require('./x')`, `const { a } = require('./x')`, `require('./x')` anywhere, `import x = require('./x')` | an import of `./x`, resolved like any other |
+| `require(name)` | nothing — and the file is marked as having an import this cannot read, exactly as `import(name)` is |
+| `exports.x = …`, `module.exports.x = …` | a named export `x` |
+| `module.exports = { a, b: …, c() {} }` | named exports `a`, `b`, `c` |
+| `module.exports = <anything else>`, `export = X` | a default export |
+| `module.exports = require('./x')`, `{ ...require('./x') }` | `export * from './x'` |
+| `exports.x = require('./x')` | `export { x } from './x'` |
+
+**The kind is the one the ES-module spelling would have.** `exports.x = 10` is
+a `const`, `exports.x = () => {}` is `const` + `arrow`, a function or class
+expression is `function` or `class`, and `exports.x = local` is whatever
+`local` was declared as. A `must_export` written for `export function handler`
+is satisfied by `function handler() {}` followed by
+`module.exports = { handler }`.
+
+**A default is still a default.** `module.exports = class UserService {}`
+gives the importer a value and no name, so it does not satisfy a named
+`must_export` — see section 2.
+
+**Only the top level exports.** An assignment inside a function or an `if` may
+never run. A `require` is read wherever it is, because a lazy `require` inside
+a function is how a forbidden layer usually gets loaded.
+
+**What is not read**: `exports[key] = …`, `Object.defineProperty(exports, …)`,
+`require.resolve(…)`, and a spread of anything that is not a `require`. Those
+are absent rather than guessed at.
+
 ## Severity precedence
 
 Within a single rule, **the most specific declaration wins**. Specificity is
@@ -503,7 +539,8 @@ default for presets.
 local name does not bind the importer (`import Whatever from './foo'`), and
 this rule exists to couple filename to the symbol importers actually see.
 `config doctor` warns when a file targeted by a `naming` rule exports only a
-default.
+default. `module.exports = <something that is not an object literal>` is a
+default on the same terms; `module.exports = { handler }` is a named export.
 
 **Re-exports** match `kind: "any"` or `kind: "reexport"` and fail any concrete
 kind, with a specific reason: *"symbol is re-exported from './x'; kind is not
@@ -1156,6 +1193,11 @@ there is exactly one canonical path per import, and rules operate on it.
 are extracted separately. Rules may opt in with `include_type_only: false`
 (default `true`).
 
+**`require` is an import.** `require('./x')` is an edge wherever it is written,
+including inside a function, and is never type-only: it is a call, and it
+runs. `require(name)` names no module and is not an edge — see "`CommonJS` is
+the same facts" above.
+
 ### Forbidding a dependency nobody wrote down
 
 `forbid_reaching` is the transitive half of `forbid_import_from`:
@@ -1440,7 +1482,7 @@ not resolve.
 
 | form | looks like |
 |---|---|
-| `reexport` | `export { A } from './x'`, `export * from './x'`, or `import { A }` followed by `export { A }` |
+| `reexport` | `export { A } from './x'`, `export * from './x'`, or `import { A }` followed by `export { A }` — and their `CommonJS` spellings: `module.exports = require('./x')`, `exports.A = require('./x')`, or `const { A } = require('./x')` followed by `module.exports = { A }` |
 | `alias` | `export const planToJson = planToJsonShared`, `export type PlanJson = PlanJsonShared` |
 | `wrapper` | `export function f(a, b) { return g(a, b); }` |
 

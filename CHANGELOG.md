@@ -17,6 +17,37 @@ saying so.
 
 ## [Unreleased]
 
+**This changes what an existing, unchanged config reports**, on any repository
+with `CommonJS` in it. A `.cjs` file — or a `.js` file that uses `require` and
+`module.exports` — used to parse cleanly and come out as a file that imports
+nothing and exports nothing. So `import-boundary` and `import-cycle` passed on
+every edge in it, and `naming`, `export-shape` and `call-matches-export` judged
+it as a file with no exports. Findings that were always true will appear, and
+findings that were always false will go away. The cache rebuilds itself once.
+
+### Added
+
+- **`CommonJS` is read.** `require('./x')` is an import wherever it is written,
+  binding the names it is assigned to (`const { a } = require('./x')` imports
+  `a`), and `require(name)` is an import this cannot read, on the terms
+  `import(name)` already is. `exports.x = …` and `module.exports = { x }` are
+  named exports with the kind the ES-module spelling would have;
+  `module.exports = <anything else>` is a default; `module.exports =
+  require('./x')` is `export * from './x'`. TypeScript's
+  `import x = require()` and `export = X` are the same two things with
+  keywords. No config field and no new rule kind: the table of what is read,
+  and what is deliberately not, is in `docs/RULES.md`, and the reasons are
+  decision 41.
+- **An extensionless specifier finds a `.json` file**, after every kind of
+  source, which is where Node's `require` has it. `require('./config')` used to
+  be an unresolved import when `config.json` was the only thing there.
+
+### Changed
+
+- **Cache format 17 → 18.** No field changed; every `CommonJS` file's facts
+  did, and facts are keyed by content hash, so an unedited file would otherwise
+  keep the empty ones.
+
 ## [0.37.0] — 2026-09-02
 
 **Two features narrower than the issues that asked for them, and two silences
