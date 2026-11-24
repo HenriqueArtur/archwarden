@@ -613,8 +613,9 @@ fresh clone before `install`. `--apply` refuses rather than rewriting the
 importers it happens to see, and the refusal names the file and the specifier.
 Run your package manager's install and try again.
 
-**`--force` covers exactly one refusal** — a dynamic import naming no module,
-where whether that file imports the target is unknowable. The report names the
+**`--force` covers exactly one refusal** — a dynamic import naming no module
+(`import(name)`, or `require(name)` in a `CommonJS` file), where whether that
+file imports the target is unknowable. The report names the
 file. Look at it. Do not reach for `--force` on anything else; it does not
 apply to anything else.
 

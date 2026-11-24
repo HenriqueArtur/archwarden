@@ -110,6 +110,25 @@ impl OxcParser {
         let forwarded = forwarded_bindings(&parsed.program);
 
         let (imports, has_opaque_import) = imports(&parsed.module_record, &parsed.program);
+        let mut exports = exports(
+            &parsed.module_record,
+            &declaration_tags,
+            &declaration_annotations,
+            &declaration_returns,
+            &forwarded,
+        );
+        // `module.exports` and `exports.x` are assignments, so the module
+        // record has never heard of them. Decision 41.
+        exports.extend(crate::commonjs::exports(
+            &parsed.program,
+            source,
+            crate::commonjs::Declarations {
+                tags: &declaration_tags,
+                annotations: &declaration_annotations,
+                returns: &declaration_returns,
+                forwarded: &forwarded,
+            },
+        ));
         let allowances = allowances(&parsed.program, source);
         let metadata = metadata(&parsed.program, source);
         let (calls, reads) = calls(&parsed.program);
@@ -123,13 +142,7 @@ impl OxcParser {
             // is not where they live".
             inline_tests: 0,
             imports,
-            exports: exports(
-                &parsed.module_record,
-                &declaration_tags,
-                &declaration_annotations,
-                &declaration_returns,
-                &forwarded,
-            ),
+            exports,
             calls,
             reads,
             // Zero, and not a gap. For JavaScript the question `skip_type_only`
@@ -665,7 +678,7 @@ fn record_returns(
 
 /// The declared return type of a callable expression, when it is one and it
 /// declared anything.
-fn return_type_of<'a>(
+pub(crate) fn return_type_of<'a>(
     expression: &'a oxc_ast::ast::Expression<'a>,
 ) -> Option<&'a oxc_ast::ast::TSTypeAnnotation<'a>> {
     match expression {
@@ -731,7 +744,7 @@ fn record_annotations(
 /// rule nobody keeps. Collapsed rather than stripped because this text is
 /// printed back at a user in a finding; the comparison that consumes it ignores
 /// spacing entirely, on both sides.
-fn collapsed(source: &str, span: oxc_span::Span) -> Option<String> {
+pub(crate) fn collapsed(source: &str, span: oxc_span::Span) -> Option<String> {
     let text = source.get(span.start as usize..span.end as usize)?;
 
     let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -970,11 +983,17 @@ fn imports(
     // off the AST -- which is how a boundary rule was bypassable by writing
     // `await import('@/domain/user')`. Found by the differential harness
     // against a real monorepo.
-    let (dynamic, has_opaque_import) = dynamic_imports(program);
+    let (dynamic, opaque_import) = dynamic_imports(program);
     by_statement.extend(dynamic);
 
+    // And a `require` is a call to an ordinary function, which is further
+    // still from module syntax. A boundary rule over a `CommonJS` layer saw no
+    // edges at all until this was read. Decision 41.
+    let (required, opaque_require) = crate::commonjs::requires(program);
+    by_statement.extend(required);
+
     by_statement.sort_by_key(|fact| (fact.span.start, fact.span.end));
-    (by_statement, has_opaque_import)
+    (by_statement, opaque_import || opaque_require)
 }
 
 /// Every `import()` in the file whose specifier is written out, and whether
@@ -1242,7 +1261,7 @@ fn callee_path(expression: &Expression<'_>) -> Option<String> {
     }
 }
 
-fn span_of(span: oxc_span::Span) -> Span {
+pub(crate) fn span_of(span: oxc_span::Span) -> Span {
     Span::new(span.start, span.end)
 }
 
@@ -2268,16 +2287,6 @@ export async function lazy() {
 
         let specifiers: Vec<_> = facts.imports.iter().map(|i| i.specifier.as_str()).collect();
         assert_eq!(specifiers, ["./a", "./b", "./a"]);
-    }
-
-    /// `require()` is not `import()`. `CommonJS` resolution has its own rules
-    /// and v0 does not claim to follow them; picking up the string here would
-    /// promise a coverage the resolver does not have.
-    #[test]
-    fn a_require_call_is_not_picked_up() {
-        let facts = parse("src/x.ts", "export const thing = require('./commonjs');");
-
-        assert!(facts.imports.is_empty());
     }
 
     /// A re-export's source is an import as far as the graph is concerned.

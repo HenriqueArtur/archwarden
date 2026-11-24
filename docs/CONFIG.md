@@ -1353,8 +1353,9 @@ target and which of those imports would *newly* be forbidden, how many of the
 file's own relative imports would need rewriting — and which files contain a
 dynamic import it cannot read.
 
-That last one matters. `import(name)` names no single module, so archwarden
-records nothing for it: right for a rule, which must not report a path nobody
+That last one matters. `import(name)` — and `require(name)`, which is the same
+thing in `CommonJS` — names no single module, so archwarden records nothing for
+it: right for a rule, which must not report a path nobody
 wrote, and wrong for a question about who imports a file. Those files are
 listed separately, because a confident answer with a hole in it is worse than
 an incomplete one that says so.
@@ -1473,7 +1474,7 @@ rewritten.
 | a file being moved is untracked | `git mv` cannot move it, and `git checkout .` cannot bring it back — the two halves of the same fact. Asked before anything is written, because git asks it in the middle of the move |
 | a specifier this cannot recompute | a `tsconfig` path alias whose entry does not reach the destination. The alias the importer already writes *is* re-run against the new location, and rewritten when it still covers it; what refuses is a move out of what the alias covers, or an entry naming one file rather than a subtree |
 | the destination exists, or two files land on one path | carrying it out would delete something |
-| a dynamic import naming no module | whether that file imports the target is unknowable |
+| a dynamic import naming no module — `import(name)` or `require(name)` | whether that file imports the target is unknowable |
 
 Only the last is overridable. `--force` is a human saying they looked, and the
 report prints the file and the line to look at. The others produce a repository

@@ -9,6 +9,7 @@
 
 // Modules document themselves with `//!`; see the note in archwarden-core.
 pub mod astro;
+mod commonjs;
 pub mod document;
 pub mod oxc;
 pub mod rust;

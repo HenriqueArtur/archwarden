@@ -590,6 +590,70 @@ fn an_astro_page_crossing_a_boundary_is_reported_once_astro_is_enabled() {
         .stdout(contains("skipped").not());
 }
 
+/// Decision 41, through the binary. A `CommonJS` layer used to be a place a
+/// boundary rule looked at and saw nothing in, which reads exactly like a
+/// layer that satisfies it.
+#[test]
+fn a_commonjs_file_crossing_a_boundary_is_reported() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"import-boundary","id":"routes-forbid-db","level":"error",
+                 "from":["src/routes/**"],"forbid_import_from":["src/db/**"]}]}"#,
+        ),
+        ("src/db/pool.js", "module.exports = { query() {} };\n"),
+        ("src/services/users.js", "exports.list = () => [];\n"),
+        (
+            "src/routes/users.js",
+            "const { query } = require('../db/pool');\nexports.index = () => query();\n",
+        ),
+        (
+            "src/routes/health.js",
+            "const users = require('../services/users');\nexports.index = () => users.list();\n",
+        ),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("src/routes/users.js"))
+        .stdout(contains("routes-forbid-db"))
+        // A require that stays inside the allowed layers is not a finding.
+        .stdout(contains("src/routes/health.js").not());
+}
+
+/// The export half: `module.exports = { handler }` is a named export a rule
+/// can ask for, and a file that assigns something else whole has none.
+#[test]
+fn a_naming_rule_reads_what_a_commonjs_file_exports() {
+    let dir = repo(&[
+        (
+            "arch.config.json",
+            r#"{"version":0,"rules":[
+                {"type":"naming","id":"jobs-export-a-handler","level":"error",
+                 "roots":["src/jobs"],
+                 "file_pattern":"^.+\\.js$",
+                 "must_export":{"kind":["function"],"name":"handler"}}]}"#,
+        ),
+        (
+            "src/jobs/good.js",
+            "function handler() {}\nmodule.exports = { handler };\n",
+        ),
+        ("src/jobs/bad.js", "module.exports = function () {};\n"),
+    ]);
+
+    archwarden()
+        .current_dir(dir.path())
+        .arg("check")
+        .assert()
+        .code(1)
+        .stdout(contains("src/jobs/bad.js"))
+        .stdout(contains("src/jobs/good.js").not());
+}
+
 /// The rule issue #13 says earns its keep, and it falls out of reading the
 /// fence: an Astro page has no named component export, but it does export
 /// `getStaticPaths`.
