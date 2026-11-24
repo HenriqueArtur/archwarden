@@ -25,8 +25,14 @@ use camino::{Utf8Path, Utf8PathBuf};
 /// Without it, `import Layout from './Base.astro'` resolves to nothing and a
 /// boundary rule sees an unresolved specifier instead of an in-repo path.
 /// Issue #13.
-const EXTENSIONS: [&str; 10] = [
-    ".ts", ".tsx", ".mts", ".cts", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".astro",
+///
+/// `.json` is after every kind of source, which is where Node's own `require`
+/// has it: `require('./config')` finds `config.json` only when no module of
+/// that name sits beside it. An ES module has to write the extension, so for
+/// one this entry only ever answers a specifier `tsc` would have refused.
+/// Decision 41.
+const EXTENSIONS: [&str; 11] = [
+    ".ts", ".tsx", ".mts", ".cts", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".json", ".astro",
 ];
 
 /// Fields consulted in a dependency's `package.json`, best first.
@@ -383,6 +389,38 @@ mod tests {
                 "./user",
             ),
             "in-repo src/user.ts"
+        );
+    }
+
+    /// `require('./config')` finding `config.json` is Node's own algorithm
+    /// and the commonest thing a `CommonJS` file loads that is not code.
+    /// Decision 41.
+    #[test]
+    fn an_extensionless_specifier_finds_a_json_file() {
+        assert_eq!(
+            landed(
+                &[("src/app.js", ""), ("src/config.json", "{}")],
+                "src/app.js",
+                "./config",
+            ),
+            "in-repo src/config.json"
+        );
+    }
+
+    /// Last, as Node has it: data never shadows the module beside it.
+    #[test]
+    fn source_wins_over_a_json_file_of_the_same_name() {
+        assert_eq!(
+            landed(
+                &[
+                    ("src/app.js", ""),
+                    ("src/config.json", "{}"),
+                    ("src/config.cjs", "module.exports = {};"),
+                ],
+                "src/app.js",
+                "./config",
+            ),
+            "in-repo src/config.cjs"
         );
     }
 
