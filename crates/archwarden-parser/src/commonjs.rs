@@ -205,24 +205,22 @@ fn required_bindings(program: &Program<'_>) -> HashSet<String> {
     let mut names = HashSet::new();
 
     for statement in &program.body {
-        match statement {
-            Statement::VariableDeclaration(variable) => {
-                for declarator in &variable.declarations {
-                    if declarator.init.as_ref().and_then(require_behind).is_some() {
-                        names.extend(
-                            declarator
-                                .id
-                                .get_binding_identifiers()
-                                .iter()
-                                .map(|identifier| identifier.name.to_string()),
-                        );
-                    }
-                }
+        // `import x = require()` needs no entry: the declaration map has
+        // never heard of it, so it already reads as a name the file did not
+        // declare.
+        let Statement::VariableDeclaration(variable) = statement else {
+            continue;
+        };
+        for declarator in &variable.declarations {
+            if declarator.init.as_ref().and_then(require_behind).is_some() {
+                names.extend(
+                    declarator
+                        .id
+                        .get_binding_identifiers()
+                        .iter()
+                        .map(|identifier| identifier.name.to_string()),
+                );
             }
-            Statement::TSImportEqualsDeclaration(import) => {
-                names.insert(import.id.name.to_string());
-            }
-            _ => {}
         }
     }
 
@@ -761,9 +759,10 @@ mod tests {
     fn an_exported_function_expression_carries_its_return_type() {
         let facts = parse(
             "src/x.ts",
-            "exports.load = (): Promise<User> => fetchUser();\nexports.bare = () => 1;",
+            "exports.load = (): Promise<User> => fetchUser();\nexports.bare = () => 1;\nexports.plain = function (): Result {};",
         );
 
+        assert_eq!(named(&facts, "plain").returns.as_deref(), Some("Result"));
         assert_eq!(
             named(&facts, "load").returns.as_deref(),
             Some("Promise<User>")
@@ -966,6 +965,24 @@ mod tests {
         assert_eq!(export.forwards.as_deref(), Some("*"));
         assert!(!export.is_default);
         assert_eq!(specifiers(&facts), ["./impl"], "and it is still an import");
+    }
+
+    /// A call to anything else returns a value this file computed, and
+    /// re-exports nothing -- whatever string it was handed.
+    #[test]
+    fn a_call_that_is_not_a_require_is_never_a_reexport() {
+        let facts = parse(
+            "src/x.js",
+            "module.exports = load('./impl');\nexports.user = load('./user');",
+        );
+
+        let whole = facts.exports.first().expect("the default");
+        assert!(whole.is_default);
+        assert!(whole.reexport_from.is_none());
+
+        let user = named(&facts, "user");
+        assert_eq!(kinds(user), [ExportKind::Const]);
+        assert!(user.reexport_from.is_none());
     }
 
     /// The barrel: `{ ...require('./a'), b: require('./b') }`.
